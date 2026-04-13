@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Orchestrator state (project-specific, not committed)
+.orchestra/worktrees/
+.orchestra/state.json
+.orchestra/passes/
+.orchestra/summaries/
+.orchestra/conversation.json
+
+# Keep the workflow config
+!.orchestra/workflow.yaml
