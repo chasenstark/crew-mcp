@@ -1,0 +1,27 @@
+{
+  "userRequest": "Fix the login timeout issue where users get logged out after 5 minutes",
+  "decomposition": {
+    "reasoning": "This is a targeted bug fix in session management. Single implementation task with a review for security implications.",
+    "tasks": [
+      {
+        "id": "task-1",
+        "description": "Investigate and fix session timeout configuration — check token expiry, refresh logic, and cookie settings",
+        "agent": "claude-code",
+        "role": "implement",
+        "dependencies": [],
+        "scope": { "files": ["src/auth/", "src/middleware/"], "description": "Session management" },
+        "estimatedComplexity": "medium"
+      },
+      {
+        "id": "task-2",
+        "description": "Review fix for security implications: token lifetime, refresh token rotation, session fixation",
+        "agent": "codex",
+        "role": "review",
+        "dependencies": ["task-1"],
+        "scope": { "files": ["src/auth/"], "description": "Security review of auth changes" },
+        "estimatedComplexity": "low"
+      }
+    ],
+    "suggestedOrder": ["task-1", "task-2"]
+  }
+}

@@ -1,0 +1,58 @@
+# Default workflow configuration for the orchestrator.
+# Copy to .orchestra/workflow.yaml and customize.
+
+workflow:
+  name: default
+  steps:
+    - role: coder
+      agent: claude-code
+      action: implement
+
+    - role: reviewer
+      agent: codex
+      action: review
+      max_passes: 3
+
+    - role: judge
+      agent: orchestrator
+      action: evaluate_review
+      criteria:
+        - "Are the review findings actionable?"
+        - "Is the fix complete and correct?"
+
+    - role: coder
+      agent: claude-code
+      action: fix_review_issues
+      condition: "judge says fixes needed"
+
+  completion:
+    strategy: judge_approval
+    fallback: max_passes
+
+agents:
+  claude-code:
+    adapter: claude-code
+    auth: subscription
+    strengths:
+      - implementation
+      - refactoring
+      - TypeScript
+      - React
+
+  codex:
+    adapter: codex
+    auth: subscription
+    strengths:
+      - review
+      - testing
+      - Python
+      - security
+
+orchestrator:
+  cli: claude-code
+
+error_handling:
+  default:
+    retry: 1
+    fallback: null
+    on_exhausted: ask_user
