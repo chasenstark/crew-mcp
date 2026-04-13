@@ -1,0 +1,5 @@
+{
+  "reasoning": "Single component task",
+  "tasks": [{"id": "task-1", "description": "Implement component"}],
+  "suggestedOrder": ["task-1"]
+}

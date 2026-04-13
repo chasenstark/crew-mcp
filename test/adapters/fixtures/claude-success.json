@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "I've created the DatePicker component at src/components/DatePicker/DatePicker.tsx with the following features:\n\n- Calendar grid with month navigation\n- Click-to-select date functionality\n- Keyboard navigation with arrow keys\n- Design system token integration\n\nFiles created:\n- src/components/DatePicker/DatePicker.tsx\n- src/components/DatePicker/DatePicker.test.tsx\n- src/components/DatePicker/index.ts",
+  "session_id": "session-abc-123-def-456",
+  "total_cost_usd": 0.087,
+  "duration_ms": 45200,
+  "num_turns": 8,
+  "is_error": false
+}

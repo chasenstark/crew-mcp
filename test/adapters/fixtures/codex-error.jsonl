@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"thread_err456"}
+{"type":"turn.started","turn_id":"turn_1"}
+{"type":"error","message":"Authentication failed: please run codex auth"}
+{"type":"turn.failed","turn_id":"turn_1","reason":"auth_error"}
