@@ -1,0 +1,74 @@
+import { z } from 'zod';
+
+// Step 1: DECOMPOSE
+export const DecomposeOutputSchema = z.object({
+  reasoning: z.string().describe('Brief explanation of how the request was broken down (2-3 sentences)'),
+  tasks: z.array(z.object({
+    id: z.string().describe("Short identifier, e.g. 'task-1'"),
+    description: z.string().describe('What this task accomplishes'),
+    agent: z.string().describe('Which agent should handle this'),
+    role: z.enum(['implement', 'review', 'test', 'refactor', 'document', 'analyze']),
+    dependencies: z.array(z.string()).describe('IDs of tasks that must complete first'),
+    scope: z.object({
+      files: z.array(z.string()).optional().describe('Specific files/directories involved'),
+      description: z.string().describe('What area of the codebase this touches'),
+    }),
+    estimatedComplexity: z.enum(['low', 'medium', 'high']),
+  })),
+  suggestedOrder: z.array(z.string()).describe('Task IDs in recommended execution order'),
+});
+
+// Step 2: DISPATCH
+export const DispatchOutputSchema = z.object({
+  agentPrompt: z.string().describe('The complete prompt to send to the agent'),
+  workingDirectory: z.string().optional().describe('Specific subdirectory to focus on'),
+  expectedOutputs: z.array(z.string()).describe('What files or artifacts the agent should produce'),
+  successCriteria: z.string().describe('How to determine if the agent completed successfully'),
+});
+
+// Step 3: INGEST
+export const IngestOutputSchema = z.object({
+  status: z.enum(['success', 'partial', 'failure']),
+  summary: z.string().describe('2-3 sentence summary of what the agent did'),
+  filesModified: z.array(z.object({
+    path: z.string(),
+    action: z.enum(['created', 'modified', 'deleted']),
+  })),
+  decisions: z.array(z.string()).describe('Key technical decisions the agent made'),
+  concerns: z.array(z.object({
+    severity: z.enum(['info', 'warning', 'error']),
+    description: z.string(),
+  })).describe('Issues or concerns found in the output'),
+  needsHumanAttention: z.boolean(),
+  humanAttentionReason: z.string().optional(),
+  reviewFindings: z.array(z.object({
+    severity: z.enum(['critical', 'major', 'minor', 'suggestion']),
+    description: z.string(),
+    file: z.string().optional(),
+    actionable: z.boolean(),
+  })).optional().describe('For review tasks: specific findings'),
+});
+
+// Step 4: SUMMARIZE
+export const SummarizeOutputSchema = z.object({
+  passNumber: z.number(),
+  summary: z.string().describe('3-8 sentence summary of what happened'),
+  unresolvedIssues: z.array(z.string()).describe('Issues still needing attention'),
+  contextForNextPass: z.string().describe('Specific context the next agent needs'),
+  filesInScope: z.array(z.string()).describe('Files that were touched'),
+});
+
+// Step 5: JUDGE
+export const JudgeOutputSchema = z.object({
+  decision: z.enum(['done', 'iterate', 'ask_user']),
+  reasoning: z.string().describe('Why this decision was made'),
+  issuesRequiringFixes: z.array(z.object({
+    description: z.string(),
+    severity: z.enum(['critical', 'major']),
+    originalFinding: z.string(),
+  })).optional().describe('Only for iterate'),
+  acceptedMinorIssues: z.array(z.string()).optional().describe('Only for done'),
+  questionForUser: z.string().optional().describe('Only for ask_user'),
+  isLooping: z.boolean().describe('Are the same issues repeating?'),
+  loopDescription: z.string().optional(),
+});
