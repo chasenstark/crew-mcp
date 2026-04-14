@@ -1,5 +1,6 @@
 import { execa } from 'execa';
 import { z } from 'zod';
+import { extractJson } from '../utils/json-parse.js';
 
 import type {
   AgentAdapter,
@@ -16,7 +17,7 @@ import type {
 const ClaudeResponseSchema = z.object({
   type: z.string(),
   subtype: z.string().optional(),
-  result: z.string(),
+  result: z.string().optional(),
   structured_output: z.unknown().optional(),
   session_id: z.string().optional(),
   total_cost_usd: z.number().optional(),
@@ -151,10 +152,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       };
     }
 
-    const filesModified = extractFilePaths(parsed.result);
+    const filesModified = extractFilePaths(parsed.result ?? '');
 
     return {
-      output: parsed.result,
+      output: parsed.result ?? '',
       filesModified,
       status: parsed.is_error ? 'error' : 'success',
       sessionId: parsed.session_id,
@@ -171,22 +172,39 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     schema: T,
     options?: ExecuteOptions,
   ): Promise<z.infer<T>> {
-    const jsonSchema = JSON.stringify(z.toJSONSchema(schema));
+    const rawJsonSchema = z.toJSONSchema(schema);
+    // Strip $schema meta-field — some CLI versions don't accept it
+    const { $schema: _, ...cleanSchema } = rawJsonSchema as Record<string, unknown>;
+    const jsonSchema = JSON.stringify(cleanSchema);
+
+    // Embed the schema in the prompt so the model knows the expected shape
+    // even if --json-schema enforcement doesn't populate structured_output.
+    const fullPrompt = prompt +
+      '\n\nYou MUST respond with valid JSON matching this exact schema:\n' +
+      JSON.stringify(cleanSchema, null, 2);
 
     const args = [
       '-p',
-      prompt,
+      fullPrompt,
       '--output-format',
       'json',
       '--dangerously-skip-permissions',
       '--json-schema',
       jsonSchema,
-      // --bare prevents user config (hooks, CLAUDE.md, output styles) from
-      // interfering with structured JSON output.
-      '--bare',
-      '--max-turns',
-      String(options?.maxTurns ?? 1),
+      // Override the system prompt to prevent CLAUDE.md, hooks, and output
+      // styles from interfering with structured JSON output. This keeps
+      // OAuth/keychain auth working (unlike --bare which disables them).
+      '--system-prompt',
+      'You are a structured data extraction engine. Return ONLY valid JSON matching the provided schema. No prose, no markdown, no explanations.',
+      // Disable all tools — orchestrator steps only need to analyze the prompt
+      // and return JSON, never browse files or run commands.
+      '--tools',
+      '',
     ];
+
+    if (options?.maxTurns) {
+      args.push('--max-turns', String(options.maxTurns));
+    }
 
     const timeout = options?.timeout ?? 300_000;
 
@@ -214,18 +232,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     }
 
     // Prefer structured_output (populated when --json-schema is supported).
-    // Fall back to parsing the result string as JSON — some CLI versions or
-    // unsupported schema features may put the output there instead.
+    // Fall back to extracting JSON from the result string — the model may
+    // wrap it in markdown fences or include extra text.
     let output: unknown = parsed.structured_output;
     if (output === undefined || output === null) {
       if (!parsed.result) {
         throw new Error('Claude returned neither structured_output nor a result string');
       }
       try {
-        output = JSON.parse(parsed.result);
+        output = extractJson(parsed.result);
       } catch {
         throw new Error(
-          `Claude returned no structured_output and result is not valid JSON: ${parsed.result.slice(0, 200)}`,
+          `Claude returned no structured_output and could not extract JSON from result: ${parsed.result.slice(0, 200)}`,
         );
       }
     }

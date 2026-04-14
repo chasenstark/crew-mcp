@@ -218,7 +218,7 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.suggestedOrder).toEqual(['task-1']);
     });
 
-    it('passes --json-schema and --bare flags', async () => {
+    it('passes --json-schema, --system-prompt, and --tools flags for isolation', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: structuredFixture,
         stderr: '',
@@ -234,10 +234,14 @@ describe('ClaudeCodeAdapter', () => {
       await adapter.executeWithSchema('Plan tasks', schema);
 
       const callArgs = mockExeca.mock.calls[0];
+      const cliArgs = callArgs[1] as string[];
       expect(callArgs[0]).toBe('claude');
-      expect(callArgs[1]).toContain('--json-schema');
-      expect(callArgs[1]).toContain('--bare');
-      expect(callArgs[1]).toContain('--max-turns');
+      expect(cliArgs).toContain('--json-schema');
+      expect(cliArgs).toContain('--system-prompt');
+      expect(cliArgs).toContain('--tools');
+      // Tools should be disabled (empty string)
+      expect(cliArgs[cliArgs.indexOf('--tools') + 1]).toBe('');
+      expect(cliArgs).not.toContain('--bare');
     });
 
     it('produces valid JSON schema with type field', async () => {
@@ -334,7 +338,7 @@ describe('ClaudeCodeAdapter', () => {
 
       await expect(
         adapter.executeWithSchema('Do something', schema),
-      ).rejects.toThrow('Claude returned no structured_output and result is not valid JSON');
+      ).rejects.toThrow('Claude returned no structured_output and could not extract JSON from result');
     });
 
     it('throws when stdout is empty', async () => {
