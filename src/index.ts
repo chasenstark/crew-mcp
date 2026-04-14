@@ -19,9 +19,10 @@ program
 
 program
   .command('init')
-  .description('Initialize orchestrator config in the current project')
-  .action(async () => {
-    await initCommand();
+  .description('Initialize orchestrator config (global by default)')
+  .option('--project', 'Write config to .orchestra/ in the current project instead of globally')
+  .action(async (opts: { project?: boolean }) => {
+    await initCommand({ project: opts.project });
   });
 
 program

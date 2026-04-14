@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import chalk from 'chalk';
 
 const DEFAULT_WORKFLOW_YAML = `# Orchestra Workflow Configuration
@@ -51,15 +52,23 @@ workflows:
         role: analyze
 `;
 
-export async function initCommand(cwd?: string): Promise<void> {
-  const workingDir = cwd ?? process.cwd();
-  const configDir = join(workingDir, '.orchestra');
-  const workflowFile = join(configDir, 'workflow.yaml');
+export async function initCommand(options: { project?: boolean; cwd?: string } = {}): Promise<void> {
+  let configDir: string;
+  let workflowFile: string;
+
+  if (options.project) {
+    const workingDir = options.cwd ?? process.cwd();
+    configDir = join(workingDir, '.orchestra');
+    workflowFile = join(configDir, 'workflow.yaml');
+  } else {
+    configDir = join(homedir(), '.orchestra');
+    workflowFile = join(configDir, 'workflow.yaml');
+  }
 
   if (existsSync(workflowFile)) {
     console.log(
       chalk.yellow(
-        `\n  .orchestra/workflow.yaml already exists. Delete it first to reinitialize.\n`,
+        `\n  ${workflowFile} already exists. Delete it first to reinitialize.\n`,
       ),
     );
     return;
@@ -72,13 +81,20 @@ export async function initCommand(cwd?: string): Promise<void> {
 
     writeFileSync(workflowFile, DEFAULT_WORKFLOW_YAML, 'utf-8');
 
-    console.log(chalk.green('\u2713 Initialized orchestrator configuration.\n'));
+    const label = options.project ? 'project' : 'global';
+    console.log(chalk.green(`\u2713 Initialized ${label} orchestrator configuration.\n`));
     console.log(`  ${chalk.dim('Config directory:')} ${configDir}`);
     console.log(`  ${chalk.dim('Workflow file:')}    ${workflowFile}`);
     console.log();
-    console.log(
-      chalk.dim('Run `orchestrator status` to check available agents.'),
-    );
+    if (options.project) {
+      console.log(
+        chalk.dim('This config overrides global settings for this project only.'),
+      );
+    } else {
+      console.log(
+        chalk.dim('This config applies to all projects. Override per-project with `orchestrator init --project`.'),
+      );
+    }
   } catch (error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Unknown error';

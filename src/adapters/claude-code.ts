@@ -181,11 +181,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       '--dangerously-skip-permissions',
       '--json-schema',
       jsonSchema,
+      // --bare prevents user config (hooks, CLAUDE.md, output styles) from
+      // interfering with structured JSON output.
+      '--bare',
+      '--max-turns',
+      String(options?.maxTurns ?? 1),
     ];
-
-    if (options?.maxTurns) {
-      args.push('--max-turns', String(options.maxTurns));
-    }
 
     const timeout = options?.timeout ?? 300_000;
 

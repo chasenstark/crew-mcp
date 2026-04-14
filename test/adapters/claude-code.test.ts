@@ -218,7 +218,7 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.suggestedOrder).toEqual(['task-1']);
     });
 
-    it('passes --json-schema flag', async () => {
+    it('passes --json-schema and --bare flags', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: structuredFixture,
         stderr: '',
@@ -236,6 +236,8 @@ describe('ClaudeCodeAdapter', () => {
       const callArgs = mockExeca.mock.calls[0];
       expect(callArgs[0]).toBe('claude');
       expect(callArgs[1]).toContain('--json-schema');
+      expect(callArgs[1]).toContain('--bare');
+      expect(callArgs[1]).toContain('--max-turns');
     });
 
     it('produces valid JSON schema with type field', async () => {
