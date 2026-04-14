@@ -15,11 +15,12 @@ program
   .command('run')
   .description('Start a new workflow or enter conversation mode')
   .argument('[prompt]', 'Initial prompt (or enter interactive mode)')
-  .action(async (prompt?: string) => {
+  .option('--on-ask-user <policy>', 'Behavior when human input is required in non-interactive mode: fail or prompt')
+  .action(async (prompt: string | undefined, opts: { onAskUser?: string }) => {
     if (program.opts<{ debug?: boolean }>().debug) {
       setLogLevel('debug');
     }
-    await runCommand(prompt);
+    await runCommand(prompt, { onAskUser: opts.onAskUser });
   });
 
 program
@@ -36,11 +37,12 @@ program
 program
   .command('resume')
   .description('Resume an interrupted workflow')
-  .action(async () => {
+  .option('--on-ask-user <policy>', 'Behavior when human input is required during resume: fail or prompt')
+  .action(async (opts: { onAskUser?: string }) => {
     if (program.opts<{ debug?: boolean }>().debug) {
       setLogLevel('debug');
     }
-    await resumeCommand();
+    await resumeCommand({ onAskUser: opts.onAskUser });
   });
 
 program

@@ -7,10 +7,44 @@ import { toAgentRegistry } from './run.js';
 import { formatStepComplete, formatStepStart } from '../step-status.js';
 import { enableFileLogging, logger } from '../../utils/logger.js';
 import chalk from 'chalk';
+import { createInterface } from 'readline/promises';
+import { stdin as input, stdout as output } from 'process';
 
-export async function resumeCommand(): Promise<void> {
+type AskUserPolicy = 'fail' | 'prompt';
+
+function normalizeAskUserPolicy(raw: string | undefined): AskUserPolicy {
+  if (!raw) return 'fail';
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'fail' || normalized === 'prompt') return normalized;
+  throw new Error(`Invalid --on-ask-user policy "${raw}". Expected: fail or prompt.`);
+}
+
+function attachResumeAskUserHandler(
+  pipeline: Pipeline,
+  policy: AskUserPolicy,
+): void {
+  pipeline.on('ask_user', async (question) => {
+    if (policy === 'fail') {
+      const reason = `Human input required during resume: ${question}`;
+      console.error(chalk.red(`\n  ${reason}`));
+      pipeline.cancel(reason);
+      return;
+    }
+
+    const rl = createInterface({ input, output });
+    try {
+      const response = await rl.question(`\n[orchestrator] ${question}\n> `);
+      pipeline.provideUserInput(response);
+    } finally {
+      rl.close();
+    }
+  });
+}
+
+export async function resumeCommand(options: { onAskUser?: string } = {}): Promise<void> {
   const projectRoot = process.cwd();
   const stateStore = new StateStore(projectRoot);
+  const onAskUser = normalizeAskUserPolicy(options.onAskUser);
 
   if (!stateStore.hasInterruptedWorkflow()) {
     console.log(chalk.dim('\n  No interrupted workflow found.\n'));
@@ -77,6 +111,8 @@ export async function resumeCommand(): Promise<void> {
     sawPipelineError = true;
     console.error(chalk.red(`\n  Error: ${error.message}\n`));
   });
+
+  attachResumeAskUserHandler(pipeline, onAskUser);
 
   const handleSigint = () => {
     pipeline.cancel('Interrupted by SIGINT while resuming');

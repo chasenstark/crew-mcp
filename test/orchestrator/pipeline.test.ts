@@ -76,11 +76,14 @@ function createHarness() {
     ]),
   };
 
+  let latestState: WorkflowState | null = null;
   const state = {
-    saveState: vi.fn(),
+    saveState: vi.fn((next: WorkflowState) => {
+      latestState = next;
+    }),
     addPassSummary: vi.fn(),
     addPassOutput: vi.fn(),
-    loadState: vi.fn(() => null),
+    loadState: vi.fn(() => latestState),
   };
 
   const worktreeManager = {
@@ -369,7 +372,7 @@ describe('Pipeline', () => {
 
   it('marks running state as interrupted', () => {
     const { pipeline, state } = createHarness();
-    state.loadState.mockReturnValue({
+    state.saveState({
       status: 'running',
       userRequest: 'Build thing',
       decomposition: defaultDecomposition(),
@@ -385,5 +388,29 @@ describe('Pipeline', () => {
         lastError: 'Interrupted by test',
       }),
     );
+  });
+
+  it('exits gracefully as interrupted when cancelled while waiting for user input', async () => {
+    const { pipeline, state } = createHarness();
+
+    mockJudge.mockResolvedValueOnce({
+      decision: 'ask_user',
+      reasoning: 'Need clarification',
+      questionForUser: 'Choose one?',
+      isLooping: false,
+    });
+
+    pipeline.on('ask_user', () => {
+      pipeline.cancel('Cancelled during question');
+    });
+
+    const result = await pipeline.run('Build thing');
+
+    expect(result).toBe('Workflow interrupted.');
+    expect(mockReport).not.toHaveBeenCalled();
+
+    const finalState = state.loadState() as WorkflowState;
+    expect(finalState.status).toBe('interrupted');
+    expect(finalState.lastError).toBe('Cancelled during question');
   });
 });

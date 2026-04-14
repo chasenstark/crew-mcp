@@ -9,6 +9,8 @@ import { loadWorkflowConfig } from '../../workflow/loader.js';
 import chalk from 'chalk';
 import { formatStepComplete, formatStepStart } from '../step-status.js';
 import { enableFileLogging, logger } from '../../utils/logger.js';
+import { createInterface } from 'readline/promises';
+import { stdin as input, stdout as output } from 'process';
 
 /**
  * Wrap AdapterRegistry to satisfy Pipeline's AgentRegistry interface.
@@ -24,7 +26,42 @@ export function toAgentRegistry(registry: AdapterRegistry): AgentRegistry {
   };
 }
 
-export async function runCommand(prompt?: string): Promise<void> {
+type AskUserPolicy = 'fail' | 'prompt';
+
+function normalizeAskUserPolicy(raw: string | undefined, mode: 'interactive' | 'non-interactive'): AskUserPolicy {
+  if (mode === 'interactive') return 'prompt';
+  if (!raw) return 'fail';
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'fail' || normalized === 'prompt') return normalized;
+  throw new Error(`Invalid --on-ask-user policy "${raw}". Expected: fail or prompt.`);
+}
+
+function attachNonInteractiveAskUserHandler(
+  pipeline: Pipeline,
+  policy: AskUserPolicy,
+): void {
+  pipeline.on('ask_user', async (question) => {
+    if (policy === 'fail') {
+      const reason = `Human input required in non-interactive mode: ${question}`;
+      console.error(chalk.red(`\n  ${reason}`));
+      pipeline.cancel(reason);
+      return;
+    }
+
+    const rl = createInterface({ input, output });
+    try {
+      const response = await rl.question(`\n[orchestrator] ${question}\n> `);
+      pipeline.provideUserInput(response);
+    } finally {
+      rl.close();
+    }
+  });
+}
+
+export async function runCommand(
+  prompt?: string,
+  options: { onAskUser?: string } = {},
+): Promise<void> {
   const projectRoot = process.cwd();
   const logFile = enableFileLogging(projectRoot);
   logger.info(`Run log file: ${logFile}`);
@@ -59,6 +96,7 @@ export async function runCommand(prompt?: string): Promise<void> {
   );
 
   if (prompt) {
+    const onAskUser = normalizeAskUserPolicy(options.onAskUser, 'non-interactive');
     // Non-interactive mode: run directly
     let sawPipelineError = false;
     console.log(chalk.blue('\n  orchestrator') + chalk.dim(' \u2014 starting workflow\n'));
@@ -89,6 +127,8 @@ export async function runCommand(prompt?: string): Promise<void> {
       sawPipelineError = true;
       console.error(chalk.red(`\n  Error: ${error.message}\n`));
     });
+
+    attachNonInteractiveAskUserHandler(pipeline, onAskUser);
 
     const handleSigint = () => {
       pipeline.cancel('Interrupted by SIGINT');

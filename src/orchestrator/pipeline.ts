@@ -55,6 +55,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private agentModels: Record<string, string | undefined>;
   private globalPassCounter = 0;
   private userInputResolver: ((input: string) => void) | null = null;
+  private userInputRejecter: ((error: Error) => void) | null = null;
   private activeAbortController: AbortController | null = null;
 
   constructor(
@@ -83,8 +84,9 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
    * that resolves when provideUserInput() is called.
    */
   requestUserInput(question: string): Promise<string> {
-    return new Promise<string>((resolve) => {
+    return new Promise<string>((resolve, reject) => {
       this.userInputResolver = resolve;
+      this.userInputRejecter = reject;
       this.emit('ask_user', question);
     });
   }
@@ -96,7 +98,17 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     if (this.userInputResolver) {
       const resolve = this.userInputResolver;
       this.userInputResolver = null;
+      this.userInputRejecter = null;
       resolve(input);
+    }
+  }
+
+  private rejectPendingUserInput(reason: string): void {
+    if (this.userInputRejecter) {
+      const reject = this.userInputRejecter;
+      this.userInputResolver = null;
+      this.userInputRejecter = null;
+      reject(new Error(reason));
     }
   }
 
@@ -124,6 +136,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
       this.activeAbortController.abort(reason);
     }
+    this.rejectPendingUserInput(reason);
   }
 
   /**
@@ -230,9 +243,11 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     const failedTaskIds = new Set<string>();
     let hadErrors = false;
     this.activeAbortController = new AbortController();
+    const signal = this.activeAbortController.signal;
 
     try {
       for (let taskIndex = startTaskIndex; taskIndex < executionOrder.length; taskIndex++) {
+      if (signal.aborted) break;
       const taskId = executionOrder[taskIndex];
       const task = decomposition.tasks.find((t) => t.id === taskId);
       if (!task) {
@@ -280,6 +295,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
           task,
           summaries,
         );
+        if (signal.aborted) break;
         summaries.push(passSummary);
         this.state.addPassSummary(passSummary);
         passRecords.push({
@@ -289,6 +305,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
           timestamp: new Date().toISOString(),
         });
       } catch (err) {
+        if (signal.aborted) {
+          logger.info(`Stopping task loop after cancellation during ${taskId}`);
+          break;
+        }
         const error = err instanceof Error ? err : new Error(String(err));
         logger.error(`Task execution failed for ${taskId}`, {
           error: error.message,
@@ -320,6 +340,16 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         startedAt,
       });
     }
+
+      if (signal.aborted) {
+        logger.info('Workflow interrupted before report generation');
+        return this.handleInterruptedWorkflow({
+          userRequest,
+          decomposition,
+          passRecords,
+          startedAt,
+        });
+      }
 
       // -----------------------------------------------------------------------
       // Step 6: REPORT
@@ -581,6 +611,29 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private getMaxPasses(role: string): number {
     const step = this.workflow.steps.find((s) => s.role === role);
     return step?.maxPasses ?? 3;
+  }
+
+  private handleInterruptedWorkflow(params: {
+    userRequest: string;
+    decomposition: DecomposeOutput;
+    passRecords: PassRecord[];
+    startedAt: string;
+  }): string {
+    const snapshot = this.state.loadState();
+    this.state.saveState({
+      status: 'interrupted',
+      userRequest: params.userRequest,
+      decomposition: params.decomposition,
+      currentTaskIndex: snapshot?.currentTaskIndex ?? 0,
+      passes: params.passRecords,
+      startedAt: params.startedAt,
+      interruptedAt: new Date().toISOString(),
+      lastError:
+        (typeof this.activeAbortController?.signal.reason === 'string'
+          ? this.activeAbortController.signal.reason
+          : undefined) ?? 'Interrupted by user',
+    });
+    return 'Workflow interrupted.';
   }
 
   private persistRunningState(params: {
