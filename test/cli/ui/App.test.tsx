@@ -117,9 +117,10 @@ describe('App', () => {
     submit('start');
     await flush();
 
-    emitter.emit('agent:start', 'codex', 'task-1');
+    emitter.emit('agent:start', 'codex', 'task-1', 'Implement the auth middleware');
     await flush();
     expect(lastFrame()).toContain('codex');
+    expect(lastFrame()).toContain('Implement the auth middleware');
     expect(lastFrame()).toContain('\u25CF');
 
     emitter.emit('agent:complete', 'codex', 'task-1', {

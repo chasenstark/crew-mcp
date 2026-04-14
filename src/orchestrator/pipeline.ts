@@ -19,7 +19,7 @@ import { report } from './steps/report.js';
 export interface PipelineEvents {
   'step:start': (step: string, data?: Record<string, unknown>) => void;
   'step:complete': (step: string, data?: Record<string, unknown>) => void;
-  'agent:start': (agentName: string, taskId: string) => void;
+  'agent:start': (agentName: string, taskId: string, description: string) => void;
   'agent:output': (agentName: string, taskId: string, chunk: string) => void;
   'agent:complete': (agentName: string, taskId: string, result: TaskResult) => void;
   'report': (text: string) => void;
@@ -413,7 +413,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         );
       }
 
-      this.emit('agent:start', agent.name, task.id);
+      this.emit('agent:start', agent.name, task.id, task.description);
       logger.info(`Dispatching to agent "${agent.name}"...`);
 
       const agentResult = await agent.execute({

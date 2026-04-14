@@ -42,7 +42,7 @@ export function AgentStatus({ agents }: Props) {
           <Box key={agent.name} gap={1}>
             <Text color={color}>{icon}</Text>
             <Text bold>{agent.name.padEnd(14)}</Text>
-            <Text dimColor>{(agent.task ?? agent.status).padEnd(40)}</Text>
+            <Text dimColor>{agent.task ?? agent.status}</Text>
             {elapsed && <Text dimColor>{elapsed}</Text>}
           </Box>
         );

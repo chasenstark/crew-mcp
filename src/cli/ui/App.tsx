@@ -6,6 +6,14 @@ import { PromptInput } from './PromptInput.js';
 import type { Pipeline } from '../../orchestrator/pipeline.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
+function summarizeTask(description: string, taskId: string, maxLen = 60): string {
+  const text = description?.trim();
+  if (!text) return taskId;
+  const firstLine = text.split('\n')[0].replace(/\s+/g, ' ').trim();
+  if (firstLine.length <= maxLen) return firstLine;
+  return firstLine.slice(0, maxLen - 1).trimEnd() + '\u2026';
+}
+
 interface Props {
   pipeline: Pipeline;
   initialPrompt?: string;
@@ -58,10 +66,11 @@ export function App({ pipeline, initialPrompt }: Props) {
       setCurrentStep(null);
     });
 
-    pipeline.on('agent:start', (name, task) => {
+    pipeline.on('agent:start', (name, taskId, description) => {
+      const label = summarizeTask(description, taskId);
       setAgents(prev => [
         ...prev.filter(a => a.name !== name),
-        { name, status: 'running', task, startedAt: Date.now() },
+        { name, status: 'running', task: label, startedAt: Date.now() },
       ]);
     });
 
