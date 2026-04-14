@@ -503,6 +503,20 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     changes.push({ path: 'orchestrator.model', before, after: draft.orchestrator.model });
   }
 
+  const executionModeValue = await askFieldValue({
+    label: 'workflow.execution.mode',
+    currentValue: draft.workflow.execution?.mode ?? 'linear',
+    defaultValue: defaults.workflow.execution?.mode ?? 'linear',
+    description: 'Execution path: deterministic linear pipeline or judgment controller.',
+    options: getConfigValueOptions(draft, 'workflow.execution.mode'),
+  });
+  if (executionModeValue) {
+    const before = draft.workflow.execution?.mode ?? 'linear';
+    draft = applyConfigPatch(draft, { path: 'workflow.execution.mode', value: executionModeValue });
+    const after = draft.workflow.execution?.mode ?? 'linear';
+    changes.push({ path: 'workflow.execution.mode', before, after });
+  }
+
   for (const role of workflowRoles(draft)) {
     const rolePath = `workflow.roleModels.${role}`;
     const roleModelValue = await askFieldValue({

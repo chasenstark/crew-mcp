@@ -164,6 +164,11 @@ export class CodexAdapter implements AgentAdapter {
     'analyze',
   ];
   readonly supportsJsonSchema = true;
+  readonly orchestratorCapabilities = {
+    supportsToolLoop: false,
+    supportsStructuredDecisions: true,
+    supportsPauseForUserInput: false,
+  };
 
   async execute(task: Task): Promise<TaskResult> {
     const tmpDir = mkdtempSync(join(tmpdir(), 'codex-'));

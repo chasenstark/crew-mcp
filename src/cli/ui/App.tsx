@@ -4,7 +4,7 @@ import { ConversationView, type ChatMessage } from './ConversationView.js';
 import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
 import { handleConfigSlashCommand } from './config/command-handler.js';
-import type { Pipeline } from '../../orchestrator/pipeline.js';
+import type { OrchestrationRunner } from '../../orchestrator/runner.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
 function summarizeTask(description: string, taskId: string, maxLen = 60): string {
@@ -16,7 +16,7 @@ function summarizeTask(description: string, taskId: string, maxLen = 60): string
 }
 
 interface Props {
-  pipeline: Pipeline;
+  pipeline: OrchestrationRunner;
   initialPrompt?: string;
 }
 

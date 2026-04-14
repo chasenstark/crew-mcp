@@ -12,6 +12,7 @@ import { ingest, type IngestOutput } from './steps/ingest.js';
 import { summarize } from './steps/summarize.js';
 import { judge } from './steps/judge.js';
 import { report } from './steps/report.js';
+import type { OrchestrationRunner, ResumeParams } from './runner.js';
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -37,18 +38,13 @@ export interface AgentRegistry {
   list(): { name: string; capabilities: string[] }[];
 }
 
-interface ResumeParams {
-  workflowState: WorkflowState;
-  previousSummaries: PassSummary[];
-}
-
 type OrchestratorStage = 'decompose' | 'dispatch' | 'ingest' | 'summarize' | 'judge' | 'report';
 
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
-export class Pipeline extends EventEmitter<PipelineEvents> {
+export class Pipeline extends EventEmitter<PipelineEvents> implements OrchestrationRunner {
   private orchestrator: AgentAdapter;
   private registry: AgentRegistry;
   private workflow: WorkflowConfig;

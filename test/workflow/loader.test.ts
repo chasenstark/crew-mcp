@@ -28,6 +28,7 @@ describe('Workflow Loader', () => {
     const config = parseWorkflowYaml(yaml);
 
     expect(config.workflow.name).toBe('default');
+    expect(config.workflow.execution?.mode).toBe('linear');
     expect(config.workflow.steps).toHaveLength(4);
     expect(config.workflow.steps[0].role).toBe('coder');
     expect(config.workflow.steps[1].role).toBe('reviewer');
@@ -52,6 +53,21 @@ orchestrator:
     const config = parseWorkflowYaml(yaml);
     expect(config.agents['claude-code'].model).toBe('claude-sonnet-4-5');
     expect(config.orchestrator.model).toBe('claude-opus-4-1');
+    expect(config.workflow.execution?.mode).toBe('linear');
+  });
+
+  it('parses workflow execution mode', () => {
+    const yaml = `
+workflow:
+  name: execution-mode
+  execution:
+    mode: judgment
+  steps: []
+orchestrator:
+  cli: claude-code
+`;
+    const config = parseWorkflowYaml(yaml);
+    expect(config.workflow.execution?.mode).toBe('judgment');
   });
 
   it('parses workflow role_models', () => {

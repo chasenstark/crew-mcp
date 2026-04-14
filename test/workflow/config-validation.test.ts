@@ -67,4 +67,13 @@ describe('config-validation', () => {
     const diagnostics = validateConfig(config);
     expect(diagnostics.some((d) => d.path === 'workflow.roleModels.reviewer')).toBe(true);
   });
+
+  it('rejects unsupported workflow execution mode', () => {
+    const config = getDefaultConfig();
+    config.workflow.execution = { mode: 'linear' };
+    config.workflow.execution.mode = 'invalid' as 'linear';
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'workflow.execution.mode')).toBe(true);
+  });
 });

@@ -3,7 +3,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import { Text } from 'ink';
 import { EventEmitter } from 'eventemitter3';
-import type { Pipeline, PipelineEvents } from '../../../src/orchestrator/pipeline.js';
+import type { PipelineEvents } from '../../../src/orchestrator/pipeline.js';
+import type { OrchestrationRunner } from '../../../src/orchestrator/runner.js';
 
 // Shared handle to the latest PromptInput onSubmit callback, set by the mock.
 let latestSubmit: ((value: string) => void) | null = null;
@@ -44,12 +45,13 @@ function createFakePipeline() {
     emit: emitter.emit.bind(emitter),
     removeAllListeners: emitter.removeAllListeners.bind(emitter),
     run: vi.fn((_input: string) => new Promise<string>(() => { /* pending */ })),
+    resume: vi.fn(() => new Promise<string>(() => { /* pending */ })),
     provideUserInput: vi.fn(),
     cancel: vi.fn(),
     markInterrupted: vi.fn(),
   };
 
-  return { pipeline: fake as unknown as Pipeline, emitter, fake };
+  return { pipeline: fake as unknown as OrchestrationRunner, emitter, fake };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 20));

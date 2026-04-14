@@ -68,6 +68,21 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
     );
   }
 
+  if (
+    config.workflow.execution?.mode !== undefined
+    && config.workflow.execution.mode !== 'linear'
+    && config.workflow.execution.mode !== 'judgment'
+  ) {
+    diagnostics.push(
+      createDiagnostic(
+        'workflow.execution.mode',
+        'one of: linear, judgment',
+        config.workflow.execution.mode,
+        '/config set workflow.execution.mode judgment',
+      ),
+    );
+  }
+
   const reviewerStep = findReviewStep(config);
   if (reviewerStep && (!Number.isInteger(reviewerStep.maxPasses) || (reviewerStep.maxPasses ?? 0) < 1)) {
     diagnostics.push(

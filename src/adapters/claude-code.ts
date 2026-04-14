@@ -152,6 +152,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     'analyze',
   ];
   readonly supportsJsonSchema = true;
+  readonly orchestratorCapabilities = {
+    supportsToolLoop: false,
+    supportsStructuredDecisions: true,
+    supportsPauseForUserInput: false,
+  };
 
   async execute(task: Task): Promise<TaskResult> {
     const streaming = Boolean(task.onOutput);

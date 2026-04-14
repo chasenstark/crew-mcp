@@ -2,6 +2,7 @@ import { render } from 'ink';
 import React from 'react';
 import { App } from '../ui/App.js';
 import { Pipeline, type AgentRegistry } from '../../orchestrator/pipeline.js';
+import { JudgmentRunner } from '../../orchestrator/judgment-runner.js';
 import { AdapterRegistry, createRegistryFromConfig } from '../../adapters/registry.js';
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
@@ -11,6 +12,7 @@ import { formatStepComplete, formatStepStart } from '../step-status.js';
 import { enableFileLogging, logger } from '../../utils/logger.js';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'process';
+import type { OrchestrationRunner } from '../../orchestrator/runner.js';
 
 /**
  * Wrap AdapterRegistry to satisfy Pipeline's AgentRegistry interface.
@@ -37,21 +39,21 @@ function normalizeAskUserPolicy(raw: string | undefined, mode: 'interactive' | '
 }
 
 function attachNonInteractiveAskUserHandler(
-  pipeline: Pipeline,
+  runner: OrchestrationRunner,
   policy: AskUserPolicy,
 ): void {
-  pipeline.on('ask_user', async (question) => {
+  runner.on('ask_user', async (question) => {
     if (policy === 'fail') {
       const reason = `Human input required in non-interactive mode: ${question}`;
       console.error(chalk.red(`\n  ${reason}`));
-      pipeline.cancel(reason);
+      runner.cancel(reason);
       return;
     }
 
     const rl = createInterface({ input, output });
     try {
       const response = await rl.question(`\n[orchestrator] ${question}\n> `);
-      pipeline.provideUserInput(response);
+      runner.provideUserInput(response);
     } finally {
       rl.close();
     }
@@ -80,20 +82,34 @@ export async function runCommand(
   // Wrap registry for pipeline's interface
   const agentRegistry = toAgentRegistry(registry);
 
-  // Create pipeline
-  const pipeline = new Pipeline(
-    orchestratorAdapter,
-    agentRegistry,
-    config.workflow,
-    state,
-    worktreeManager,
-    {
-      orchestratorModel: config.orchestrator.model,
-      agentModels: Object.fromEntries(
-        Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
-      ),
-    },
-  );
+  const runner: OrchestrationRunner =
+    (config.workflow.execution?.mode ?? 'linear') === 'judgment'
+      ? new JudgmentRunner(
+        orchestratorAdapter,
+        agentRegistry,
+        config.workflow,
+        state,
+        worktreeManager,
+        {
+          orchestratorModel: config.orchestrator.model,
+          agentModels: Object.fromEntries(
+            Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
+          ),
+        },
+      )
+      : new Pipeline(
+        orchestratorAdapter,
+        agentRegistry,
+        config.workflow,
+        state,
+        worktreeManager,
+        {
+          orchestratorModel: config.orchestrator.model,
+          agentModels: Object.fromEntries(
+            Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
+          ),
+        },
+      );
 
   if (prompt) {
     const onAskUser = normalizeAskUserPolicy(options.onAskUser, 'non-interactive');
@@ -102,42 +118,42 @@ export async function runCommand(
     console.log(chalk.blue('\n  orchestrator') + chalk.dim(' \u2014 starting workflow\n'));
     console.log(chalk.dim(`  log: ${logFile}\n`));
 
-    pipeline.on('step:start', (step, data) => {
+    runner.on('step:start', (step, data) => {
       console.log(chalk.dim(`  [${step}] ${formatStepStart(step, data)}`));
     });
 
-    pipeline.on('step:complete', (step, data) => {
+    runner.on('step:complete', (step, data) => {
       console.log(chalk.dim(`    -> ${formatStepComplete(step, data)}`));
     });
 
-    pipeline.on('agent:start', (name, task) => {
+    runner.on('agent:start', (name, task) => {
       console.log(chalk.green(`  \u25CF ${name}`) + chalk.dim(` ${task}`));
     });
 
-    pipeline.on('agent:complete', (name, _taskId, result) => {
+    runner.on('agent:complete', (name, _taskId, result) => {
       const icon = result.status === 'success' ? chalk.green('\u2713') : chalk.red('\u2717');
       console.log(`  ${icon} ${name} \u2014 ${result.status}`);
     });
 
-    pipeline.on('report', (message) => {
+    runner.on('report', (message) => {
       console.log('\n' + message + '\n');
     });
 
-    pipeline.on('error', (error) => {
+    runner.on('error', (error) => {
       sawPipelineError = true;
       console.error(chalk.red(`\n  Error: ${error.message}\n`));
     });
 
-    attachNonInteractiveAskUserHandler(pipeline, onAskUser);
+    attachNonInteractiveAskUserHandler(runner, onAskUser);
 
     const handleSigint = () => {
-      pipeline.cancel('Interrupted by SIGINT');
+      runner.cancel('Interrupted by SIGINT');
       process.exitCode = 130;
     };
 
     process.once('SIGINT', handleSigint);
     try {
-      await pipeline.run(prompt);
+      await runner.run(prompt);
     } finally {
       process.off('SIGINT', handleSigint);
     }
@@ -150,7 +166,7 @@ export async function runCommand(
   } else {
     // Interactive mode: render Ink app
     const { waitUntilExit } = render(
-      React.createElement(App, { pipeline }),
+      React.createElement(App, { pipeline: runner }),
     );
     await waitUntilExit();
   }

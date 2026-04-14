@@ -30,6 +30,7 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
   return {
     workflow: {
       name: override.workflow.name ?? base.workflow.name,
+      execution: override.workflow.execution ?? base.workflow.execution,
       steps: override.workflow.steps.length > 0
         ? override.workflow.steps
         : base.workflow.steps,
@@ -53,6 +54,7 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
 export function parseWorkflowYaml(yamlContent: string): FullConfig {
   const parsed = asObject(YAML.parse(yamlContent));
   const parsedWorkflow = asObject(parsed.workflow);
+  const parsedExecution = asObject(parsedWorkflow.execution);
   const parsedCompletion = asObject(parsedWorkflow.completion);
   const parsedRoleModels = asObject(parsedWorkflow.role_models);
   const parsedErrorHandling = asObject(parsed.error_handling);
@@ -121,6 +123,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   return {
     workflow: {
       name: typeof parsedWorkflow.name === 'string' ? parsedWorkflow.name : 'default',
+      execution: {
+        mode: parsedExecution.mode === 'judgment' ? 'judgment' : 'linear',
+      },
       steps: Array.isArray(parsedWorkflow.steps)
         ? parsedWorkflow.steps.map(toWorkflowStep)
         : [],
@@ -155,6 +160,9 @@ export function serializeWorkflowYaml(config: FullConfig): string {
   const yamlObject = {
     workflow: {
       name: config.workflow.name,
+      execution: {
+        mode: config.workflow.execution?.mode ?? 'linear',
+      },
       steps: config.workflow.steps.map((step) => omitUndefined({
         role: step.role,
         agent: step.agent,
@@ -207,6 +215,7 @@ export function getDefaultConfig(): FullConfig {
   return {
     workflow: {
       name: 'default',
+      execution: { mode: 'linear' },
       steps: [
         { role: 'coder', agent: 'claude-code', action: 'implement' },
         { role: 'reviewer', agent: 'codex', action: 'review', maxPasses: 3 },

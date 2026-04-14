@@ -7,6 +7,10 @@ export interface WorkflowStep {
   criteria?: string[];
 }
 
+export interface WorkflowExecutionConfig {
+  mode: 'linear' | 'judgment';
+}
+
 export interface AgentConfig {
   adapter?: string;
   auth?: string;
@@ -19,6 +23,7 @@ export interface AgentConfig {
 
 export interface WorkflowConfig {
   name: string;
+  execution?: WorkflowExecutionConfig;
   steps: WorkflowStep[];
   roleModels?: Record<string, string>;
   completion: {

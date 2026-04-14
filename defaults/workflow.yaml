@@ -3,6 +3,8 @@
 
 workflow:
   name: default
+  execution:
+    mode: judgment
   steps:
     - role: coder
       agent: claude-code

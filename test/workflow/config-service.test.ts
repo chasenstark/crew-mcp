@@ -71,6 +71,14 @@ describe('config-service', () => {
     expect(next.workflow.steps.find((step) => step.role === 'reviewer')?.maxPasses).toBe(5);
   });
 
+  it('applies patch for workflow execution mode', () => {
+    const next = applyConfigPatch(getDefaultConfig(), {
+      path: 'workflow.execution.mode',
+      value: 'judgment',
+    });
+    expect(next.workflow.execution?.mode).toBe('judgment');
+  });
+
   it('applies reviewer max passes to review action step when role name is custom', () => {
     const config = getDefaultConfig();
     const reviewer = config.workflow.steps.find((step) => step.role === 'reviewer');
@@ -146,6 +154,11 @@ describe('config-service', () => {
     expect(options).toEqual(['1', '2', '3', '4', '5']);
   });
 
+  it('returns preset options for workflow execution mode', () => {
+    const options = getConfigValueOptions(getDefaultConfig(), 'workflow.execution.mode');
+    expect(options).toEqual(['linear', 'judgment']);
+  });
+
   it('returns adapter options for agent adapter path', () => {
     const options = getConfigValueOptions(getDefaultConfig(), 'agents.codex.adapter');
     expect(options).toContain('generic');
@@ -175,6 +188,12 @@ describe('config-service', () => {
     expect(() =>
       setConfigValue(cwd, 'workflow.reviewer.maxPasses', '0'),
     ).toThrow(/expected integer >= 1/);
+  });
+
+  it('rejects invalid execution mode values', () => {
+    expect(() =>
+      setConfigValue(cwd, 'workflow.execution.mode', 'nonexistent'),
+    ).toThrow(/one of: linear, judgment/);
   });
 
   it('rejects unknown agent model path', () => {

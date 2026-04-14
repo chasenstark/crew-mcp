@@ -1,15 +1,55 @@
 import type { z } from 'zod';
 
+export interface OrchestratorCapabilities {
+  supportsToolLoop: boolean;
+  supportsStructuredDecisions: boolean;
+  supportsPauseForUserInput: boolean;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ToolCall {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  output: unknown;
+}
+
+export interface ToolLoopMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  name?: string;
+}
+
+export interface ToolLoopResult {
+  status: 'completed' | 'failed' | 'interrupted';
+  transcript: ToolLoopMessage[];
+  output?: string;
+  error?: string;
+}
+
 export interface AgentAdapter {
   readonly name: string;
   readonly capabilities: AgentCapability[];
   readonly supportsJsonSchema: boolean;
+  readonly orchestratorCapabilities?: OrchestratorCapabilities;
   execute(task: Task): Promise<TaskResult>;
   executeWithSchema?<T extends z.ZodType>(
     prompt: string,
     schema: T,
     options?: ExecuteOptions,
   ): Promise<z.infer<T>>;
+  executeWithTools?(
+    tools: ToolDefinition[],
+    messages: ToolLoopMessage[],
+    onToolCall: (call: ToolCall) => Promise<ToolResult>,
+  ): Promise<ToolLoopResult>;
   healthCheck(): Promise<HealthCheckResult>;
 }
 

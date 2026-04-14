@@ -126,6 +126,7 @@ orchestrator config show
 orchestrator config set orchestrator.cli codex
 orchestrator config set orchestrator.model claude-sonnet-4-5
 orchestrator config set orchestrator.model next
+orchestrator config set workflow.execution.mode judgment
 orchestrator config set workflow.roleModels.reviewer gpt-5.4
 orchestrator config set workflow.roleModels.fix_review_issues claude-opus-4-6
 orchestrator config set workflow.roleModels.reviewer next
@@ -169,6 +170,7 @@ In interactive `orchestrator run` mode, `/config` slash commands are also availa
 /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
 /config set agents.local-gemma.capabilities implement,review
 /config set orchestrator.cli codex
+/config set workflow.execution.mode judgment
 /config set workflow.roleModels.reviewer gpt-5.4
 /config remove-agent local-gemma
 /config reset

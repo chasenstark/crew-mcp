@@ -63,6 +63,7 @@ export interface ConfigRemoveAgentResult {
 export const SUPPORTED_CONFIG_SET_PATHS = [
   'orchestrator.cli',
   'orchestrator.model',
+  'workflow.execution.mode',
   'workflow.roleModels.<role>',
   'agents.<name>.adapter',
   'agents.<name>.model',
@@ -172,6 +173,11 @@ export function getConfigValueOptions(config: FullConfig, path: string): string[
     return withCurrentOption(ORCHESTRATOR_MODEL_PRESETS, config.orchestrator.model);
   }
 
+  if (path === 'workflow.execution.mode') {
+    const presets = ['linear', 'judgment'];
+    return withCurrentOption(presets, config.workflow.execution?.mode ?? 'linear');
+  }
+
   const roleMatch = /^workflow\.roleModels\.([^.]+)$/.exec(path);
   if (roleMatch) {
     const role = roleMatch[1];
@@ -226,6 +232,7 @@ function unsupportedPathError(path: string): Error {
       `Supported paths: ${SUPPORTED_CONFIG_SET_PATHS.join(', ')}`,
       'Examples:',
       '  /config set orchestrator.cli codex',
+      '  /config set workflow.execution.mode judgment',
       '  /config set workflow.roleModels.reviewer gpt-5.4',
       '  /config set agents.local-gemma.adapter generic',
       '  /config set agents.local-gemma.command ollama',
@@ -398,6 +405,26 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
     return next;
   }
 
+  if (path === 'workflow.execution.mode') {
+    const mode = parseNonEmptyString(
+      path,
+      resolvedValue,
+      '/config set workflow.execution.mode judgment',
+    ).toLowerCase();
+    if (mode !== 'linear' && mode !== 'judgment') {
+      throw new Error(
+        invalidValueMessage(
+          path,
+          'one of: linear, judgment',
+          resolvedValue,
+          '/config set workflow.execution.mode judgment',
+        ),
+      );
+    }
+    next.workflow.execution = { mode };
+    return next;
+  }
+
   const roleModelMatch = /^workflow\.roleModels\.([^.]+)$/.exec(path);
   if (roleModelMatch) {
     const role = roleModelMatch[1];
@@ -491,6 +518,7 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
 function readConfigValue(config: FullConfig, path: string): unknown {
   if (path === 'orchestrator.cli') return config.orchestrator.cli;
   if (path === 'orchestrator.model') return config.orchestrator.model;
+  if (path === 'workflow.execution.mode') return config.workflow.execution?.mode ?? 'linear';
   const roleModelMatch = /^workflow\.roleModels\.([^.]+)$/.exec(path);
   if (roleModelMatch) {
     return config.workflow.roleModels?.[roleModelMatch[1]];

@@ -43,6 +43,11 @@ export class GenericAdapter implements AgentAdapter {
   readonly name: string;
   readonly capabilities: AgentCapability[];
   readonly supportsJsonSchema = false;
+  readonly orchestratorCapabilities = {
+    supportsToolLoop: false,
+    supportsStructuredDecisions: true,
+    supportsPauseForUserInput: false,
+  };
 
   private readonly command: string;
   private readonly argsTemplate: string[];

@@ -1,4 +1,5 @@
 import { Pipeline } from '../../orchestrator/pipeline.js';
+import { JudgmentRunner } from '../../orchestrator/judgment-runner.js';
 import { createRegistryFromConfig } from '../../adapters/registry.js';
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
@@ -9,6 +10,7 @@ import { enableFileLogging, logger } from '../../utils/logger.js';
 import chalk from 'chalk';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'process';
+import type { OrchestrationRunner } from '../../orchestrator/runner.js';
 
 type AskUserPolicy = 'fail' | 'prompt';
 
@@ -20,21 +22,21 @@ function normalizeAskUserPolicy(raw: string | undefined): AskUserPolicy {
 }
 
 function attachResumeAskUserHandler(
-  pipeline: Pipeline,
+  runner: OrchestrationRunner,
   policy: AskUserPolicy,
 ): void {
-  pipeline.on('ask_user', async (question) => {
+  runner.on('ask_user', async (question) => {
     if (policy === 'fail') {
       const reason = `Human input required during resume: ${question}`;
       console.error(chalk.red(`\n  ${reason}`));
-      pipeline.cancel(reason);
+      runner.cancel(reason);
       return;
     }
 
     const rl = createInterface({ input, output });
     try {
       const response = await rl.question(`\n[orchestrator] ${question}\n> `);
-      pipeline.provideUserInput(response);
+      runner.provideUserInput(response);
     } finally {
       rl.close();
     }
@@ -65,19 +67,35 @@ export async function resumeCommand(options: { onAskUser?: string } = {}): Promi
   const worktreeManager = new WorktreeManager(projectRoot);
   const orchestratorAdapter = registry.getOrThrow(config.orchestrator.cli);
 
-  const pipeline = new Pipeline(
-    orchestratorAdapter,
-    toAgentRegistry(registry),
-    config.workflow,
-    stateStore,
-    worktreeManager,
-    {
-      orchestratorModel: config.orchestrator.model,
-      agentModels: Object.fromEntries(
-        Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
-      ),
-    },
-  );
+  const mode = workflowState.executionMode ?? config.workflow.execution?.mode ?? 'linear';
+  const runner: OrchestrationRunner =
+    mode === 'judgment'
+      ? new JudgmentRunner(
+        orchestratorAdapter,
+        toAgentRegistry(registry),
+        config.workflow,
+        stateStore,
+        worktreeManager,
+        {
+          orchestratorModel: config.orchestrator.model,
+          agentModels: Object.fromEntries(
+            Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
+          ),
+        },
+      )
+      : new Pipeline(
+        orchestratorAdapter,
+        toAgentRegistry(registry),
+        config.workflow,
+        stateStore,
+        worktreeManager,
+        {
+          orchestratorModel: config.orchestrator.model,
+          agentModels: Object.fromEntries(
+            Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
+          ),
+        },
+      );
 
   let sawPipelineError = false;
 
@@ -86,42 +104,42 @@ export async function resumeCommand(options: { onAskUser?: string } = {}): Promi
   console.log(chalk.yellow(`  Request: "${workflowState.userRequest}"`));
   console.log(chalk.dim(`  Progress: task ${workflowState.currentTaskIndex + 1} of ${workflowState.decomposition.tasks.length}\n`));
 
-  pipeline.on('step:start', (step, data) => {
+  runner.on('step:start', (step, data) => {
     console.log(chalk.dim(`  [${step}] ${formatStepStart(step, data)}`));
   });
 
-  pipeline.on('step:complete', (step, data) => {
+  runner.on('step:complete', (step, data) => {
     console.log(chalk.dim(`    -> ${formatStepComplete(step, data)}`));
   });
 
-  pipeline.on('agent:start', (name, task) => {
+  runner.on('agent:start', (name, task) => {
     console.log(chalk.green(`  * ${name}`) + chalk.dim(` ${task}`));
   });
 
-  pipeline.on('agent:complete', (name, _taskId, result) => {
+  runner.on('agent:complete', (name, _taskId, result) => {
     const icon = result.status === 'success' ? chalk.green('ok') : chalk.red('x');
     console.log(`  ${icon} ${name} - ${result.status}`);
   });
 
-  pipeline.on('report', (message) => {
+  runner.on('report', (message) => {
     console.log('\n' + message + '\n');
   });
 
-  pipeline.on('error', (error) => {
+  runner.on('error', (error) => {
     sawPipelineError = true;
     console.error(chalk.red(`\n  Error: ${error.message}\n`));
   });
 
-  attachResumeAskUserHandler(pipeline, onAskUser);
+  attachResumeAskUserHandler(runner, onAskUser);
 
   const handleSigint = () => {
-    pipeline.cancel('Interrupted by SIGINT while resuming');
+    runner.cancel('Interrupted by SIGINT while resuming');
     process.exitCode = 130;
   };
 
   process.once('SIGINT', handleSigint);
   try {
-    await pipeline.resume({
+    await runner.resume({
       workflowState,
       previousSummaries: stateStore.loadPassSummaries(workflowState.runId),
     });

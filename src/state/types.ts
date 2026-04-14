@@ -1,3 +1,5 @@
+import type { TaskResult } from '../adapters/types.js';
+
 export interface DecomposeOutputRef {
   reasoning: string;
   tasks: {
@@ -12,13 +14,58 @@ export interface DecomposeOutputRef {
   suggestedOrder: string[];
 }
 
+export type TaskLifecycleState = 'pending' | 'running' | 'done' | 'failed' | 'blocked';
+
+export interface TaskArtifacts {
+  dispatch?: {
+    agentPrompt: string;
+    workingDirectory?: string;
+    expectedOutputs: string[];
+    successCriteria: string;
+  };
+  agentResult?: TaskResult;
+  ingest?: unknown;
+  summary?: PassSummary;
+  judge?: unknown;
+}
+
+export interface ActionRecord {
+  sequence: number;
+  action: string;
+  target?: { taskId?: string };
+  payload: unknown;
+  reasoning?: string;
+  result: {
+    status: 'success' | 'error' | 'skipped';
+    data?: unknown;
+    error?: string;
+  };
+  startedAt: string;
+  completedAt: string;
+  pathTaken: 'native' | 'fallback';
+}
+
+export interface ToolTranscriptMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  name?: string;
+}
+
 export interface WorkflowState {
+  schemaVersion?: number;
+  executionMode?: 'linear' | 'judgment';
   runId?: string;
   status: 'running' | 'interrupted' | 'completed' | 'failed';
   userRequest: string;
   decomposition: DecomposeOutputRef;
   currentTaskIndex: number;
   passes: PassRecord[];
+  taskStates?: Record<string, TaskLifecycleState>;
+  pendingQueue?: string[];
+  artifactsByTask?: Record<string, TaskArtifacts>;
+  actionHistory?: ActionRecord[];
+  controllerCursor?: number;
+  toolCallTranscript?: ToolTranscriptMessage[];
   startedAt?: string;
   completedAt?: string;
   interruptedAt?: string;

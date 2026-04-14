@@ -38,6 +38,7 @@ function helpText(): string {
     '  /config set orchestrator.cli <value>',
     '  /config set orchestrator.model <value>',
     '  /config set orchestrator.model next',
+    '  /config set workflow.execution.mode <linear|judgment>',
     '  /config set workflow.roleModels.<role> <value>',
     '  /config set workflow.roleModels.reviewer next',
     '  /config set agents.<name>.adapter <value>',
