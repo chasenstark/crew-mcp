@@ -189,7 +189,7 @@ export class CodexAdapter implements AgentAdapter {
         const subprocess = execa('codex', args, {
           cwd: task.context.workingDirectory,
           timeout,
-          signal: task.constraints?.signal,
+          cancelSignal: task.constraints?.signal,
           reject: false,
         });
 
@@ -359,7 +359,7 @@ export class CodexAdapter implements AgentAdapter {
         result = await execa('codex', args, {
           cwd: options?.workingDirectory,
           timeout,
-          signal: options?.signal,
+          cancelSignal: options?.signal,
           reject: false,
         });
       } catch (error: unknown) {

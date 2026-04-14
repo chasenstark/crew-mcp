@@ -89,7 +89,7 @@ export class GenericAdapter implements AgentAdapter {
       const subprocess = execa(this.command, args, {
         cwd: task.context.workingDirectory,
         timeout,
-        signal: task.constraints?.signal,
+        cancelSignal: task.constraints?.signal,
         reject: false,
       });
       if (task.onOutput && subprocess.stdout) {
