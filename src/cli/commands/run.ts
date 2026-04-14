@@ -50,6 +50,12 @@ export async function runCommand(prompt?: string): Promise<void> {
     config.workflow,
     state,
     worktreeManager,
+    {
+      orchestratorModel: config.orchestrator.model,
+      agentModels: Object.fromEntries(
+        Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
+      ),
+    },
   );
 
   if (prompt) {

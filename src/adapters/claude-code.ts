@@ -94,6 +94,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       '--dangerously-skip-permissions',
     ];
 
+    if (task.constraints?.model) {
+      args.push('--model', task.constraints.model);
+    }
+
     if (task.constraints?.maxTurns) {
       args.push('--max-turns', String(task.constraints.maxTurns));
     }
@@ -103,6 +107,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cwd: task.context.workingDirectory,
       timeoutMs: timeout,
       maxTurns: task.constraints?.maxTurns,
+      model: task.constraints?.model,
       promptChars: task.prompt.length,
     });
 
@@ -222,6 +227,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       '--output-format',
       'json',
       '--dangerously-skip-permissions',
+      ...(options?.model ? ['--model', options.model] : []),
       '--json-schema',
       jsonSchema,
       // Override the system prompt to prevent CLAUDE.md, hooks, and output
@@ -244,6 +250,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cwd: options?.workingDirectory,
       timeoutMs: timeout,
       maxTurns: options?.maxTurns,
+      model: options?.model,
       promptChars: prompt.length,
     });
 

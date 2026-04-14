@@ -10,7 +10,8 @@ export async function ingest(
   orchestrator: AgentAdapter,
   taskDescription: string,
   agentResult: TaskResult,
+  model?: string,
 ): Promise<IngestOutput> {
   const prompt = buildIngestPrompt(taskDescription, agentResult);
-  return executeWithValidation(orchestrator, prompt, IngestOutputSchema);
+  return executeWithValidation(orchestrator, prompt, IngestOutputSchema, { model });
 }

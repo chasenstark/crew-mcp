@@ -12,6 +12,7 @@ export async function dispatch(
   task: { description: string; role: string },
   previousSummaries: PassSummary[],
   passNumber: number,
+  model?: string,
 ): Promise<DispatchOutput> {
   const prompt = buildDispatchPrompt(
     task.description,
@@ -19,5 +20,5 @@ export async function dispatch(
     previousSummaries,
     passNumber,
   );
-  return executeWithValidation(orchestrator, prompt, DispatchOutputSchema);
+  return executeWithValidation(orchestrator, prompt, DispatchOutputSchema, { model });
 }

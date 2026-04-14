@@ -185,6 +185,25 @@ describe('CodexAdapter', () => {
       expect(result.status).toBe('error');
       expect(result.metadata.rawEvents).toBeDefined();
     });
+
+    it('passes --model when specified in task constraints', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Review code with model override',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { model: 'gpt-5.4-mini' },
+      });
+
+      const callArgs = mockExeca.mock.calls[0];
+      const cliArgs = callArgs[1] as string[];
+      expect(cliArgs).toContain('--model');
+      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('gpt-5.4-mini');
+    });
   });
 
   describe('healthCheck', () => {

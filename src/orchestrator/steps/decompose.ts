@@ -12,7 +12,8 @@ export async function decompose(
   userRequest: string,
   agents: { name: string; capabilities: string[] }[],
   workflow: WorkflowConfig,
+  model?: string,
 ): Promise<DecomposeOutput> {
   const prompt = buildDecomposePrompt(userRequest, agents, workflow);
-  return executeWithValidation(orchestrator, prompt, DecomposeOutputSchema);
+  return executeWithValidation(orchestrator, prompt, DecomposeOutputSchema, { model });
 }

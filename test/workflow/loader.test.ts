@@ -30,6 +30,23 @@ describe('Workflow Loader', () => {
     expect(config.orchestrator.cli).toBe('claude-code');
   });
 
+  it('parses optional model fields for agents and orchestrator', () => {
+    const yaml = `
+workflow:
+  name: model-config
+  steps: []
+agents:
+  claude-code:
+    model: claude-sonnet-4-5
+orchestrator:
+  cli: claude-code
+  model: claude-opus-4-1
+`;
+    const config = parseWorkflowYaml(yaml);
+    expect(config.agents['claude-code'].model).toBe('claude-sonnet-4-5');
+    expect(config.orchestrator.model).toBe('claude-opus-4-1');
+  });
+
   it('returns default config', () => {
     const config = getDefaultConfig();
     expect(config.workflow.name).toBe('default');
@@ -81,6 +98,36 @@ describe('mergeConfigs', () => {
     expect(merged.agents['claude-code'].strengths).toEqual(['security']);
     // codex from base is preserved
     expect(merged.agents['codex']).toBeDefined();
+  });
+
+  it('override agent can set only model without clobbering base agent fields', () => {
+    const override = {
+      ...getDefaultConfig(),
+      agents: {
+        'claude-code': { model: 'claude-sonnet-4-5' },
+      },
+    };
+
+    const merged = mergeConfigs(baseConfig, override);
+
+    expect(merged.agents['claude-code'].model).toBe('claude-sonnet-4-5');
+    expect(merged.agents['claude-code'].adapter).toBe(baseConfig.agents['claude-code'].adapter);
+    expect(merged.agents['claude-code'].auth).toBe(baseConfig.agents['claude-code'].auth);
+    expect(merged.agents['claude-code'].strengths).toEqual(baseConfig.agents['claude-code'].strengths);
+  });
+
+  it('override orchestrator can set model while preserving cli', () => {
+    const override = parseWorkflowYaml(`
+workflow:
+  name: override
+  steps: []
+orchestrator:
+  model: claude-sonnet-4-5
+`);
+
+    const merged = mergeConfigs(baseConfig, override);
+    expect(merged.orchestrator.model).toBe('claude-sonnet-4-5');
+    expect(merged.orchestrator.cli).toBe(baseConfig.orchestrator.cli);
   });
 
   it('override steps replace base steps entirely', () => {

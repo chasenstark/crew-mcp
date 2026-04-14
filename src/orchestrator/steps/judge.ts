@@ -14,7 +14,8 @@ export async function judge(
   previousSummaries: PassSummary[],
   currentPass: number,
   maxPasses: number,
+  model?: string,
 ): Promise<JudgeOutput> {
   const prompt = buildJudgePrompt(ingestResult, previousSummaries, currentPass, maxPasses);
-  return executeWithValidation(orchestrator, prompt, JudgeOutputSchema);
+  return executeWithValidation(orchestrator, prompt, JudgeOutputSchema, { model });
 }

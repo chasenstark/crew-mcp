@@ -45,6 +45,8 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private workflow: WorkflowConfig;
   private state: StateStore;
   private worktreeManager: WorktreeManager;
+  private orchestratorModel?: string;
+  private agentModels: Record<string, string | undefined>;
   private globalPassCounter = 0;
   private userInputResolver: ((input: string) => void) | null = null;
 
@@ -54,6 +56,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     workflow: WorkflowConfig,
     state: StateStore,
     worktreeManager: WorktreeManager,
+    options?: {
+      orchestratorModel?: string;
+      agentModels?: Record<string, string | undefined>;
+    },
   ) {
     super();
     this.orchestrator = orchestratorAdapter;
@@ -61,6 +67,8 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     this.workflow = workflow;
     this.state = state;
     this.worktreeManager = worktreeManager;
+    this.orchestratorModel = options?.orchestratorModel;
+    this.agentModels = options?.agentModels ?? {};
   }
 
   /**
@@ -109,6 +117,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         userRequest,
         agents,
         this.workflow,
+        this.orchestratorModel,
       );
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -224,7 +233,12 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 
     let finalReport: string;
     try {
-      finalReport = await report(this.orchestrator, summaries, userRequest);
+      finalReport = await report(
+        this.orchestrator,
+        summaries,
+        userRequest,
+        this.orchestratorModel,
+      );
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.emit('error', error, { step: 'report' });
@@ -291,6 +305,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         { description: task.description, role: task.role },
         localSummaries,
         currentPass,
+        this.orchestratorModel,
       );
 
       this.emit('step:complete', 'dispatch', { taskId: task.id, pass: currentPass });
@@ -313,6 +328,9 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         context: {
           workingDirectory: dispatchResult.workingDirectory ?? process.cwd(),
           files: task.scope.files,
+        },
+        constraints: {
+          model: this.agentModels[task.agent],
         },
       });
 
@@ -343,6 +361,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.orchestrator,
         task.description,
         agentResult,
+        this.orchestratorModel,
       );
 
       this.emit('step:complete', 'ingest', {
@@ -381,6 +400,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.orchestrator,
         latestIngest,
         globalPass,
+        this.orchestratorModel,
       );
 
       this.emit('step:complete', 'summarize', {
@@ -400,6 +420,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         localSummaries,
         currentPass,
         maxPasses,
+        this.orchestratorModel,
       );
 
       this.emit('step:complete', 'judge', {

@@ -11,7 +11,8 @@ export async function summarize(
   orchestrator: AgentAdapter,
   ingestResult: z.infer<typeof IngestOutputSchema>,
   passNumber: number,
+  model?: string,
 ): Promise<SummarizeOutput> {
   const prompt = buildSummarizePrompt(ingestResult, passNumber);
-  return executeWithValidation(orchestrator, prompt, SummarizeOutputSchema);
+  return executeWithValidation(orchestrator, prompt, SummarizeOutputSchema, { model });
 }

@@ -142,12 +142,16 @@ export class CodexAdapter implements AgentAdapter {
       const outputFile = join(tmpDir, 'output.json');
 
       const args = ['exec', task.prompt, '--json', '-o', outputFile];
+      if (task.constraints?.model) {
+        args.push('--model', task.constraints.model);
+      }
 
       const timeout = task.constraints?.timeout ?? 300_000;
       logger.debug('[adapter:codex] starting execute', {
         cwd: task.context.workingDirectory,
         timeoutMs: timeout,
         outputFile,
+        model: task.constraints?.model,
         promptChars: task.prompt.length,
       });
 
@@ -285,6 +289,7 @@ export class CodexAdapter implements AgentAdapter {
         schemaFile,
         '-o',
         outputFile,
+        ...(options?.model ? ['--model', options.model] : []),
       ];
 
       const timeout = options?.timeout ?? 300_000;
@@ -293,6 +298,7 @@ export class CodexAdapter implements AgentAdapter {
         timeoutMs: timeout,
         schemaFile,
         outputFile,
+        model: options?.model,
         promptChars: prompt.length,
       });
 

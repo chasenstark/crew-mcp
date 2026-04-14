@@ -8,9 +8,10 @@ export interface WorkflowStep {
 }
 
 export interface AgentConfig {
-  adapter: string;
-  auth: string;
-  strengths: string[];
+  adapter?: string;
+  auth?: string;
+  strengths?: string[];
+  model?: string;
 }
 
 export interface WorkflowConfig {
@@ -25,7 +26,10 @@ export interface WorkflowConfig {
 export interface FullConfig {
   workflow: WorkflowConfig;
   agents: Record<string, AgentConfig>;
-  orchestrator: { cli: string };
+  orchestrator: {
+    cli: string;
+    model?: string;
+  };
   errorHandling: {
     default: {
       retry: number;

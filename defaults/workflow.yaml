@@ -33,6 +33,8 @@ agents:
   claude-code:
     adapter: claude-code
     auth: subscription
+    # Optional: pin a specific CLI model
+    # model: claude-sonnet-4-5
     strengths:
       - implementation
       - refactoring
@@ -42,6 +44,8 @@ agents:
   codex:
     adapter: codex
     auth: subscription
+    # Optional: pin a specific CLI model
+    # model: gpt-5.4-mini
     strengths:
       - review
       - testing
@@ -50,6 +54,8 @@ agents:
 
 orchestrator:
   cli: claude-code
+  # Optional: model for orchestration steps (decompose/dispatch/ingest/summarize/judge/report)
+  # model: claude-sonnet-4-5
 
 error_handling:
   default:

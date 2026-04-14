@@ -17,7 +17,7 @@ export async function executeWithValidation<T extends z.ZodType>(
   adapter: AgentAdapter,
   prompt: string,
   schema: T,
-  options?: { workingDirectory?: string; maxRetries?: number },
+  options?: { workingDirectory?: string; maxRetries?: number; model?: string },
 ): Promise<z.infer<T>> {
   const maxRetries = options?.maxRetries ?? 1;
   logger.debug('executeWithValidation started', {
@@ -33,6 +33,7 @@ export async function executeWithValidation<T extends z.ZodType>(
     try {
       return await adapter.executeWithSchema(prompt, schema, {
         workingDirectory: options?.workingDirectory,
+        model: options?.model,
       });
     } catch (error: unknown) {
       logger.error('executeWithValidation fast path failed', {
@@ -57,6 +58,9 @@ export async function executeWithValidation<T extends z.ZodType>(
       prompt: currentPrompt,
       context: {
         workingDirectory: options?.workingDirectory ?? process.cwd(),
+      },
+      constraints: {
+        model: options?.model,
       },
     });
 

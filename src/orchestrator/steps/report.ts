@@ -10,6 +10,7 @@ export async function report(
   orchestrator: AgentAdapter,
   summaries: PassSummary[],
   userRequest: string,
+  model?: string,
 ): Promise<string> {
   const prompt = buildReportPrompt(summaries, userRequest);
 
@@ -17,6 +18,9 @@ export async function report(
     prompt,
     context: {
       workingDirectory: process.cwd(),
+    },
+    constraints: {
+      model,
     },
   });
 

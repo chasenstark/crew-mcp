@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import YAML from 'yaml';
-import type { FullConfig, WorkflowConfig } from './types.js';
+import type { AgentConfig, FullConfig, WorkflowConfig } from './types.js';
 
 export function getGlobalConfigPath(): string {
   return join(homedir(), '.orchestra', 'workflow.yaml');
@@ -20,6 +20,14 @@ function loadRawConfig(configPath: string): FullConfig | null {
 }
 
 export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig {
+  const mergedAgents: Record<string, AgentConfig> = { ...base.agents };
+  for (const [name, agentOverride] of Object.entries(override.agents)) {
+    mergedAgents[name] = {
+      ...(base.agents[name] ?? {}),
+      ...agentOverride,
+    };
+  }
+
   return {
     workflow: {
       name: override.workflow.name ?? base.workflow.name,
@@ -28,11 +36,11 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
         : base.workflow.steps,
       completion: override.workflow.completion ?? base.workflow.completion,
     },
-    agents: {
-      ...base.agents,
-      ...override.agents,
+    agents: mergedAgents,
+    orchestrator: {
+      cli: override.orchestrator?.cli ?? base.orchestrator.cli,
+      model: override.orchestrator?.model ?? base.orchestrator.model,
     },
-    orchestrator: override.orchestrator ?? base.orchestrator,
     errorHandling: {
       default: {
         ...base.errorHandling.default,
@@ -70,6 +78,34 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     throw new Error('workflow.steps must be an array');
   }
 
+  const parsedAgents = parsed.agents && typeof parsed.agents === 'object'
+    ? Object.entries(parsed.agents as Record<string, unknown>).reduce<Record<string, AgentConfig>>(
+      (acc, [name, value]) => {
+        if (!value || typeof value !== 'object') {
+          acc[name] = {};
+          return acc;
+        }
+        const raw = value as Record<string, unknown>;
+        const strengths = Array.isArray(raw.strengths)
+          ? raw.strengths.filter((s): s is string => typeof s === 'string')
+          : undefined;
+
+        acc[name] = {
+          adapter: typeof raw.adapter === 'string' ? raw.adapter : undefined,
+          auth: typeof raw.auth === 'string' ? raw.auth : undefined,
+          strengths,
+          model: typeof raw.model === 'string' ? raw.model : undefined,
+        };
+        return acc;
+      },
+      {},
+    )
+    : {};
+
+  const rawOrchestrator = parsed.orchestrator && typeof parsed.orchestrator === 'object'
+    ? parsed.orchestrator as Record<string, unknown>
+    : {};
+
   // Map YAML structure to our types
   // The YAML has: workflow.name, workflow.steps[], agents{}, orchestrator{}, error_handling{}
   return {
@@ -85,8 +121,11 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
       })),
       completion: parsed.workflow?.completion ?? { strategy: 'judge_approval', fallback: 'max_passes' },
     },
-    agents: parsed.agents ?? {},
-    orchestrator: parsed.orchestrator ?? { cli: 'claude-code' },
+    agents: parsedAgents,
+    orchestrator: {
+      cli: typeof rawOrchestrator.cli === 'string' ? rawOrchestrator.cli : 'claude-code',
+      model: typeof rawOrchestrator.model === 'string' ? rawOrchestrator.model : undefined,
+    },
     errorHandling: {
       default: {
         retry: parsed.error_handling?.default?.retry ?? 1,

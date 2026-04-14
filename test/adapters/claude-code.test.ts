@@ -183,6 +183,25 @@ describe('ClaudeCodeAdapter', () => {
         }),
       );
     });
+
+    it('passes --model when specified in task constraints', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Test model override',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { model: 'claude-sonnet-4-5' },
+      });
+
+      const callArgs = mockExeca.mock.calls[0];
+      const cliArgs = callArgs[1] as string[];
+      expect(cliArgs).toContain('--model');
+      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('claude-sonnet-4-5');
+    });
   });
 
   describe('executeWithSchema', () => {
@@ -353,6 +372,29 @@ describe('ClaudeCodeAdapter', () => {
       await expect(
         adapter.executeWithSchema('Do something', schema),
       ).rejects.toThrow('Claude CLI returned no output');
+    });
+
+    it('passes --model in executeWithSchema when provided', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: structuredFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const schema = z.object({
+        reasoning: z.string(),
+        tasks: z.array(z.object({ id: z.string(), description: z.string() })),
+        suggestedOrder: z.array(z.string()),
+      });
+
+      await adapter.executeWithSchema('Plan tasks', schema, {
+        model: 'claude-sonnet-4-5',
+      });
+
+      const callArgs = mockExeca.mock.calls[0];
+      const cliArgs = callArgs[1] as string[];
+      expect(cliArgs).toContain('--model');
+      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('claude-sonnet-4-5');
     });
   });
 

@@ -31,6 +31,7 @@ export interface Task {
   constraints?: {
     timeout?: number;
     maxTurns?: number;
+    model?: string;
     sandbox?: 'read-only' | 'workspace-write' | 'full-access';
   };
 }
@@ -60,4 +61,5 @@ export interface ExecuteOptions {
   workingDirectory?: string;
   timeout?: number;
   maxTurns?: number;
+  model?: string;
 }
