@@ -62,7 +62,7 @@ orchestrator status
 
 # 2. Initialize config in your project
 cd /path/to/your/project
-orchestrator init
+orchestrator init --project
 
 # 3. Run a workflow
 orchestrator run "Build a DatePicker component with tests"
@@ -84,6 +84,9 @@ orchestrator run "Add email validation to the signup form"
 # Interactive mode
 orchestrator run
 
+# Non-interactive input policy when the workflow needs clarification
+orchestrator run "Add email validation to the signup form" --on-ask-user prompt
+
 # Verbose debugging logs
 orchestrator --debug run "Add email validation to the signup form"
 ```
@@ -91,9 +94,12 @@ orchestrator --debug run "Add email validation to the signup form"
 Each run writes a log file to `.orchestra/logs/run-<timestamp>.log`.
 Use `--debug` (or `ORCHESTRATOR_LOG_LEVEL=debug`) to include detailed adapter/process diagnostics.
 
-### `orchestrator init`
+### `orchestrator init [--project]`
 
-Creates `.orchestra/workflow.yaml` in the current project with the default workflow configuration.
+Creates `workflow.yaml` with the default workflow configuration.
+
+- Default: global config at `~/.orchestra/workflow.yaml`
+- With `--project`: project config at `./.orchestra/workflow.yaml`
 
 ### `orchestrator status`
 
@@ -106,7 +112,15 @@ Health-checks all registered agents and shows which are installed and authentica
 
 ### `orchestrator resume`
 
-Checks for an interrupted workflow (saved in `.orchestra/state.json`) and displays its status.
+Resumes an interrupted workflow from `.orchestra/state.json`.
+
+```bash
+# Resume and fail if user input is required
+orchestrator resume
+
+# Resume and prompt in terminal if user input is required
+orchestrator resume --on-ask-user prompt
+```
 
 ## Configuration
 
@@ -160,7 +174,7 @@ agents:
     adapter: generic
     command: "my-tool"
     args: ["--prompt", "{{prompt}}", "--output", "json"]
-    strengths: [analysis]
+    capabilities: [analyze]
 ```
 
 **Structured output caveat.** The `generic` adapter does not natively enforce
@@ -214,7 +228,7 @@ npm run build
 - **Adapters** wrap CLI tools behind a common `AgentAdapter` interface — `execute()`, `executeWithSchema()`, `healthCheck()`
 - **Pipeline** orchestrates the 6-step cycle with an `EventEmitter` for UI updates
 - **Worktrees** give each agent an isolated git branch/directory under `.orchestra/worktrees/`
-- **State** persists to `.orchestra/` as JSON files — workflow state, pass summaries, and conversation history
+- **State** persists to `.orchestra/` as JSON files — active workflow state in `state.json` and run-scoped artifacts under `.orchestra/runs/<runId>/`
 - **Context management** is tiered: full output for the current pass, structured summaries for previous passes, compressed one-liners for older passes
 
 ## License
