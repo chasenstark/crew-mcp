@@ -3,6 +3,7 @@ import { Box, Text, useApp } from 'ink';
 import { ConversationView, type ChatMessage } from './ConversationView.js';
 import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
+import { handleConfigSlashCommand } from './config/command-handler.js';
 import type { Pipeline } from '../../orchestrator/pipeline.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
@@ -128,6 +129,23 @@ export function App({ pipeline, initialPrompt }: Props) {
   }, [pipeline, addMessage, appendStreamChunk, finalizeStream]);
 
   const handleSubmit = useCallback((input: string) => {
+    if (input.startsWith('/config')) {
+      try {
+        const response = handleConfigSlashCommand(input, {
+          cwd: process.cwd(),
+          isRunning,
+        });
+        if (response) {
+          addMessage('system', response);
+          return;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        addMessage('system', `Config error: ${message}`);
+        return;
+      }
+    }
+
     if (waitingForInput) {
       // Pipeline is paused waiting for input — send it
       addMessage('user', input);

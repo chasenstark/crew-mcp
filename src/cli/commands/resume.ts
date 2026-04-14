@@ -7,7 +7,7 @@ import { toAgentRegistry } from './run.js';
 import { formatStepComplete, formatStepStart } from '../step-status.js';
 import { enableFileLogging, logger } from '../../utils/logger.js';
 import chalk from 'chalk';
-import { createInterface } from 'readline/promises';
+import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'process';
 
 type AskUserPolicy = 'fail' | 'prompt';

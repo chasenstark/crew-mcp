@@ -1,0 +1,113 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
+import { homedir, tmpdir } from 'os';
+import { getDefaultConfig } from '../../src/workflow/config-codec.js';
+import { loadConfigByScope } from '../../src/workflow/config-repository.js';
+import {
+  applyConfigPatch,
+  getConfigScope,
+  resetConfig,
+  setConfigScope,
+  setConfigValue,
+  showConfig,
+} from '../../src/workflow/config-service.js';
+
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    homedir: vi.fn(actual.homedir),
+  };
+});
+
+describe('config-service', () => {
+  const mockedHomedir = vi.mocked(homedir);
+  let tmpRoot: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    tmpRoot = join(tmpdir(), `orchestrator-config-service-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    cwd = join(tmpRoot, 'project');
+    mkdirSync(cwd, { recursive: true });
+    mockedHomedir.mockReturnValue(join(tmpRoot, 'home'));
+  });
+
+  afterEach(() => {
+    mockedHomedir.mockRestore();
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('defaults active scope to project', () => {
+    expect(getConfigScope(cwd)).toBe('project');
+  });
+
+  it('persists active scope preference', () => {
+    const result = setConfigScope(cwd, 'global');
+    expect(result.scope).toBe('global');
+    expect(getConfigScope(cwd)).toBe('global');
+  });
+
+  it('applies patch for workflow reviewer max passes', () => {
+    const next = applyConfigPatch(getDefaultConfig(), {
+      path: 'workflow.reviewer.maxPasses',
+      value: '5',
+    });
+    expect(next.workflow.steps.find((step) => step.role === 'reviewer')?.maxPasses).toBe(5);
+  });
+
+  it('throws for unsupported patch path', () => {
+    expect(() =>
+      applyConfigPatch(getDefaultConfig(), {
+        path: 'workflow.name',
+        value: 'new-name',
+      }),
+    ).toThrow(/Unsupported config path/);
+  });
+
+  it('sets a config value in active scope', () => {
+    setConfigScope(cwd, 'global');
+    const result = setConfigValue(cwd, 'errorHandling.default.retry', '4');
+    expect(result.scope).toBe('global');
+    expect(result.nextValue).toBe(4);
+
+    const globalConfig = loadConfigByScope('global', cwd);
+    expect(globalConfig?.errorHandling.default.retry).toBe(4);
+  });
+
+  it('can set agent model', () => {
+    const result = setConfigValue(cwd, 'agents.codex.model', 'gpt-5.4');
+    expect(result.nextValue).toBe('gpt-5.4');
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents.codex.model).toBe('gpt-5.4');
+  });
+
+  it('rejects invalid integer values', () => {
+    expect(() =>
+      setConfigValue(cwd, 'workflow.reviewer.maxPasses', '0'),
+    ).toThrow(/expected integer >= 1/);
+  });
+
+  it('rejects unknown agent model path', () => {
+    expect(() =>
+      setConfigValue(cwd, 'agents.unknown.model', 'foo'),
+    ).toThrow(/unknown agent "unknown"/i);
+  });
+
+  it('resets scoped config to defaults', () => {
+    setConfigValue(cwd, 'errorHandling.default.retry', '9');
+    const result = resetConfig(cwd);
+    expect(result.scope).toBe('project');
+    expect(result.config.errorHandling.default.retry).toBe(1);
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.errorHandling.default.retry).toBe(1);
+  });
+
+  it('shows effective config and paths', () => {
+    setConfigValue(cwd, 'orchestrator.cli', 'codex');
+    const shown = showConfig(cwd);
+    expect(shown.activeScope).toBe('project');
+    expect(shown.effectiveConfig.orchestrator.cli).toBe('codex');
+    expect(shown.paths.project).toContain('.orchestra/workflow.yaml');
+  });
+});

@@ -60,11 +60,14 @@ npm link
 # 1. Check which agents are available
 orchestrator status
 
-# 2. Initialize config in your project
+# 2. Select project-local config scope (recommended)
 cd /path/to/your/project
-orchestrator init --project
+orchestrator config scope project
 
-# 3. Run a workflow
+# 3. Configure via interactive wizard (or use config set commands)
+orchestrator config
+
+# 4. Run a workflow
 orchestrator run "Build a DatePicker component with tests"
 
 # Or enter interactive mode
@@ -100,6 +103,45 @@ Creates `workflow.yaml` with the default workflow configuration.
 
 - Default: global config at `~/.orchestra/workflow.yaml`
 - With `--project`: project config at `./.orchestra/workflow.yaml`
+- Compatibility command. Preferred setup/edit flow is `orchestrator config`.
+
+### `orchestrator config`
+
+Interactive and command-based configuration management.
+
+```bash
+# Interactive wizard
+orchestrator config
+
+# Show effective config + active scope
+orchestrator config show
+
+# Set values
+orchestrator config set orchestrator.cli codex
+orchestrator config set orchestrator.model claude-sonnet-4-5
+orchestrator config set agents.codex.model gpt-5.4
+orchestrator config set workflow.reviewer.maxPasses 3
+orchestrator config set errorHandling.default.retry 1
+
+# Scope management
+orchestrator config scope
+orchestrator config scope project
+orchestrator config scope global
+
+# Reset a scope to defaults
+orchestrator config reset --scope project
+```
+
+In interactive `orchestrator run` mode, `/config` slash commands are also available:
+
+```text
+/config
+/config show
+/config scope
+/config scope project
+/config set orchestrator.cli codex
+/config reset
+```
 
 ### `orchestrator status`
 
@@ -124,7 +166,9 @@ orchestrator resume --on-ask-user prompt
 
 ## Configuration
 
-After running `orchestrator init`, edit `.orchestra/workflow.yaml` to customize the workflow:
+Primary path: use `orchestrator config` and `/config` commands.
+
+Advanced/legacy path: edit `.orchestra/workflow.yaml` manually if needed:
 
 ```yaml
 workflow:

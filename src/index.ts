@@ -3,6 +3,7 @@ import { runCommand } from './cli/commands/run.js';
 import { statusCommand } from './cli/commands/status.js';
 import { initCommand } from './cli/commands/init.js';
 import { resumeCommand } from './cli/commands/resume.js';
+import { registerConfigCommand } from './cli/commands/config.js';
 import { setLogLevel } from './utils/logger.js';
 
 program
@@ -54,6 +55,8 @@ program
     }
     await statusCommand();
   });
+
+registerConfigCommand(program);
 
 program.parseAsync().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err));

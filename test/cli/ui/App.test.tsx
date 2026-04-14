@@ -7,6 +7,16 @@ import type { Pipeline, PipelineEvents } from '../../../src/orchestrator/pipelin
 
 // Shared handle to the latest PromptInput onSubmit callback, set by the mock.
 let latestSubmit: ((value: string) => void) | null = null;
+const mockHandleConfigSlashCommand = vi.fn((input: string, context: { isRunning: boolean }) => {
+  if (!input.startsWith('/config')) return null;
+  if (context.isRunning && input.startsWith('/config set')) {
+    return 'Cannot mutate config while a workflow is running.';
+  }
+  if (input === '/config show') {
+    return 'config show output';
+  }
+  return 'config help output';
+});
 
 vi.mock('../../../src/cli/ui/PromptInput.js', () => ({
   PromptInput: (props: { onSubmit: (v: string) => void; disabled?: boolean; statusText?: string }) => {
@@ -15,6 +25,11 @@ vi.mock('../../../src/cli/ui/PromptInput.js', () => ({
       <Text>[input disabled={String(Boolean(props.disabled))} status="{props.statusText ?? ''}"]</Text>
     );
   },
+}));
+
+vi.mock('../../../src/cli/ui/config/command-handler.js', () => ({
+  handleConfigSlashCommand: (input: string, context: { isRunning: boolean }) =>
+    mockHandleConfigSlashCommand(input, context),
 }));
 
 // Import App after the mock
@@ -45,6 +60,18 @@ function submit(text: string) {
 }
 
 describe('App', () => {
+  it('handles /config commands while idle without starting a run', async () => {
+    const { pipeline, fake } = createFakePipeline();
+    const { lastFrame } = render(<App pipeline={pipeline} />);
+    await flush();
+
+    submit('/config show');
+    await flush();
+
+    expect(fake.run).not.toHaveBeenCalled();
+    expect(lastFrame()).toContain('config show output');
+  });
+
   it('sends user input to pipeline.run when idle', async () => {
     const { pipeline, fake } = createFakePipeline();
     render(<App pipeline={pipeline} />);
@@ -195,5 +222,21 @@ describe('App', () => {
     submit('another');
     await flush();
     expect(fake.run).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces config mutation blocking message during active run', async () => {
+    const { pipeline, fake } = createFakePipeline();
+    const { lastFrame } = render(<App pipeline={pipeline} />);
+    await flush();
+
+    submit('start');
+    await flush();
+    expect(fake.run).toHaveBeenCalledTimes(1);
+
+    submit('/config set orchestrator.cli codex');
+    await flush();
+
+    expect(lastFrame()).toContain('Cannot mutate config while a workflow is running');
+    expect(fake.run).toHaveBeenCalledTimes(1);
   });
 });
