@@ -1,7 +1,13 @@
 import { EventEmitter } from 'eventemitter3';
 import { isAbsolute, resolve, sep } from 'path';
 import { z } from 'zod';
-import type { AgentAdapter, TaskResult } from '../adapters/types.js';
+import type {
+  AgentAdapter,
+  TaskResult,
+  ToolDefinition,
+  ToolLoopMessage,
+  ToolLoopResult,
+} from '../adapters/types.js';
 import type { WorkflowConfig } from '../workflow/types.js';
 import type {
   ActionRecord,
@@ -101,6 +107,7 @@ interface RuntimeState {
   hadErrors: boolean;
   deterministicFallbackCount: number;
   replanCount: number;
+  nativeToolCalls: number;
 }
 
 interface ActionDefinition<TInput, TOutput> {
@@ -277,76 +284,30 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
 
   private async execute(runtime: RuntimeState): Promise<string> {
     this.activeAbortController = new AbortController();
-    const signal = this.activeAbortController.signal;
 
     try {
-      if (
+      const supportsNativeToolLoop = Boolean(
         this.orchestrator.orchestratorCapabilities?.supportsToolLoop
         && this.orchestrator.executeWithTools
-      ) {
-        logger.warn(
-          'Adapter reports tool-loop support, but native path is not enabled yet. Falling back to structured decision mode.',
-        );
+      );
+
+      let interrupted = false;
+      if (supportsNativeToolLoop) {
+        try {
+          interrupted = await this.executeNativeToolLoop(runtime);
+        } catch (error: unknown) {
+          runtime.hadErrors = true;
+          logger.warn('Native tool-loop failed, falling back to structured decision mode.', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          interrupted = await this.executeFallbackLoop(runtime);
+        }
+      } else {
+        interrupted = await this.executeFallbackLoop(runtime);
       }
 
-      while (runtime.controllerCursor <= runtime.actionHistory.length) {
-        if (signal.aborted) {
-          return this.handleInterrupted(runtime);
-        }
-        if (runtime.actionHistory.length >= this.guardrails.maxTotalActions) {
-          throw new Error(
-            `Judgment action budget exceeded (${this.guardrails.maxTotalActions}).`,
-          );
-        }
-
-        const decided = await this.decideNextAction(runtime);
-        const validated = this.validateDecision(decided, runtime);
-        let decision = decided;
-
-        if (!validated.ok) {
-          runtime.hadErrors = true;
-          runtime.deterministicFallbackCount++;
-          logger.warn('Invalid controller decision; using deterministic fallback.', {
-            reason: validated.reason,
-            decision,
-          });
-          if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
-            throw new Error(
-              `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
-            );
-          }
-          decision = {
-            reasoning: `Deterministic fallback: ${validated.reason}`,
-            ...this.computeDeterministicFallback(runtime),
-          };
-        }
-
-        if (decision.action === 'finish') {
-          if (!runtime.reportFinalized) {
-            runtime.hadErrors = true;
-            runtime.deterministicFallbackCount++;
-            if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
-              throw new Error(
-                `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
-              );
-            }
-            decision = {
-              reasoning:
-                'finish requires finalize_report first; applying deterministic fallback',
-              action: 'finalize_report',
-              payload: {},
-            };
-          } else {
-            break;
-          }
-        }
-
-        if (decision.action === 'fail') {
-          throw new Error(`Controller aborted run: ${decision.reasoning}`);
-        }
-
-        await this.executeActionDecision(decision, runtime);
-        this.persistRuntimeState(runtime, 'running');
+      if (interrupted) {
+        return 'Workflow interrupted.';
       }
 
       if (!runtime.finalReport) {
@@ -378,6 +339,115 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     } finally {
       this.activeAbortController = null;
     }
+  }
+
+  private async executeFallbackLoop(runtime: RuntimeState): Promise<boolean> {
+    const signal = this.activeAbortController?.signal;
+
+    while (runtime.controllerCursor <= runtime.actionHistory.length) {
+      if (signal?.aborted) {
+        this.handleInterrupted(runtime);
+        return true;
+      }
+      if (runtime.actionHistory.length >= this.guardrails.maxTotalActions) {
+        throw new Error(
+          `Judgment action budget exceeded (${this.guardrails.maxTotalActions}).`,
+        );
+      }
+
+      const decided = await this.decideNextAction(runtime);
+      const validated = this.validateDecision(decided, runtime);
+      let decision = decided;
+
+      if (!validated.ok) {
+        runtime.hadErrors = true;
+        runtime.deterministicFallbackCount++;
+        logger.warn('Invalid controller decision; using deterministic fallback.', {
+          reason: validated.reason,
+          decision,
+        });
+        if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+          throw new Error(
+            `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+          );
+        }
+        decision = {
+          reasoning: `Deterministic fallback: ${validated.reason}`,
+          ...this.computeDeterministicFallback(runtime),
+        };
+      }
+
+      if (decision.action === 'finish') {
+        if (!runtime.reportFinalized) {
+          runtime.hadErrors = true;
+          runtime.deterministicFallbackCount++;
+          if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+            throw new Error(
+              `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+            );
+          }
+          decision = {
+            reasoning:
+              'finish requires finalize_report first; applying deterministic fallback',
+            action: 'finalize_report',
+            payload: {},
+          };
+        } else {
+          break;
+        }
+      }
+
+      if (decision.action === 'fail') {
+        throw new Error(`Controller aborted run: ${decision.reasoning}`);
+      }
+
+      await this.executeActionDecision(decision, runtime, 'fallback');
+      this.persistRuntimeState(runtime, 'running');
+    }
+
+    return false;
+  }
+
+  private async executeNativeToolLoop(runtime: RuntimeState): Promise<boolean> {
+    if (!this.orchestrator.executeWithTools) {
+      throw new Error('Adapter does not implement executeWithTools.');
+    }
+
+    const tools = this.buildNativeToolDefinitions();
+    const startMessages = runtime.toolCallTranscript && runtime.toolCallTranscript.length > 0
+      ? runtime.toolCallTranscript.map((message) => ({ ...message }))
+      : this.buildNativeStartMessages(runtime);
+
+    const result = await this.orchestrator.executeWithTools(
+      tools,
+      startMessages,
+      async (call) => {
+        runtime.nativeToolCalls++;
+        const { decision, pathTaken } = this.resolveNativeToolDecision(call, runtime);
+        if (decision.action === 'finish' || decision.action === 'fail') {
+          return {
+            output: {
+              ok: true,
+              terminal: decision.action,
+              message: 'Use terminal response instead of tool call for finish/fail.',
+            },
+          };
+        }
+        await this.executeActionDecision(decision, runtime, pathTaken);
+        this.persistRuntimeState(runtime, 'running');
+        return {
+          output: {
+            ok: true,
+            action: decision.action,
+            taskId: decision.target?.taskId,
+            sequence: runtime.actionHistory.length,
+          },
+        };
+      },
+    );
+
+    runtime.toolCallTranscript = result.transcript;
+    return this.handleNativeLoopResult(result, runtime);
   }
 
   private createInitialRuntimeState(args: {
@@ -418,6 +488,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       hadErrors: false,
       deterministicFallbackCount: 0,
       replanCount: 0,
+      nativeToolCalls: 0,
     };
   }
 
@@ -866,6 +937,122 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     };
   }
 
+  private buildNativeToolDefinitions(): ToolDefinition[] {
+    return Object.values(this.actions).map((action) => ({
+      name: action.name,
+      description: action.description,
+      inputSchema: z.toJSONSchema(action.inputSchema) as Record<string, unknown>,
+    }));
+  }
+
+  private buildNativeStartMessages(runtime: RuntimeState): ToolLoopMessage[] {
+    const tools = Object.values(this.actions)
+      .map((action) => `- ${action.name}: ${action.description}`)
+      .join('\n');
+
+    const policyHints = this.workflow.steps.flatMap((step) => {
+      const hints: string[] = [];
+      if (step.condition) {
+        hints.push(`- condition (${step.action}): ${step.condition}`);
+      }
+      if (step.criteria && step.criteria.length > 0) {
+        hints.push(...step.criteria.map((criteria) => `- criteria (${step.action}): ${criteria}`));
+      }
+      return hints;
+    }).join('\n') || '- none';
+
+    return [
+      {
+        role: 'system',
+        content: [
+          'You are the judgment-mode orchestration controller.',
+          'Call tools one at a time to progress workflow execution.',
+          'Do not finish until finalize_report has succeeded.',
+          'Available tools:',
+          tools,
+          'Policy hints (soft):',
+          policyHints,
+        ].join('\n'),
+      },
+      {
+        role: 'user',
+        content: `User request: ${runtime.userRequest}`,
+      },
+    ];
+  }
+
+  private resolveNativeToolDecision(
+    call: { name: string; input: Record<string, unknown> },
+    runtime: RuntimeState,
+  ): { decision: ControllerDecision; pathTaken: ActionRecord['pathTaken'] } {
+    const action = ControllerActionNameSchema.safeParse(call.name);
+    if (!action.success || action.data === 'finish' || action.data === 'fail') {
+      runtime.hadErrors = true;
+      runtime.deterministicFallbackCount++;
+      if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+        throw new Error(
+          `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+        );
+      }
+      return {
+        decision: {
+          reasoning: `Unknown or terminal native tool call "${call.name}".`,
+          ...this.computeDeterministicFallback(runtime),
+        },
+        pathTaken: 'fallback',
+      };
+    }
+
+    const taskId =
+      typeof call.input?.taskId === 'string'
+        ? call.input.taskId
+        : runtime.activeTaskId;
+    const decision: ControllerDecision = {
+      reasoning:
+        typeof call.input?.reasoning === 'string'
+          ? call.input.reasoning
+          : `native tool call: ${action.data}`,
+      action: action.data,
+      target: taskId ? { taskId } : undefined,
+      payload: call.input,
+    };
+
+    const validated = this.validateDecision(decision, runtime);
+    if (validated.ok) {
+      return { decision, pathTaken: 'native' };
+    }
+
+    runtime.hadErrors = true;
+    runtime.deterministicFallbackCount++;
+    if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+      throw new Error(
+        `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+      );
+    }
+
+    return {
+      decision: {
+        reasoning: `Native tool call invalid: ${validated.reason}`,
+        ...this.computeDeterministicFallback(runtime),
+      },
+      pathTaken: 'fallback',
+    };
+  }
+
+  private handleNativeLoopResult(result: ToolLoopResult, runtime: RuntimeState): boolean {
+    if (result.status === 'interrupted') {
+      this.handleInterrupted(runtime);
+      return true;
+    }
+    if (result.status === 'failed') {
+      throw new Error(result.error ?? 'Native tool-loop failed.');
+    }
+    if (!runtime.reportFinalized) {
+      throw new Error('Native tool-loop completed without finalize_report.');
+    }
+    return false;
+  }
+
   private async decideNextAction(runtime: RuntimeState): Promise<ControllerDecision> {
     const prompt = this.buildControllerPrompt(runtime);
     try {
@@ -1116,7 +1303,11 @@ Return valid JSON matching the schema.`;
     return { action: 'finish' };
   }
 
-  private async executeActionDecision(decision: ControllerDecision, runtime: RuntimeState): Promise<void> {
+  private async executeActionDecision(
+    decision: ControllerDecision,
+    runtime: RuntimeState,
+    pathTaken: ActionRecord['pathTaken'],
+  ): Promise<void> {
     const action = ExecutableActionNameSchema.parse(decision.action);
     const definition = this.actions[action];
     const payload = decision.payload ?? {};
@@ -1142,7 +1333,7 @@ Return valid JSON matching the schema.`;
         },
         startedAt,
         completedAt: new Date().toISOString(),
-        pathTaken: 'fallback',
+        pathTaken,
       };
       runtime.actionHistory.push(record);
       runtime.controllerCursor = record.sequence;
@@ -1162,7 +1353,7 @@ Return valid JSON matching the schema.`;
         },
         startedAt,
         completedAt: new Date().toISOString(),
-        pathTaken: 'fallback',
+        pathTaken,
       };
       runtime.actionHistory.push(record);
       runtime.controllerCursor = record.sequence;

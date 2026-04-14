@@ -17,6 +17,11 @@ import type {
   HealthCheckResult,
   Task,
   TaskResult,
+  ToolCall,
+  ToolDefinition,
+  ToolLoopMessage,
+  ToolLoopResult,
+  ToolResult,
 } from './types.js';
 import { logger } from '../utils/logger.js';
 
@@ -44,6 +49,17 @@ interface ParseJsonlResult {
   events: CodexEvent[];
   droppedLines: number;
 }
+
+const ToolLoopDecisionSchema = z.object({
+  type: z.enum(['tool_call', 'finish', 'fail']),
+  reasoning: z.string().optional(),
+  tool: z.string().optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+  output: z.string().optional(),
+  error: z.string().optional(),
+});
+
+type ToolLoopDecision = z.infer<typeof ToolLoopDecisionSchema>;
 
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
@@ -165,7 +181,7 @@ export class CodexAdapter implements AgentAdapter {
   ];
   readonly supportsJsonSchema = true;
   readonly orchestratorCapabilities = {
-    supportsToolLoop: false,
+    supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,
   };
@@ -446,6 +462,143 @@ export class CodexAdapter implements AgentAdapter {
     } finally {
       try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore cleanup errors */ }
     }
+  }
+
+  async executeWithTools(
+    tools: ToolDefinition[],
+    messages: ToolLoopMessage[],
+    onToolCall: (call: ToolCall) => Promise<ToolResult>,
+  ): Promise<ToolLoopResult> {
+    const transcript: ToolLoopMessage[] = [...messages];
+    const maxTurns = 200;
+
+    const renderToolCatalog = (): string => {
+      return tools
+        .map((tool) => {
+          const schema = JSON.stringify(tool.inputSchema);
+          return `- ${tool.name}: ${tool.description}\n  input_schema: ${schema}`;
+        })
+        .join('\n');
+    };
+
+    const renderTranscript = (): string => {
+      if (transcript.length === 0) return '(empty)';
+      return transcript
+        .map((message, index) => {
+          const role = message.name ? `${message.role}(${message.name})` : message.role;
+          return `${index + 1}. ${role}: ${message.content}`;
+        })
+        .join('\n');
+    };
+
+    const buildPrompt = (): string => {
+      return [
+        'You are a workflow controller using external tools.',
+        'Decide exactly one next step per turn.',
+        '',
+        'Available tools:',
+        renderToolCatalog(),
+        '',
+        'Conversation transcript:',
+        renderTranscript(),
+        '',
+        'Respond with one JSON object matching the schema.',
+        '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
+        '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
+        '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
+        'Rules:',
+        '- Never emit multiple tool calls in one turn.',
+        '- tool must match exactly one available tool name.',
+      ].join('\n');
+    };
+
+    for (let turn = 1; turn <= maxTurns; turn++) {
+      let decision: ToolLoopDecision;
+      try {
+        decision = await this.executeWithSchema(buildPrompt(), ToolLoopDecisionSchema);
+      } catch (error: unknown) {
+        return {
+          status: 'failed',
+          transcript,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      if (decision.reasoning) {
+        transcript.push({
+          role: 'assistant',
+          content: decision.reasoning,
+        });
+      }
+
+      if (decision.type === 'finish') {
+        const output = decision.output ?? decision.reasoning ?? '';
+        return {
+          status: 'completed',
+          transcript,
+          output,
+        };
+      }
+
+      if (decision.type === 'fail') {
+        return {
+          status: 'failed',
+          transcript,
+          error: decision.error ?? decision.reasoning ?? 'Controller requested fail',
+        };
+      }
+
+      const toolName = decision.tool?.trim();
+      if (!toolName) {
+        return {
+          status: 'failed',
+          transcript,
+          error: 'Tool call missing tool name.',
+        };
+      }
+
+      const knownTool = tools.find((tool) => tool.name === toolName);
+      if (!knownTool) {
+        return {
+          status: 'failed',
+          transcript,
+          error: `Unknown tool "${toolName}".`,
+        };
+      }
+
+      const toolInput = decision.input ?? {};
+      transcript.push({
+        role: 'assistant',
+        content: JSON.stringify({
+          type: 'tool_call',
+          tool: toolName,
+          input: toolInput,
+        }),
+      });
+
+      let toolResult: ToolResult;
+      try {
+        toolResult = await onToolCall({ name: toolName, input: toolInput });
+      } catch (error: unknown) {
+        return {
+          status: 'failed',
+          transcript,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      transcript.push({
+        role: 'tool',
+        name: toolName,
+        content: JSON.stringify(toolResult.output),
+      });
+    }
+
+    return {
+      status: 'failed',
+      transcript,
+      error: `Exceeded maximum native tool-loop turns (${maxTurns}).`,
+    };
   }
 
   async healthCheck(): Promise<HealthCheckResult> {

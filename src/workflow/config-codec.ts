@@ -215,7 +215,7 @@ export function getDefaultConfig(): FullConfig {
   return {
     workflow: {
       name: 'default',
-      execution: { mode: 'linear' },
+      execution: { mode: 'judgment' },
       steps: [
         { role: 'coder', agent: 'claude-code', action: 'implement' },
         { role: 'reviewer', agent: 'codex', action: 'review', maxPasses: 3 },

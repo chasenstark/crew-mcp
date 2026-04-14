@@ -28,7 +28,7 @@ describe('Workflow Loader', () => {
     const config = parseWorkflowYaml(yaml);
 
     expect(config.workflow.name).toBe('default');
-    expect(config.workflow.execution?.mode).toBe('linear');
+    expect(config.workflow.execution?.mode).toBe('judgment');
     expect(config.workflow.steps).toHaveLength(4);
     expect(config.workflow.steps[0].role).toBe('coder');
     expect(config.workflow.steps[1].role).toBe('reviewer');
@@ -113,6 +113,7 @@ orchestrator:
   it('returns default config', () => {
     const config = getDefaultConfig();
     expect(config.workflow.name).toBe('default');
+    expect(config.workflow.execution?.mode).toBe('judgment');
     expect(config.workflow.steps.length).toBeGreaterThan(0);
   });
 

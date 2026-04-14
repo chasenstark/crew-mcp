@@ -48,6 +48,12 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
+    it('advertises native tool-loop support for orchestrator mode', () => {
+      expect(adapter.orchestratorCapabilities?.supportsToolLoop).toBe(true);
+      expect(adapter.orchestratorCapabilities?.supportsStructuredDecisions).toBe(true);
+      expect(adapter.orchestratorCapabilities?.supportsPauseForUserInput).toBe(true);
+    });
+
     it('has all capabilities', () => {
       expect(adapter.capabilities).toEqual([
         'implement',
@@ -410,6 +416,45 @@ describe('ClaudeCodeAdapter', () => {
       const cliArgs = callArgs[1] as string[];
       expect(cliArgs).toContain('--model');
       expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('claude-sonnet-4-5');
+    });
+  });
+
+  describe('executeWithTools', () => {
+    it('runs tool calls and completes when the controller emits finish', async () => {
+      const schemaSpy = vi
+        .spyOn(adapter, 'executeWithSchema')
+        .mockResolvedValueOnce({
+          type: 'tool_call',
+          tool: 'run_decompose',
+          input: {},
+          reasoning: 'decompose first',
+        } as any)
+        .mockResolvedValueOnce({
+          type: 'finish',
+          output: 'done',
+          reasoning: 'workflow complete',
+        } as any);
+
+      const onToolCall = vi.fn(async () => ({ output: { ok: true } }));
+
+      const result = await adapter.executeWithTools(
+        [
+          {
+            name: 'run_decompose',
+            description: 'decompose request',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        [{ role: 'system', content: 'start' }],
+        onToolCall,
+      );
+
+      expect(schemaSpy).toHaveBeenCalledTimes(2);
+      expect(onToolCall).toHaveBeenCalledTimes(1);
+      expect(onToolCall).toHaveBeenCalledWith({ name: 'run_decompose', input: {} });
+      expect(result.status).toBe('completed');
+      expect(result.output).toBe('done');
+      expect(result.transcript.some((message) => message.role === 'tool')).toBe(true);
     });
   });
 
