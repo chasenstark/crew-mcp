@@ -1,6 +1,7 @@
 import { z, ZodError } from 'zod';
 import type { AgentAdapter } from '../adapters/types.js';
 import { extractJson } from './json-parse.js';
+import { logger } from './logger.js';
 
 /**
  * Execute a prompt against an adapter and validate the response against a Zod schema.
@@ -19,12 +20,27 @@ export async function executeWithValidation<T extends z.ZodType>(
   options?: { workingDirectory?: string; maxRetries?: number },
 ): Promise<z.infer<T>> {
   const maxRetries = options?.maxRetries ?? 1;
+  logger.debug('executeWithValidation started', {
+    adapter: adapter.name,
+    supportsJsonSchema: adapter.supportsJsonSchema,
+    workingDirectory: options?.workingDirectory ?? process.cwd(),
+    maxRetries,
+    promptChars: prompt.length,
+  });
 
   // Fast path: adapter natively supports JSON schema output
   if (adapter.supportsJsonSchema && adapter.executeWithSchema) {
-    return adapter.executeWithSchema(prompt, schema, {
-      workingDirectory: options?.workingDirectory,
-    });
+    try {
+      return await adapter.executeWithSchema(prompt, schema, {
+        workingDirectory: options?.workingDirectory,
+      });
+    } catch (error: unknown) {
+      logger.error('executeWithValidation fast path failed', {
+        adapter: adapter.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   // Slow path: prompted JSON with validation + retry
@@ -32,6 +48,11 @@ export async function executeWithValidation<T extends z.ZodType>(
   let currentPrompt = prompt + '\n\nRespond with ONLY valid JSON matching this schema. No extra text.\n';
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    logger.debug('executeWithValidation prompted JSON attempt', {
+      adapter: adapter.name,
+      attempt: attempt + 1,
+      maxAttempts: maxRetries + 1,
+    });
     const result = await adapter.execute({
       prompt: currentPrompt,
       context: {
@@ -40,6 +61,11 @@ export async function executeWithValidation<T extends z.ZodType>(
     });
 
     if (result.status === 'error') {
+      logger.error('executeWithValidation adapter returned error status', {
+        adapter: adapter.name,
+        attempt: attempt + 1,
+        outputPreview: result.output.slice(0, 400),
+      });
       throw new Error(`Agent execution failed: ${result.output}`);
     }
 
@@ -47,6 +73,12 @@ export async function executeWithValidation<T extends z.ZodType>(
       const raw = extractJson(result.output);
       return schema.parse(raw) as z.infer<T>;
     } catch (err: unknown) {
+      logger.warn('executeWithValidation parse/validation failed', {
+        adapter: adapter.name,
+        attempt: attempt + 1,
+        error: err instanceof Error ? err.message : String(err),
+        outputPreview: result.output.slice(0, 400),
+      });
       lastError = err;
 
       if (attempt < maxRetries) {

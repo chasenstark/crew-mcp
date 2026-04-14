@@ -6,6 +6,13 @@ import type {
   Task,
   TaskResult,
 } from './types.js';
+import { logger } from '../utils/logger.js';
+
+function preview(text: string | undefined, max = 600): string {
+  if (!text) return '';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}...`;
+}
 
 export interface GenericAdapterOptions {
   name: string;
@@ -51,6 +58,13 @@ export class GenericAdapter implements AgentAdapter {
   async execute(task: Task): Promise<TaskResult> {
     const args = this.buildArgs(task.prompt);
     const timeout = task.constraints?.timeout ?? 300_000;
+    logger.debug(`[adapter:${this.name}] starting execute`, {
+      command: this.command,
+      args,
+      cwd: task.context.workingDirectory,
+      timeoutMs: timeout,
+      promptChars: task.prompt.length,
+    });
 
     let result;
     try {
@@ -62,6 +76,13 @@ export class GenericAdapter implements AgentAdapter {
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';
+      logger.error(`[adapter:${this.name}] process execution threw`, {
+        command: this.command,
+        args,
+        cwd: task.context.workingDirectory,
+        timeoutMs: timeout,
+        error: message,
+      });
       return {
         output: '',
         filesModified: [],
@@ -72,7 +93,19 @@ export class GenericAdapter implements AgentAdapter {
       };
     }
 
+    logger.debug(`[adapter:${this.name}] execute finished`, {
+      exitCode: result.exitCode,
+      stdoutChars: result.stdout.length,
+      stderrChars: result.stderr.length,
+    });
+
     if (result.exitCode !== 0 && !result.stdout) {
+      logger.error(`[adapter:${this.name}] command failed with no stdout`, {
+        command: this.command,
+        args,
+        exitCode: result.exitCode,
+        stderrPreview: preview(result.stderr),
+      });
       return {
         output: result.stderr || `${this.command} exited with code ${result.exitCode}`,
         filesModified: [],

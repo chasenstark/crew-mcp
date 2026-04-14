@@ -112,6 +112,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       );
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+      logger.error('Step decompose failed', {
+        error: error.message,
+        stack: error.stack,
+      });
       this.emit('error', error, { step: 'decompose' });
       throw error;
     }
@@ -176,6 +180,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.state.addPassSummary(passSummary);
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
+        logger.error(`Task execution failed for ${taskId}`, {
+          error: error.message,
+          stack: error.stack,
+        });
         this.emit('error', error, { step: 'task-execution', taskId });
         logger.error(`Task ${taskId} failed: ${error.message}`);
         failedTaskIds.add(taskId);
@@ -221,6 +229,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       const error = err instanceof Error ? err : new Error(String(err));
       this.emit('error', error, { step: 'report' });
       logger.error(`Report generation failed: ${error.message}`);
+      logger.error('Report step error details', {
+        error: error.message,
+        stack: error.stack,
+      });
       // Fallback: produce a basic report from summaries
       finalReport = this.buildFallbackReport(summaries, userRequest);
     }

@@ -10,6 +10,7 @@ import type {
   Task,
   TaskResult,
 } from './types.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -28,6 +29,12 @@ const ClaudeResponseSchema = z.object({
 });
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
+
+function preview(text: string | undefined, max = 600): string {
+  if (!text) return '';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}...`;
+}
 
 /**
  * Extracts modified file paths from Claude's result text.
@@ -92,6 +99,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     }
 
     const timeout = task.constraints?.timeout ?? 300_000; // 5 minutes default
+    logger.debug('[adapter:claude-code] starting execute', {
+      cwd: task.context.workingDirectory,
+      timeoutMs: timeout,
+      maxTurns: task.constraints?.maxTurns,
+      promptChars: task.prompt.length,
+    });
 
     let result;
     try {
@@ -104,6 +117,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // Timeout or other process-level errors
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';
+      logger.error('[adapter:claude-code] process execution threw', {
+        cwd: task.context.workingDirectory,
+        timeoutMs: timeout,
+        error: message,
+      });
       return {
         output: '',
         filesModified: [],
@@ -114,8 +132,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       };
     }
 
+    logger.debug('[adapter:claude-code] execute finished', {
+      exitCode: result.exitCode,
+      stdoutChars: result.stdout.length,
+      stderrChars: result.stderr.length,
+    });
+
     // CLI crash: non-zero exit code and no stdout
     if (!result.stdout && result.exitCode !== 0) {
+      logger.error('[adapter:claude-code] command failed with no stdout', {
+        exitCode: result.exitCode,
+        stderrPreview: preview(result.stderr),
+      });
       return {
         output: result.stderr || 'Claude CLI exited with no output',
         filesModified: [],
@@ -136,6 +164,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     try {
       parsed = ClaudeResponseSchema.parse(JSON.parse(result.stdout));
     } catch (error: unknown) {
+      logger.error('[adapter:claude-code] failed to parse JSON output', {
+        exitCode: result.exitCode,
+        stdoutPreview: preview(result.stdout),
+        stderrPreview: preview(result.stderr),
+      });
       return {
         output: result.stdout || 'Failed to parse Claude response',
         filesModified: [],
@@ -207,14 +240,41 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     }
 
     const timeout = options?.timeout ?? 300_000;
-
-    const result = await execa('claude', args, {
+    logger.debug('[adapter:claude-code] starting executeWithSchema', {
       cwd: options?.workingDirectory,
-      timeout,
-      reject: false,
+      timeoutMs: timeout,
+      maxTurns: options?.maxTurns,
+      promptChars: prompt.length,
+    });
+
+    let result;
+    try {
+      result = await execa('claude', args, {
+        cwd: options?.workingDirectory,
+        timeout,
+        reject: false,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown execution error';
+      logger.error('[adapter:claude-code] executeWithSchema process threw', {
+        cwd: options?.workingDirectory,
+        timeoutMs: timeout,
+        error: message,
+      });
+      throw new Error(`Claude execution failed before producing output: ${message}`);
+    }
+
+    logger.debug('[adapter:claude-code] executeWithSchema finished', {
+      exitCode: result.exitCode,
+      stdoutChars: result.stdout.length,
+      stderrChars: result.stderr.length,
     });
 
     if (!result.stdout) {
+      logger.error('[adapter:claude-code] executeWithSchema returned no stdout', {
+        exitCode: result.exitCode,
+        stderrPreview: preview(result.stderr),
+      });
       throw new Error(
         `Claude CLI returned no output (exit code ${result.exitCode}): ${result.stderr}`,
       );
@@ -224,10 +284,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     try {
       parsed = ClaudeResponseSchema.parse(JSON.parse(result.stdout));
     } catch {
+      logger.error('[adapter:claude-code] executeWithSchema failed to parse JSON envelope', {
+        stdoutPreview: preview(result.stdout),
+        stderrPreview: preview(result.stderr),
+      });
       throw new Error(`Failed to parse Claude response: ${result.stdout}`);
     }
 
     if (parsed.is_error) {
+      logger.error('[adapter:claude-code] executeWithSchema returned error response', {
+        resultPreview: preview(parsed.result),
+      });
       throw new Error(`Claude returned an error: ${parsed.result}`);
     }
 
@@ -242,6 +309,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       try {
         output = extractJson(parsed.result);
       } catch {
+        logger.error('[adapter:claude-code] executeWithSchema could not extract JSON payload', {
+          resultPreview: preview(parsed.result),
+        });
         throw new Error(
           `Claude returned no structured_output and could not extract JSON from result: ${parsed.result.slice(0, 200)}`,
         );

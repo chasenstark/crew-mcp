@@ -8,6 +8,7 @@ import { WorktreeManager } from '../../git/worktree.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import chalk from 'chalk';
 import { formatStepComplete, formatStepStart } from '../step-status.js';
+import { enableFileLogging, logger } from '../../utils/logger.js';
 
 /**
  * Wrap AdapterRegistry to satisfy Pipeline's AgentRegistry interface.
@@ -25,6 +26,8 @@ function toAgentRegistry(registry: AdapterRegistry): AgentRegistry {
 
 export async function runCommand(prompt?: string): Promise<void> {
   const projectRoot = process.cwd();
+  const logFile = enableFileLogging(projectRoot);
+  logger.info(`Run log file: ${logFile}`);
 
   // Load config
   const config = loadWorkflowConfig(projectRoot);
@@ -52,6 +55,7 @@ export async function runCommand(prompt?: string): Promise<void> {
   if (prompt) {
     // Non-interactive mode: run directly
     console.log(chalk.blue('\n  orchestrator') + chalk.dim(' \u2014 starting workflow\n'));
+    console.log(chalk.dim(`  log: ${logFile}\n`));
 
     pipeline.on('step:start', (step, data) => {
       console.log(chalk.dim(`  [${step}] ${formatStepStart(step, data)}`));

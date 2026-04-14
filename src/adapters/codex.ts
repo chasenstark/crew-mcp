@@ -45,6 +45,12 @@ interface ParseJsonlResult {
   droppedLines: number;
 }
 
+function preview(text: string | undefined, max = 600): string {
+  if (!text) return '';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
 /**
  * Parses newline-delimited JSON (JSONL) into an array of events.
  * Malformed lines are logged at warn level and counted.
@@ -138,6 +144,12 @@ export class CodexAdapter implements AgentAdapter {
       const args = ['exec', task.prompt, '--json', '-o', outputFile];
 
       const timeout = task.constraints?.timeout ?? 300_000;
+      logger.debug('[adapter:codex] starting execute', {
+        cwd: task.context.workingDirectory,
+        timeoutMs: timeout,
+        outputFile,
+        promptChars: task.prompt.length,
+      });
 
       let result;
       try {
@@ -149,6 +161,11 @@ export class CodexAdapter implements AgentAdapter {
       } catch (error: unknown) {
         const message =
           error instanceof Error ? error.message : 'Unknown execution error';
+        logger.error('[adapter:codex] process execution threw', {
+          cwd: task.context.workingDirectory,
+          timeoutMs: timeout,
+          error: message,
+        });
         return {
           output: '',
           filesModified: [],
@@ -159,6 +176,19 @@ export class CodexAdapter implements AgentAdapter {
         };
       }
 
+      logger.debug('[adapter:codex] execute finished', {
+        exitCode: result.exitCode,
+        stdoutChars: result.stdout.length,
+        stderrChars: result.stderr.length,
+      });
+
+      if (result.exitCode !== 0 && !result.stdout) {
+        logger.error('[adapter:codex] command failed with no stdout', {
+          exitCode: result.exitCode,
+          stderrPreview: preview(result.stderr),
+        });
+      }
+
       // Parse JSONL from stdout
       const { events, droppedLines } = result.stdout
         ? parseJsonl(result.stdout)
@@ -166,6 +196,10 @@ export class CodexAdapter implements AgentAdapter {
 
       // If stdout was non-empty but every line failed to parse, treat as error
       if (result.stdout && events.length === 0) {
+        logger.error('[adapter:codex] failed to parse any JSONL events', {
+          droppedLines,
+          stdoutPreview: preview(result.stdout),
+        });
         return {
           output: 'Failed to parse any events from Codex JSONL output',
           filesModified: [],
@@ -180,6 +214,10 @@ export class CodexAdapter implements AgentAdapter {
       // Check for errors in events
       const errorMessage = findError(events);
       if (errorMessage) {
+        logger.error('[adapter:codex] runtime error event detected', {
+          errorMessage,
+          droppedLines,
+        });
         return {
           output: errorMessage,
           filesModified: [],
@@ -201,6 +239,9 @@ export class CodexAdapter implements AgentAdapter {
           output = readFileSync(outputFile, 'utf-8');
         } catch {
           // Fall through to agent message
+          logger.warn('[adapter:codex] could not read output file, falling back to event message', {
+            outputFile,
+          });
         }
       }
       if (!output) {
@@ -247,24 +288,63 @@ export class CodexAdapter implements AgentAdapter {
       ];
 
       const timeout = options?.timeout ?? 300_000;
-
-      const result = await execa('codex', args, {
+      logger.debug('[adapter:codex] starting executeWithSchema', {
         cwd: options?.workingDirectory,
-        timeout,
-        reject: false,
+        timeoutMs: timeout,
+        schemaFile,
+        outputFile,
+        promptChars: prompt.length,
       });
+
+      let result;
+      try {
+        result = await execa('codex', args, {
+          cwd: options?.workingDirectory,
+          timeout,
+          reject: false,
+        });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Unknown execution error';
+        logger.error('[adapter:codex] executeWithSchema process threw', {
+          cwd: options?.workingDirectory,
+          timeoutMs: timeout,
+          error: message,
+        });
+        throw new Error(`Codex execution failed before producing JSON output: ${message}`);
+      }
+
+      logger.debug('[adapter:codex] executeWithSchema finished', {
+        exitCode: result.exitCode,
+        stdoutChars: result.stdout.length,
+        stderrChars: result.stderr.length,
+      });
+
+      if (result.exitCode !== 0 && !result.stdout) {
+        logger.error('[adapter:codex] executeWithSchema failed with no stdout', {
+          exitCode: result.exitCode,
+          stderrPreview: preview(result.stderr),
+        });
+      }
 
       // Check for errors in JSONL output
       if (result.stdout) {
         const { events } = parseJsonl(result.stdout);
         const errorMessage = findError(events);
         if (errorMessage) {
+          logger.error('[adapter:codex] executeWithSchema returned error event', {
+            errorMessage,
+          });
           throw new Error(`Codex returned an error: ${errorMessage}`);
         }
       }
 
       // Read structured output from the output file
       if (!existsSync(outputFile)) {
+        logger.error('[adapter:codex] executeWithSchema missing output file', {
+          outputFile,
+          exitCode: result.exitCode,
+          stderrPreview: preview(result.stderr),
+        });
         throw new Error(
           `Codex did not produce output file (exit code ${result.exitCode}): ${result.stderr}`,
         );
@@ -274,6 +354,9 @@ export class CodexAdapter implements AgentAdapter {
       try {
         raw = JSON.parse(readFileSync(outputFile, 'utf-8'));
       } catch {
+        logger.error('[adapter:codex] executeWithSchema output file was invalid JSON', {
+          outputFile,
+        });
         throw new Error(`Failed to parse Codex output file: ${outputFile}`);
       }
 

@@ -83,7 +83,13 @@ orchestrator run "Add email validation to the signup form"
 
 # Interactive mode
 orchestrator run
+
+# Verbose debugging logs
+orchestrator --debug run "Add email validation to the signup form"
 ```
+
+Each run writes a log file to `.orchestra/logs/run-<timestamp>.log`.
+Use `--debug` (or `ORCHESTRATOR_LOG_LEVEL=debug`) to include detailed adapter/process diagnostics.
 
 ### `orchestrator init`
 
