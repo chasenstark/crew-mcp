@@ -12,7 +12,17 @@ describe('step-status formatter', () => {
 
   it('formats dispatch start details with task and pass', () => {
     expect(formatStepStart('dispatch', { taskId: 'task-2', pass: 3 }))
-      .toContain('task-2 (pass 3)');
+      .toContain('"task-2" (pass 3)');
+  });
+
+  it('prefers the task description over the id when both are provided', () => {
+    const line = formatStepStart('dispatch', {
+      taskId: 'task-2',
+      taskDescription: 'Analyze the existing codebase',
+      pass: 1,
+    });
+    expect(line).toContain('"Analyze the existing codebase"');
+    expect(line).not.toContain('task-2');
   });
 
   it('formats decompose completion with task count', () => {

@@ -24,6 +24,15 @@ function shorten(text: string, max = 100): string {
   return `${text.slice(0, max - 1).trimEnd()}...`;
 }
 
+function taskLabel(data?: Record<string, unknown>): string | undefined {
+  const description = asString(data?.taskDescription);
+  if (description) {
+    const firstLine = description.split('\n')[0].replace(/\s+/g, ' ').trim();
+    return shorten(firstLine, 60);
+  }
+  return asString(data?.taskId);
+}
+
 function pluralize(count: number, singular: string, plural: string): string {
   return count === 1 ? singular : plural;
 }
@@ -33,22 +42,22 @@ export function getStepLabel(step: string): string {
 }
 
 export function formatStepStart(step: string, data?: Record<string, unknown>): string {
-  const taskId = asString(data?.taskId);
+  const label = taskLabel(data);
   const pass = asNumber(data?.pass);
 
   switch (step) {
     case 'decompose':
       return 'breaking the request into executable tasks';
     case 'dispatch':
-      if (taskId && pass !== undefined) return `preparing instructions for ${taskId} (pass ${pass})`;
-      if (taskId) return `preparing instructions for ${taskId}`;
+      if (label && pass !== undefined) return `preparing instructions for "${label}" (pass ${pass})`;
+      if (label) return `preparing instructions for "${label}"`;
       return 'preparing instructions for the assigned agent';
     case 'ingest':
-      return taskId ? `analyzing output from ${taskId}` : 'analyzing agent output';
+      return label ? `analyzing output from "${label}"` : 'analyzing agent output';
     case 'summarize':
-      return taskId ? `compressing results for ${taskId}` : 'compressing results for the next pass';
+      return label ? `compressing results for "${label}"` : 'compressing results for the next pass';
     case 'judge':
-      return taskId ? `evaluating completion criteria for ${taskId}` : 'evaluating completion criteria';
+      return label ? `evaluating completion criteria for "${label}"` : 'evaluating completion criteria';
     case 'report':
       return 'assembling the final response';
     default:
@@ -64,10 +73,10 @@ export function formatStepComplete(step: string, data?: Record<string, unknown>)
       return `planned ${taskCount} ${pluralize(taskCount, 'task', 'tasks')}`;
     }
     case 'dispatch': {
-      const taskId = asString(data?.taskId);
+      const label = taskLabel(data);
       const pass = asNumber(data?.pass);
-      if (taskId && pass !== undefined) return `prompt ready for ${taskId} (pass ${pass})`;
-      if (taskId) return `prompt ready for ${taskId}`;
+      if (label && pass !== undefined) return `prompt ready for "${label}" (pass ${pass})`;
+      if (label) return `prompt ready for "${label}"`;
       return 'agent prompt prepared';
     }
     case 'ingest': {

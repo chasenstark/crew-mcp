@@ -11,6 +11,15 @@ interface Props {
   messages: ChatMessage[];
 }
 
+function lastNonEmptyLine(text: string): string {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
 export function ConversationView({ messages }: Props) {
   return (
     <Box flexDirection="column" paddingX={1}>
@@ -24,9 +33,13 @@ export function ConversationView({ messages }: Props) {
           ) : msg.role === 'system' ? (
             <Text dimColor>{msg.content}</Text>
           ) : msg.role === 'stream' ? (
+            // Streaming view: show only the last non-empty line to keep the
+            // pane compact while an agent is talking. Full buffered content
+            // is preserved on the message — a future UI affordance (e.g. an
+            // "expand" keybind) can reveal the whole transcript on demand.
             <Box flexDirection="column">
               <Text color="magenta" dimColor>{`\u258E ${msg.agentName ?? 'agent'} (streaming)`}</Text>
-              <Text dimColor>{msg.content}</Text>
+              <Text dimColor>{lastNonEmptyLine(msg.content)}</Text>
             </Box>
           ) : (
             <Text>{msg.content}</Text>

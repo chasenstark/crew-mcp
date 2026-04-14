@@ -391,7 +391,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       // -------------------------------------------------------------------
       // DISPATCH: craft the agent prompt
       // -------------------------------------------------------------------
-      this.emit('step:start', 'dispatch', { taskId: task.id, pass: currentPass });
+      this.emit('step:start', 'dispatch', { taskId: task.id, taskDescription: task.description, pass: currentPass });
 
       const dispatchResult = await dispatch(
         this.orchestrator,
@@ -401,7 +401,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.orchestratorModel,
       );
 
-      this.emit('step:complete', 'dispatch', { taskId: task.id, pass: currentPass });
+      this.emit('step:complete', 'dispatch', { taskId: task.id, taskDescription: task.description, pass: currentPass });
 
       // -------------------------------------------------------------------
       // EXECUTE: send prompt to the assigned agent
@@ -450,7 +450,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       // -------------------------------------------------------------------
       // INGEST: analyze the agent's output
       // -------------------------------------------------------------------
-      this.emit('step:start', 'ingest', { taskId: task.id });
+      this.emit('step:start', 'ingest', { taskId: task.id, taskDescription: task.description });
 
       latestIngest = await ingest(
         this.orchestrator,
@@ -461,6 +461,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 
       this.emit('step:complete', 'ingest', {
         taskId: task.id,
+        taskDescription: task.description,
         status: latestIngest.status,
         summary: latestIngest.summary,
         needsHumanAttention: latestIngest.needsHumanAttention,
@@ -489,7 +490,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       // -------------------------------------------------------------------
       // SUMMARIZE: compress for context window
       // -------------------------------------------------------------------
-      this.emit('step:start', 'summarize', { taskId: task.id });
+      this.emit('step:start', 'summarize', { taskId: task.id, taskDescription: task.description });
 
       latestSummary = await summarize(
         this.orchestrator,
@@ -500,6 +501,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 
       this.emit('step:complete', 'summarize', {
         taskId: task.id,
+        taskDescription: task.description,
         summary: latestSummary.summary,
         unresolvedIssueCount: latestSummary.unresolvedIssues.length,
       });
@@ -507,7 +509,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       // -------------------------------------------------------------------
       // JUDGE: decide whether to continue iterating
       // -------------------------------------------------------------------
-      this.emit('step:start', 'judge', { taskId: task.id });
+      this.emit('step:start', 'judge', { taskId: task.id, taskDescription: task.description });
 
       const judgment = await judge(
         this.orchestrator,
@@ -520,6 +522,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 
       this.emit('step:complete', 'judge', {
         taskId: task.id,
+        taskDescription: task.description,
         decision: judgment.decision,
         reasoning: judgment.reasoning,
         isLooping: judgment.isLooping,
