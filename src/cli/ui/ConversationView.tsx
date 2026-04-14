@@ -4,6 +4,10 @@ import { Box, Text } from 'ink';
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'stream';
   content: string;
+  // For 'stream' messages: only the most recent chunk is rendered live. The
+  // full buffer is kept in `content` so a future expand affordance can show
+  // the whole transcript.
+  latestChunk?: string;
   agentName?: string;
 }
 
@@ -11,13 +15,13 @@ interface Props {
   messages: ChatMessage[];
 }
 
-function lastNonEmptyLine(text: string): string {
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (trimmed) return trimmed;
-  }
-  return '';
+const STREAM_LINE_MAX = 120;
+
+function oneLinePreview(text: string): string {
+  const firstLine = text.split('\n').find((l) => l.trim()) ?? '';
+  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= STREAM_LINE_MAX) return collapsed;
+  return collapsed.slice(0, STREAM_LINE_MAX - 1).trimEnd() + '\u2026';
 }
 
 export function ConversationView({ messages }: Props) {
@@ -33,13 +37,12 @@ export function ConversationView({ messages }: Props) {
           ) : msg.role === 'system' ? (
             <Text dimColor>{msg.content}</Text>
           ) : msg.role === 'stream' ? (
-            // Streaming view: show only the last non-empty line to keep the
-            // pane compact while an agent is talking. Full buffered content
-            // is preserved on the message — a future UI affordance (e.g. an
-            // "expand" keybind) can reveal the whole transcript on demand.
+            // Streaming view: render only the most recent chunk, clipped to
+            // one line. Full buffered content is preserved on msg.content so
+            // a future expand affordance can reveal the whole transcript.
             <Box flexDirection="column">
               <Text color="magenta" dimColor>{`\u258E ${msg.agentName ?? 'agent'} (streaming)`}</Text>
-              <Text dimColor>{lastNonEmptyLine(msg.content)}</Text>
+              <Text dimColor wrap="truncate-end">{oneLinePreview(msg.latestChunk ?? msg.content)}</Text>
             </Box>
           ) : (
             <Text>{msg.content}</Text>

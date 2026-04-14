@@ -145,7 +145,9 @@ describe('App', () => {
     emitter.emit('agent:output', 'codex', 'task-1', 'world');
     await flush();
 
-    expect(lastFrame()).toContain('hello world');
+    // Only the latest chunk is rendered live (full content is kept on the
+    // message for a future expand affordance).
+    expect(lastFrame()).toContain('world');
     expect(lastFrame()).toContain('streaming');
   });
 

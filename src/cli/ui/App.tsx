@@ -43,11 +43,12 @@ export function App({ pipeline, initialPrompt }: Props) {
         updated[updated.length - 1] = {
           ...updated[updated.length - 1],
           content: updated[updated.length - 1].content + chunk,
+          latestChunk: chunk,
         };
         return updated;
       }
       streamKeyRef.current = key;
-      return [...prev, { role: 'stream', content: chunk, agentName }];
+      return [...prev, { role: 'stream', content: chunk, latestChunk: chunk, agentName }];
     });
   }, []);
 
