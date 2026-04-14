@@ -118,6 +118,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 
     this.emit('step:complete', 'decompose', {
       taskCount: decomposition.tasks.length,
+      suggestedOrder: decomposition.suggestedOrder,
     });
     logger.info(
       `Decomposed into ${decomposition.tasks.length} tasks: ${decomposition.suggestedOrder.join(', ')}`,
@@ -224,7 +225,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       finalReport = this.buildFallbackReport(summaries, userRequest);
     }
 
-    this.emit('step:complete', 'report');
+    this.emit('step:complete', 'report', { passCount: summaries.length });
     this.emit('report', finalReport);
 
     // Mark workflow as completed
@@ -280,7 +281,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         currentPass,
       );
 
-      this.emit('step:complete', 'dispatch', { taskId: task.id });
+      this.emit('step:complete', 'dispatch', { taskId: task.id, pass: currentPass });
 
       // -------------------------------------------------------------------
       // EXECUTE: send prompt to the assigned agent
@@ -335,6 +336,8 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       this.emit('step:complete', 'ingest', {
         taskId: task.id,
         status: latestIngest.status,
+        summary: latestIngest.summary,
+        needsHumanAttention: latestIngest.needsHumanAttention,
       });
       const globalPass = ++this.globalPassCounter;
       this.state.addPassOutput(globalPass, latestIngest);
@@ -368,7 +371,11 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         globalPass,
       );
 
-      this.emit('step:complete', 'summarize', { taskId: task.id });
+      this.emit('step:complete', 'summarize', {
+        taskId: task.id,
+        summary: latestSummary.summary,
+        unresolvedIssueCount: latestSummary.unresolvedIssues.length,
+      });
 
       // -------------------------------------------------------------------
       // JUDGE: decide whether to continue iterating
@@ -386,6 +393,8 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       this.emit('step:complete', 'judge', {
         taskId: task.id,
         decision: judgment.decision,
+        reasoning: judgment.reasoning,
+        isLooping: judgment.isLooping,
       });
       logger.info(
         `Judge decision for ${task.id}: ${judgment.decision} — ${judgment.reasoning}`,

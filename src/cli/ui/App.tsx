@@ -4,15 +4,7 @@ import { ConversationView, type ChatMessage } from './ConversationView.js';
 import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
 import type { Pipeline } from '../../orchestrator/pipeline.js';
-
-const STEP_LABELS: Record<string, string> = {
-  decompose: 'Decomposing request into tasks...',
-  dispatch: 'Crafting agent prompt...',
-  ingest: 'Analyzing agent output...',
-  summarize: 'Summarizing pass...',
-  judge: 'Evaluating quality...',
-  report: 'Generating report...',
-};
+import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
 interface Props {
   pipeline: Pipeline;
@@ -33,12 +25,13 @@ export function App({ pipeline, initialPrompt }: Props) {
   }, []);
 
   useEffect(() => {
-    pipeline.on('step:start', (step) => {
-      setCurrentStep(STEP_LABELS[step] ?? `Running ${step}...`);
-      addMessage('system', `Starting step: ${step}`);
+    pipeline.on('step:start', (step, data) => {
+      setCurrentStep(getStepLabel(step));
+      addMessage('system', `Step start  [${step}]  ${formatStepStart(step, data)}`);
     });
 
-    pipeline.on('step:complete', () => {
+    pipeline.on('step:complete', (step, data) => {
+      addMessage('system', `Step done   [${step}]  ${formatStepComplete(step, data)}`);
       setCurrentStep(null);
     });
 

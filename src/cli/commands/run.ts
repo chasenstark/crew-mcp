@@ -7,6 +7,7 @@ import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import chalk from 'chalk';
+import { formatStepComplete, formatStepStart } from '../step-status.js';
 
 /**
  * Wrap AdapterRegistry to satisfy Pipeline's AgentRegistry interface.
@@ -52,8 +53,12 @@ export async function runCommand(prompt?: string): Promise<void> {
     // Non-interactive mode: run directly
     console.log(chalk.blue('\n  orchestrator') + chalk.dim(' \u2014 starting workflow\n'));
 
-    pipeline.on('step:start', (step) => {
-      console.log(chalk.dim(`  [${step}]`));
+    pipeline.on('step:start', (step, data) => {
+      console.log(chalk.dim(`  [${step}] ${formatStepStart(step, data)}`));
+    });
+
+    pipeline.on('step:complete', (step, data) => {
+      console.log(chalk.dim(`    -> ${formatStepComplete(step, data)}`));
     });
 
     pipeline.on('agent:start', (name, task) => {
