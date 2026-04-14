@@ -25,6 +25,28 @@ export function App({ pipeline, initialPrompt }: Props) {
     setMessages(prev => [...prev, { role, content }]);
   }, []);
 
+  const streamKeyRef = useRef<string | null>(null);
+
+  const appendStreamChunk = useCallback((agentName: string, taskId: string, chunk: string) => {
+    const key = `${agentName}:${taskId}`;
+    setMessages(prev => {
+      if (streamKeyRef.current === key && prev.length > 0 && prev[prev.length - 1].role === 'stream') {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          ...updated[updated.length - 1],
+          content: updated[updated.length - 1].content + chunk,
+        };
+        return updated;
+      }
+      streamKeyRef.current = key;
+      return [...prev, { role: 'stream', content: chunk, agentName }];
+    });
+  }, []);
+
+  const finalizeStream = useCallback(() => {
+    streamKeyRef.current = null;
+  }, []);
+
   useEffect(() => {
     pipeline.on('step:start', (step, data) => {
       setCurrentStep(getStepLabel(step));
@@ -43,7 +65,12 @@ export function App({ pipeline, initialPrompt }: Props) {
       ]);
     });
 
+    pipeline.on('agent:output', (name, taskId, chunk) => {
+      appendStreamChunk(name, taskId, chunk);
+    });
+
     pipeline.on('agent:complete', (name, _taskId, result) => {
+      finalizeStream();
       setAgents(prev =>
         prev.map(a => a.name === name
           ? { ...a, status: result.status === 'success' ? 'done' : 'error' }
@@ -88,7 +115,7 @@ export function App({ pipeline, initialPrompt }: Props) {
     return () => {
       pipeline.removeAllListeners();
     };
-  }, [pipeline, addMessage]);
+  }, [pipeline, addMessage, appendStreamChunk, finalizeStream]);
 
   const handleSubmit = useCallback((input: string) => {
     if (waitingForInput) {
@@ -102,6 +129,17 @@ export function App({ pipeline, initialPrompt }: Props) {
         inputQueueRef.current = [];
         setQueueCount(0);
         addMessage('system', `Cleared ${cleared} queued message${cleared === 1 ? '' : 's'}.`);
+        return;
+      }
+      if (input === '/cancel') {
+        pipeline.cancel('Cancelled by user from interactive session');
+        inputQueueRef.current = [];
+        setQueueCount(0);
+        finalizeStream();
+        setIsRunning(false);
+        setWaitingForInput(false);
+        setCurrentStep(null);
+        addMessage('system', 'Cancelled. Workflow state saved as interrupted — rerun to resume.');
         return;
       }
       // Pipeline is running — queue the input
@@ -124,7 +162,7 @@ export function App({ pipeline, initialPrompt }: Props) {
         setQueueCount(0);
       });
     }
-  }, [pipeline, addMessage, isRunning, waitingForInput]);
+  }, [pipeline, addMessage, isRunning, waitingForInput, finalizeStream]);
 
   useEffect(() => {
     if (initialPrompt) {
@@ -138,8 +176,8 @@ export function App({ pipeline, initialPrompt }: Props) {
       : 'Waiting for your input...'
     : isRunning
       ? queueCount > 0
-        ? `${currentStep ?? 'Running...'} (${queueCount} queued, type /clear-queue to clear)`
-        : currentStep ?? 'Running...'
+        ? `${currentStep ?? 'Running...'} (${queueCount} queued — /clear-queue or /cancel)`
+        : `${currentStep ?? 'Running...'} (type /cancel to stop)`
       : undefined;
 
   return (

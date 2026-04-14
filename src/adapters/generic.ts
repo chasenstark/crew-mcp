@@ -21,6 +21,24 @@ export interface GenericAdapterOptions {
   capabilities: AgentCapability[];
 }
 
+/**
+ * GenericAdapter wraps an arbitrary CLI tool as an agent. It intentionally
+ * does NOT implement executeWithSchema: generic CLI tools have no universal
+ * mechanism for structured output enforcement (each tool's flags differ), so
+ * we defer schema enforcement to the prompted-JSON fallback in
+ * `utils/validate.ts#executeWithValidation`. That fallback appends the schema
+ * to the prompt, parses JSON from stdout, validates with Zod, and retries
+ * with validation errors on failure.
+ *
+ * Reliability limitations:
+ *   - Depends on the underlying tool being able to produce well-formed JSON
+ *     given instructions in the prompt.
+ *   - Tools that prepend prose, wrap JSON in markdown fences, or truncate
+ *     output will fail validation and trigger retries.
+ *   - For orchestrator steps (decompose/ingest/etc.), agents backed by a
+ *     GenericAdapter are best used for non-structured work; prefer Codex or
+ *     Claude Code for the orchestrator role itself.
+ */
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;
   readonly capabilities: AgentCapability[];
@@ -68,12 +86,18 @@ export class GenericAdapter implements AgentAdapter {
 
     let result;
     try {
-      result = await execa(this.command, args, {
+      const subprocess = execa(this.command, args, {
         cwd: task.context.workingDirectory,
         timeout,
         signal: task.constraints?.signal,
         reject: false,
       });
+      if (task.onOutput && subprocess.stdout) {
+        subprocess.stdout.on('data', (buf: Buffer) => {
+          task.onOutput!(buf.toString('utf-8'));
+        });
+      }
+      result = await subprocess;
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';

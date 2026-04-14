@@ -37,6 +37,44 @@ function preview(text: string | undefined, max = 600): string {
 }
 
 /**
+ * Extracts the final result envelope from claude's stream-json output, which
+ * emits one JSON object per line. The last `type: "result"` line is the
+ * summary equivalent to non-streaming `--output-format json`.
+ */
+function findStreamResultLine(stdout: string): string | undefined {
+  const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i]) as { type?: string };
+      if (obj.type === 'result') return lines[i];
+    } catch {
+      // non-JSON line, skip
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Pulls user-visible assistant text from a single stream-json line.
+ * Returns '' for non-assistant events (tool_use, system, result).
+ */
+function extractAssistantTextFromStreamLine(line: string): string {
+  try {
+    const obj = JSON.parse(line) as {
+      type?: string;
+      message?: { content?: Array<{ type?: string; text?: string }> };
+    };
+    if (obj.type !== 'assistant' || !obj.message?.content) return '';
+    return obj.message.content
+      .filter((block) => block.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Extracts modified file paths from Claude's result text.
  * Looks for common patterns like "Files created:", "Files modified:", etc.
  */
@@ -86,11 +124,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly supportsJsonSchema = true;
 
   async execute(task: Task): Promise<TaskResult> {
+    const streaming = Boolean(task.onOutput);
     const args = [
       '-p',
       task.prompt,
       '--output-format',
-      'json',
+      streaming ? 'stream-json' : 'json',
+      ...(streaming ? ['--verbose'] : []),
       '--dangerously-skip-permissions',
     ];
 
@@ -113,12 +153,29 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     let result;
     try {
-      result = await execa('claude', args, {
+      const subprocess = execa('claude', args, {
         cwd: task.context.workingDirectory,
         timeout,
         signal: task.constraints?.signal,
         reject: false,
       });
+
+      if (streaming && subprocess.stdout) {
+        let buffer = '';
+        subprocess.stdout.on('data', (buf: Buffer) => {
+          buffer += buf.toString('utf-8');
+          let newlineIdx: number;
+          while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIdx).trim();
+            buffer = buffer.slice(newlineIdx + 1);
+            if (!line) continue;
+            const chunk = extractAssistantTextFromStreamLine(line);
+            if (chunk) task.onOutput!(chunk);
+          }
+        });
+      }
+
+      result = await subprocess;
     } catch (error: unknown) {
       // Timeout or other process-level errors
       const message =
@@ -165,10 +222,16 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       };
     }
 
-    // Parse JSON response
+    // Parse JSON response. In stream-json mode the envelope is the last
+    // line of type "result"; in json mode the entire stdout is the envelope.
+    const envelopeText = streaming
+      ? findStreamResultLine(result.stdout)
+      : result.stdout;
+
     let parsed: ClaudeResponse;
     try {
-      parsed = ClaudeResponseSchema.parse(JSON.parse(result.stdout));
+      if (!envelopeText) throw new Error('no result envelope in stream');
+      parsed = ClaudeResponseSchema.parse(JSON.parse(envelopeText));
     } catch (error: unknown) {
       logger.error('[adapter:claude-code] failed to parse JSON output', {
         exitCode: result.exitCode,

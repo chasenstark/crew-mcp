@@ -20,6 +20,7 @@ export interface PipelineEvents {
   'step:start': (step: string, data?: Record<string, unknown>) => void;
   'step:complete': (step: string, data?: Record<string, unknown>) => void;
   'agent:start': (agentName: string, taskId: string) => void;
+  'agent:output': (agentName: string, taskId: string, chunk: string) => void;
   'agent:complete': (agentName: string, taskId: string, result: TaskResult) => void;
   'report': (text: string) => void;
   'ask_user': (question: string) => void;
@@ -425,6 +426,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
           model: this.agentModels[task.agent],
           signal: this.activeAbortController?.signal,
         },
+        onOutput: (chunk) => this.emit('agent:output', agent.name, task.id, chunk),
       });
 
       // If the adapter didn't report modified files, try to detect them via worktree

@@ -111,6 +111,35 @@ function getLastAgentMessage(events: CodexEvent[]): string {
 }
 
 /**
+ * Formats a single Codex event as a user-visible chunk for streaming.
+ * Return an empty string to suppress the event from the live view.
+ *
+ * TODO(user): Decide which event types should stream to the UI and how they
+ * should be formatted. The Codex JSONL stream contains many event types
+ * (item.agent_message, item.reasoning, item.command_execution, item.file_change,
+ * turn.started, turn.completed, thread.started, etc.). Picking the right
+ * subset shapes how the feature feels — too much is noisy, too little feels dead.
+ *
+ * Consider: do you want to show agent thoughts/reasoning, tool calls, file
+ * edits, or only the final message? Format should be concise — users will
+ * see these inline in the conversation view.
+ *
+ * Example formats:
+ *   item.agent_message  -> event.content (the assistant's prose)
+ *   item.command_execution -> `$ ${event.command}`
+ *   item.file_change    -> `~ ${event.action} ${event.path}`
+ */
+function formatEventForStream(event: CodexEvent): string {
+  if (event.type === 'item.agent_message' && event.content) {
+    return event.content;
+  }
+  if (event.type === 'item.reasoning' && event.content) {
+    return `\u2502 ${event.content}\n`;
+  }
+  return '';
+}
+
+/**
  * Checks if the events contain an error.
  */
 function findError(events: CodexEvent[]): string | undefined {
@@ -157,12 +186,34 @@ export class CodexAdapter implements AgentAdapter {
 
       let result;
       try {
-        result = await execa('codex', args, {
+        const subprocess = execa('codex', args, {
           cwd: task.context.workingDirectory,
           timeout,
           signal: task.constraints?.signal,
           reject: false,
         });
+
+        if (task.onOutput && subprocess.stdout) {
+          let buffer = '';
+          subprocess.stdout.on('data', (buf: Buffer) => {
+            buffer += buf.toString('utf-8');
+            let newlineIdx: number;
+            while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+              const line = buffer.slice(0, newlineIdx).trim();
+              buffer = buffer.slice(newlineIdx + 1);
+              if (!line) continue;
+              try {
+                const event = JSON.parse(line) as CodexEvent;
+                const chunk = formatEventForStream(event);
+                if (chunk) task.onOutput!(chunk);
+              } catch {
+                // Malformed line — already logged by the final parseJsonl pass.
+              }
+            }
+          });
+        }
+
+        result = await subprocess;
       } catch (error: unknown) {
         const message =
           error instanceof Error ? error.message : 'Unknown execution error';

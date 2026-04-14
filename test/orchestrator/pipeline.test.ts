@@ -155,6 +155,38 @@ beforeEach(() => {
 });
 
 describe('Pipeline', () => {
+  it('emits agent:output events when the adapter streams chunks', async () => {
+    const { pipeline } = createHarness();
+
+    // Override the adapter's execute to simulate streaming chunks
+    const registry = (pipeline as unknown as { registry: { get: (n: string) => AgentAdapter } }).registry;
+    const originalGet = registry.get.bind(registry);
+    registry.get = (name: string) => {
+      const adapter = originalGet(name);
+      if (!adapter) return adapter;
+      return {
+        ...adapter,
+        execute: vi.fn(async (task) => {
+          task.onOutput?.('hello ');
+          task.onOutput?.('world');
+          return { output: 'done', filesModified: [], status: 'success', metadata: {} } as TaskResult;
+        }),
+      } as AgentAdapter;
+    };
+
+    const chunks: Array<{ agent: string; taskId: string; chunk: string }> = [];
+    pipeline.on('agent:output', (agent, taskId, chunk) => {
+      chunks.push({ agent, taskId, chunk });
+    });
+
+    await pipeline.run('Build thing');
+
+    expect(chunks).toEqual([
+      { agent: 'agent-a', taskId: 'task-1', chunk: 'hello ' },
+      { agent: 'agent-a', taskId: 'task-1', chunk: 'world' },
+    ]);
+  });
+
   it('runs happy path with done decision', async () => {
     const { pipeline, state, agentExecute } = createHarness();
 

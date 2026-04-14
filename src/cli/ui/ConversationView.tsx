@@ -2,8 +2,9 @@ import React from 'react';
 import { Box, Text } from 'ink';
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'stream';
   content: string;
+  agentName?: string;
 }
 
 interface Props {
@@ -22,6 +23,11 @@ export function ConversationView({ messages }: Props) {
             </Text>
           ) : msg.role === 'system' ? (
             <Text dimColor>{msg.content}</Text>
+          ) : msg.role === 'stream' ? (
+            <Box flexDirection="column">
+              <Text color="magenta" dimColor>{`\u258E ${msg.agentName ?? 'agent'} (streaming)`}</Text>
+              <Text dimColor>{msg.content}</Text>
+            </Box>
           ) : (
             <Text>{msg.content}</Text>
           )}

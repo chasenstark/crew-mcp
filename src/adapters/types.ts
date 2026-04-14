@@ -35,6 +35,7 @@ export interface Task {
     sandbox?: 'read-only' | 'workspace-write' | 'full-access';
     signal?: AbortSignal;
   };
+  onOutput?: (chunk: string) => void;
 }
 
 export interface TaskResult {
