@@ -46,6 +46,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private state: StateStore;
   private worktreeManager: WorktreeManager;
   private globalPassCounter = 0;
+  private userInputResolver: ((input: string) => void) | null = null;
 
   constructor(
     orchestratorAdapter: AgentAdapter,
@@ -60,6 +61,28 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     this.workflow = workflow;
     this.state = state;
     this.worktreeManager = worktreeManager;
+  }
+
+  /**
+   * Request input from the user. Emits 'ask_user' and returns a Promise
+   * that resolves when provideUserInput() is called.
+   */
+  requestUserInput(question: string): Promise<string> {
+    return new Promise<string>((resolve) => {
+      this.userInputResolver = resolve;
+      this.emit('ask_user', question);
+    });
+  }
+
+  /**
+   * Provide user input to a waiting requestUserInput() call.
+   */
+  provideUserInput(input: string): void {
+    if (this.userInputResolver) {
+      const resolve = this.userInputResolver;
+      this.userInputResolver = null;
+      resolve(input);
+    }
   }
 
   /**
@@ -238,10 +261,9 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     let currentPass = 1;
     let latestIngest: IngestOutput | undefined;
     let latestSummary: PassSummary | undefined;
-    let isDone = false;
     const localSummaries = [...previousSummaries];
 
-    while (currentPass <= maxPasses && !isDone) {
+    while (currentPass <= maxPasses) {
       logger.info(
         `Task ${task.id} (${task.role}): pass ${currentPass}/${maxPasses}`,
       );
@@ -322,13 +344,17 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         logger.warn(
           `Task ${task.id} needs human attention: ${latestIngest.humanAttentionReason}`,
         );
-        this.emit(
-          'ask_user',
+        const userResponse = await this.requestUserInput(
           latestIngest.humanAttentionReason ?? 'Agent requires human input',
         );
-        // Persist state for resume and stop the review loop
-        isDone = true;
-        break;
+        // Feed user response into the next dispatch as additional context
+        localSummaries.push({
+          passNumber: currentPass,
+          summary: `User provided input: ${userResponse}`,
+          unresolvedIssues: [],
+          contextForNextPass: userResponse,
+          filesInScope: [],
+        });
       }
 
       // -------------------------------------------------------------------
@@ -376,12 +402,19 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       }
 
       if (judgment.decision === 'ask_user') {
-        this.emit(
-          'ask_user',
+        const userResponse = await this.requestUserInput(
           judgment.questionForUser ?? 'The orchestrator needs your input.',
         );
-        // For now, break — the pipeline will be resumed when user responds
-        break;
+        // Feed user response into the next dispatch as additional context
+        localSummaries.push({
+          passNumber: currentPass,
+          summary: `User provided input: ${userResponse}`,
+          unresolvedIssues: [],
+          contextForNextPass: userResponse,
+          filesInScope: [],
+        });
+        currentPass++;
+        continue;
       }
 
       if (judgment.isLooping) {

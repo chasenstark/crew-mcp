@@ -1,9 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useApp } from 'ink';
 import { ConversationView, type ChatMessage } from './ConversationView.js';
 import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
 import type { Pipeline } from '../../orchestrator/pipeline.js';
+
+const STEP_LABELS: Record<string, string> = {
+  decompose: 'Decomposing request into tasks...',
+  dispatch: 'Crafting agent prompt...',
+  ingest: 'Analyzing agent output...',
+  summarize: 'Summarizing pass...',
+  judge: 'Evaluating quality...',
+  report: 'Generating report...',
+};
 
 interface Props {
   pipeline: Pipeline;
@@ -15,6 +24,9 @@ export function App({ pipeline, initialPrompt }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [currentStep, setCurrentStep] = useState<string | null>(null);
+  const [waitingForInput, setWaitingForInput] = useState(false);
+  const inputQueueRef = useRef<string[]>([]);
 
   const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
     setMessages(prev => [...prev, { role, content }]);
@@ -22,7 +34,12 @@ export function App({ pipeline, initialPrompt }: Props) {
 
   useEffect(() => {
     pipeline.on('step:start', (step) => {
+      setCurrentStep(STEP_LABELS[step] ?? `Running ${step}...`);
       addMessage('system', `Starting step: ${step}`);
+    });
+
+    pipeline.on('step:complete', () => {
+      setCurrentStep(null);
     });
 
     pipeline.on('agent:start', (name, task) => {
@@ -43,16 +60,27 @@ export function App({ pipeline, initialPrompt }: Props) {
 
     pipeline.on('report', (message) => {
       addMessage('assistant', message);
+      setCurrentStep(null);
       setIsRunning(false);
     });
 
     pipeline.on('ask_user', (question) => {
       addMessage('assistant', question);
-      setIsRunning(false);
+      setCurrentStep(null);
+
+      // Check for queued input
+      const queued = inputQueueRef.current.shift();
+      if (queued) {
+        addMessage('user', `(queued) ${queued}`);
+        pipeline.provideUserInput(queued);
+      } else {
+        setWaitingForInput(true);
+      }
     });
 
     pipeline.on('error', (error) => {
       addMessage('system', `Error: ${error.message}`);
+      setCurrentStep(null);
       setIsRunning(false);
     });
 
@@ -61,24 +89,40 @@ export function App({ pipeline, initialPrompt }: Props) {
     };
   }, [pipeline, addMessage]);
 
-  const handleSubmit = useCallback(async (input: string) => {
-    addMessage('user', input);
-    setIsRunning(true);
-    setAgents([]);
+  const handleSubmit = useCallback((input: string) => {
+    if (waitingForInput) {
+      // Pipeline is paused waiting for input — send it
+      addMessage('user', input);
+      setWaitingForInput(false);
+      pipeline.provideUserInput(input);
+    } else if (isRunning) {
+      // Pipeline is running — queue the input
+      inputQueueRef.current.push(input);
+      addMessage('user', `(queued) ${input}`);
+    } else {
+      // Pipeline is idle — start a new run
+      addMessage('user', input);
+      setIsRunning(true);
+      setAgents([]);
+      inputQueueRef.current = [];
 
-    try {
-      await pipeline.run(input);
-    } catch (err) {
-      addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
-      setIsRunning(false);
+      pipeline.run(input).catch((err) => {
+        addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
+        setIsRunning(false);
+        setCurrentStep(null);
+      });
     }
-  }, [pipeline, addMessage]);
+  }, [pipeline, addMessage, isRunning, waitingForInput]);
 
   useEffect(() => {
     if (initialPrompt) {
-      handleSubmit(initialPrompt).catch(() => {}); // errors handled inside
+      handleSubmit(initialPrompt);
     }
   }, [initialPrompt, handleSubmit]);
+
+  const statusText = waitingForInput
+    ? 'Waiting for your input...'
+    : currentStep ?? undefined;
 
   return (
     <Box flexDirection="column" minHeight={10}>
@@ -96,7 +140,11 @@ export function App({ pipeline, initialPrompt }: Props) {
       )}
 
       <Box marginTop={1}>
-        <PromptInput onSubmit={handleSubmit} disabled={isRunning} />
+        <PromptInput
+          onSubmit={handleSubmit}
+          disabled={isRunning && !waitingForInput}
+          statusText={statusText}
+        />
       </Box>
     </Box>
   );

@@ -3,7 +3,15 @@ import { parseWorkflowYaml, getDefaultConfig, mergeConfigs, loadWorkflowConfig, 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
+
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    homedir: vi.fn(actual.homedir),
+  };
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -132,13 +140,17 @@ describe('getGlobalConfigPath', () => {
 
 describe('loadWorkflowConfig', () => {
   let tmpDir: string;
+  const mockedHomedir = vi.mocked(homedir);
 
   beforeEach(() => {
     tmpDir = join(tmpdir(), `orchestrator-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpDir, { recursive: true });
+    // Point homedir to a clean temp dir so real ~/.orchestra doesn't interfere
+    mockedHomedir.mockReturnValue(join(tmpDir, 'fake-home'));
   });
 
   afterEach(() => {
+    mockedHomedir.mockRestore();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -159,13 +171,78 @@ workflow:
     expect(config.workflow.name).toBe('project-workflow');
   });
 
+  it('uses global config when no project config exists', () => {
+    const fakeHome = join(tmpDir, 'fake-home');
+    const globalDir = join(fakeHome, '.orchestra');
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(join(globalDir, 'workflow.yaml'), `
+workflow:
+  name: global-workflow
+  steps:
+    - role: coder
+      agent: claude-code
+      action: implement
+`, 'utf-8');
+
+    const emptyProject = join(tmpDir, 'empty-project');
+    mkdirSync(emptyProject, { recursive: true });
+
+    const config = loadWorkflowConfig(emptyProject);
+    expect(config.workflow.name).toBe('global-workflow');
+  });
+
+  it('merges project config over global config', () => {
+    // Set up global config with agents
+    const fakeHome = join(tmpDir, 'fake-home');
+    const globalDir = join(fakeHome, '.orchestra');
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(join(globalDir, 'workflow.yaml'), `
+workflow:
+  name: global
+  steps:
+    - role: coder
+      agent: claude-code
+      action: implement
+agents:
+  claude-code:
+    adapter: claude-code
+    auth: subscription
+    strengths:
+      - implementation
+  codex:
+    adapter: codex
+    auth: subscription
+    strengths:
+      - review
+`, 'utf-8');
+
+    // Set up project config that overrides workflow but not agents
+    const projectDir = join(tmpDir, 'merge-project');
+    const projectOrchDir = join(projectDir, '.orchestra');
+    mkdirSync(projectOrchDir, { recursive: true });
+    writeFileSync(join(projectOrchDir, 'workflow.yaml'), `
+workflow:
+  name: project-override
+  steps:
+    - role: reviewer
+      agent: codex
+      action: review
+`, 'utf-8');
+
+    const config = loadWorkflowConfig(projectDir);
+    // Project workflow overrides global
+    expect(config.workflow.name).toBe('project-override');
+    expect(config.workflow.steps).toHaveLength(1);
+    expect(config.workflow.steps[0].role).toBe('reviewer');
+    // Global agents are preserved via merge
+    expect(config.agents['claude-code']).toBeDefined();
+    expect(config.agents['codex']).toBeDefined();
+  });
+
   it('returns default config when no configs exist', () => {
     const emptyDir = join(tmpDir, 'empty');
     mkdirSync(emptyDir, { recursive: true });
 
-    // Mock getGlobalConfigPath to return a non-existent path
-    // Since loadWorkflowConfig uses the real homedir, we test the fallback
-    // by pointing to a project dir with no .orchestra/
     const config = loadWorkflowConfig(emptyDir);
     expect(config.workflow.name).toBe('default');
     expect(config.workflow.steps.length).toBeGreaterThan(0);
