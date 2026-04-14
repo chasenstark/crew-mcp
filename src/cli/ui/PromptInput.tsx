@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const MAX_HISTORY = 200;
 
 interface Props {
   onSubmit: (value: string) => void;
@@ -14,6 +15,9 @@ interface Props {
 export function PromptInput({ onSubmit, placeholder = 'Type a message...', disabled = false, statusText }: Props) {
   const [value, setValue] = useState('');
   const [frame, setFrame] = useState(0);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
 
   useEffect(() => {
     if (!disabled || !statusText) return;
@@ -21,9 +25,51 @@ export function PromptInput({ onSubmit, placeholder = 'Type a message...', disab
     return () => clearInterval(timer);
   }, [disabled, statusText]);
 
+  useInput((_input, key) => {
+    if (disabled || history.length === 0) return;
+
+    if (key.upArrow) {
+      if (historyIndex === null) {
+        setDraftBeforeHistory(value);
+        const nextIndex = history.length - 1;
+        setHistoryIndex(nextIndex);
+        setValue(history[nextIndex]);
+        return;
+      }
+
+      if (historyIndex > 0) {
+        const nextIndex = historyIndex - 1;
+        setHistoryIndex(nextIndex);
+        setValue(history[nextIndex]);
+      }
+      return;
+    }
+
+    if (key.downArrow && historyIndex !== null) {
+      if (historyIndex < history.length - 1) {
+        const nextIndex = historyIndex + 1;
+        setHistoryIndex(nextIndex);
+        setValue(history[nextIndex]);
+        return;
+      }
+
+      setHistoryIndex(null);
+      setValue(draftBeforeHistory);
+      setDraftBeforeHistory('');
+    }
+  }, { isActive: !disabled });
+
   const handleSubmit = (input: string) => {
-    if (input.trim()) {
-      onSubmit(input.trim());
+    const trimmed = input.trim();
+    if (trimmed) {
+      onSubmit(trimmed);
+      setHistory(prev => {
+        if (prev[prev.length - 1] === trimmed) return prev;
+        const next = [...prev, trimmed];
+        return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next;
+      });
+      setHistoryIndex(null);
+      setDraftBeforeHistory('');
       setValue('');
     }
   };
