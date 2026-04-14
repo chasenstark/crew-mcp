@@ -2,12 +2,16 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Local-only docs and planning notes
+docs/
+
 # Orchestrator state (project-specific, not committed)
 .orchestra/worktrees/
 .orchestra/state.json
 .orchestra/passes/
 .orchestra/summaries/
 .orchestra/conversation.json
+.orchestra/logs
 
 # Keep the workflow config
 !.orchestra/workflow.yaml
