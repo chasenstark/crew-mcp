@@ -75,7 +75,7 @@ describe('CodexAdapter', () => {
     it('advertises native tool-loop support for orchestrator mode', () => {
       expect(adapter.orchestratorCapabilities?.supportsToolLoop).toBe(true);
       expect(adapter.orchestratorCapabilities?.supportsStructuredDecisions).toBe(true);
-      expect(adapter.orchestratorCapabilities?.supportsPauseForUserInput).toBe(false);
+      expect(adapter.orchestratorCapabilities?.supportsPauseForUserInput).toBe(true);
     });
 
     it('has expected capabilities', () => {
@@ -121,6 +121,38 @@ describe('CodexAdapter', () => {
       expect(result.status).toBe('completed');
       expect(result.output).toBe('done');
       expect(result.transcript.some((message) => message.role === 'tool')).toBe(true);
+    });
+
+    it('caps transcript context to avoid unbounded prompt growth', async () => {
+      const schemaSpy = vi
+        .spyOn(adapter, 'executeWithSchema')
+        .mockResolvedValueOnce({
+          type: 'finish',
+          output: 'done',
+          reasoning: 'workflow complete',
+        } as any);
+
+      const longContent = 'x'.repeat(3000);
+      const manyMessages = Array.from({ length: 30 }, (_, i) => ({
+        role: 'assistant' as const,
+        content: `${i}:${longContent}`,
+      }));
+
+      await adapter.executeWithTools(
+        [
+          {
+            name: 'run_decompose',
+            description: 'decompose request',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        manyMessages,
+        vi.fn(async () => ({ output: { ok: true } })),
+      );
+
+      const prompt = schemaSpy.mock.calls[0][0];
+      expect(prompt).toContain('omitted 6 earlier transcript messages');
+      expect(prompt).not.toContain(`${'x'.repeat(2000)}`);
     });
   });
 

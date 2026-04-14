@@ -42,7 +42,7 @@ export interface ActionRecord {
   };
   startedAt: string;
   completedAt: string;
-  pathTaken: 'native' | 'fallback';
+  pathTaken: 'native' | 'adapter' | 'fallback';
 }
 
 export interface ToolTranscriptMessage {
@@ -66,6 +66,7 @@ export interface WorkflowState {
   actionHistory?: ActionRecord[];
   controllerCursor?: number;
   toolCallTranscript?: ToolTranscriptMessage[];
+  nativeToolCalls?: number;
   startedAt?: string;
   completedAt?: string;
   interruptedAt?: string;

@@ -261,6 +261,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       summaries: [...previousSummaries],
       decomposition: workflowState.decomposition,
       toolCallTranscript: workflowState.toolCallTranscript,
+      nativeToolCalls: workflowState.nativeToolCalls,
     });
 
     if (workflowState.actionHistory && workflowState.actionHistory.length > 0) {
@@ -286,13 +287,13 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     this.activeAbortController = new AbortController();
 
     try {
-      const supportsNativeToolLoop = Boolean(
+      const supportsAdapterToolLoop = Boolean(
         this.orchestrator.orchestratorCapabilities?.supportsToolLoop
         && this.orchestrator.executeWithTools
       );
 
       let interrupted = false;
-      if (supportsNativeToolLoop) {
+      if (supportsAdapterToolLoop) {
         try {
           interrupted = await this.executeNativeToolLoop(runtime);
         } catch (error: unknown) {
@@ -412,6 +413,9 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     if (!this.orchestrator.executeWithTools) {
       throw new Error('Adapter does not implement executeWithTools.');
     }
+    const supportsPauseForUserInput = Boolean(
+      this.orchestrator.orchestratorCapabilities?.supportsPauseForUserInput,
+    );
 
     const tools = this.buildNativeToolDefinitions();
     const startMessages = runtime.toolCallTranscript && runtime.toolCallTranscript.length > 0
@@ -432,6 +436,11 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
               message: 'Use terminal response instead of tool call for finish/fail.',
             },
           };
+        }
+        if (decision.action === 'ask_user' && !supportsPauseForUserInput) {
+          throw new Error(
+            'Adapter tool-loop path cannot pause for user input; switching to fallback mode.',
+          );
         }
         await this.executeActionDecision(decision, runtime, pathTaken);
         this.persistRuntimeState(runtime, 'running');
@@ -458,6 +467,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     summaries?: PassSummary[];
     decomposition?: DecomposeOutputRef;
     toolCallTranscript?: WorkflowState['toolCallTranscript'];
+    nativeToolCalls?: number;
   }): RuntimeState {
     return {
       runId: args.runId,
@@ -488,7 +498,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       hadErrors: false,
       deterministicFallbackCount: 0,
       replanCount: 0,
-      nativeToolCalls: 0,
+      nativeToolCalls: args.nativeToolCalls ?? 0,
     };
   }
 
@@ -539,6 +549,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       actionHistory: runtime.actionHistory,
       controllerCursor: runtime.controllerCursor,
       toolCallTranscript: runtime.toolCallTranscript,
+      nativeToolCalls: runtime.nativeToolCalls,
       startedAt: runtime.startedAt,
     };
   }
@@ -1019,7 +1030,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
 
     const validated = this.validateDecision(decision, runtime);
     if (validated.ok) {
-      return { decision, pathTaken: 'native' };
+      return { decision, pathTaken: 'adapter' };
     }
 
     runtime.hadErrors = true;
@@ -1039,7 +1050,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     };
   }
 
-  private handleNativeLoopResult(result: ToolLoopResult, runtime: RuntimeState): boolean {
+  private async handleNativeLoopResult(result: ToolLoopResult, runtime: RuntimeState): Promise<boolean> {
     if (result.status === 'interrupted') {
       this.handleInterrupted(runtime);
       return true;
@@ -1048,7 +1059,24 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       throw new Error(result.error ?? 'Native tool-loop failed.');
     }
     if (!runtime.reportFinalized) {
-      throw new Error('Native tool-loop completed without finalize_report.');
+      runtime.hadErrors = true;
+      runtime.deterministicFallbackCount++;
+      if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+        throw new Error(
+          `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+        );
+      }
+      await this.executeActionDecision(
+        {
+          reasoning:
+            'Native tool-loop completed without finalize_report; applying deterministic fallback.',
+          action: 'finalize_report',
+          payload: {},
+        },
+        runtime,
+        'fallback',
+      );
+      this.persistRuntimeState(runtime, 'running');
     }
     return false;
   }

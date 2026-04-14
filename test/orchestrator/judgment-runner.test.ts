@@ -85,6 +85,7 @@ function createDecisionAdapter(decisions: Array<Record<string, unknown>>) {
 
 function createToolLoopAdapter(
   toolCalls: Array<{ name: string; input?: Record<string, unknown> }>,
+  options?: { supportsPauseForUserInput?: boolean },
 ) {
   const executeWithTools = vi.fn(async (_tools, messages, onToolCall) => {
     const transcript = [...messages];
@@ -109,7 +110,7 @@ function createToolLoopAdapter(
     orchestratorCapabilities: {
       supportsToolLoop: true,
       supportsStructuredDecisions: true,
-      supportsPauseForUserInput: true,
+      supportsPauseForUserInput: options?.supportsPauseForUserInput ?? true,
     },
     execute: vi.fn(),
     executeWithSchema: vi.fn(),
@@ -404,6 +405,55 @@ describe('JudgmentRunner', () => {
 
     const saved = stateStore.loadState() as WorkflowState;
     expect(saved.actionHistory?.length).toBeGreaterThan(0);
-    expect(saved.actionHistory?.every((record) => record.pathTaken === 'native')).toBe(true);
+    expect(saved.actionHistory?.every((record) => record.pathTaken === 'adapter')).toBe(true);
+    expect(saved.nativeToolCalls).toBe(8);
+  });
+
+  it('auto-finalizes report when native tool-loop completes early', async () => {
+    const { adapter, executeWithTools } = createToolLoopAdapter([
+      { name: 'run_decompose' },
+      { name: 'select_task', input: { taskId: 'task-1' } },
+      { name: 'run_dispatch', input: { taskId: 'task-1' } },
+      { name: 'run_execute', input: { taskId: 'task-1' } },
+      { name: 'run_ingest', input: { taskId: 'task-1' } },
+      { name: 'run_summarize', input: { taskId: 'task-1' } },
+      { name: 'run_judge', input: { taskId: 'task-1' } },
+    ]);
+
+    const agentExecute = vi.fn().mockResolvedValue({
+      output: 'done',
+      filesModified: ['src/a.ts'],
+      status: 'success',
+      metadata: {},
+    } satisfies TaskResult);
+
+    const registry = createAgentRegistry(agentExecute);
+    const worktreeManager = {
+      createWorktree: vi.fn(async () => '/tmp/worktrees/task-1'),
+      getModifiedFiles: vi.fn(async () => ['src/a.ts']),
+    };
+
+    const runner = new JudgmentRunner(
+      adapter,
+      registry,
+      {
+        name: 'judgment-test',
+        execution: { mode: 'judgment' },
+        steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
+        completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+      },
+      stateStore,
+      worktreeManager as never,
+    );
+
+    const result = await runner.run('implement feature');
+    expect(result).toBe('final report');
+    expect(executeWithTools).toHaveBeenCalledTimes(1);
+
+    const saved = stateStore.loadState() as WorkflowState;
+    expect(saved.actionHistory?.some((record) => record.action === 'finalize_report')).toBe(true);
+    expect(saved.actionHistory?.at(-1)?.action).toBe('finalize_report');
+    expect(saved.actionHistory?.at(-1)?.pathTaken).toBe('fallback');
+    expect(saved.nativeToolCalls).toBe(7);
   });
 });

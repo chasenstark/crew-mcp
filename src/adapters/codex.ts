@@ -61,6 +61,10 @@ const ToolLoopDecisionSchema = z.object({
 
 type ToolLoopDecision = z.infer<typeof ToolLoopDecisionSchema>;
 
+const TOOL_LOOP_MAX_TURNS = 200;
+const TOOL_LOOP_TRANSCRIPT_WINDOW = 24;
+const TOOL_LOOP_MESSAGE_CHAR_LIMIT = 1_500;
+
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
   if (text.length <= max) return text;
@@ -183,7 +187,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly orchestratorCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
-    supportsPauseForUserInput: false,
+    supportsPauseForUserInput: true,
   };
 
   async execute(task: Task): Promise<TaskResult> {
@@ -470,7 +474,6 @@ export class CodexAdapter implements AgentAdapter {
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
-    const maxTurns = 200;
 
     const renderToolCatalog = (): string => {
       return tools
@@ -483,10 +486,21 @@ export class CodexAdapter implements AgentAdapter {
 
     const renderTranscript = (): string => {
       if (transcript.length === 0) return '(empty)';
-      return transcript
+      const windowed = transcript.length > TOOL_LOOP_TRANSCRIPT_WINDOW
+        ? transcript.slice(-TOOL_LOOP_TRANSCRIPT_WINDOW)
+        : transcript;
+      const omitted = transcript.length - windowed.length;
+      const summaryPrefix = omitted > 0
+        ? `(omitted ${omitted} earlier transcript messages)\n`
+        : '';
+
+      return summaryPrefix + windowed
         .map((message, index) => {
           const role = message.name ? `${message.role}(${message.name})` : message.role;
-          return `${index + 1}. ${role}: ${message.content}`;
+          const content = message.content.length > TOOL_LOOP_MESSAGE_CHAR_LIMIT
+            ? `${message.content.slice(0, TOOL_LOOP_MESSAGE_CHAR_LIMIT - 1)}…`
+            : message.content;
+          return `${index + 1}. ${role}: ${content}`;
         })
         .join('\n');
     };
@@ -512,7 +526,7 @@ export class CodexAdapter implements AgentAdapter {
       ].join('\n');
     };
 
-    for (let turn = 1; turn <= maxTurns; turn++) {
+    for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
       let decision: ToolLoopDecision;
       try {
         decision = await this.executeWithSchema(buildPrompt(), ToolLoopDecisionSchema);
@@ -597,7 +611,7 @@ export class CodexAdapter implements AgentAdapter {
     return {
       status: 'failed',
       transcript,
-      error: `Exceeded maximum native tool-loop turns (${maxTurns}).`,
+      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
     };
   }
 
