@@ -148,6 +148,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   async run(userRequest: string): Promise<string> {
     const agents = this.registry.list();
     const startedAt = new Date().toISOString();
+    const runId = this.createRunId(startedAt);
 
     // -----------------------------------------------------------------------
     // Step 1: DECOMPOSE
@@ -183,6 +184,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     );
 
     return this.executeWithDecomposition({
+      runId,
       userRequest,
       decomposition,
       startTaskIndex: 0,
@@ -204,8 +206,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     const startTaskIndex = Math.max(0, Math.min(workflowState.currentTaskIndex, maxTaskIndex));
     const maxSavedPass = previousSummaries.reduce((max, item) => Math.max(max, item.passNumber), 0);
     this.globalPassCounter = Math.max(this.globalPassCounter, maxSavedPass);
+    const runId = workflowState.runId ?? this.createRunId(workflowState.startedAt);
 
     return this.executeWithDecomposition({
+      runId,
       userRequest: workflowState.userRequest,
       decomposition: workflowState.decomposition,
       startTaskIndex,
@@ -216,6 +220,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   }
 
   private async executeWithDecomposition(params: {
+    runId: string;
     userRequest: string;
     decomposition: DecomposeOutput;
     startTaskIndex: number;
@@ -224,6 +229,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     startedAt: string;
   }): Promise<string> {
     const {
+      runId,
       userRequest,
       decomposition,
       startTaskIndex,
@@ -233,6 +239,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     } = params;
 
     this.persistRunningState({
+      runId,
       userRequest,
       decomposition,
       currentTaskIndex: startTaskIndex,
@@ -272,8 +279,9 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
           filesInScope: task.scope.files ?? [],
         });
         this.globalPassCounter++;
-        this.state.addPassSummary(summaries[summaries.length - 1]);
+        this.state.addPassSummary(summaries[summaries.length - 1], runId);
         this.persistRunningState({
+          runId,
           userRequest,
           decomposition,
           currentTaskIndex: taskIndex + 1,
@@ -295,10 +303,11 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         const passSummary = await this.executeTaskWithReviewLoop(
           task,
           summaries,
+          runId,
         );
         if (signal.aborted) break;
         summaries.push(passSummary);
-        this.state.addPassSummary(passSummary);
+        this.state.addPassSummary(passSummary, runId);
         passRecords.push({
           passNumber: passSummary.passNumber,
           taskId: task.id,
@@ -330,10 +339,11 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         };
         this.globalPassCounter++;
         summaries.push(failedSummary);
-        this.state.addPassSummary(failedSummary);
+        this.state.addPassSummary(failedSummary, runId);
       }
 
       this.persistRunningState({
+        runId,
         userRequest,
         decomposition,
         currentTaskIndex: taskIndex + 1,
@@ -345,6 +355,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       if (signal.aborted) {
         logger.info('Workflow interrupted before report generation');
         return this.handleInterruptedWorkflow({
+          runId,
           userRequest,
           decomposition,
           passRecords,
@@ -384,6 +395,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 
       // Mark workflow as completed (or failed when we recovered with a fallback/partial output)
       this.state.saveState({
+        runId,
         status: hadErrors ? 'failed' : 'completed',
         userRequest,
         decomposition,
@@ -407,6 +419,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   async executeTaskWithReviewLoop(
     task: DecomposeOutput['tasks'][number],
     previousSummaries: PassSummary[],
+    runId: string,
   ): Promise<PassSummary> {
     const taskWorktree = await this.worktreeManager.createWorktree(task.id);
     const maxPasses = this.getMaxPasses(task.role);
@@ -502,7 +515,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         needsHumanAttention: latestIngest.needsHumanAttention,
       });
       const globalPass = ++this.globalPassCounter;
-      this.state.addPassOutput(globalPass, latestIngest);
+      this.state.addPassOutput(globalPass, latestIngest, runId);
 
       // Check if human attention is needed
       if (latestIngest.needsHumanAttention) {
@@ -646,6 +659,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   }
 
   private handleInterruptedWorkflow(params: {
+    runId: string;
     userRequest: string;
     decomposition: DecomposeOutput;
     passRecords: PassRecord[];
@@ -653,6 +667,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   }): string {
     const snapshot = this.state.loadState();
     this.state.saveState({
+      runId: params.runId,
       status: 'interrupted',
       userRequest: params.userRequest,
       decomposition: params.decomposition,
@@ -669,6 +684,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   }
 
   private persistRunningState(params: {
+    runId: string;
     userRequest: string;
     decomposition: DecomposeOutput;
     currentTaskIndex: number;
@@ -676,6 +692,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     startedAt: string;
   }): void {
     this.state.saveState({
+      runId: params.runId,
       status: 'running',
       userRequest: params.userRequest,
       decomposition: params.decomposition,
@@ -683,6 +700,11 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       passes: params.passRecords,
       startedAt: params.startedAt,
     });
+  }
+
+  private createRunId(seed?: string): string {
+    const source = (seed ?? new Date().toISOString()).replace(/[:.]/g, '-');
+    return `run-${source}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   /**

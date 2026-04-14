@@ -385,7 +385,7 @@ describe('Pipeline', () => {
     expect(mockDecompose).toHaveBeenCalledTimes(0);
     expect(agentExecute).toHaveBeenCalledTimes(1);
     expect(mockDispatch).toHaveBeenCalledTimes(1);
-    expect(state.addPassOutput).toHaveBeenCalledWith(4, expect.anything());
+    expect(state.addPassOutput).toHaveBeenCalledWith(4, expect.anything(), expect.any(String));
   });
 
   it('marks running state as interrupted', () => {

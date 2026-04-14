@@ -83,6 +83,48 @@ describe('StateStore', () => {
     expect(summaries[1].passNumber).toBe(2);
   });
 
+  it('isolates pass summaries by runId', () => {
+    store.saveState({
+      runId: 'run-a',
+      status: 'running',
+      userRequest: 'run a',
+      decomposition: { reasoning: '', tasks: [], suggestedOrder: [] },
+      currentTaskIndex: 0,
+      passes: [],
+    });
+    store.addPassSummary({
+      passNumber: 1,
+      summary: 'summary a',
+      unresolvedIssues: [],
+      contextForNextPass: 'ctx a',
+      filesInScope: ['a.ts'],
+    });
+
+    store.saveState({
+      runId: 'run-b',
+      status: 'running',
+      userRequest: 'run b',
+      decomposition: { reasoning: '', tasks: [], suggestedOrder: [] },
+      currentTaskIndex: 0,
+      passes: [],
+    });
+    store.addPassSummary({
+      passNumber: 1,
+      summary: 'summary b',
+      unresolvedIssues: [],
+      contextForNextPass: 'ctx b',
+      filesInScope: ['b.ts'],
+    });
+
+    const runASummaries = store.loadPassSummaries('run-a');
+    const runBSummaries = store.loadPassSummaries('run-b');
+
+    expect(runASummaries).toHaveLength(1);
+    expect(runASummaries[0].summary).toBe('summary a');
+    expect(runBSummaries).toHaveLength(1);
+    expect(runBSummaries[0].summary).toBe('summary b');
+  });
+
   it('saves and loads conversation', () => {
     const messages = [
       { role: 'user' as const, content: 'Hello', timestamp: '2024-01-01T00:00:00Z' },

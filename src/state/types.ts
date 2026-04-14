@@ -13,6 +13,7 @@ export interface DecomposeOutputRef {
 }
 
 export interface WorkflowState {
+  runId?: string;
   status: 'running' | 'interrupted' | 'completed' | 'failed';
   userRequest: string;
   decomposition: DecomposeOutputRef;

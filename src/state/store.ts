@@ -9,6 +9,7 @@ export class StateStore {
     this.basePath = join(projectRoot, '.orchestra');
     mkdirSync(join(this.basePath, 'passes'), { recursive: true });
     mkdirSync(join(this.basePath, 'summaries'), { recursive: true });
+    mkdirSync(join(this.basePath, 'runs'), { recursive: true });
   }
 
   private atomicWrite(filePath: string, data: string): void {
@@ -39,15 +40,48 @@ export class StateStore {
     return state !== null && (state.status === 'running' || state.status === 'interrupted');
   }
 
-  addPassSummary(summary: PassSummary): void {
+  private resolveRunId(runId?: string): string | undefined {
+    if (runId) return runId;
+    const state = this.loadState();
+    return state?.runId;
+  }
+
+  private getRunPath(runId: string): string {
+    return join(this.basePath, 'runs', runId);
+  }
+
+  private ensureRunDirs(runId: string): void {
+    const runPath = this.getRunPath(runId);
+    mkdirSync(join(runPath, 'passes'), { recursive: true });
+    mkdirSync(join(runPath, 'summaries'), { recursive: true });
+  }
+
+  addPassSummary(summary: PassSummary, runId?: string): void {
+    const resolvedRunId = this.resolveRunId(runId);
+    if (resolvedRunId) {
+      this.ensureRunDirs(resolvedRunId);
+      this.atomicWrite(
+        join(
+          this.getRunPath(resolvedRunId),
+          'summaries',
+          `pass-${String(summary.passNumber).padStart(3, '0')}.json`,
+        ),
+        JSON.stringify(summary, null, 2),
+      );
+      return;
+    }
+
     this.atomicWrite(
       join(this.basePath, 'summaries', `pass-${String(summary.passNumber).padStart(3, '0')}.json`),
       JSON.stringify(summary, null, 2),
     );
   }
 
-  loadPassSummaries(): PassSummary[] {
-    const dir = join(this.basePath, 'summaries');
+  loadPassSummaries(runId?: string): PassSummary[] {
+    const resolvedRunId = this.resolveRunId(runId);
+    const dir = resolvedRunId
+      ? join(this.getRunPath(resolvedRunId), 'summaries')
+      : join(this.basePath, 'summaries');
     if (!existsSync(dir)) return [];
     try {
       return readdirSync(dir)
@@ -59,7 +93,21 @@ export class StateStore {
     }
   }
 
-  addPassOutput(passNumber: number, output: unknown): void {
+  addPassOutput(passNumber: number, output: unknown, runId?: string): void {
+    const resolvedRunId = this.resolveRunId(runId);
+    if (resolvedRunId) {
+      this.ensureRunDirs(resolvedRunId);
+      this.atomicWrite(
+        join(
+          this.getRunPath(resolvedRunId),
+          'passes',
+          `pass-${String(passNumber).padStart(3, '0')}.json`,
+        ),
+        JSON.stringify(output, null, 2),
+      );
+      return;
+    }
+
     this.atomicWrite(
       join(this.basePath, 'passes', `pass-${String(passNumber).padStart(3, '0')}.json`),
       JSON.stringify(output, null, 2),
@@ -84,7 +132,7 @@ export class StateStore {
   }
 
   clear(): void {
-    for (const sub of ['state.json', 'conversation.json', 'passes', 'summaries']) {
+    for (const sub of ['state.json', 'conversation.json', 'passes', 'summaries', 'runs']) {
       const path = join(this.basePath, sub);
       if (existsSync(path)) {
         rmSync(path, { recursive: true, force: true });
@@ -92,5 +140,6 @@ export class StateStore {
     }
     mkdirSync(join(this.basePath, 'passes'), { recursive: true });
     mkdirSync(join(this.basePath, 'summaries'), { recursive: true });
+    mkdirSync(join(this.basePath, 'runs'), { recursive: true });
   }
 }

@@ -123,7 +123,7 @@ export async function resumeCommand(options: { onAskUser?: string } = {}): Promi
   try {
     await pipeline.resume({
       workflowState,
-      previousSummaries: stateStore.loadPassSummaries(),
+      previousSummaries: stateStore.loadPassSummaries(workflowState.runId),
     });
   } finally {
     process.off('SIGINT', handleSigint);
