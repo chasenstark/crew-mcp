@@ -132,20 +132,17 @@ workflow:
 agents:
   claude-code:
     adapter: claude-code
+    model: claude-opus-4-6
     strengths: [implementation, refactoring, TypeScript, React]
-    # Optional: force a specific model for this agent
-    # model: claude-sonnet-4-5
 
   codex:
     adapter: codex
+    model: gpt-5.3-codex
     strengths: [review, testing, Python, security]
-    # Optional: force a specific model for this agent
-    # model: gpt-5.4-mini
 
 orchestrator:
   cli: claude-code
-  # Optional: model for orchestration steps
-  # model: claude-sonnet-4-5
+  model: claude-sonnet-4-5
 
 error_handling:
   default:

@@ -149,10 +149,20 @@ export function getDefaultConfig(): FullConfig {
       completion: { strategy: 'judge_approval', fallback: 'max_passes' },
     },
     agents: {
-      'claude-code': { adapter: 'claude-code', auth: 'subscription', strengths: ['implementation', 'refactoring', 'TypeScript', 'React'] },
-      'codex': { adapter: 'codex', auth: 'subscription', strengths: ['review', 'testing', 'Python', 'security'] },
+      'claude-code': {
+        adapter: 'claude-code',
+        auth: 'subscription',
+        model: 'claude-opus-4-6',
+        strengths: ['implementation', 'refactoring', 'TypeScript', 'React'],
+      },
+      'codex': {
+        adapter: 'codex',
+        auth: 'subscription',
+        model: 'gpt-5.3-codex',
+        strengths: ['review', 'testing', 'Python', 'security'],
+      },
     },
-    orchestrator: { cli: 'claude-code' },
+    orchestrator: { cli: 'claude-code', model: 'claude-sonnet-4-5' },
     errorHandling: {
       default: { retry: 1, fallback: null, onExhausted: 'ask_user' },
     },
