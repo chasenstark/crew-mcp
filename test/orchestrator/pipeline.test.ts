@@ -87,6 +87,7 @@ function createHarness() {
   };
 
   const worktreeManager = {
+    createWorktree: vi.fn(async (taskId: string) => `/tmp/worktrees/${taskId}`),
     getModifiedFiles: vi.fn(async () => []),
   };
 
@@ -102,7 +103,7 @@ function createHarness() {
     worktreeManager as never,
   );
 
-  return { pipeline, state, agentExecute };
+  return { pipeline, state, agentExecute, worktreeManager };
 }
 
 function defaultDecomposition() {
@@ -191,7 +192,7 @@ describe('Pipeline', () => {
   });
 
   it('runs happy path with done decision', async () => {
-    const { pipeline, state, agentExecute } = createHarness();
+    const { pipeline, state, agentExecute, worktreeManager } = createHarness();
 
     const result = await pipeline.run('Build thing');
 
@@ -199,6 +200,7 @@ describe('Pipeline', () => {
     expect(mockDecompose).toHaveBeenCalledTimes(1);
     expect(mockDispatch).toHaveBeenCalledTimes(1);
     expect(agentExecute).toHaveBeenCalledTimes(1);
+    expect(worktreeManager.createWorktree).toHaveBeenCalledWith('task-1');
     expect(mockJudge).toHaveBeenCalledTimes(1);
     expect(mockReport).toHaveBeenCalledTimes(1);
 
@@ -208,7 +210,7 @@ describe('Pipeline', () => {
   });
 
   it('iterates when judge requests iterate', async () => {
-    const { pipeline, agentExecute } = createHarness();
+    const { pipeline, agentExecute, worktreeManager } = createHarness();
 
     mockJudge
       .mockResolvedValueOnce({
@@ -226,7 +228,23 @@ describe('Pipeline', () => {
 
     expect(mockDispatch).toHaveBeenCalledTimes(2);
     expect(agentExecute).toHaveBeenCalledTimes(2);
+    expect(worktreeManager.createWorktree).toHaveBeenCalledTimes(1);
     expect(mockJudge).toHaveBeenCalledTimes(2);
+  });
+
+  it('constrains dispatched workingDirectory to task worktree', async () => {
+    const { pipeline, agentExecute } = createHarness();
+    mockDispatch.mockResolvedValueOnce({
+      agentPrompt: 'do task',
+      workingDirectory: '/tmp/outside-worktree',
+      expectedOutputs: ['src/a.ts'],
+      successCriteria: 'tests pass',
+    });
+
+    await pipeline.run('Build thing');
+
+    const executeCall = agentExecute.mock.calls[0]?.[0];
+    expect(executeCall.context.workingDirectory).toBe('/tmp/worktrees/task-1');
   });
 
   it('requests user input when judge asks user and resumes with response', async () => {

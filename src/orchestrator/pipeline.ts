@@ -5,6 +5,7 @@ import type { PassRecord, PassSummary, WorkflowState } from '../state/types.js';
 import { StateStore } from '../state/store.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { logger } from '../utils/logger.js';
+import { isAbsolute, resolve, sep } from 'path';
 import { decompose, type DecomposeOutput } from './steps/decompose.js';
 import { dispatch } from './steps/dispatch.js';
 import { ingest, type IngestOutput } from './steps/ingest.js';
@@ -407,6 +408,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     task: DecomposeOutput['tasks'][number],
     previousSummaries: PassSummary[],
   ): Promise<PassSummary> {
+    const taskWorktree = await this.worktreeManager.createWorktree(task.id);
     const maxPasses = this.getMaxPasses(task.role);
     let currentPass = 1;
     let latestIngest: IngestOutput | undefined;
@@ -449,7 +451,10 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       const agentResult = await agent.execute({
         prompt: dispatchResult.agentPrompt,
         context: {
-          workingDirectory: dispatchResult.workingDirectory ?? process.cwd(),
+          workingDirectory: this.resolveTaskWorkingDirectory(
+            taskWorktree,
+            dispatchResult.workingDirectory,
+          ),
           files: task.scope.files,
         },
         constraints: {
@@ -611,6 +616,33 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private getMaxPasses(role: string): number {
     const step = this.workflow.steps.find((s) => s.role === role);
     return step?.maxPasses ?? 3;
+  }
+
+  private resolveTaskWorkingDirectory(taskWorktree: string, requested?: string): string {
+    if (!requested || !requested.trim()) return taskWorktree;
+    const candidate = requested.trim();
+
+    const ensureWithinTaskWorktree = (pathValue: string): string => {
+      const normalizedWorktree = resolve(taskWorktree);
+      const normalizedPath = resolve(pathValue);
+      if (
+        normalizedPath === normalizedWorktree ||
+        normalizedPath.startsWith(normalizedWorktree + sep)
+      ) {
+        return normalizedPath;
+      }
+
+      logger.warn(
+        `Ignoring workingDirectory "${requested}" because it is outside task worktree ${taskWorktree}`,
+      );
+      return taskWorktree;
+    };
+
+    if (isAbsolute(candidate)) {
+      return ensureWithinTaskWorktree(candidate);
+    }
+
+    return ensureWithinTaskWorktree(resolve(taskWorktree, candidate));
   }
 
   private handleInterruptedWorkflow(params: {
