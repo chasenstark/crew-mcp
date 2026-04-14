@@ -238,6 +238,31 @@ describe('ClaudeCodeAdapter', () => {
       expect(callArgs[1]).toContain('--json-schema');
     });
 
+    it('produces valid JSON schema with type field', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: structuredFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const schema = z.object({
+        reasoning: z.string(),
+        tasks: z.array(z.object({ id: z.string(), description: z.string() })),
+        suggestedOrder: z.array(z.string()),
+      });
+
+      await adapter.executeWithSchema('Plan tasks', schema);
+
+      const callArgs = mockExeca.mock.calls[0];
+      const schemaIndex = (callArgs[1] as string[]).indexOf('--json-schema');
+      const jsonSchemaArg = (callArgs[1] as string[])[schemaIndex + 1];
+      const parsed = JSON.parse(jsonSchemaArg);
+      expect(parsed.type).toBe('object');
+      expect(parsed.properties).toBeDefined();
+      expect(parsed.properties.reasoning).toEqual({ type: 'string' });
+      expect(parsed.properties.tasks.type).toBe('array');
+    });
+
     it('throws on error response', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: errorFixture,

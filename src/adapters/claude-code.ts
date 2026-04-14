@@ -1,6 +1,6 @@
 import { execa } from 'execa';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+
 import type {
   AgentAdapter,
   AgentCapability,
@@ -171,7 +171,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     schema: T,
     options?: ExecuteOptions,
   ): Promise<z.infer<T>> {
-    const jsonSchema = JSON.stringify(zodToJsonSchema(schema as any));
+    const jsonSchema = JSON.stringify(z.toJSONSchema(schema));
 
     const args = [
       '-p',

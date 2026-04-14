@@ -1,6 +1,6 @@
 import { execa } from 'execa';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+
 import {
   writeFileSync,
   readFileSync,
@@ -233,7 +233,7 @@ export class CodexAdapter implements AgentAdapter {
       const schemaFile = join(tmpDir, 'schema.json');
       const outputFile = join(tmpDir, 'output.json');
 
-      const jsonSchema = zodToJsonSchema(schema as any);
+      const jsonSchema = z.toJSONSchema(schema);
       writeFileSync(schemaFile, JSON.stringify(jsonSchema, null, 2), 'utf-8');
 
       const args = [
