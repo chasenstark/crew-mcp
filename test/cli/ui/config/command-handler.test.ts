@@ -34,6 +34,7 @@ describe('handleConfigSlashCommand', () => {
     const response = handleConfigSlashCommand('/config', { cwd, isRunning: false });
     expect(response).toContain('/config help');
     expect(response).toContain('/config set orchestrator.cli <value>');
+    expect(response).toContain('/config add-agent <name> [adapter] [command]');
   });
 
   it('allows show while running', () => {
@@ -64,5 +65,31 @@ describe('handleConfigSlashCommand', () => {
     const response = handleConfigSlashCommand('/config scope global', { cwd, isRunning: false });
     expect(response).toContain('Active write scope set to global');
     expect(readActiveScopePreference(cwd)).toBe('global');
+  });
+
+  it('adds and removes agent via slash commands', () => {
+    const addResponse = handleConfigSlashCommand(
+      '/config add-agent local-gemma generic ollama',
+      { cwd, isRunning: false },
+    );
+    expect(addResponse).toContain('Agent added');
+    let projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-gemma']?.adapter).toBe('generic');
+    expect(projectConfig?.agents['local-gemma']?.command).toBe('ollama');
+
+    handleConfigSlashCommand(
+      '/config set agents.local-gemma.capabilities implement,review',
+      { cwd, isRunning: false },
+    );
+    projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-gemma']?.capabilities).toEqual(['implement', 'review']);
+
+    const removeResponse = handleConfigSlashCommand('/config remove-agent local-gemma', {
+      cwd,
+      isRunning: false,
+    });
+    expect(removeResponse).toContain('Agent removed');
+    projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-gemma']).toBeUndefined();
   });
 });

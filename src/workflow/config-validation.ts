@@ -8,6 +8,16 @@ export interface ConfigDiagnostic {
   message: string;
 }
 
+const SUPPORTED_ADAPTERS = new Set(['claude-code', 'codex', 'generic']);
+const SUPPORTED_CAPABILITIES = new Set([
+  'implement',
+  'review',
+  'refactor',
+  'test',
+  'document',
+  'analyze',
+]);
+
 function findReviewStep(config: FullConfig) {
   return (
     config.workflow.steps.find((step) => step.role === 'reviewer')
@@ -78,6 +88,33 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
   }
 
   for (const [name, agent] of Object.entries(config.agents)) {
+    const adapterType = (agent.adapter ?? name).trim();
+
+    if (!SUPPORTED_ADAPTERS.has(adapterType)) {
+      diagnostics.push(
+        createDiagnostic(
+          `agents.${name}.adapter`,
+          'one of: claude-code, codex, generic',
+          agent.adapter ?? name,
+          `/config set agents.${name}.adapter generic`,
+        ),
+      );
+    }
+
+    if (
+      (adapterType === 'claude-code' || adapterType === 'codex')
+      && name !== adapterType
+    ) {
+      diagnostics.push(
+        createDiagnostic(
+          `agents.${name}.adapter`,
+          `built-in adapter "${adapterType}" must use key "${adapterType}"`,
+          name,
+          `Use "agents.${adapterType}" for adapter "${adapterType}"`,
+        ),
+      );
+    }
+
     if (agent.model !== undefined && agent.model.trim().length === 0) {
       diagnostics.push(
         createDiagnostic(
@@ -89,13 +126,38 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
       );
     }
 
-    if (agent.adapter === 'generic' && (!agent.command || agent.command.trim().length === 0)) {
+    if (adapterType === 'generic' && (!agent.command || agent.command.trim().length === 0)) {
       diagnostics.push(
         createDiagnostic(
           `agents.${name}.command`,
           'non-empty string when adapter=generic',
           agent.command,
           `Set agents.${name}.command to a runnable CLI command`,
+        ),
+      );
+    }
+
+    if (agent.args && agent.args.some((value) => value.trim().length === 0)) {
+      diagnostics.push(
+        createDiagnostic(
+          `agents.${name}.args`,
+          'array of non-empty strings',
+          agent.args,
+          `/config set agents.${name}.args run,gemma4:latest,{{prompt}}`,
+        ),
+      );
+    }
+
+    if (
+      agent.capabilities
+      && agent.capabilities.some((capability) => !SUPPORTED_CAPABILITIES.has(capability.trim().toLowerCase()))
+    ) {
+      diagnostics.push(
+        createDiagnostic(
+          `agents.${name}.capabilities`,
+          'comma-delimited values from implement|review|refactor|test|document|analyze',
+          agent.capabilities,
+          `/config set agents.${name}.capabilities implement,review`,
         ),
       );
     }

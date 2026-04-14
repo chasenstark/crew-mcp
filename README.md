@@ -123,10 +123,18 @@ orchestrator config show
 orchestrator config set orchestrator.cli codex
 orchestrator config set orchestrator.model claude-sonnet-4-5
 orchestrator config set orchestrator.model next
+orchestrator config set agents.codex.adapter codex
 orchestrator config set agents.codex.model gpt-5.4
 orchestrator config set agents.codex.model prev
+orchestrator config set agents.local-gemma.command ollama
+orchestrator config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
+orchestrator config set agents.local-gemma.capabilities implement,review
 orchestrator config set workflow.reviewer.maxPasses 3
 orchestrator config set errorHandling.default.retry 1
+
+# Add/remove agents
+orchestrator config add-agent local-gemma --adapter generic --command ollama --args run,gemma4:latest,{{prompt}} --capabilities implement,review
+orchestrator config remove-agent local-gemma
 
 # Scope management
 orchestrator config scope
@@ -144,7 +152,11 @@ In interactive `orchestrator run` mode, `/config` slash commands are also availa
 /config show
 /config scope
 /config scope project
+/config add-agent local-gemma generic ollama
+/config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
+/config set agents.local-gemma.capabilities implement,review
 /config set orchestrator.cli codex
+/config remove-agent local-gemma
 /config reset
 ```
 
@@ -224,6 +236,13 @@ agents:
     command: "my-tool"
     args: ["--prompt", "{{prompt}}", "--output", "json"]
     capabilities: [analyze]
+```
+
+Example for a local Gemma model via `ollama`:
+
+```bash
+orchestrator config add-agent local-gemma --adapter generic --command ollama --args run,gemma4:latest,{{prompt}} --capabilities implement,review
+orchestrator config set orchestrator.cli local-gemma
 ```
 
 **Structured output caveat.** The `generic` adapter does not natively enforce

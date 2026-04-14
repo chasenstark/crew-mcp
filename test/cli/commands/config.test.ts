@@ -3,7 +3,9 @@ import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import {
+  configAddAgentCommand,
   configResetCommand,
+  configRemoveAgentCommand,
   configScopeCommand,
   configSetCommand,
   configShowCommand,
@@ -77,5 +79,26 @@ describe('config command handlers', () => {
     await expect(configSetCommand('orchestrator.cli', 'codex', { cwd, scope: 'invalid' }))
       .rejects
       .toThrow(/Invalid scope/);
+  });
+
+  it('adds and removes an agent via command handlers', async () => {
+    await configAddAgentCommand('local-gemma', {
+      cwd,
+      adapter: 'generic',
+      command: 'ollama',
+      args: 'run,gemma4:latest,{{prompt}}',
+      capabilities: 'implement,review',
+    });
+    let projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-gemma']).toEqual({
+      adapter: 'generic',
+      command: 'ollama',
+      args: ['run', 'gemma4:latest', '{{prompt}}'],
+      capabilities: ['implement', 'review'],
+    });
+
+    await configRemoveAgentCommand('local-gemma', { cwd });
+    projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-gemma']).toBeUndefined();
   });
 });

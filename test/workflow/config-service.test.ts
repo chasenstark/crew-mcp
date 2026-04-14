@@ -5,9 +5,11 @@ import { homedir, tmpdir } from 'os';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
 import { loadConfigByScope } from '../../src/workflow/config-repository.js';
 import {
+  addAgent,
   applyConfigPatch,
   getConfigValueOptions,
   getConfigScope,
+  removeAgent,
   resetConfig,
   setConfigScope,
   setConfigValue,
@@ -97,6 +99,17 @@ describe('config-service', () => {
     expect(projectConfig?.agents.codex.model).toBe('gpt-5.4');
   });
 
+  it('can set generic agent fields', () => {
+    addAgent(cwd, 'local-gemma', { adapter: 'generic', command: 'ollama' });
+
+    setConfigValue(cwd, 'agents.local-gemma.args', 'run,gemma4:latest,{{prompt}}');
+    setConfigValue(cwd, 'agents.local-gemma.capabilities', 'implement,review');
+
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-gemma'].args).toEqual(['run', 'gemma4:latest', '{{prompt}}']);
+    expect(projectConfig?.agents['local-gemma'].capabilities).toEqual(['implement', 'review']);
+  });
+
   it('supports cycling with "next" for model fields', () => {
     const result = setConfigValue(cwd, 'orchestrator.model', 'next');
     expect(typeof result.nextValue).toBe('string');
@@ -111,6 +124,12 @@ describe('config-service', () => {
   it('returns preset options for supported fields', () => {
     const options = getConfigValueOptions(getDefaultConfig(), 'workflow.reviewer.maxPasses');
     expect(options).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('returns adapter options for agent adapter path', () => {
+    const options = getConfigValueOptions(getDefaultConfig(), 'agents.codex.adapter');
+    expect(options).toContain('generic');
+    expect(options).toContain('codex');
   });
 
   it('returns no reviewer presets when no review step exists', () => {
@@ -132,6 +151,24 @@ describe('config-service', () => {
     expect(() =>
       setConfigValue(cwd, 'agents.unknown.model', 'foo'),
     ).toThrow(/unknown agent "unknown"/i);
+  });
+
+  it('adds and removes a custom agent', () => {
+    const addResult = addAgent(cwd, 'local-gemma', {
+      adapter: 'generic',
+      command: 'ollama',
+      capabilities: ['analyze'],
+    });
+    expect(addResult.agent.command).toBe('ollama');
+    expect(loadConfigByScope('project', cwd)?.agents['local-gemma']).toBeDefined();
+
+    const removeResult = removeAgent(cwd, 'local-gemma');
+    expect(removeResult.name).toBe('local-gemma');
+    expect(loadConfigByScope('project', cwd)?.agents['local-gemma']).toBeUndefined();
+  });
+
+  it('prevents removing agent referenced by orchestrator.cli', () => {
+    expect(() => removeAgent(cwd, 'claude-code')).toThrow(/orchestrator\.cli/i);
   });
 
   it('rejects reviewer max passes when no review step exists', () => {

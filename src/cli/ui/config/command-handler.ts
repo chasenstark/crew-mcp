@@ -1,5 +1,7 @@
 import {
+  addAgent,
   getConfigScope,
+  removeAgent,
   resetConfig,
   setConfigScope,
   setConfigValue,
@@ -27,10 +29,16 @@ function helpText(): string {
     '  /config scope project',
     '  /config scope global',
     '  /config edit',
+    '  /config add-agent <name> [adapter] [command]',
+    '  /config remove-agent <name>',
     '  /config set orchestrator.cli <value>',
     '  /config set orchestrator.model <value>',
     '  /config set orchestrator.model next',
+    '  /config set agents.<name>.adapter <value>',
     '  /config set agents.<name>.model <value>',
+    '  /config set agents.<name>.command <value>',
+    '  /config set agents.<name>.args <csv|json>',
+    '  /config set agents.<name>.capabilities <csv|json>',
     '  /config set agents.<name>.model prev',
     '  /config set workflow.reviewer.maxPasses <number>',
     '  /config set errorHandling.default.retry <number>',
@@ -75,6 +83,31 @@ export function handleConfigSlashCommand(
     return [
       `\u2713 Active write scope set to ${result.scope}.`,
       `file: ${result.scopePath}`,
+    ].join('\n');
+  }
+
+  if (parsed.kind === 'add-agent') {
+    const result = addAgent(options.cwd, parsed.name, {
+      adapter: parsed.adapter,
+      command: parsed.command,
+    });
+    return [
+      '\u2713 Agent added.',
+      `scope: ${result.scope}`,
+      `file: ${result.filePath}`,
+      `name: ${result.name}`,
+      `adapter: ${result.agent.adapter ?? 'generic'}`,
+      `command: ${result.agent.command ?? '(none)'}`,
+    ].join('\n');
+  }
+
+  if (parsed.kind === 'remove-agent') {
+    const result = removeAgent(options.cwd, parsed.name);
+    return [
+      '\u2713 Agent removed.',
+      `scope: ${result.scope}`,
+      `file: ${result.filePath}`,
+      `name: ${result.name}`,
     ].join('\n');
   }
 

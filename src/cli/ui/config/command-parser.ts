@@ -5,6 +5,8 @@ export type ConfigSlashCommand =
   | { kind: 'show' }
   | { kind: 'edit' }
   | { kind: 'reset' }
+  | { kind: 'add-agent'; name: string; adapter?: string; command?: string }
+  | { kind: 'remove-agent'; name: string }
   | { kind: 'scope:get' }
   | { kind: 'scope:set'; scope: ConfigScope }
   | { kind: 'set'; path: string; value: string }
@@ -23,6 +25,34 @@ export function parseConfigSlashCommand(input: string): ConfigSlashCommand | nul
   if (subcommand === 'show') return { kind: 'show' };
   if (subcommand === 'edit') return { kind: 'edit' };
   if (subcommand === 'reset') return { kind: 'reset' };
+
+  if (subcommand === 'add-agent') {
+    if (tokens.length < 3) {
+      return {
+        kind: 'invalid',
+        reason: 'Usage: /config add-agent <name> [adapter] [command]',
+      };
+    }
+    return {
+      kind: 'add-agent',
+      name: tokens[2],
+      adapter: tokens[3],
+      command: tokens[4],
+    };
+  }
+
+  if (subcommand === 'remove-agent') {
+    if (tokens.length < 3) {
+      return {
+        kind: 'invalid',
+        reason: 'Usage: /config remove-agent <name>',
+      };
+    }
+    return {
+      kind: 'remove-agent',
+      name: tokens[2],
+    };
+  }
 
   if (subcommand === 'scope') {
     if (tokens.length === 2) return { kind: 'scope:get' };

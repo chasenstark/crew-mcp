@@ -8,9 +8,11 @@ import { getDefaultConfig } from '../../workflow/config-codec.js';
 import { saveConfigByScope } from '../../workflow/config-repository.js';
 import { validateConfig } from '../../workflow/config-validation.js';
 import {
+  addAgent,
   applyConfigPatch,
   getConfigScope,
   getConfigValueOptions,
+  removeAgent,
   resetConfig,
   setConfigScope,
   setConfigValue,
@@ -61,6 +63,15 @@ function parseScopeOption(raw: string | undefined): ConfigScope | undefined {
   if (raw === undefined) return undefined;
   if (raw === 'project' || raw === 'global') return raw;
   throw new Error(`Invalid scope "${raw}". Expected "project" or "global".`);
+}
+
+function splitCsvList(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const parsed = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 function formatChangedValue(value: unknown): string {
@@ -289,6 +300,50 @@ export async function configSetCommand(
   );
 }
 
+export async function configAddAgentCommand(
+  name: string,
+  options: {
+    cwd?: string;
+    scope?: string;
+    adapter?: string;
+    model?: string;
+    command?: string;
+    args?: string;
+    capabilities?: string;
+  } = {},
+): Promise<void> {
+  const cwd = options.cwd ?? process.cwd();
+  const scope = parseScopeOption(options.scope);
+  const result = addAgent(cwd, name, {
+    scope,
+    adapter: options.adapter,
+    model: options.model,
+    command: options.command,
+    args: splitCsvList(options.args),
+    capabilities: splitCsvList(options.capabilities),
+  });
+
+  console.log(chalk.green('\u2713 Agent added.'));
+  console.log(`  ${chalk.dim('scope:')} ${result.scope}`);
+  console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
+  console.log(`  ${chalk.dim('name:')}  ${result.name}`);
+  console.log(`  ${chalk.dim('agent:')} ${formatChangedValue(result.agent)}`);
+}
+
+export async function configRemoveAgentCommand(
+  name: string,
+  options: { cwd?: string; scope?: string } = {},
+): Promise<void> {
+  const cwd = options.cwd ?? process.cwd();
+  const scope = parseScopeOption(options.scope);
+  const result = removeAgent(cwd, name, { scope });
+
+  console.log(chalk.green('\u2713 Agent removed.'));
+  console.log(`  ${chalk.dim('scope:')} ${result.scope}`);
+  console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
+  console.log(`  ${chalk.dim('name:')}  ${result.name}`);
+}
+
 export async function configScopeCommand(
   scope: string | undefined,
   options: { cwd?: string } = {},
@@ -383,19 +438,82 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
 
   const agentNames = Object.keys(draft.agents).sort();
   for (const agentName of agentNames) {
-    const path = `agents.${agentName}.model`;
-    const pathOptions = getConfigValueOptions(draft, path);
-    const agentModelValue = await askFieldValue({
-      label: path,
+    const adapterPath = `agents.${agentName}.adapter`;
+    const adapterValue = await askFieldValue({
+      label: adapterPath,
+      currentValue: draft.agents[agentName].adapter ?? agentName,
+      defaultValue: defaults.agents[agentName]?.adapter ?? agentName,
+      description: 'Adapter backend for this agent (claude-code, codex, generic).',
+      options: getConfigValueOptions(draft, adapterPath),
+    });
+    if (adapterValue) {
+      const before = draft.agents[agentName].adapter ?? agentName;
+      draft = applyConfigPatch(draft, { path: adapterPath, value: adapterValue });
+      changes.push({ path: adapterPath, before, after: draft.agents[agentName].adapter ?? agentName });
+    }
+
+    const modelPath = `agents.${agentName}.model`;
+    const modelValue = await askFieldValue({
+      label: modelPath,
       currentValue: draft.agents[agentName].model,
       defaultValue: defaults.agents[agentName]?.model,
       description: 'Model used when this agent runs.',
-      options: pathOptions,
+      options: getConfigValueOptions(draft, modelPath),
     });
-    if (!agentModelValue) continue;
-    const before = draft.agents[agentName].model;
-    draft = applyConfigPatch(draft, { path, value: agentModelValue });
-    changes.push({ path, before, after: draft.agents[agentName].model });
+    if (modelValue) {
+      const before = draft.agents[agentName].model;
+      draft = applyConfigPatch(draft, { path: modelPath, value: modelValue });
+      changes.push({ path: modelPath, before, after: draft.agents[agentName].model });
+    }
+
+    const adapterType = draft.agents[agentName].adapter ?? agentName;
+    const shouldConfigureGenericFields = adapterType === 'generic'
+      || draft.agents[agentName].command !== undefined
+      || draft.agents[agentName].args !== undefined;
+
+    if (shouldConfigureGenericFields) {
+      const commandPath = `agents.${agentName}.command`;
+      const commandValue = await askFieldValue({
+        label: commandPath,
+        currentValue: draft.agents[agentName].command,
+        defaultValue: defaults.agents[agentName]?.command,
+        description: 'CLI command used by generic adapters (for example: ollama).',
+        options: [],
+      });
+      if (commandValue) {
+        const before = draft.agents[agentName].command;
+        draft = applyConfigPatch(draft, { path: commandPath, value: commandValue });
+        changes.push({ path: commandPath, before, after: draft.agents[agentName].command });
+      }
+
+      const argsPath = `agents.${agentName}.args`;
+      const argsValue = await askFieldValue({
+        label: argsPath,
+        currentValue: draft.agents[agentName].args,
+        defaultValue: defaults.agents[agentName]?.args,
+        description: 'Comma list or JSON array. Use {{prompt}} where prompt should be injected.',
+        options: [],
+      });
+      if (argsValue) {
+        const before = draft.agents[agentName].args;
+        draft = applyConfigPatch(draft, { path: argsPath, value: argsValue });
+        changes.push({ path: argsPath, before, after: draft.agents[agentName].args });
+      }
+    }
+
+    const capabilitiesPath = `agents.${agentName}.capabilities`;
+    const capabilitiesValue = await askFieldValue({
+      label: capabilitiesPath,
+      currentValue: draft.agents[agentName].capabilities,
+      defaultValue: defaults.agents[agentName]?.capabilities,
+      description: 'Comma list or JSON array of capabilities (implement, review, etc.).',
+      options: getConfigValueOptions(draft, capabilitiesPath),
+    });
+    if (capabilitiesValue) {
+      const before = draft.agents[agentName].capabilities;
+      draft = applyConfigPatch(draft, { path: capabilitiesPath, value: capabilitiesValue });
+      changes.push({ path: capabilitiesPath, before, after: draft.agents[agentName].capabilities });
+    }
   }
 
   const reviewerOptions = getConfigValueOptions(draft, 'workflow.reviewer.maxPasses');
@@ -513,6 +631,34 @@ export function registerConfigCommand(program: Command): void {
       runWithExitCode(() =>
         configSetCommand(path, value.join(' '), { scope: options.scope }),
       ));
+
+  command
+    .command('add-agent')
+    .description('Add an agent entry (generic by default)')
+    .argument('<name>', 'Agent key')
+    .option('--scope <scope>', 'Write scope: project|global')
+    .option('--adapter <adapter>', 'Adapter: claude-code|codex|generic')
+    .option('--model <model>', 'Optional model value')
+    .option('--command <command>', 'CLI command (required for generic unless name should be used)')
+    .option('--args <csv>', 'Comma-delimited args (for example: run,gemma4:latest,{{prompt}})')
+    .option('--capabilities <csv>', 'Comma-delimited capabilities')
+    .action((name: string, options: {
+      scope?: string;
+      adapter?: string;
+      model?: string;
+      command?: string;
+      args?: string;
+      capabilities?: string;
+    }) =>
+      runWithExitCode(() => configAddAgentCommand(name, options)));
+
+  command
+    .command('remove-agent')
+    .description('Remove an agent entry (fails if still referenced)')
+    .argument('<name>', 'Agent key')
+    .option('--scope <scope>', 'Write scope: project|global')
+    .action((name: string, options: { scope?: string }) =>
+      runWithExitCode(() => configRemoveAgentCommand(name, options)));
 
   command
     .command('scope')

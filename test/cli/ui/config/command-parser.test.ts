@@ -30,11 +30,35 @@ describe('parseConfigSlashCommand', () => {
     });
   });
 
+  it('parses add-agent command', () => {
+    expect(parseConfigSlashCommand('/config add-agent gemma generic ollama')).toEqual({
+      kind: 'add-agent',
+      name: 'gemma',
+      adapter: 'generic',
+      command: 'ollama',
+    });
+  });
+
+  it('parses remove-agent command', () => {
+    expect(parseConfigSlashCommand('/config remove-agent gemma')).toEqual({
+      kind: 'remove-agent',
+      name: 'gemma',
+    });
+  });
+
   it('returns invalid for malformed set command', () => {
     const parsed = parseConfigSlashCommand('/config set orchestrator.model');
     expect(parsed).toEqual({
       kind: 'invalid',
       reason: 'Usage: /config set <path> <value>',
+    });
+  });
+
+  it('returns invalid for malformed add-agent command', () => {
+    const parsed = parseConfigSlashCommand('/config add-agent');
+    expect(parsed).toEqual({
+      kind: 'invalid',
+      reason: 'Usage: /config add-agent <name> [adapter] [command]',
     });
   });
 });

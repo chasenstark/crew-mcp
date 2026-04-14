@@ -1,5 +1,5 @@
 import { getDefaultConfig } from './config-codec.js';
-import type { FullConfig } from './types.js';
+import type { AgentConfig, FullConfig } from './types.js';
 import type { ConfigScope } from './config-repository.js';
 import {
   getConfigPaths,
@@ -36,13 +36,43 @@ export interface ConfigResetResult {
   config: FullConfig;
 }
 
+export interface ConfigAddAgentResult {
+  scope: ConfigScope;
+  filePath: string;
+  name: string;
+  agent: AgentConfig;
+  config: FullConfig;
+}
+
+export interface ConfigRemoveAgentResult {
+  scope: ConfigScope;
+  filePath: string;
+  name: string;
+  removedAgent: AgentConfig;
+  config: FullConfig;
+}
+
 export const SUPPORTED_CONFIG_SET_PATHS = [
   'orchestrator.cli',
   'orchestrator.model',
+  'agents.<name>.adapter',
   'agents.<name>.model',
+  'agents.<name>.command',
+  'agents.<name>.args',
+  'agents.<name>.capabilities',
   'workflow.reviewer.maxPasses',
   'errorHandling.default.retry',
 ] as const;
+
+const ADAPTER_PRESETS = ['claude-code', 'codex', 'generic'];
+const CAPABILITY_PRESETS = [
+  'implement',
+  'review',
+  'refactor',
+  'test',
+  'document',
+  'analyze',
+];
 
 const CLAUDE_MODEL_PRESETS = [
   'claude-sonnet-4-5',
@@ -112,11 +142,22 @@ export function getConfigValueOptions(config: FullConfig, path: string): string[
     return withCurrentOption(presets, config.errorHandling.default.retry);
   }
 
-  const agentMatch = /^agents\.([^.]+)\.model$/.exec(path);
+  const agentMatch = /^agents\.([^.]+)\.(adapter|model|capabilities)$/.exec(path);
   if (!agentMatch) return [];
   const agentName = agentMatch[1];
+  const field = agentMatch[2];
   const agent = config.agents[agentName];
   if (!agent) return [];
+
+  if (field === 'adapter') {
+    const adapterType = agent.adapter ?? agentName;
+    return withCurrentOption(ADAPTER_PRESETS, adapterType);
+  }
+
+  if (field === 'capabilities') {
+    const current = (agent.capabilities ?? []).join(',');
+    return withCurrentOption(CAPABILITY_PRESETS, current);
+  }
 
   const adapterType = agent.adapter ?? agentName;
   let presets: string[] = [];
@@ -140,6 +181,10 @@ function unsupportedPathError(path: string): Error {
       `Supported paths: ${SUPPORTED_CONFIG_SET_PATHS.join(', ')}`,
       'Examples:',
       '  /config set orchestrator.cli codex',
+      '  /config set agents.local-gemma.adapter generic',
+      '  /config set agents.local-gemma.command ollama',
+      '  /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}',
+      '  /config set agents.local-gemma.capabilities implement,review',
       '  /config set agents.codex.model gpt-5.3-codex',
       '  /config set workflow.reviewer.maxPasses 3',
     ].join('\n'),
@@ -167,6 +212,68 @@ function parseNonEmptyString(path: string, raw: unknown, example: string): strin
     throw new Error(invalidValueMessage(path, 'non-empty string', raw, example));
   }
   return normalized;
+}
+
+function parseDelimitedStringList(path: string, raw: unknown, example: string): string[] {
+  if (Array.isArray(raw)) {
+    const values = raw
+      .map((value) => String(value).trim())
+      .filter((value) => value.length > 0);
+    return uniqueOrdered(values);
+  }
+
+  const normalized = String(raw).trim();
+  if (!normalized) {
+    throw new Error(invalidValueMessage(path, 'comma-separated list of strings or []', raw, example));
+  }
+  if (normalized === '[]') return [];
+
+  if (normalized.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(normalized);
+      if (!Array.isArray(parsed)) {
+        throw new Error('not array');
+      }
+      const values = parsed
+        .map((value) => String(value).trim())
+        .filter((value) => value.length > 0);
+      return uniqueOrdered(values);
+    } catch {
+      throw new Error(
+        invalidValueMessage(
+          path,
+          'JSON array of strings, comma-delimited values, or []',
+          raw,
+          example,
+        ),
+      );
+    }
+  }
+
+  const values = normalized
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  if (values.length === 0) {
+    throw new Error(
+      invalidValueMessage(path, 'comma-separated list of strings or []', raw, example),
+    );
+  }
+  return uniqueOrdered(values);
+}
+
+function parseAgentName(raw: string): string {
+  const name = raw.trim();
+  if (!name) {
+    throw new Error('Agent name is required.');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new Error(
+      `Invalid agent name "${raw}". Use only letters, numbers, ".", "_", or "-".`,
+    );
+  }
+  return name;
 }
 
 function readReviewStepIndex(config: FullConfig): number {
@@ -260,18 +367,51 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
     return next;
   }
 
-  const agentMatch = /^agents\.([^.]+)\.model$/.exec(path);
+  const agentMatch = /^agents\.([^.]+)\.(adapter|model|command|args|capabilities)$/.exec(path);
   if (agentMatch) {
     const agentName = agentMatch[1];
+    const field = agentMatch[2];
     if (!next.agents[agentName]) {
       throw new Error(
-        `Invalid value for ${path}: unknown agent "${agentName}". Example: /config set agents.codex.model gpt-5.3-codex`,
+        `Invalid value for ${path}: unknown agent "${agentName}". Example: /config add-agent ${agentName} generic`,
       );
     }
-    next.agents[agentName].model = parseNonEmptyString(
+    if (field === 'adapter') {
+      next.agents[agentName].adapter = parseNonEmptyString(
+        path,
+        resolvedValue,
+        `/config set agents.${agentName}.adapter generic`,
+      );
+      return next;
+    }
+    if (field === 'model') {
+      next.agents[agentName].model = parseNonEmptyString(
+        path,
+        resolvedValue,
+        `/config set agents.${agentName}.model gpt-5.3-codex`,
+      );
+      return next;
+    }
+    if (field === 'command') {
+      next.agents[agentName].command = parseNonEmptyString(
+        path,
+        resolvedValue,
+        `/config set agents.${agentName}.command ollama`,
+      );
+      return next;
+    }
+    if (field === 'args') {
+      next.agents[agentName].args = parseDelimitedStringList(
+        path,
+        resolvedValue,
+        `/config set agents.${agentName}.args run,gemma4:latest,{{prompt}}`,
+      );
+      return next;
+    }
+    next.agents[agentName].capabilities = parseDelimitedStringList(
       path,
       resolvedValue,
-      `/config set agents.${agentName}.model gpt-5.3-codex`,
+      `/config set agents.${agentName}.capabilities implement,review`,
     );
     return next;
   }
@@ -289,9 +429,16 @@ function readConfigValue(config: FullConfig, path: string): unknown {
   }
   if (path === 'errorHandling.default.retry') return config.errorHandling.default.retry;
 
-  const agentMatch = /^agents\.([^.]+)\.model$/.exec(path);
+  const agentMatch = /^agents\.([^.]+)\.(adapter|model|command|args|capabilities)$/.exec(path);
   if (agentMatch) {
-    return config.agents[agentMatch[1]]?.model;
+    const agent = config.agents[agentMatch[1]];
+    const field = agentMatch[2];
+    if (!agent) return undefined;
+    if (field === 'adapter') return agent.adapter;
+    if (field === 'model') return agent.model;
+    if (field === 'command') return agent.command;
+    if (field === 'args') return agent.args;
+    return agent.capabilities;
   }
   return undefined;
 }
@@ -341,6 +488,100 @@ export function setConfigValue(
     path,
     previousValue,
     nextValue: readConfigValue(next, path),
+    config: next,
+  };
+}
+
+export function addAgent(
+  cwd: string,
+  nameRaw: string,
+  options: {
+    adapter?: string;
+    model?: string;
+    command?: string;
+    args?: string[];
+    capabilities?: string[];
+    scope?: ConfigScope;
+  } = {},
+): ConfigAddAgentResult {
+  const name = parseAgentName(nameRaw);
+  const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
+  const current = loadEffectiveConfig(cwd);
+
+  if (current.agents[name]) {
+    throw new Error(`Agent "${name}" already exists.`);
+  }
+
+  const adapter = options.adapter?.trim() || 'generic';
+  const model = options.model?.trim();
+  const command = options.command?.trim();
+  const args = options.args
+    ?.map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const capabilities = options.capabilities
+    ?.map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  const agent: AgentConfig = {
+    adapter,
+  };
+  if (model) agent.model = model;
+  if (command) {
+    agent.command = command;
+  } else if (adapter === 'generic') {
+    agent.command = name;
+  }
+  if (args && args.length > 0) agent.args = uniqueOrdered(args);
+  if (capabilities && capabilities.length > 0) agent.capabilities = uniqueOrdered(capabilities);
+
+  const next = structuredClone(current);
+  next.agents[name] = agent;
+
+  validateConfigOrThrow(next);
+  const filePath = saveConfigByScope(scope, cwd, next);
+  return {
+    scope,
+    filePath,
+    name,
+    agent,
+    config: next,
+  };
+}
+
+export function removeAgent(
+  cwd: string,
+  nameRaw: string,
+  options: { scope?: ConfigScope } = {},
+): ConfigRemoveAgentResult {
+  const name = parseAgentName(nameRaw);
+  const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
+  const current = loadEffectiveConfig(cwd);
+  const existing = current.agents[name];
+  if (!existing) {
+    throw new Error(`Agent "${name}" does not exist.`);
+  }
+  if (current.orchestrator.cli === name) {
+    throw new Error(
+      `Cannot remove agent "${name}" because orchestrator.cli is set to it. Set orchestrator.cli first.`,
+    );
+  }
+  const referencedSteps = current.workflow.steps.filter((step) => step.agent === name);
+  if (referencedSteps.length > 0) {
+    throw new Error(
+      `Cannot remove agent "${name}" because workflow.steps reference it (${referencedSteps.length} step${referencedSteps.length === 1 ? '' : 's'}). Update workflow first.`,
+    );
+  }
+
+  const next = structuredClone(current);
+  delete next.agents[name];
+
+  validateConfigOrThrow(next);
+  const filePath = saveConfigByScope(scope, cwd, next);
+  return {
+    scope,
+    filePath,
+    name,
+    removedAgent: existing,
     config: next,
   };
 }
