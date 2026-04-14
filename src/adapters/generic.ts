@@ -120,8 +120,8 @@ export class GenericAdapter implements AgentAdapter {
 
     logger.debug(`[adapter:${this.name}] execute finished`, {
       exitCode: result.exitCode,
-      stdoutChars: result.stdout.length,
-      stderrChars: result.stderr.length,
+      stdoutChars: result.stdout?.length ?? 0,
+      stderrChars: result.stderr?.length ?? 0,
     });
 
     if (result.exitCode !== 0 && !result.stdout) {

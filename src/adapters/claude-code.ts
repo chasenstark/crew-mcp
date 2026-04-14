@@ -40,18 +40,48 @@ function preview(text: string | undefined, max = 600): string {
  * Extracts the final result envelope from claude's stream-json output, which
  * emits one JSON object per line. The last `type: "result"` line is the
  * summary equivalent to non-streaming `--output-format json`.
+ *
+ * When the process is killed before completing (timeout, cancellation), no
+ * result line is emitted. In that case we fall back to constructing a
+ * synthetic envelope from whatever assistant text was streamed so upstream
+ * code can still surface partial output instead of losing it entirely.
  */
-function findStreamResultLine(stdout: string): string | undefined {
+function extractStreamEnvelope(stdout: string): ClaudeResponse | undefined {
+  if (!stdout) return undefined;
   const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  const assistantChunks: string[] = [];
+  let sessionId: string | undefined;
+
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
-      const obj = JSON.parse(lines[i]) as { type?: string };
-      if (obj.type === 'result') return lines[i];
+      const obj = JSON.parse(lines[i]) as { type?: string; session_id?: string };
+      if (obj.type === 'result') {
+        return ClaudeResponseSchema.parse(obj);
+      }
     } catch {
       // non-JSON line, skip
     }
   }
-  return undefined;
+
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line) as { type?: string; session_id?: string };
+      if (obj.session_id && !sessionId) sessionId = obj.session_id;
+      const chunk = extractAssistantTextFromStreamLine(line);
+      if (chunk) assistantChunks.push(chunk);
+    } catch {
+      // non-JSON line, skip
+    }
+  }
+
+  if (assistantChunks.length === 0) return undefined;
+  return {
+    type: 'result',
+    subtype: 'partial',
+    result: assistantChunks.join(''),
+    session_id: sessionId,
+    is_error: true,
+  };
 }
 
 /**
@@ -195,27 +225,29 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       };
     }
 
+    const stdoutText = result.stdout ?? '';
+    const stderrText = result.stderr ?? '';
     logger.debug('[adapter:claude-code] execute finished', {
       exitCode: result.exitCode,
-      stdoutChars: result.stdout.length,
-      stderrChars: result.stderr.length,
+      stdoutChars: stdoutText.length,
+      stderrChars: stderrText.length,
     });
 
     // CLI crash: non-zero exit code and no stdout
-    if (!result.stdout && result.exitCode !== 0) {
+    if (!stdoutText && result.exitCode !== 0) {
       logger.error('[adapter:claude-code] command failed with no stdout', {
         exitCode: result.exitCode,
-        stderrPreview: preview(result.stderr),
+        stderrPreview: preview(stderrText),
       });
       return {
-        output: result.stderr || 'Claude CLI exited with no output',
+        output: stderrText || 'Claude CLI exited with no output',
         filesModified: [],
         status: 'error',
         metadata: {
           rawEvents: [
             {
               exitCode: result.exitCode,
-              stderr: result.stderr,
+              stderr: stderrText,
             },
           ],
         },
@@ -224,30 +256,34 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     // Parse JSON response. In stream-json mode the envelope is the last
     // line of type "result"; in json mode the entire stdout is the envelope.
-    const envelopeText = streaming
-      ? findStreamResultLine(result.stdout)
-      : result.stdout;
+    let parsed: ClaudeResponse | undefined;
+    let parseError: string | undefined;
+    if (streaming) {
+      parsed = extractStreamEnvelope(stdoutText);
+      if (!parsed) parseError = 'no result envelope or assistant text in stream';
+    } else {
+      try {
+        parsed = ClaudeResponseSchema.parse(JSON.parse(stdoutText));
+      } catch (error: unknown) {
+        parseError = error instanceof Error ? error.message : 'JSON parse error';
+      }
+    }
 
-    let parsed: ClaudeResponse;
-    try {
-      if (!envelopeText) throw new Error('no result envelope in stream');
-      parsed = ClaudeResponseSchema.parse(JSON.parse(envelopeText));
-    } catch (error: unknown) {
+    if (!parsed) {
       logger.error('[adapter:claude-code] failed to parse JSON output', {
         exitCode: result.exitCode,
-        stdoutPreview: preview(result.stdout),
-        stderrPreview: preview(result.stderr),
+        stdoutPreview: preview(stdoutText),
+        stderrPreview: preview(stderrText),
       });
       return {
-        output: result.stdout || 'Failed to parse Claude response',
+        output: stdoutText || 'Failed to parse Claude response',
         filesModified: [],
         status: 'error',
         metadata: {
           rawEvents: [
             {
-              parseError:
-                error instanceof Error ? error.message : 'JSON parse error',
-              rawStdout: result.stdout,
+              parseError,
+              rawStdout: stdoutText,
             },
           ],
         },
@@ -336,31 +372,33 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       throw new Error(`Claude execution failed before producing output: ${message}`);
     }
 
+    const schemaStdout = result.stdout ?? '';
+    const schemaStderr = result.stderr ?? '';
     logger.debug('[adapter:claude-code] executeWithSchema finished', {
       exitCode: result.exitCode,
-      stdoutChars: result.stdout.length,
-      stderrChars: result.stderr.length,
+      stdoutChars: schemaStdout.length,
+      stderrChars: schemaStderr.length,
     });
 
-    if (!result.stdout) {
+    if (!schemaStdout) {
       logger.error('[adapter:claude-code] executeWithSchema returned no stdout', {
         exitCode: result.exitCode,
-        stderrPreview: preview(result.stderr),
+        stderrPreview: preview(schemaStderr),
       });
       throw new Error(
-        `Claude CLI returned no output (exit code ${result.exitCode}): ${result.stderr}`,
+        `Claude CLI returned no output (exit code ${result.exitCode}): ${schemaStderr}`,
       );
     }
 
     let parsed: ClaudeResponse;
     try {
-      parsed = ClaudeResponseSchema.parse(JSON.parse(result.stdout));
+      parsed = ClaudeResponseSchema.parse(JSON.parse(schemaStdout));
     } catch {
       logger.error('[adapter:claude-code] executeWithSchema failed to parse JSON envelope', {
-        stdoutPreview: preview(result.stdout),
-        stderrPreview: preview(result.stderr),
+        stdoutPreview: preview(schemaStdout),
+        stderrPreview: preview(schemaStderr),
       });
-      throw new Error(`Failed to parse Claude response: ${result.stdout}`);
+      throw new Error(`Failed to parse Claude response: ${schemaStdout}`);
     }
 
     if (parsed.is_error) {

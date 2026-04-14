@@ -136,6 +136,21 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.metadata.rawEvents).toBeDefined();
     });
 
+    it('does not crash when execa returns undefined stdout (cancellation edge case)', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: undefined,
+        stderr: undefined,
+        exitCode: 143,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      expect(result.status).toBe('error');
+    });
+
     it('handles JSON parse errors', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: 'not valid json {{{',

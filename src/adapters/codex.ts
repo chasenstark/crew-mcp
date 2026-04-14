@@ -234,8 +234,8 @@ export class CodexAdapter implements AgentAdapter {
 
       logger.debug('[adapter:codex] execute finished', {
         exitCode: result.exitCode,
-        stdoutChars: result.stdout.length,
-        stderrChars: result.stderr.length,
+        stdoutChars: result.stdout?.length ?? 0,
+        stderrChars: result.stderr?.length ?? 0,
       });
 
       if (result.exitCode !== 0 && !result.stdout) {
@@ -374,8 +374,8 @@ export class CodexAdapter implements AgentAdapter {
 
       logger.debug('[adapter:codex] executeWithSchema finished', {
         exitCode: result.exitCode,
-        stdoutChars: result.stdout.length,
-        stderrChars: result.stderr.length,
+        stdoutChars: result.stdout?.length ?? 0,
+        stderrChars: result.stderr?.length ?? 0,
       });
 
       if (result.exitCode !== 0 && !result.stdout) {
