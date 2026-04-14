@@ -3,53 +3,67 @@ import { join } from 'path';
 import { homedir } from 'os';
 import chalk from 'chalk';
 
-const DEFAULT_WORKFLOW_YAML = `# Orchestra Workflow Configuration
-# See documentation for all options.
+const DEFAULT_WORKFLOW_YAML = `# Default workflow configuration for the orchestrator.
+# Edit this file to customize agents, models, and workflow behavior.
 
-version: "1"
+workflow:
+  name: default
+  steps:
+    - role: coder
+      agent: claude-code
+      action: implement
 
-# Default agent preferences
-defaults:
-  agent: claude-code
-  timeout: 300000
-  maxTurns: 20
-  sandbox: workspace-write
+    - role: reviewer
+      agent: codex
+      action: review
+      max_passes: 3
 
-# Agent-specific overrides
+    - role: judge
+      agent: orchestrator
+      action: evaluate_review
+      criteria:
+        - "Are the review findings actionable?"
+        - "Is the fix complete and correct?"
+
+    - role: coder
+      agent: claude-code
+      action: fix_review_issues
+      condition: "judge says fixes needed"
+
+  completion:
+    strategy: judge_approval
+    fallback: max_passes
+
 agents:
   claude-code:
-    capabilities:
-      - implement
-      - review
-      - refactor
-      - test
-      - document
-      - analyze
+    adapter: claude-code
+    auth: subscription
+    model: claude-opus-4-6
+    strengths:
+      - implementation
+      - refactoring
+      - TypeScript
+      - React
+
   codex:
-    capabilities:
-      - implement
+    adapter: codex
+    auth: subscription
+    model: gpt-5.3-codex
+    strengths:
       - review
-      - refactor
-      - test
-      - analyze
+      - testing
+      - Python
+      - security
 
-# Workflow templates
-workflows:
-  implement:
-    description: "Implement a new feature"
-    steps:
-      - agent: claude-code
-        role: implement
-      - agent: codex
-        role: review
+orchestrator:
+  cli: claude-code
+  model: claude-sonnet-4-5
 
-  review:
-    description: "Review existing code"
-    steps:
-      - agent: codex
-        role: review
-      - agent: claude-code
-        role: analyze
+error_handling:
+  default:
+    retry: 1
+    fallback: null
+    on_exhausted: ask_user
 `;
 
 export async function initCommand(options: { project?: boolean; cwd?: string } = {}): Promise<void> {
