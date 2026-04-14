@@ -44,7 +44,11 @@ const mockReport = vi.mocked(report);
 function createHarness(workflowOverride?: {
   name: string;
   steps: Array<{ role: string; agent: string; action: string; maxPasses?: number }>;
+  roleModels?: Record<string, string>;
   completion: { strategy: string; fallback: string };
+}, runtimeModelOptions?: {
+  orchestratorModel?: string;
+  agentModels?: Record<string, string | undefined>;
 }) {
   const agentExecute = vi.fn<AgentAdapter['execute']>().mockResolvedValue({
     output: 'agent output',
@@ -105,6 +109,7 @@ function createHarness(workflowOverride?: {
     },
     state as never,
     worktreeManager as never,
+    runtimeModelOptions,
   );
 
   return { pipeline, state, agentExecute, worktreeManager };
@@ -284,6 +289,86 @@ describe('Pipeline', () => {
 
     const executeCall = agentExecute.mock.calls[0]?.[0];
     expect(executeCall.context.workingDirectory).toBe('/tmp/worktrees/task-1');
+  });
+
+  it('uses roleModels.<task role> before agent model', async () => {
+    const { pipeline, agentExecute } = createHarness({
+      name: 'role-model-direct',
+      steps: [{ role: 'reviewer', agent: 'agent-a', action: 'review' }],
+      roleModels: { review: 'gpt-5.4-mini' },
+      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+    }, {
+      agentModels: { 'agent-a': 'fallback-agent-model' },
+    });
+
+    mockDecompose.mockResolvedValue({
+      reasoning: 'review task',
+      tasks: [
+        {
+          id: 'task-1',
+          description: 'Review implementation',
+          agent: 'agent-a',
+          role: 'review' as const,
+          dependencies: [],
+          scope: { files: ['src/a.ts'], description: 'review scope' },
+          estimatedComplexity: 'low' as const,
+        },
+      ],
+      suggestedOrder: ['task-1'],
+    });
+
+    await pipeline.run('Review thing');
+
+    const executeCall = agentExecute.mock.calls[0]?.[0];
+    expect(executeCall.constraints?.model).toBe('gpt-5.4-mini');
+  });
+
+  it('uses roleModels.<step role> when task role matches workflow action', async () => {
+    const { pipeline, agentExecute } = createHarness({
+      name: 'role-model-action-alias',
+      steps: [{ role: 'reviewer', agent: 'agent-a', action: 'review' }],
+      roleModels: { reviewer: 'gpt-5.4' },
+      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+    }, {
+      agentModels: { 'agent-a': 'fallback-agent-model' },
+    });
+
+    mockDecompose.mockResolvedValue({
+      reasoning: 'review task',
+      tasks: [
+        {
+          id: 'task-1',
+          description: 'Review implementation',
+          agent: 'agent-a',
+          role: 'review' as const,
+          dependencies: [],
+          scope: { files: ['src/a.ts'], description: 'review scope' },
+          estimatedComplexity: 'low' as const,
+        },
+      ],
+      suggestedOrder: ['task-1'],
+    });
+
+    await pipeline.run('Review thing');
+
+    const executeCall = agentExecute.mock.calls[0]?.[0];
+    expect(executeCall.constraints?.model).toBe('gpt-5.4');
+  });
+
+  it('uses workflow judge role model for judge step', async () => {
+    const { pipeline } = createHarness({
+      name: 'judge-role-model',
+      steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
+      roleModels: { judge: 'gpt-5.4' },
+      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+    }, {
+      orchestratorModel: 'claude-sonnet-4-5',
+    });
+
+    await pipeline.run('Build thing');
+
+    const judgeModelArg = mockJudge.mock.calls[0]?.[5];
+    expect(judgeModelArg).toBe('gpt-5.4');
   });
 
   it('requests user input when judge asks user and resumes with response', async () => {

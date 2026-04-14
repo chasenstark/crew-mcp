@@ -55,6 +55,7 @@ export interface ConfigRemoveAgentResult {
 export const SUPPORTED_CONFIG_SET_PATHS = [
   'orchestrator.cli',
   'orchestrator.model',
+  'workflow.roleModels.<role>',
   'agents.<name>.adapter',
   'agents.<name>.model',
   'agents.<name>.command',
@@ -112,6 +113,40 @@ function withCurrentOption(options: string[], current: unknown): string[] {
   return [...options, asString];
 }
 
+function modelPresetsForAdapterType(adapterType: string): string[] {
+  if (adapterType === 'claude-code') return CLAUDE_MODEL_PRESETS;
+  if (adapterType === 'codex') return CODEX_MODEL_PRESETS;
+  return [];
+}
+
+function modelPresetsForAgent(config: FullConfig, agentName: string): string[] {
+  const agent = config.agents[agentName];
+  if (!agent) return [];
+  const adapterType = agent.adapter ?? agentName;
+  return withCurrentOption(modelPresetsForAdapterType(adapterType), agent.model);
+}
+
+function modelPresetsForRole(config: FullConfig, role: string): string[] {
+  const candidates: string[] = [];
+  for (const step of config.workflow.steps) {
+    if (step.role !== role && step.action !== role) continue;
+    if (step.agent === 'orchestrator') {
+      candidates.push(...ORCHESTRATOR_MODEL_PRESETS);
+      continue;
+    }
+    candidates.push(...modelPresetsForAgent(config, step.agent));
+  }
+
+  if (candidates.length === 0) {
+    if (role === 'judge') {
+      candidates.push(...ORCHESTRATOR_MODEL_PRESETS);
+    } else {
+      candidates.push(...CLAUDE_MODEL_PRESETS, ...CODEX_MODEL_PRESETS);
+    }
+  }
+  return uniqueOrdered(candidates);
+}
+
 export function getConfigValueOptions(config: FullConfig, path: string): string[] {
   if (path === 'orchestrator.cli') {
     const otherAgents = Object.keys(config.agents)
@@ -127,6 +162,15 @@ export function getConfigValueOptions(config: FullConfig, path: string): string[
 
   if (path === 'orchestrator.model') {
     return withCurrentOption(ORCHESTRATOR_MODEL_PRESETS, config.orchestrator.model);
+  }
+
+  const roleMatch = /^workflow\.roleModels\.([^.]+)$/.exec(path);
+  if (roleMatch) {
+    const role = roleMatch[1];
+    return withCurrentOption(
+      modelPresetsForRole(config, role),
+      config.workflow.roleModels?.[role],
+    );
   }
 
   if (path === 'workflow.reviewer.maxPasses') {
@@ -159,14 +203,7 @@ export function getConfigValueOptions(config: FullConfig, path: string): string[
     return withCurrentOption(CAPABILITY_PRESETS, current);
   }
 
-  const adapterType = agent.adapter ?? agentName;
-  let presets: string[] = [];
-  if (adapterType === 'claude-code') {
-    presets = CLAUDE_MODEL_PRESETS;
-  } else if (adapterType === 'codex') {
-    presets = CODEX_MODEL_PRESETS;
-  }
-  return withCurrentOption(presets, agent.model);
+  return withCurrentOption(modelPresetsForAgent(config, agentName), agent.model);
 }
 
 function invalidValueMessage(path: string, expected: string, received: unknown, example: string): string {
@@ -181,6 +218,7 @@ function unsupportedPathError(path: string): Error {
       `Supported paths: ${SUPPORTED_CONFIG_SET_PATHS.join(', ')}`,
       'Examples:',
       '  /config set orchestrator.cli codex',
+      '  /config set workflow.roleModels.reviewer gpt-5.4',
       '  /config set agents.local-gemma.adapter generic',
       '  /config set agents.local-gemma.command ollama',
       '  /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}',
@@ -341,6 +379,18 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
     return next;
   }
 
+  const roleModelMatch = /^workflow\.roleModels\.([^.]+)$/.exec(path);
+  if (roleModelMatch) {
+    const role = roleModelMatch[1];
+    if (!next.workflow.roleModels) next.workflow.roleModels = {};
+    next.workflow.roleModels[role] = parseNonEmptyString(
+      path,
+      resolvedValue,
+      '/config set workflow.roleModels.reviewer gpt-5.4',
+    );
+    return next;
+  }
+
   if (path === 'workflow.reviewer.maxPasses') {
     const reviewerIndex = readReviewStepIndex(next);
     if (reviewerIndex < 0) {
@@ -422,6 +472,10 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
 function readConfigValue(config: FullConfig, path: string): unknown {
   if (path === 'orchestrator.cli') return config.orchestrator.cli;
   if (path === 'orchestrator.model') return config.orchestrator.model;
+  const roleModelMatch = /^workflow\.roleModels\.([^.]+)$/.exec(path);
+  if (roleModelMatch) {
+    return config.workflow.roleModels?.[roleModelMatch[1]];
+  }
   if (path === 'workflow.reviewer.maxPasses') {
     const reviewerIndex = readReviewStepIndex(config);
     const reviewer = reviewerIndex >= 0 ? config.workflow.steps[reviewerIndex] : undefined;

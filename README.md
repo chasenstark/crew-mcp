@@ -123,6 +123,9 @@ orchestrator config show
 orchestrator config set orchestrator.cli codex
 orchestrator config set orchestrator.model claude-sonnet-4-5
 orchestrator config set orchestrator.model next
+orchestrator config set workflow.roleModels.reviewer gpt-5.4
+orchestrator config set workflow.roleModels.fix_review_issues claude-opus-4-6
+orchestrator config set workflow.roleModels.reviewer next
 orchestrator config set agents.codex.adapter codex
 orchestrator config set agents.codex.model gpt-5.4
 orchestrator config set agents.codex.model prev
@@ -156,6 +159,7 @@ In interactive `orchestrator run` mode, `/config` slash commands are also availa
 /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
 /config set agents.local-gemma.capabilities implement,review
 /config set orchestrator.cli codex
+/config set workflow.roleModels.reviewer gpt-5.4
 /config remove-agent local-gemma
 /config reset
 ```
@@ -200,6 +204,11 @@ workflow:
       action: review
       max_passes: 3
 
+  role_models:
+    reviewer: gpt-5.4
+    fix_review_issues: claude-opus-4-6
+    judge: claude-opus-4-6
+
   completion:
     strategy: judge_approval
     fallback: max_passes
@@ -224,6 +233,12 @@ error_handling:
     retry: 1
     on_exhausted: ask_user
 ```
+
+Model selection precedence:
+1. `workflow.role_models.<task role>`.
+2. If a task role matches a workflow step `action`, then `workflow.role_models.<step role>`.
+3. `agents.<agent>.model`.
+4. For orchestrator judge decisions, `workflow.role_models.judge` overrides `orchestrator.model`.
 
 ### Custom Agents
 

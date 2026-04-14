@@ -116,6 +116,13 @@ describe('config-service', () => {
     expect(result.nextValue).toBe('claude-opus-4-6');
   });
 
+  it('supports cycling with "next" for role model fields', () => {
+    const result = setConfigValue(cwd, 'workflow.roleModels.reviewer', 'next');
+    expect(result.nextValue).toBe('gpt-5.4');
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.workflow.roleModels?.reviewer).toBe('gpt-5.4');
+  });
+
   it('supports cycling with "prev" for numeric fields', () => {
     const result = setConfigValue(cwd, 'errorHandling.default.retry', 'prev');
     expect(result.nextValue).toBe(0);
@@ -130,6 +137,16 @@ describe('config-service', () => {
     const options = getConfigValueOptions(getDefaultConfig(), 'agents.codex.adapter');
     expect(options).toContain('generic');
     expect(options).toContain('codex');
+  });
+
+  it('returns role-model options for a role key and action key', () => {
+    const reviewerOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.reviewer');
+    expect(reviewerOptions).toContain('gpt-5.4');
+    expect(reviewerOptions).toContain('gpt-5.3-codex');
+
+    const fixOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.fix_review_issues');
+    expect(fixOptions).toContain('claude-sonnet-4-5');
+    expect(fixOptions).toContain('claude-opus-4-6');
   });
 
   it('returns no reviewer presets when no review step exists', () => {
@@ -151,6 +168,12 @@ describe('config-service', () => {
     expect(() =>
       setConfigValue(cwd, 'agents.unknown.model', 'foo'),
     ).toThrow(/unknown agent "unknown"/i);
+  });
+
+  it('rejects unknown role-model keys', () => {
+    expect(() =>
+      setConfigValue(cwd, 'workflow.roleModels.unknownRole', 'gpt-5.4'),
+    ).toThrow(/workflow\.roleModels\.unknownRole/);
   });
 
   it('adds and removes a custom agent', () => {

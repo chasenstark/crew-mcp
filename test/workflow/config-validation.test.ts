@@ -40,4 +40,31 @@ describe('config-validation', () => {
     const diagnostics = validateConfig(config);
     expect(diagnostics.some((d) => d.path === 'agents.custom-codex.adapter')).toBe(true);
   });
+
+  it('accepts role model keys that exist in workflow roles/actions', () => {
+    const config = getDefaultConfig();
+    config.workflow.roleModels = {
+      reviewer: 'gpt-5.4',
+      fix_review_issues: 'claude-opus-4-6',
+    };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path.startsWith('workflow.roleModels'))).toBe(false);
+  });
+
+  it('rejects unknown role model keys', () => {
+    const config = getDefaultConfig();
+    config.workflow.roleModels = { unknown: 'gpt-5.4' };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.unknown')).toBe(true);
+  });
+
+  it('rejects empty role model values', () => {
+    const config = getDefaultConfig();
+    config.workflow.roleModels = { reviewer: '   ' };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.reviewer')).toBe(true);
+  });
 });

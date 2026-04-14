@@ -20,6 +20,7 @@ export interface AgentConfig {
 export interface WorkflowConfig {
   name: string;
   steps: WorkflowStep[];
+  roleModels?: Record<string, string>;
   completion: {
     strategy: string;
     fallback: string;

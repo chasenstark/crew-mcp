@@ -79,6 +79,18 @@ function formatChangedValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function workflowRoles(config: { workflow: { steps: Array<{ role: string; action: string }>; roleModels?: Record<string, string> } }): string[] {
+  const keys = new Set<string>();
+  for (const step of config.workflow.steps) {
+    keys.add(step.role);
+    keys.add(step.action);
+  }
+  for (const role of Object.keys(config.workflow.roleModels ?? {})) {
+    keys.add(role);
+  }
+  return [...keys].sort();
+}
+
 interface SelectOption {
   label: string;
   value: string;
@@ -434,6 +446,23 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     const before = draft.orchestrator.model;
     draft = applyConfigPatch(draft, { path: 'orchestrator.model', value: orchestratorModelValue });
     changes.push({ path: 'orchestrator.model', before, after: draft.orchestrator.model });
+  }
+
+  for (const role of workflowRoles(draft)) {
+    const rolePath = `workflow.roleModels.${role}`;
+    const roleModelValue = await askFieldValue({
+      label: rolePath,
+      currentValue: draft.workflow.roleModels?.[role],
+      defaultValue: defaults.workflow.roleModels?.[role],
+      description: `Optional model override for workflow role/action "${role}".`,
+      options: getConfigValueOptions(draft, rolePath),
+    });
+    if (!roleModelValue) continue;
+
+    const before = draft.workflow.roleModels?.[role];
+    draft = applyConfigPatch(draft, { path: rolePath, value: roleModelValue });
+    const after = draft.workflow.roleModels?.[role];
+    changes.push({ path: rolePath, before, after });
   }
 
   const agentNames = Object.keys(draft.agents).sort();

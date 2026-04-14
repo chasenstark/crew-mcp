@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { parseWorkflowYaml, getDefaultConfig, mergeConfigs, loadWorkflowConfig, getGlobalConfigPath } from '../../src/workflow/loader.js';
+import {
+  parseWorkflowYaml,
+  serializeWorkflowYaml,
+  getDefaultConfig,
+  mergeConfigs,
+  loadWorkflowConfig,
+  getGlobalConfigPath,
+} from '../../src/workflow/loader.js';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -45,6 +52,24 @@ orchestrator:
     const config = parseWorkflowYaml(yaml);
     expect(config.agents['claude-code'].model).toBe('claude-sonnet-4-5');
     expect(config.orchestrator.model).toBe('claude-opus-4-1');
+  });
+
+  it('parses workflow role_models', () => {
+    const yaml = `
+workflow:
+  name: role-models
+  role_models:
+    reviewer: gpt-5.4
+    fix_review_issues: claude-opus-4-6
+  steps: []
+orchestrator:
+  cli: claude-code
+`;
+    const config = parseWorkflowYaml(yaml);
+    expect(config.workflow.roleModels).toEqual({
+      reviewer: 'gpt-5.4',
+      fix_review_issues: 'claude-opus-4-6',
+    });
   });
 
   it('parses generic agent command/args/capabilities fields', () => {
@@ -150,6 +175,40 @@ orchestrator:
     const merged = mergeConfigs(baseConfig, override);
     expect(merged.orchestrator.model).toBe('claude-sonnet-4-5');
     expect(merged.orchestrator.cli).toBe(baseConfig.orchestrator.cli);
+  });
+
+  it('merges workflow role models with override priority', () => {
+    const base = getDefaultConfig();
+    base.workflow.roleModels = {
+      reviewer: 'gpt-5.3-codex',
+      coder: 'claude-opus-4-6',
+    };
+
+    const override = getDefaultConfig();
+    override.workflow.roleModels = {
+      reviewer: 'gpt-5.4',
+      judge: 'claude-sonnet-4-5',
+    };
+
+    const merged = mergeConfigs(base, override);
+    expect(merged.workflow.roleModels).toEqual({
+      reviewer: 'gpt-5.4',
+      coder: 'claude-opus-4-6',
+      judge: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('serializes workflow role models as role_models', () => {
+    const config = getDefaultConfig();
+    config.workflow.roleModels = {
+      reviewer: 'gpt-5.4',
+      judge: 'claude-opus-4-6',
+    };
+
+    const yaml = serializeWorkflowYaml(config);
+    expect(yaml).toContain('role_models:');
+    expect(yaml).toContain('reviewer: gpt-5.4');
+    expect(yaml).toContain('judge: claude-opus-4-6');
   });
 
   it('override steps replace base steps entirely', () => {

@@ -34,6 +34,7 @@ describe('handleConfigSlashCommand', () => {
     const response = handleConfigSlashCommand('/config', { cwd, isRunning: false });
     expect(response).toContain('/config help');
     expect(response).toContain('/config set orchestrator.cli <value>');
+    expect(response).toContain('/config set workflow.roleModels.<role> <value>');
     expect(response).toContain('/config add-agent <name> [adapter] [command]');
   });
 
@@ -59,6 +60,16 @@ describe('handleConfigSlashCommand', () => {
     expect(response).toContain('Configuration updated');
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.orchestrator.model).toBe('claude-opus-4-6');
+  });
+
+  it('updates role model override with slash set command', () => {
+    const response = handleConfigSlashCommand(
+      '/config set workflow.roleModels.reviewer gpt-5.4',
+      { cwd, isRunning: false },
+    );
+    expect(response).toContain('Configuration updated');
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.workflow.roleModels?.reviewer).toBe('gpt-5.4');
   });
 
   it('sets active scope', () => {

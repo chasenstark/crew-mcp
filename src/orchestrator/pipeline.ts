@@ -42,6 +42,8 @@ interface ResumeParams {
   previousSummaries: PassSummary[];
 }
 
+type OrchestratorStage = 'decompose' | 'dispatch' | 'ingest' | 'summarize' | 'judge' | 'report';
+
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -140,6 +142,29 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
     this.rejectPendingUserInput(reason);
   }
 
+  private resolveTaskModel(task: { role: string; agent: string }): string | undefined {
+    const roleModels = this.workflow.roleModels ?? {};
+    const directRoleModel = roleModels[task.role]?.trim();
+    if (directRoleModel) return directRoleModel;
+
+    const stepByAction = this.workflow.steps.find((step) => step.action === task.role);
+    if (stepByAction) {
+      const stepRoleModel = roleModels[stepByAction.role]?.trim();
+      if (stepRoleModel) return stepRoleModel;
+    }
+
+    const agentModel = this.agentModels[task.agent]?.trim();
+    return agentModel || undefined;
+  }
+
+  private resolveOrchestratorModel(stage: OrchestratorStage): string | undefined {
+    if (stage === 'judge') {
+      const roleModel = this.workflow.roleModels?.judge?.trim();
+      if (roleModel) return roleModel;
+    }
+    return this.orchestratorModel;
+  }
+
   /**
    * Execute the full orchestration pipeline for a user request.
    *
@@ -163,7 +188,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         userRequest,
         agents,
         this.workflow,
-        this.orchestratorModel,
+        this.resolveOrchestratorModel('decompose'),
       );
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -375,7 +400,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
           this.orchestrator,
           summaries,
           userRequest,
-          this.orchestratorModel,
+          this.resolveOrchestratorModel('report'),
         );
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -443,7 +468,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         { description: task.description, role: task.role },
         localSummaries,
         currentPass,
-        this.orchestratorModel,
+        this.resolveOrchestratorModel('dispatch'),
       );
 
       this.emit('step:complete', 'dispatch', { taskId: task.id, taskDescription: task.description, pass: currentPass });
@@ -471,7 +496,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
           files: task.scope.files,
         },
         constraints: {
-          model: this.agentModels[task.agent],
+          model: this.resolveTaskModel(task),
           signal: this.activeAbortController?.signal,
         },
         onOutput: (chunk) => this.emit('agent:output', agent.name, task.id, chunk),
@@ -504,7 +529,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.orchestrator,
         task.description,
         agentResult,
-        this.orchestratorModel,
+        this.resolveOrchestratorModel('ingest'),
       );
 
       this.emit('step:complete', 'ingest', {
@@ -544,7 +569,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.orchestrator,
         latestIngest,
         globalPass,
-        this.orchestratorModel,
+        this.resolveOrchestratorModel('summarize'),
       );
 
       this.emit('step:complete', 'summarize', {
@@ -565,7 +590,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         localSummaries,
         currentPass,
         maxPasses,
-        this.orchestratorModel,
+        this.resolveOrchestratorModel('judge'),
       );
 
       this.emit('step:complete', 'judge', {

@@ -22,12 +22,18 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
     };
   }
 
+  const mergedRoleModels = {
+    ...(base.workflow.roleModels ?? {}),
+    ...(override.workflow.roleModels ?? {}),
+  };
+
   return {
     workflow: {
       name: override.workflow.name ?? base.workflow.name,
       steps: override.workflow.steps.length > 0
         ? override.workflow.steps
         : base.workflow.steps,
+      roleModels: Object.keys(mergedRoleModels).length > 0 ? mergedRoleModels : undefined,
       completion: override.workflow.completion ?? base.workflow.completion,
     },
     agents: mergedAgents,
@@ -48,6 +54,7 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   const parsed = asObject(YAML.parse(yamlContent));
   const parsedWorkflow = asObject(parsed.workflow);
   const parsedCompletion = asObject(parsedWorkflow.completion);
+  const parsedRoleModels = asObject(parsedWorkflow.role_models);
   const parsedErrorHandling = asObject(parsed.error_handling);
   const parsedErrorDefault = asObject(parsedErrorHandling.default);
   const parsedAgentsRoot = asObject(parsed.agents);
@@ -87,6 +94,12 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     },
     {},
   );
+  const roleModels = Object.entries(parsedRoleModels).reduce<Record<string, string>>((acc, [key, value]) => {
+    if (typeof value === 'string') {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
 
   const rawOrchestrator = asObject(parsed.orchestrator);
 
@@ -111,6 +124,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
       steps: Array.isArray(parsedWorkflow.steps)
         ? parsedWorkflow.steps.map(toWorkflowStep)
         : [],
+      roleModels: Object.keys(roleModels).length > 0
+        ? roleModels
+        : undefined,
       completion: {
         strategy: typeof parsedCompletion.strategy === 'string' ? parsedCompletion.strategy : 'judge_approval',
         fallback: typeof parsedCompletion.fallback === 'string' ? parsedCompletion.fallback : 'max_passes',
@@ -147,6 +163,9 @@ export function serializeWorkflowYaml(config: FullConfig): string {
         condition: step.condition,
         criteria: step.criteria,
       })),
+      role_models: config.workflow.roleModels && Object.keys(config.workflow.roleModels).length > 0
+        ? config.workflow.roleModels
+        : undefined,
       completion: {
         strategy: config.workflow.completion.strategy,
         fallback: config.workflow.completion.fallback,

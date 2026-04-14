@@ -60,6 +60,12 @@ describe('config command handlers', () => {
     expect(projectConfig?.orchestrator.model).toBe('claude-opus-4-6');
   });
 
+  it('sets role model overrides via set command', async () => {
+    await configSetCommand('workflow.roleModels.reviewer', 'gpt-5.4', { cwd });
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.workflow.roleModels?.reviewer).toBe('gpt-5.4');
+  });
+
   it('sets and shows write scope', async () => {
     await configScopeCommand('global', { cwd });
     expect(readActiveScopePreference(cwd)).toBe('global');

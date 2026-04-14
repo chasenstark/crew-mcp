@@ -47,6 +47,10 @@ function createDiagnostic(
 
 export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
   const diagnostics: ConfigDiagnostic[] = [];
+  const validRoleModelKeys = new Set([
+    ...config.workflow.steps.map((step) => step.role),
+    ...config.workflow.steps.map((step) => step.action),
+  ]);
 
   const knownOrchestratorCli = new Set([
     ...Object.keys(config.agents),
@@ -158,6 +162,29 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
           'comma-delimited values from implement|review|refactor|test|document|analyze',
           agent.capabilities,
           `/config set agents.${name}.capabilities implement,review`,
+        ),
+      );
+    }
+  }
+
+  for (const [role, model] of Object.entries(config.workflow.roleModels ?? {})) {
+    if (!validRoleModelKeys.has(role)) {
+      diagnostics.push(
+        createDiagnostic(
+          `workflow.roleModels.${role}`,
+          'role key present in workflow.steps[*].role or workflow.steps[*].action',
+          role,
+          '/config set workflow.roleModels.reviewer gpt-5.4',
+        ),
+      );
+    }
+    if (typeof model !== 'string' || model.trim().length === 0) {
+      diagnostics.push(
+        createDiagnostic(
+          `workflow.roleModels.${role}`,
+          'non-empty string',
+          model,
+          '/config set workflow.roleModels.reviewer gpt-5.4',
         ),
       );
     }
