@@ -5,6 +5,8 @@ export type ConfigSlashCommand =
   | { kind: 'show' }
   | { kind: 'edit' }
   | { kind: 'reset' }
+  | { kind: 'profile:get' }
+  | { kind: 'profile:set'; profile: string }
   | { kind: 'add-agent'; name: string; adapter?: string; command?: string }
   | { kind: 'remove-agent'; name: string }
   | { kind: 'scope:get' }
@@ -25,6 +27,11 @@ export function parseConfigSlashCommand(input: string): ConfigSlashCommand | nul
   if (subcommand === 'show') return { kind: 'show' };
   if (subcommand === 'edit') return { kind: 'edit' };
   if (subcommand === 'reset') return { kind: 'reset' };
+
+  if (subcommand === 'profile') {
+    if (tokens.length === 2) return { kind: 'profile:get' };
+    return { kind: 'profile:set', profile: tokens[2] };
+  }
 
   if (subcommand === 'add-agent') {
     if (tokens.length < 3) {

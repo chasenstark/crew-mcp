@@ -7,10 +7,12 @@ import { loadConfigByScope } from '../../src/workflow/config-repository.js';
 import {
   addAgent,
   applyConfigPatch,
+  getConfigProfile,
   getConfigValueOptions,
   getConfigScope,
   removeAgent,
   resetConfig,
+  setConfigProfile,
   setConfigScope,
   setConfigValue,
   showConfig,
@@ -51,6 +53,16 @@ describe('config-service', () => {
     expect(getConfigScope(cwd)).toBe('global');
   });
 
+  it('defaults active profile to default', () => {
+    expect(getConfigProfile(cwd)).toBe('default');
+  });
+
+  it('persists active profile preference', () => {
+    const result = setConfigProfile(cwd, 'codex-first');
+    expect(result.profile).toBe('codex-first');
+    expect(getConfigProfile(cwd)).toBe('codex-first');
+  });
+
   it('applies patch for workflow reviewer max passes', () => {
     const next = applyConfigPatch(getDefaultConfig(), {
       path: 'workflow.reviewer.maxPasses',
@@ -86,6 +98,7 @@ describe('config-service', () => {
     setConfigScope(cwd, 'global');
     const result = setConfigValue(cwd, 'errorHandling.default.retry', '4');
     expect(result.scope).toBe('global');
+    expect(result.profile).toBe('default');
     expect(result.nextValue).toBe(4);
 
     const globalConfig = loadConfigByScope('global', cwd);
@@ -217,7 +230,28 @@ describe('config-service', () => {
     setConfigValue(cwd, 'orchestrator.cli', 'codex');
     const shown = showConfig(cwd);
     expect(shown.activeScope).toBe('project');
+    expect(shown.activeProfile).toBe('default');
     expect(shown.effectiveConfig.orchestrator.cli).toBe('codex');
     expect(shown.paths.project).toContain('.orchestra/workflow.yaml');
+  });
+
+  it('writes to explicit profile when provided', () => {
+    const result = setConfigValue(cwd, 'orchestrator.cli', 'codex', { profile: 'codex-first' });
+    expect(result.profile).toBe('codex-first');
+
+    const profileConfig = loadConfigByScope('project', cwd, { profile: 'codex-first' });
+    expect(profileConfig?.orchestrator.cli).toBe('codex');
+
+    const defaultConfig = loadConfigByScope('project', cwd);
+    expect(defaultConfig).toBeNull();
+  });
+
+  it('writes to active profile when no profile option is provided', () => {
+    setConfigProfile(cwd, 'claude-first');
+    const result = setConfigValue(cwd, 'orchestrator.cli', 'codex');
+    expect(result.profile).toBe('claude-first');
+
+    const activeProfileConfig = loadConfigByScope('project', cwd, { profile: 'claude-first' });
+    expect(activeProfileConfig?.orchestrator.cli).toBe('codex');
   });
 });

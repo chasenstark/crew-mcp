@@ -2,9 +2,12 @@ import { getDefaultConfig } from './config-codec.js';
 import type { AgentConfig, FullConfig } from './types.js';
 import type { ConfigScope } from './config-repository.js';
 import {
+  DEFAULT_CONFIG_PROFILE,
   getConfigPaths,
   loadEffectiveConfig,
+  readActiveProfilePreference,
   readActiveScopePreference,
+  saveActiveProfilePreference,
   saveActiveScopePreference,
   saveConfigByScope,
 } from './config-repository.js';
@@ -17,12 +20,14 @@ export interface ConfigPatch {
 
 export interface ConfigShowResult {
   activeScope: ConfigScope;
+  activeProfile: string;
   paths: ReturnType<typeof getConfigPaths>;
   effectiveConfig: FullConfig;
 }
 
 export interface ConfigSetResult {
   scope: ConfigScope;
+  profile: string;
   filePath: string;
   path: string;
   previousValue: unknown;
@@ -32,12 +37,14 @@ export interface ConfigSetResult {
 
 export interface ConfigResetResult {
   scope: ConfigScope;
+  profile: string;
   filePath: string;
   config: FullConfig;
 }
 
 export interface ConfigAddAgentResult {
   scope: ConfigScope;
+  profile: string;
   filePath: string;
   name: string;
   agent: AgentConfig;
@@ -46,6 +53,7 @@ export interface ConfigAddAgentResult {
 
 export interface ConfigRemoveAgentResult {
   scope: ConfigScope;
+  profile: string;
   filePath: string;
   name: string;
   removedAgent: AgentConfig;
@@ -232,6 +240,17 @@ function unsupportedPathError(path: string): Error {
 function parseScope(scope: string): ConfigScope {
   if (scope === 'project' || scope === 'global') return scope;
   throw new Error(`Invalid scope "${scope}". Expected "project" or "global".`);
+}
+
+function parseProfile(profile: string): string {
+  const normalized = profile.trim();
+  if (!normalized) {
+    throw new Error('Profile name is required.');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(normalized)) {
+    throw new Error(`Invalid profile "${profile}". Use only letters, numbers, ".", "_", or "-".`);
+  }
+  return normalized;
 }
 
 function parseInteger(path: string, raw: unknown, min: number, example: string): number {
@@ -508,17 +527,29 @@ export function getConfigScope(cwd: string): ConfigScope {
   return readActiveScopePreference(cwd) ?? 'project';
 }
 
+export function getConfigProfile(cwd: string): string {
+  return readActiveProfilePreference(cwd) ?? DEFAULT_CONFIG_PROFILE;
+}
+
 export function setConfigScope(cwd: string, scope: ConfigScope): { scope: ConfigScope; scopePath: string } {
   const normalizedScope = parseScope(scope);
   const scopePath = saveActiveScopePreference(cwd, normalizedScope);
   return { scope: normalizedScope, scopePath };
 }
 
-export function showConfig(cwd: string): ConfigShowResult {
+export function setConfigProfile(cwd: string, profile: string): { profile: string; profilePath: string } {
+  const normalizedProfile = parseProfile(profile);
+  const profilePath = saveActiveProfilePreference(cwd, normalizedProfile);
+  return { profile: normalizedProfile, profilePath };
+}
+
+export function showConfig(cwd: string, options: { profile?: string } = {}): ConfigShowResult {
+  const activeProfile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
   return {
     activeScope: getConfigScope(cwd),
-    paths: getConfigPaths(cwd),
-    effectiveConfig: loadEffectiveConfig(cwd),
+    activeProfile,
+    paths: getConfigPaths(cwd, { profile: activeProfile }),
+    effectiveConfig: loadEffectiveConfig(cwd, { profile: activeProfile }),
   };
 }
 
@@ -526,18 +557,20 @@ export function setConfigValue(
   cwd: string,
   path: string,
   rawValue: unknown,
-  options: { scope?: ConfigScope } = {},
+  options: { scope?: ConfigScope; profile?: string } = {},
 ): ConfigSetResult {
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
-  const current = loadEffectiveConfig(cwd);
+  const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
+  const current = loadEffectiveConfig(cwd, { profile });
   const previousValue = readConfigValue(current, path);
   const next = applyConfigPatch(current, { path, value: rawValue });
 
   validateConfigOrThrow(next);
-  const filePath = saveConfigByScope(scope, cwd, next);
+  const filePath = saveConfigByScope(scope, cwd, next, { profile });
 
   return {
     scope,
+    profile,
     filePath,
     path,
     previousValue,
@@ -556,11 +589,13 @@ export function addAgent(
     args?: string[];
     capabilities?: string[];
     scope?: ConfigScope;
+    profile?: string;
   } = {},
 ): ConfigAddAgentResult {
   const name = parseAgentName(nameRaw);
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
-  const current = loadEffectiveConfig(cwd);
+  const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
+  const current = loadEffectiveConfig(cwd, { profile });
 
   if (current.agents[name]) {
     throw new Error(`Agent "${name}" already exists.`);
@@ -592,9 +627,10 @@ export function addAgent(
   next.agents[name] = agent;
 
   validateConfigOrThrow(next);
-  const filePath = saveConfigByScope(scope, cwd, next);
+  const filePath = saveConfigByScope(scope, cwd, next, { profile });
   return {
     scope,
+    profile,
     filePath,
     name,
     agent,
@@ -605,11 +641,12 @@ export function addAgent(
 export function removeAgent(
   cwd: string,
   nameRaw: string,
-  options: { scope?: ConfigScope } = {},
+  options: { scope?: ConfigScope; profile?: string } = {},
 ): ConfigRemoveAgentResult {
   const name = parseAgentName(nameRaw);
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
-  const current = loadEffectiveConfig(cwd);
+  const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
+  const current = loadEffectiveConfig(cwd, { profile });
   const existing = current.agents[name];
   if (!existing) {
     throw new Error(`Agent "${name}" does not exist.`);
@@ -630,9 +667,10 @@ export function removeAgent(
   delete next.agents[name];
 
   validateConfigOrThrow(next);
-  const filePath = saveConfigByScope(scope, cwd, next);
+  const filePath = saveConfigByScope(scope, cwd, next, { profile });
   return {
     scope,
+    profile,
     filePath,
     name,
     removedAgent: existing,
@@ -642,11 +680,12 @@ export function removeAgent(
 
 export function resetConfig(
   cwd: string,
-  options: { scope?: ConfigScope } = {},
+  options: { scope?: ConfigScope; profile?: string } = {},
 ): ConfigResetResult {
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
+  const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
   const config = getDefaultConfig();
   validateConfigOrThrow(config);
-  const filePath = saveConfigByScope(scope, cwd, config);
-  return { scope, filePath, config };
+  const filePath = saveConfigByScope(scope, cwd, config, { profile });
+  return { scope, profile, filePath, config };
 }

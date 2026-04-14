@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import {
   configAddAgentCommand,
+  configProfileCommand,
   configResetCommand,
   configRemoveAgentCommand,
   configScopeCommand,
@@ -45,6 +46,7 @@ describe('config command handlers', () => {
     expect(logSpy).toHaveBeenCalled();
     const joined = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
     expect(joined).toContain('Active Write Scope');
+    expect(joined).toContain('Active Profile');
     expect(joined).toContain('Effective Config');
   });
 
@@ -58,6 +60,18 @@ describe('config command handlers', () => {
     await configSetCommand('orchestrator.model', 'next', { cwd });
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.orchestrator.model).toBe('claude-opus-4-6');
+  });
+
+  it('sets active profile', async () => {
+    await configProfileCommand('codex-first', { cwd });
+    const joined = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(joined).toContain('Active profile set to codex-first');
+  });
+
+  it('writes config to selected profile', async () => {
+    await configSetCommand('orchestrator.cli', 'codex', { cwd, profile: 'codex-first' });
+    const profileConfig = loadConfigByScope('project', cwd, { profile: 'codex-first' });
+    expect(profileConfig?.orchestrator.cli).toBe('codex');
   });
 
   it('sets role model overrides via set command', async () => {

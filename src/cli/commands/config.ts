@@ -10,10 +10,12 @@ import { validateConfig } from '../../workflow/config-validation.js';
 import {
   addAgent,
   applyConfigPatch,
+  getConfigProfile,
   getConfigScope,
   getConfigValueOptions,
   removeAgent,
   resetConfig,
+  setConfigProfile,
   setConfigScope,
   setConfigValue,
   showConfig,
@@ -24,17 +26,18 @@ function renderJson(value: unknown): string {
 }
 
 function effectiveSource(scopePaths: ReturnType<typeof showConfig>['paths']): 'project' | 'global' | 'defaults' {
-  if (scopePaths.effective === scopePaths.project) return 'project';
-  if (scopePaths.effective === scopePaths.global) return 'global';
+  if (scopePaths.effective === scopePaths.project || scopePaths.effective === scopePaths.defaultProject) return 'project';
+  if (scopePaths.effective === scopePaths.global || scopePaths.effective === scopePaths.defaultGlobal) return 'global';
   return 'defaults';
 }
 
-export function formatShowOutput(cwd: string, asJson = false): string {
-  const snapshot = showConfig(cwd);
+export function formatShowOutput(cwd: string, asJson = false, profile?: string): string {
+  const snapshot = showConfig(cwd, profile ? { profile } : {});
 
   if (asJson) {
     return renderJson({
       activeScope: snapshot.activeScope,
+      activeProfile: snapshot.activeProfile,
       source: effectiveSource(snapshot.paths),
       paths: snapshot.paths,
       effectiveConfig: snapshot.effectiveConfig,
@@ -44,6 +47,7 @@ export function formatShowOutput(cwd: string, asJson = false): string {
   const source = effectiveSource(snapshot.paths);
   const lines = [
     `${chalk.bold('Active Write Scope:')} ${snapshot.activeScope}`,
+    `${chalk.bold('Active Profile:')} ${snapshot.activeProfile}`,
     `${chalk.bold('Effective Source:')} ${source}`,
     `${chalk.dim('Project config:')} ${snapshot.paths.project}`,
     `${chalk.dim('Global config:')}  ${snapshot.paths.global}`,
@@ -59,10 +63,27 @@ function renderScopeOutput(cwd: string): string {
   return `Active write scope: ${scope}`;
 }
 
+function renderProfileOutput(cwd: string): string {
+  const profile = getConfigProfile(cwd);
+  return `Active profile: ${profile}`;
+}
+
 function parseScopeOption(raw: string | undefined): ConfigScope | undefined {
   if (raw === undefined) return undefined;
   if (raw === 'project' || raw === 'global') return raw;
   throw new Error(`Invalid scope "${raw}". Expected "project" or "global".`);
+}
+
+function parseProfileOption(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim();
+  if (!normalized) {
+    throw new Error('Profile name is required.');
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(normalized)) {
+    throw new Error(`Invalid profile "${raw}". Use only letters, numbers, ".", "_", or "-".`);
+  }
+  return normalized;
 }
 
 function splitCsvList(raw: string | undefined): string[] | undefined {
@@ -289,22 +310,26 @@ async function askFieldValue(args: {
 export async function configShowCommand(options: {
   cwd?: string;
   json?: boolean;
+  profile?: string;
 } = {}): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
-  console.log(formatShowOutput(cwd, options.json ?? false));
+  const profile = parseProfileOption(options.profile);
+  console.log(formatShowOutput(cwd, options.json ?? false, profile));
 }
 
 export async function configSetCommand(
   path: string,
   value: string,
-  options: { cwd?: string; scope?: string } = {},
+  options: { cwd?: string; scope?: string; profile?: string } = {},
 ): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const scope = parseScopeOption(options.scope);
-  const result = setConfigValue(cwd, path, value, { scope });
+  const profile = parseProfileOption(options.profile);
+  const result = setConfigValue(cwd, path, value, { scope, profile });
 
   console.log(chalk.green('\u2713 Configuration updated.'));
   console.log(`  ${chalk.dim('scope:')} ${result.scope}`);
+  console.log(`  ${chalk.dim('profile:')} ${result.profile}`);
   console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
   console.log(`  ${chalk.dim('path:')}  ${result.path}`);
   console.log(
@@ -317,6 +342,7 @@ export async function configAddAgentCommand(
   options: {
     cwd?: string;
     scope?: string;
+    profile?: string;
     adapter?: string;
     model?: string;
     command?: string;
@@ -326,8 +352,10 @@ export async function configAddAgentCommand(
 ): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const scope = parseScopeOption(options.scope);
+  const profile = parseProfileOption(options.profile);
   const result = addAgent(cwd, name, {
     scope,
+    profile,
     adapter: options.adapter,
     model: options.model,
     command: options.command,
@@ -337,6 +365,7 @@ export async function configAddAgentCommand(
 
   console.log(chalk.green('\u2713 Agent added.'));
   console.log(`  ${chalk.dim('scope:')} ${result.scope}`);
+  console.log(`  ${chalk.dim('profile:')} ${result.profile}`);
   console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
   console.log(`  ${chalk.dim('name:')}  ${result.name}`);
   console.log(`  ${chalk.dim('agent:')} ${formatChangedValue(result.agent)}`);
@@ -344,14 +373,16 @@ export async function configAddAgentCommand(
 
 export async function configRemoveAgentCommand(
   name: string,
-  options: { cwd?: string; scope?: string } = {},
+  options: { cwd?: string; scope?: string; profile?: string } = {},
 ): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const scope = parseScopeOption(options.scope);
-  const result = removeAgent(cwd, name, { scope });
+  const profile = parseProfileOption(options.profile);
+  const result = removeAgent(cwd, name, { scope, profile });
 
   console.log(chalk.green('\u2713 Agent removed.'));
   console.log(`  ${chalk.dim('scope:')} ${result.scope}`);
+  console.log(`  ${chalk.dim('profile:')} ${result.profile}`);
   console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
   console.log(`  ${chalk.dim('name:')}  ${result.name}`);
 }
@@ -375,16 +406,38 @@ export async function configScopeCommand(
   console.log(`  ${chalk.dim('file:')} ${result.scopePath}`);
 }
 
+export async function configProfileCommand(
+  profile: string | undefined,
+  options: { cwd?: string } = {},
+): Promise<void> {
+  const cwd = options.cwd ?? process.cwd();
+  if (!profile) {
+    console.log(renderProfileOutput(cwd));
+    return;
+  }
+
+  const normalizedProfile = parseProfileOption(profile);
+  if (!normalizedProfile) {
+    throw new Error('Profile is required.');
+  }
+  const result = setConfigProfile(cwd, normalizedProfile);
+  console.log(chalk.green(`\u2713 Active profile set to ${result.profile}.`));
+  console.log(`  ${chalk.dim('file:')} ${result.profilePath}`);
+}
+
 export async function configResetCommand(options: {
   cwd?: string;
   scope?: string;
+  profile?: string;
 } = {}): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const scope = parseScopeOption(options.scope);
-  const result = resetConfig(cwd, { scope });
+  const profile = parseProfileOption(options.profile);
+  const result = resetConfig(cwd, { scope, profile });
 
   console.log(chalk.green('\u2713 Scope config reset to defaults.'));
   console.log(`  ${chalk.dim('scope:')} ${result.scope}`);
+  console.log(`  ${chalk.dim('profile:')} ${result.profile}`);
   console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
 }
 
@@ -395,9 +448,11 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   const originalConfig = snapshot.effectiveConfig;
   let draft = structuredClone(originalConfig);
   let selectedScope = snapshot.activeScope;
+  const selectedProfile = snapshot.activeProfile;
   const changes: Array<{ path: string; before: unknown; after: unknown }> = [];
 
   console.log(chalk.bold('\nInteractive Config Wizard\n'));
+  console.log(`${chalk.dim('Active profile:')} ${selectedProfile}\n`);
 
   if (supportsInteractiveSelection()) {
     const selected = await selectOptionMenu(
@@ -619,9 +674,10 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   if (scopeChanged) {
     setConfigScope(cwd, selectedScope);
   }
-  const filePath = saveConfigByScope(selectedScope, cwd, draft);
+  const filePath = saveConfigByScope(selectedScope, cwd, draft, { profile: selectedProfile });
   console.log(chalk.green('\n\u2713 Configuration saved.'));
   console.log(`  ${chalk.dim('scope:')} ${selectedScope}`);
+  console.log(`  ${chalk.dim('profile:')} ${selectedProfile}`);
   console.log(`  ${chalk.dim('file:')}  ${filePath}\n`);
 }
 
@@ -646,8 +702,9 @@ export function registerConfigCommand(program: Command): void {
     .command('show')
     .description('Show effective config and scope information')
     .option('--json', 'Emit machine-readable output')
-    .action((options: { json?: boolean }) =>
-      runWithExitCode(() => configShowCommand({ json: options.json })),
+    .option('--profile <profile>', 'Read from a specific profile')
+    .action((options: { json?: boolean; profile?: string }) =>
+      runWithExitCode(() => configShowCommand({ json: options.json, profile: options.profile })),
     );
 
   command
@@ -656,9 +713,10 @@ export function registerConfigCommand(program: Command): void {
     .argument('<path>', 'Config path to update')
     .argument('<value...>', 'Value to write')
     .option('--scope <scope>', 'Write scope: project|global')
-    .action((path: string, value: string[], options: { scope?: string }) =>
+    .option('--profile <profile>', 'Write to a specific profile')
+    .action((path: string, value: string[], options: { scope?: string; profile?: string }) =>
       runWithExitCode(() =>
-        configSetCommand(path, value.join(' '), { scope: options.scope }),
+        configSetCommand(path, value.join(' '), { scope: options.scope, profile: options.profile }),
       ));
 
   command
@@ -666,6 +724,7 @@ export function registerConfigCommand(program: Command): void {
     .description('Add an agent entry (generic by default)')
     .argument('<name>', 'Agent key')
     .option('--scope <scope>', 'Write scope: project|global')
+    .option('--profile <profile>', 'Write to a specific profile')
     .option('--adapter <adapter>', 'Adapter: claude-code|codex|generic')
     .option('--model <model>', 'Optional model value')
     .option('--command <command>', 'CLI command (required for generic unless name should be used)')
@@ -673,6 +732,7 @@ export function registerConfigCommand(program: Command): void {
     .option('--capabilities <csv>', 'Comma-delimited capabilities')
     .action((name: string, options: {
       scope?: string;
+      profile?: string;
       adapter?: string;
       model?: string;
       command?: string;
@@ -686,7 +746,8 @@ export function registerConfigCommand(program: Command): void {
     .description('Remove an agent entry (fails if still referenced)')
     .argument('<name>', 'Agent key')
     .option('--scope <scope>', 'Write scope: project|global')
-    .action((name: string, options: { scope?: string }) =>
+    .option('--profile <profile>', 'Write to a specific profile')
+    .action((name: string, options: { scope?: string; profile?: string }) =>
       runWithExitCode(() => configRemoveAgentCommand(name, options)));
 
   command
@@ -698,11 +759,20 @@ export function registerConfigCommand(program: Command): void {
     );
 
   command
+    .command('profile')
+    .description('Show or set active config profile')
+    .argument('[profile]', 'Profile name (for example: claude-orchestrator)')
+    .action((profile: string | undefined) =>
+      runWithExitCode(() => configProfileCommand(profile)),
+    );
+
+  command
     .command('reset')
     .description('Reset scoped config to defaults')
     .option('--scope <scope>', 'Scope to reset: project|global')
-    .action((options: { scope?: string }) =>
-      runWithExitCode(() => configResetCommand({ scope: options.scope })),
+    .option('--profile <profile>', 'Reset a specific profile')
+    .action((options: { scope?: string; profile?: string }) =>
+      runWithExitCode(() => configResetCommand({ scope: options.scope, profile: options.profile })),
     );
 
   command

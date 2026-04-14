@@ -1,8 +1,10 @@
 import {
   addAgent,
+  getConfigProfile,
   getConfigScope,
   removeAgent,
   resetConfig,
+  setConfigProfile,
   setConfigScope,
   setConfigValue,
 } from '../../../workflow/config-service.js';
@@ -28,6 +30,8 @@ function helpText(): string {
     '  /config scope',
     '  /config scope project',
     '  /config scope global',
+    '  /config profile',
+    '  /config profile <name>',
     '  /config edit',
     '  /config add-agent <name> [adapter] [command]',
     '  /config remove-agent <name>',
@@ -64,6 +68,9 @@ export function handleConfigSlashCommand(
   if (parsed.kind === 'scope:get') {
     return `Active write scope: ${getConfigScope(options.cwd)}`;
   }
+  if (parsed.kind === 'profile:get') {
+    return `Active profile: ${getConfigProfile(options.cwd)}`;
+  }
 
   if (parsed.kind === 'invalid') {
     return `${parsed.reason}\nTry /config help`;
@@ -88,6 +95,14 @@ export function handleConfigSlashCommand(
     ].join('\n');
   }
 
+  if (parsed.kind === 'profile:set') {
+    const result = setConfigProfile(options.cwd, parsed.profile);
+    return [
+      `\u2713 Active profile set to ${result.profile}.`,
+      `file: ${result.profilePath}`,
+    ].join('\n');
+  }
+
   if (parsed.kind === 'add-agent') {
     const result = addAgent(options.cwd, parsed.name, {
       adapter: parsed.adapter,
@@ -96,6 +111,7 @@ export function handleConfigSlashCommand(
     return [
       '\u2713 Agent added.',
       `scope: ${result.scope}`,
+      `profile: ${result.profile}`,
       `file: ${result.filePath}`,
       `name: ${result.name}`,
       `adapter: ${result.agent.adapter ?? 'generic'}`,
@@ -108,6 +124,7 @@ export function handleConfigSlashCommand(
     return [
       '\u2713 Agent removed.',
       `scope: ${result.scope}`,
+      `profile: ${result.profile}`,
       `file: ${result.filePath}`,
       `name: ${result.name}`,
     ].join('\n');
@@ -118,6 +135,7 @@ export function handleConfigSlashCommand(
     return [
       '\u2713 Configuration updated.',
       `scope: ${result.scope}`,
+      `profile: ${result.profile}`,
       `file: ${result.filePath}`,
       `path: ${result.path}`,
       `value: ${formatChangedValue(result.previousValue)} -> ${formatChangedValue(result.nextValue)}`,
@@ -129,6 +147,7 @@ export function handleConfigSlashCommand(
     return [
       '\u2713 Scope config reset to defaults.',
       `scope: ${result.scope}`,
+      `profile: ${result.profile}`,
       `file: ${result.filePath}`,
     ].join('\n');
   }

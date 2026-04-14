@@ -22,6 +22,14 @@ describe('parseConfigSlashCommand', () => {
     });
   });
 
+  it('parses profile get/set commands', () => {
+    expect(parseConfigSlashCommand('/config profile')).toEqual({ kind: 'profile:get' });
+    expect(parseConfigSlashCommand('/config profile codex-first')).toEqual({
+      kind: 'profile:set',
+      profile: 'codex-first',
+    });
+  });
+
   it('parses set command values with spaces', () => {
     expect(parseConfigSlashCommand('/config set orchestrator.model claude sonnet')).toEqual({
       kind: 'set',

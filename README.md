@@ -64,7 +64,10 @@ orchestrator status
 cd /path/to/your/project
 orchestrator config scope project
 
-# 3. Configure via interactive wizard (or use config set commands)
+# 3. (Optional) choose a named profile
+orchestrator config profile claude-orchestrator
+
+# 4. Configure via interactive wizard (or use config set commands)
 orchestrator config
 
 # 4. Run a workflow
@@ -144,6 +147,11 @@ orchestrator config scope
 orchestrator config scope project
 orchestrator config scope global
 
+# Profile management
+orchestrator config profile
+orchestrator config profile claude-orchestrator
+orchestrator config profile codex-orchestrator
+
 # Reset a scope to defaults
 orchestrator config reset --scope project
 ```
@@ -155,6 +163,8 @@ In interactive `orchestrator run` mode, `/config` slash commands are also availa
 /config show
 /config scope
 /config scope project
+/config profile
+/config profile codex-orchestrator
 /config add-agent local-gemma generic ollama
 /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
 /config set agents.local-gemma.capabilities implement,review
@@ -188,6 +198,12 @@ orchestrator resume --on-ask-user prompt
 ## Configuration
 
 Primary path: use `orchestrator config` and `/config` commands.
+
+Profiles let you keep separate config variants (for example, `claude-orchestrator` and `codex-orchestrator`) and switch between them quickly.
+Profile files are stored under:
+- Project scope: `.orchestra/profiles/<profile>/workflow.yaml`
+- Global scope: `~/.orchestra/profiles/<profile>/workflow.yaml`
+- Default profile (when no named profile is set) continues using `.orchestra/workflow.yaml` and `~/.orchestra/workflow.yaml`.
 
 Advanced/legacy path: edit `.orchestra/workflow.yaml` manually if needed:
 

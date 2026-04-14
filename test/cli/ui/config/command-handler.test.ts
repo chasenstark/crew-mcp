@@ -35,7 +35,19 @@ describe('handleConfigSlashCommand', () => {
     expect(response).toContain('/config help');
     expect(response).toContain('/config set orchestrator.cli <value>');
     expect(response).toContain('/config set workflow.roleModels.<role> <value>');
+    expect(response).toContain('/config profile <name>');
     expect(response).toContain('/config add-agent <name> [adapter] [command]');
+  });
+
+  it('gets and sets active profile', () => {
+    const getInitial = handleConfigSlashCommand('/config profile', { cwd, isRunning: false });
+    expect(getInitial).toContain('Active profile: default');
+
+    const setResponse = handleConfigSlashCommand('/config profile codex-first', { cwd, isRunning: false });
+    expect(setResponse).toContain('Active profile set to codex-first');
+
+    const getAfter = handleConfigSlashCommand('/config profile', { cwd, isRunning: false });
+    expect(getAfter).toContain('Active profile: codex-first');
   });
 
   it('allows show while running', () => {

@@ -3,11 +3,17 @@ import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import {
+  DEFAULT_CONFIG_PROFILE,
   getConfigPaths,
   getGlobalConfigPath,
+  getGlobalProfileConfigPath,
+  getProfilePreferencePath,
+  getProjectProfileConfigPath,
   loadConfigByScope,
   loadEffectiveConfig,
+  readActiveProfilePreference,
   readActiveScopePreference,
+  saveActiveProfilePreference,
   saveActiveScopePreference,
   saveConfigByScope,
 } from '../../src/workflow/config-repository.js';
@@ -40,6 +46,7 @@ describe('config-repository', () => {
 
   it('returns project/global/effective paths', () => {
     const paths = getConfigPaths(cwd);
+    expect(paths.profile).toBe(DEFAULT_CONFIG_PROFILE);
     expect(paths.project).toBe(join(cwd, '.orchestra', 'workflow.yaml'));
     expect(paths.global).toBe(join(tmpRoot, 'home', '.orchestra', 'workflow.yaml'));
     expect(paths.effective).toBeNull();
@@ -57,6 +64,18 @@ describe('config-repository', () => {
 
     const dirEntries = readdirSync(join(cwd, '.orchestra'));
     expect(dirEntries.some((entry) => entry.startsWith('workflow.yaml.tmp-'))).toBe(false);
+  });
+
+  it('saves and loads scoped config for a named profile', () => {
+    const config = getDefaultConfig();
+    config.workflow.name = 'codex-first';
+
+    const filePath = saveConfigByScope('project', cwd, config, { profile: 'codex-first' });
+    expect(filePath).toBe(getProjectProfileConfigPath(cwd, 'codex-first'));
+    expect(existsSync(filePath)).toBe(true);
+
+    const loaded = loadConfigByScope('project', cwd, { profile: 'codex-first' });
+    expect(loaded?.workflow.name).toBe('codex-first');
   });
 
   it('loads effective config by merging project over global', () => {
@@ -77,6 +96,15 @@ describe('config-repository', () => {
     expect(effective.errorHandling.default.retry).toBe(3);
   });
 
+  it('falls back to default profile config when named profile file is missing', () => {
+    const project = getDefaultConfig();
+    project.workflow.name = 'default-profile-project';
+    saveConfigByScope('project', cwd, project);
+
+    const loaded = loadConfigByScope('project', cwd, { profile: 'missing-profile' });
+    expect(loaded?.workflow.name).toBe('default-profile-project');
+  });
+
   it('throws with path context on parse failures', () => {
     const projectConfigDir = join(cwd, '.orchestra');
     mkdirSync(projectConfigDir, { recursive: true });
@@ -92,7 +120,21 @@ describe('config-repository', () => {
     expect(readActiveScopePreference(cwd)).toBe('global');
   });
 
+  it('reads and writes active profile preference', () => {
+    expect(readActiveProfilePreference(cwd)).toBeNull();
+    const profileFile = saveActiveProfilePreference(cwd, 'codex-first');
+    expect(profileFile).toBe(getProfilePreferencePath(cwd));
+    expect(readActiveProfilePreference(cwd)).toBe('codex-first');
+  });
+
   it('exposes global config path under homedir', () => {
     expect(getGlobalConfigPath()).toBe(join(tmpRoot, 'home', '.orchestra', 'workflow.yaml'));
+  });
+
+  it('exposes profile config paths under project and home directories', () => {
+    expect(getProjectProfileConfigPath(cwd, 'claude-first'))
+      .toBe(join(cwd, '.orchestra', 'profiles', 'claude-first', 'workflow.yaml'));
+    expect(getGlobalProfileConfigPath('claude-first'))
+      .toBe(join(tmpRoot, 'home', '.orchestra', 'profiles', 'claude-first', 'workflow.yaml'));
   });
 });
