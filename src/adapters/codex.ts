@@ -243,6 +243,21 @@ export class CodexAdapter implements AgentAdapter {
           exitCode: result.exitCode,
           stderrPreview: preview(result.stderr),
         });
+        return {
+          output:
+            result.stderr ||
+            `Codex command failed with exit code ${result.exitCode} and no JSONL output`,
+          filesModified: [],
+          status: 'error',
+          metadata: {
+            rawEvents: [
+              {
+                exitCode: result.exitCode,
+                stderr: result.stderr,
+              },
+            ],
+          },
+        };
       }
 
       // Parse JSONL from stdout
@@ -383,6 +398,9 @@ export class CodexAdapter implements AgentAdapter {
           exitCode: result.exitCode,
           stderrPreview: preview(result.stderr),
         });
+        throw new Error(
+          `Codex schema execution failed with exit code ${result.exitCode}: ${result.stderr}`,
+        );
       }
 
       // Check for errors in JSONL output

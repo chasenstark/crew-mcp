@@ -152,8 +152,8 @@ describe('CodexAdapter', () => {
         context: { workingDirectory: '/tmp/project' },
       });
 
-      expect(result.status).toBe('partial');
-      expect(result.output).toBe('');
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('Some error');
     });
 
     it('reads output from output file when available', async () => {

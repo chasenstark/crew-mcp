@@ -41,7 +41,11 @@ const mockSummarize = vi.mocked(summarize);
 const mockJudge = vi.mocked(judge);
 const mockReport = vi.mocked(report);
 
-function createHarness() {
+function createHarness(workflowOverride?: {
+  name: string;
+  steps: Array<{ role: string; agent: string; action: string; maxPasses?: number }>;
+  completion: { strategy: string; fallback: string };
+}) {
   const agentExecute = vi.fn<AgentAdapter['execute']>().mockResolvedValue({
     output: 'agent output',
     filesModified: [],
@@ -94,7 +98,7 @@ function createHarness() {
   const pipeline = new Pipeline(
     orchestrator,
     registry,
-    {
+    workflowOverride ?? {
       name: 'test',
       steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
       completion: { strategy: 'judge_approval', fallback: 'max_passes' },
@@ -230,6 +234,41 @@ describe('Pipeline', () => {
     expect(agentExecute).toHaveBeenCalledTimes(2);
     expect(worktreeManager.createWorktree).toHaveBeenCalledTimes(1);
     expect(mockJudge).toHaveBeenCalledTimes(2);
+  });
+
+  it('applies maxPasses from reviewer role alias for review tasks', async () => {
+    const { pipeline, agentExecute } = createHarness({
+      name: 'alias-test',
+      steps: [{ role: 'reviewer', agent: 'agent-a', action: 'review', maxPasses: 1 }],
+      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+    });
+
+    mockDecompose.mockResolvedValue({
+      reasoning: 'one review task',
+      tasks: [
+        {
+          id: 'task-1',
+          description: 'Review implementation',
+          agent: 'agent-a',
+          role: 'review' as const,
+          dependencies: [],
+          scope: { files: ['src/a.ts'], description: 'review scope' },
+          estimatedComplexity: 'low' as const,
+        },
+      ],
+      suggestedOrder: ['task-1'],
+    });
+
+    mockJudge.mockResolvedValue({
+      decision: 'iterate',
+      reasoning: 'needs another pass',
+      isLooping: false,
+    });
+
+    await pipeline.run('Review thing');
+
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    expect(agentExecute).toHaveBeenCalledTimes(1);
   });
 
   it('constrains dispatched workingDirectory to task worktree', async () => {

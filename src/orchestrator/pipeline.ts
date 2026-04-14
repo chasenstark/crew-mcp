@@ -627,8 +627,27 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
    * Determine max passes for a given task role.
    */
   private getMaxPasses(role: string): number {
-    const step = this.workflow.steps.find((s) => s.role === role);
-    return step?.maxPasses ?? 3;
+    const normalizedRole = role.trim().toLowerCase();
+    const aliasMap: Record<string, string[]> = {
+      implement: ['implement', 'coder'],
+      refactor: ['refactor', 'coder'],
+      document: ['document', 'coder'],
+      review: ['review', 'reviewer'],
+      test: ['test', 'reviewer'],
+      analyze: ['analyze', 'reviewer', 'judge'],
+    };
+    const candidates = aliasMap[normalizedRole] ?? [normalizedRole];
+
+    for (const candidate of candidates) {
+      const step = this.workflow.steps.find(
+        (s) => s.role.trim().toLowerCase() === candidate,
+      );
+      if (typeof step?.maxPasses === 'number') {
+        return step.maxPasses;
+      }
+    }
+
+    return 3;
   }
 
   private resolveTaskWorkingDirectory(taskWorktree: string, requested?: string): string {
