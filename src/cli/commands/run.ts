@@ -13,7 +13,7 @@ import { enableFileLogging, logger } from '../../utils/logger.js';
 /**
  * Wrap AdapterRegistry to satisfy Pipeline's AgentRegistry interface.
  */
-function toAgentRegistry(registry: AdapterRegistry): AgentRegistry {
+export function toAgentRegistry(registry: AdapterRegistry): AgentRegistry {
   return {
     get: (name: string) => registry.get(name),
     list: () =>
@@ -60,6 +60,7 @@ export async function runCommand(prompt?: string): Promise<void> {
 
   if (prompt) {
     // Non-interactive mode: run directly
+    let sawPipelineError = false;
     console.log(chalk.blue('\n  orchestrator') + chalk.dim(' \u2014 starting workflow\n'));
     console.log(chalk.dim(`  log: ${logFile}\n`));
 
@@ -85,10 +86,27 @@ export async function runCommand(prompt?: string): Promise<void> {
     });
 
     pipeline.on('error', (error) => {
+      sawPipelineError = true;
       console.error(chalk.red(`\n  Error: ${error.message}\n`));
     });
 
-    await pipeline.run(prompt);
+    const handleSigint = () => {
+      pipeline.cancel('Interrupted by SIGINT');
+      process.exitCode = 130;
+    };
+
+    process.once('SIGINT', handleSigint);
+    try {
+      await pipeline.run(prompt);
+    } finally {
+      process.off('SIGINT', handleSigint);
+    }
+
+    const finalState = state.loadState();
+    const workflowFailed = finalState?.status === 'failed';
+    if ((sawPipelineError || workflowFailed) && process.exitCode === undefined) {
+      process.exitCode = 1;
+    }
   } else {
     // Interactive mode: render Ink app
     const { waitUntilExit } = render(

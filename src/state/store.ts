@@ -36,7 +36,7 @@ export class StateStore {
 
   hasInterruptedWorkflow(): boolean {
     const state = this.loadState();
-    return state !== null && state.status === 'running';
+    return state !== null && (state.status === 'running' || state.status === 'interrupted');
   }
 
   addPassSummary(summary: PassSummary): void {

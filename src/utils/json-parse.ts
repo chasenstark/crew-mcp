@@ -22,24 +22,40 @@ export function extractJson(text: string): unknown {
     }
   }
 
-  // Try finding a JSON object — try from first { to each } from right to left
-  const firstBrace = trimmed.indexOf('{');
-  if (firstBrace !== -1) {
-    for (let end = trimmed.lastIndexOf('}'); end >= firstBrace; end = trimmed.lastIndexOf('}', end - 1)) {
+  const parseFromDelimiters = (
+    startChar: '{' | '[',
+    endChar: '}' | ']',
+  ): unknown | undefined => {
+    const first = trimmed.indexOf(startChar);
+    if (first === -1) return undefined;
+    for (let end = trimmed.lastIndexOf(endChar); end >= first; end = trimmed.lastIndexOf(endChar, end - 1)) {
       try {
-        return JSON.parse(trimmed.slice(firstBrace, end + 1));
-      } catch { /* continue */ }
+        return JSON.parse(trimmed.slice(first, end + 1));
+      } catch {
+        // continue
+      }
     }
+    return undefined;
+  };
+
+  // If both array and object delimiters exist, prefer whichever appears first
+  // in the text to avoid returning an object nested inside a top-level array.
+  const firstBrace = trimmed.indexOf('{');
+  const firstBracket = trimmed.indexOf('[');
+  const tryArrayFirst = firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace);
+
+  const primary = tryArrayFirst
+    ? parseFromDelimiters('[', ']')
+    : parseFromDelimiters('{', '}');
+  if (primary !== undefined) {
+    return primary;
   }
 
-  // Try finding a JSON array — try from first [ to each ] from right to left
-  const firstBracket = trimmed.indexOf('[');
-  if (firstBracket !== -1) {
-    for (let end = trimmed.lastIndexOf(']'); end >= firstBracket; end = trimmed.lastIndexOf(']', end - 1)) {
-      try {
-        return JSON.parse(trimmed.slice(firstBracket, end + 1));
-      } catch { /* continue */ }
-    }
+  const secondary = tryArrayFirst
+    ? parseFromDelimiters('{', '}')
+    : parseFromDelimiters('[', ']');
+  if (secondary !== undefined) {
+    return secondary;
   }
 
   throw new Error(`Could not extract JSON from text: ${trimmed.slice(0, 200)}...`);

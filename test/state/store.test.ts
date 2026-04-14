@@ -50,6 +50,18 @@ describe('StateStore', () => {
     expect(store.hasInterruptedWorkflow()).toBe(true);
   });
 
+  it('detects explicitly interrupted workflows', () => {
+    store.saveState({
+      status: 'interrupted',
+      userRequest: 'test',
+      decomposition: { reasoning: '', tasks: [], suggestedOrder: [] },
+      currentTaskIndex: 0,
+      passes: [],
+      interruptedAt: new Date().toISOString(),
+    });
+    expect(store.hasInterruptedWorkflow()).toBe(true);
+  });
+
   it('saves and loads pass summaries in order', () => {
     store.addPassSummary({
       passNumber: 1,

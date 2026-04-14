@@ -71,6 +71,7 @@ export class GenericAdapter implements AgentAdapter {
       result = await execa(this.command, args, {
         cwd: task.context.workingDirectory,
         timeout,
+        signal: task.constraints?.signal,
         reject: false,
       });
     } catch (error: unknown) {

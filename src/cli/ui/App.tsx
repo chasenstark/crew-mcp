@@ -12,12 +12,13 @@ interface Props {
 }
 
 export function App({ pipeline, initialPrompt }: Props) {
-  const { exit } = useApp();
+  useApp();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
   const [waitingForInput, setWaitingForInput] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
   const inputQueueRef = useRef<string[]>([]);
 
   const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
@@ -55,6 +56,9 @@ export function App({ pipeline, initialPrompt }: Props) {
       addMessage('assistant', message);
       setCurrentStep(null);
       setIsRunning(false);
+      setWaitingForInput(false);
+      inputQueueRef.current = [];
+      setQueueCount(0);
     });
 
     pipeline.on('ask_user', (question) => {
@@ -63,6 +67,7 @@ export function App({ pipeline, initialPrompt }: Props) {
 
       // Check for queued input
       const queued = inputQueueRef.current.shift();
+      setQueueCount(inputQueueRef.current.length);
       if (queued) {
         addMessage('user', `(queued) ${queued}`);
         pipeline.provideUserInput(queued);
@@ -75,6 +80,9 @@ export function App({ pipeline, initialPrompt }: Props) {
       addMessage('system', `Error: ${error.message}`);
       setCurrentStep(null);
       setIsRunning(false);
+      setWaitingForInput(false);
+      inputQueueRef.current = [];
+      setQueueCount(0);
     });
 
     return () => {
@@ -89,8 +97,16 @@ export function App({ pipeline, initialPrompt }: Props) {
       setWaitingForInput(false);
       pipeline.provideUserInput(input);
     } else if (isRunning) {
+      if (input === '/clear' || input === '/clear-queue') {
+        const cleared = inputQueueRef.current.length;
+        inputQueueRef.current = [];
+        setQueueCount(0);
+        addMessage('system', `Cleared ${cleared} queued message${cleared === 1 ? '' : 's'}.`);
+        return;
+      }
       // Pipeline is running — queue the input
       inputQueueRef.current.push(input);
+      setQueueCount(inputQueueRef.current.length);
       addMessage('user', `(queued) ${input}`);
     } else {
       // Pipeline is idle — start a new run
@@ -98,11 +114,14 @@ export function App({ pipeline, initialPrompt }: Props) {
       setIsRunning(true);
       setAgents([]);
       inputQueueRef.current = [];
+      setQueueCount(0);
 
       pipeline.run(input).catch((err) => {
         addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
         setIsRunning(false);
         setCurrentStep(null);
+        setWaitingForInput(false);
+        setQueueCount(0);
       });
     }
   }, [pipeline, addMessage, isRunning, waitingForInput]);
@@ -114,8 +133,14 @@ export function App({ pipeline, initialPrompt }: Props) {
   }, [initialPrompt, handleSubmit]);
 
   const statusText = waitingForInput
-    ? 'Waiting for your input...'
-    : currentStep ?? undefined;
+    ? queueCount > 0
+      ? `Waiting for your input... (${queueCount} queued)`
+      : 'Waiting for your input...'
+    : isRunning
+      ? queueCount > 0
+        ? `${currentStep ?? 'Running...'} (${queueCount} queued, type /clear-queue to clear)`
+        : currentStep ?? 'Running...'
+      : undefined;
 
   return (
     <Box flexDirection="column" minHeight={10}>

@@ -106,19 +106,29 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     ? parsed.orchestrator as Record<string, unknown>
     : {};
 
+  const toWorkflowStep = (rawStep: unknown): WorkflowConfig['steps'][number] => {
+    const step = rawStep && typeof rawStep === 'object'
+      ? rawStep as Record<string, unknown>
+      : {};
+
+    return {
+      role: typeof step.role === 'string' ? step.role : 'coder',
+      agent: typeof step.agent === 'string' ? step.agent : 'claude-code',
+      action: typeof step.action === 'string' ? step.action : 'implement',
+      maxPasses: typeof step.max_passes === 'number' ? step.max_passes : undefined,
+      condition: typeof step.condition === 'string' ? step.condition : undefined,
+      criteria: Array.isArray(step.criteria)
+        ? step.criteria.filter((c): c is string => typeof c === 'string')
+        : undefined,
+    };
+  };
+
   // Map YAML structure to our types
   // The YAML has: workflow.name, workflow.steps[], agents{}, orchestrator{}, error_handling{}
   return {
     workflow: {
       name: parsed.workflow?.name ?? 'default',
-      steps: (parsed.workflow?.steps ?? []).map((s: any) => ({
-        role: s.role,
-        agent: s.agent,
-        action: s.action,
-        maxPasses: s.max_passes,
-        condition: s.condition,
-        criteria: s.criteria,
-      })),
+      steps: (parsed.workflow?.steps ?? []).map(toWorkflowStep),
       completion: parsed.workflow?.completion ?? { strategy: 'judge_approval', fallback: 'max_passes' },
     },
     agents: parsedAgents,

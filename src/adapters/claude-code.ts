@@ -116,6 +116,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       result = await execa('claude', args, {
         cwd: task.context.workingDirectory,
         timeout,
+        signal: task.constraints?.signal,
         reject: false,
       });
     } catch (error: unknown) {
@@ -259,6 +260,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       result = await execa('claude', args, {
         cwd: options?.workingDirectory,
         timeout,
+        signal: options?.signal,
         reject: false,
       });
     } catch (error: unknown) {

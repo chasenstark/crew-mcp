@@ -1,0 +1,357 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentAdapter, TaskResult } from '../../src/adapters/types.js';
+import type { PassSummary, WorkflowState } from '../../src/state/types.js';
+
+vi.mock('../../src/orchestrator/steps/decompose.js', () => ({
+  decompose: vi.fn(),
+}));
+
+vi.mock('../../src/orchestrator/steps/dispatch.js', () => ({
+  dispatch: vi.fn(),
+}));
+
+vi.mock('../../src/orchestrator/steps/ingest.js', () => ({
+  ingest: vi.fn(),
+}));
+
+vi.mock('../../src/orchestrator/steps/summarize.js', () => ({
+  summarize: vi.fn(),
+}));
+
+vi.mock('../../src/orchestrator/steps/judge.js', () => ({
+  judge: vi.fn(),
+}));
+
+vi.mock('../../src/orchestrator/steps/report.js', () => ({
+  report: vi.fn(),
+}));
+
+const { Pipeline } = await import('../../src/orchestrator/pipeline.js');
+const { decompose } = await import('../../src/orchestrator/steps/decompose.js');
+const { dispatch } = await import('../../src/orchestrator/steps/dispatch.js');
+const { ingest } = await import('../../src/orchestrator/steps/ingest.js');
+const { summarize } = await import('../../src/orchestrator/steps/summarize.js');
+const { judge } = await import('../../src/orchestrator/steps/judge.js');
+const { report } = await import('../../src/orchestrator/steps/report.js');
+
+const mockDecompose = vi.mocked(decompose);
+const mockDispatch = vi.mocked(dispatch);
+const mockIngest = vi.mocked(ingest);
+const mockSummarize = vi.mocked(summarize);
+const mockJudge = vi.mocked(judge);
+const mockReport = vi.mocked(report);
+
+function createHarness() {
+  const agentExecute = vi.fn<AgentAdapter['execute']>().mockResolvedValue({
+    output: 'agent output',
+    filesModified: [],
+    status: 'success',
+    metadata: {},
+  } as TaskResult);
+
+  const orchestrator = {
+    name: 'orchestrator',
+    capabilities: ['analyze'],
+    supportsJsonSchema: true,
+    execute: vi.fn(),
+    healthCheck: vi.fn(),
+  } as unknown as AgentAdapter;
+
+  const registry = {
+    get: vi.fn((name: string) => {
+      if (name === 'agent-a' || name === 'agent-b') {
+        return {
+          name,
+          capabilities: ['implement'],
+          supportsJsonSchema: false,
+          execute: agentExecute,
+          healthCheck: vi.fn(),
+        } as unknown as AgentAdapter;
+      }
+      return undefined;
+    }),
+    list: vi.fn(() => [
+      { name: 'agent-a', capabilities: ['implement'] },
+      { name: 'agent-b', capabilities: ['review'] },
+    ]),
+  };
+
+  const state = {
+    saveState: vi.fn(),
+    addPassSummary: vi.fn(),
+    addPassOutput: vi.fn(),
+    loadState: vi.fn(() => null),
+  };
+
+  const worktreeManager = {
+    getModifiedFiles: vi.fn(async () => []),
+  };
+
+  const pipeline = new Pipeline(
+    orchestrator,
+    registry,
+    {
+      name: 'test',
+      steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
+      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+    },
+    state as never,
+    worktreeManager as never,
+  );
+
+  return { pipeline, state, agentExecute };
+}
+
+function defaultDecomposition() {
+  return {
+    reasoning: 'split into one task',
+    tasks: [
+      {
+        id: 'task-1',
+        description: 'Implement feature',
+        agent: 'agent-a',
+        role: 'implement' as const,
+        dependencies: [],
+        scope: { files: ['src/a.ts'], description: 'feature file' },
+        estimatedComplexity: 'medium' as const,
+      },
+    ],
+    suggestedOrder: ['task-1'],
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+
+  mockDecompose.mockResolvedValue(defaultDecomposition());
+  mockDispatch.mockResolvedValue({
+    agentPrompt: 'do task',
+    workingDirectory: '/tmp/project',
+    expectedOutputs: ['src/a.ts'],
+    successCriteria: 'tests pass',
+  });
+  mockIngest.mockResolvedValue({
+    status: 'success',
+    summary: 'agent finished',
+    filesModified: [],
+    decisions: [],
+    concerns: [],
+    needsHumanAttention: false,
+    reviewFindings: [],
+  });
+  mockSummarize.mockImplementation(async (_o, _ingest, passNumber) => ({
+    passNumber,
+    summary: `summary ${passNumber}`,
+    unresolvedIssues: [],
+    contextForNextPass: 'continue',
+    filesInScope: ['src/a.ts'],
+  }));
+  mockJudge.mockResolvedValue({
+    decision: 'done',
+    reasoning: 'all good',
+    isLooping: false,
+  });
+  mockReport.mockResolvedValue('final report');
+});
+
+describe('Pipeline', () => {
+  it('runs happy path with done decision', async () => {
+    const { pipeline, state, agentExecute } = createHarness();
+
+    const result = await pipeline.run('Build thing');
+
+    expect(result).toBe('final report');
+    expect(mockDecompose).toHaveBeenCalledTimes(1);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    expect(agentExecute).toHaveBeenCalledTimes(1);
+    expect(mockJudge).toHaveBeenCalledTimes(1);
+    expect(mockReport).toHaveBeenCalledTimes(1);
+
+    const finalState = state.saveState.mock.calls.at(-1)?.[0] as WorkflowState;
+    expect(finalState.status).toBe('completed');
+    expect(finalState.currentTaskIndex).toBe(1);
+  });
+
+  it('iterates when judge requests iterate', async () => {
+    const { pipeline, agentExecute } = createHarness();
+
+    mockJudge
+      .mockResolvedValueOnce({
+        decision: 'iterate',
+        reasoning: 'needs another pass',
+        isLooping: false,
+      })
+      .mockResolvedValueOnce({
+        decision: 'done',
+        reasoning: 'resolved',
+        isLooping: false,
+      });
+
+    await pipeline.run('Build thing');
+
+    expect(mockDispatch).toHaveBeenCalledTimes(2);
+    expect(agentExecute).toHaveBeenCalledTimes(2);
+    expect(mockJudge).toHaveBeenCalledTimes(2);
+  });
+
+  it('requests user input when judge asks user and resumes with response', async () => {
+    const { pipeline } = createHarness();
+    const questions: string[] = [];
+
+    pipeline.on('ask_user', (question) => {
+      questions.push(question);
+      pipeline.provideUserInput('Use stricter validation');
+    });
+
+    mockJudge
+      .mockResolvedValueOnce({
+        decision: 'ask_user',
+        reasoning: 'Need requirement clarification',
+        questionForUser: 'Should we fail closed?',
+        isLooping: false,
+      })
+      .mockResolvedValueOnce({
+        decision: 'done',
+        reasoning: 'clarified',
+        isLooping: false,
+      });
+
+    await pipeline.run('Build thing');
+
+    expect(questions).toEqual(['Should we fail closed?']);
+    const secondDispatchSummaries = mockDispatch.mock.calls[1]?.[2] as PassSummary[];
+    expect(secondDispatchSummaries.some((s) => s.contextForNextPass === 'Use stricter validation')).toBe(true);
+  });
+
+  it('skips dependent tasks when dependency fails', async () => {
+    const { pipeline, state } = createHarness();
+
+    mockDecompose.mockResolvedValue({
+      reasoning: 'two tasks',
+      tasks: [
+        {
+          id: 'task-1',
+          description: 'first',
+          agent: 'agent-a',
+          role: 'implement' as const,
+          dependencies: [],
+          scope: { files: ['src/a.ts'], description: 'a' },
+          estimatedComplexity: 'low' as const,
+        },
+        {
+          id: 'task-2',
+          description: 'second',
+          agent: 'agent-b',
+          role: 'implement' as const,
+          dependencies: ['task-1'],
+          scope: { files: ['src/b.ts'], description: 'b' },
+          estimatedComplexity: 'low' as const,
+        },
+      ],
+      suggestedOrder: ['task-1', 'task-2'],
+    });
+
+    mockDispatch.mockRejectedValueOnce(new Error('dispatch failed'));
+
+    await pipeline.run('Build thing');
+
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    const summariesArg = mockReport.mock.calls[0]?.[1] as PassSummary[];
+    expect(summariesArg.some((s) => s.summary.includes('failed'))).toBe(true);
+    expect(summariesArg.some((s) => s.summary.includes('skipped'))).toBe(true);
+
+    const finalState = state.saveState.mock.calls.at(-1)?.[0] as WorkflowState;
+    expect(finalState.status).toBe('failed');
+  });
+
+  it('falls back to basic report when report step fails', async () => {
+    const { pipeline, state } = createHarness();
+    mockReport.mockRejectedValueOnce(new Error('report exploded'));
+
+    const result = await pipeline.run('Build thing');
+
+    expect(result).toContain('# Workflow Report');
+    expect(result).toContain('**Request:** Build thing');
+
+    const finalState = state.saveState.mock.calls.at(-1)?.[0] as WorkflowState;
+    expect(finalState.status).toBe('failed');
+  });
+
+  it('resumes from saved state without re-running decompose', async () => {
+    const { pipeline, state, agentExecute } = createHarness();
+
+    mockDecompose.mockResolvedValue({
+      reasoning: 'unused for resume',
+      tasks: [],
+      suggestedOrder: [],
+    });
+
+    await pipeline.resume({
+      workflowState: {
+        status: 'interrupted',
+        userRequest: 'Build thing',
+        decomposition: {
+          reasoning: 'two tasks',
+          tasks: [
+            {
+              id: 'task-1',
+              description: 'first',
+              agent: 'agent-a',
+              role: 'implement',
+              dependencies: [],
+              scope: { files: ['src/a.ts'], description: 'a' },
+              estimatedComplexity: 'low',
+            },
+            {
+              id: 'task-2',
+              description: 'second',
+              agent: 'agent-b',
+              role: 'implement',
+              dependencies: [],
+              scope: { files: ['src/b.ts'], description: 'b' },
+              estimatedComplexity: 'low',
+            },
+          ],
+          suggestedOrder: ['task-1', 'task-2'],
+        },
+        currentTaskIndex: 1,
+        passes: [],
+        startedAt: '2026-01-01T00:00:00.000Z',
+      },
+      previousSummaries: [
+        {
+          passNumber: 3,
+          summary: 'task 1 done',
+          unresolvedIssues: [],
+          contextForNextPass: 'ready',
+          filesInScope: ['src/a.ts'],
+        },
+      ],
+    });
+
+    expect(mockDecompose).toHaveBeenCalledTimes(0);
+    expect(agentExecute).toHaveBeenCalledTimes(1);
+    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    expect(state.addPassOutput).toHaveBeenCalledWith(4, expect.anything());
+  });
+
+  it('marks running state as interrupted', () => {
+    const { pipeline, state } = createHarness();
+    state.loadState.mockReturnValue({
+      status: 'running',
+      userRequest: 'Build thing',
+      decomposition: defaultDecomposition(),
+      currentTaskIndex: 0,
+      passes: [],
+    });
+
+    pipeline.markInterrupted('Interrupted by test');
+
+    expect(state.saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'interrupted',
+        lastError: 'Interrupted by test',
+      }),
+    );
+  });
+});

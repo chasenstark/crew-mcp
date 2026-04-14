@@ -33,6 +33,7 @@ export interface Task {
     maxTurns?: number;
     model?: string;
     sandbox?: 'read-only' | 'workspace-write' | 'full-access';
+    signal?: AbortSignal;
   };
 }
 
@@ -62,4 +63,5 @@ export interface ExecuteOptions {
   timeout?: number;
   maxTurns?: number;
   model?: string;
+  signal?: AbortSignal;
 }

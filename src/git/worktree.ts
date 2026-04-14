@@ -49,7 +49,7 @@ export class WorktreeManager {
 
   async mergeWorktree(taskId: string, targetBranch?: string): Promise<void> {
     const branchName = `orchestra/${taskId}`;
-    const target = targetBranch ?? 'main';
+    const target = await this.resolveMergeTargetBranch(targetBranch);
 
     // First, commit any uncommitted changes in the worktree
     const worktreePath = this.getWorktreePath(taskId);
@@ -69,7 +69,40 @@ export class WorktreeManager {
       );
     }
 
+    const currentBranch = (await this.git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    if (currentBranch !== target) {
+      await this.git.checkout(target);
+    }
     await this.git.merge([branchName, '--no-ff', '-m', `Merge orchestra/${taskId}`]);
+  }
+
+  private async resolveMergeTargetBranch(targetBranch?: string): Promise<string> {
+    if (targetBranch) return targetBranch;
+
+    try {
+      const branch = (await this.git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+      if (branch && branch !== 'HEAD') {
+        return branch;
+      }
+    } catch {
+      // continue to remote-head fallback
+    }
+
+    try {
+      const remoteHead = (await this.git.raw([
+        'symbolic-ref',
+        '--quiet',
+        'refs/remotes/origin/HEAD',
+      ])).trim();
+      const match = remoteHead.match(/^refs\/remotes\/origin\/(.+)$/);
+      if (match?.[1]) {
+        return match[1];
+      }
+    } catch {
+      // continue to hard fallback
+    }
+
+    return 'main';
   }
 
   async cleanupWorktree(taskId: string): Promise<void> {

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'eventemitter3';
 import type { AgentAdapter, TaskResult } from '../adapters/types.js';
 import type { WorkflowConfig } from '../workflow/types.js';
-import type { PassSummary } from '../state/types.js';
+import type { PassRecord, PassSummary, WorkflowState } from '../state/types.js';
 import { StateStore } from '../state/store.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { logger } from '../utils/logger.js';
@@ -35,6 +35,11 @@ export interface AgentRegistry {
   list(): { name: string; capabilities: string[] }[];
 }
 
+interface ResumeParams {
+  workflowState: WorkflowState;
+  previousSummaries: PassSummary[];
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -49,6 +54,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private agentModels: Record<string, string | undefined>;
   private globalPassCounter = 0;
   private userInputResolver: ((input: string) => void) | null = null;
+  private activeAbortController: AbortController | null = null;
 
   constructor(
     orchestratorAdapter: AgentAdapter,
@@ -94,14 +100,38 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   }
 
   /**
+   * Mark the current workflow as interrupted so it can be resumed later.
+   */
+  markInterrupted(reason = 'Interrupted by user'): void {
+    const snapshot = this.state.loadState();
+    if (!snapshot) return;
+    if (snapshot.status !== 'running' && snapshot.status !== 'interrupted') return;
+
+    this.state.saveState({
+      ...snapshot,
+      status: 'interrupted',
+      interruptedAt: new Date().toISOString(),
+      lastError: reason,
+    });
+  }
+
+  /**
+   * Cancel active work and persist interrupted state.
+   */
+  cancel(reason = 'Cancelled by user'): void {
+    this.markInterrupted(reason);
+    if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
+      this.activeAbortController.abort(reason);
+    }
+  }
+
+  /**
    * Execute the full orchestration pipeline for a user request.
    *
    * Flow: DECOMPOSE -> for each task (DISPATCH -> agent -> INGEST -> SUMMARIZE -> JUDGE) -> REPORT
    */
   async run(userRequest: string): Promise<string> {
     const agents = this.registry.list();
-    const summaries: PassSummary[] = [];
-    let passNumber = 0;
     const startedAt = new Date().toISOString();
 
     // -----------------------------------------------------------------------
@@ -137,26 +167,76 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       `Decomposed into ${decomposition.tasks.length} tasks: ${decomposition.suggestedOrder.join(', ')}`,
     );
 
-    // Save initial state
-    this.state.saveState({
-      status: 'running',
+    return this.executeWithDecomposition({
       userRequest,
       decomposition,
-      currentTaskIndex: 0,
-      passes: [],
+      startTaskIndex: 0,
+      summaries: [],
+      passRecords: [],
+      startedAt,
+    });
+  }
+
+  /**
+   * Resume a previously interrupted workflow from persisted state.
+   */
+  async resume({ workflowState, previousSummaries }: ResumeParams): Promise<string> {
+    if (!workflowState.decomposition || workflowState.decomposition.tasks.length === 0) {
+      throw new Error('Cannot resume workflow: no decomposition found in saved state.');
+    }
+
+    const maxTaskIndex = workflowState.decomposition.suggestedOrder.length;
+    const startTaskIndex = Math.max(0, Math.min(workflowState.currentTaskIndex, maxTaskIndex));
+    const maxSavedPass = previousSummaries.reduce((max, item) => Math.max(max, item.passNumber), 0);
+    this.globalPassCounter = Math.max(this.globalPassCounter, maxSavedPass);
+
+    return this.executeWithDecomposition({
+      userRequest: workflowState.userRequest,
+      decomposition: workflowState.decomposition,
+      startTaskIndex,
+      summaries: [...previousSummaries],
+      passRecords: [...workflowState.passes],
+      startedAt: workflowState.startedAt ?? new Date().toISOString(),
+    });
+  }
+
+  private async executeWithDecomposition(params: {
+    userRequest: string;
+    decomposition: DecomposeOutput;
+    startTaskIndex: number;
+    summaries: PassSummary[];
+    passRecords: PassRecord[];
+    startedAt: string;
+  }): Promise<string> {
+    const {
+      userRequest,
+      decomposition,
+      startTaskIndex,
+      summaries,
+      passRecords,
+      startedAt,
+    } = params;
+
+    this.persistRunningState({
+      userRequest,
+      decomposition,
+      currentTaskIndex: startTaskIndex,
+      passRecords,
       startedAt,
     });
 
-    // -----------------------------------------------------------------------
-    // Step 2–5: Execute tasks in suggested order
-    // -----------------------------------------------------------------------
     const executionOrder = decomposition.suggestedOrder;
     const failedTaskIds = new Set<string>();
+    let hadErrors = false;
+    this.activeAbortController = new AbortController();
 
-    for (const taskId of executionOrder) {
+    try {
+      for (let taskIndex = startTaskIndex; taskIndex < executionOrder.length; taskIndex++) {
+      const taskId = executionOrder[taskIndex];
       const task = decomposition.tasks.find((t) => t.id === taskId);
       if (!task) {
         logger.warn(`Task ID "${taskId}" from suggestedOrder not found, skipping.`);
+        hadErrors = true;
         continue;
       }
 
@@ -165,7 +245,24 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       const blockedBy = deps.filter(d => failedTaskIds.has(d));
       if (blockedBy.length > 0) {
         logger.warn(`Skipping task ${taskId}: depends on failed task(s) ${blockedBy.join(', ')}`);
-        failedTaskIds.add(taskId); // propagate failure
+        failedTaskIds.add(taskId);
+        hadErrors = true;
+        summaries.push({
+          passNumber: this.globalPassCounter + 1,
+          summary: `Task ${taskId} was skipped because dependencies failed: ${blockedBy.join(', ')}`,
+          unresolvedIssues: [`Blocked by failed dependencies: ${blockedBy.join(', ')}`],
+          contextForNextPass: 'Dependency failure must be resolved before rerun.',
+          filesInScope: task.scope.files ?? [],
+        });
+        this.globalPassCounter++;
+        this.state.addPassSummary(summaries[summaries.length - 1]);
+        this.persistRunningState({
+          userRequest,
+          decomposition,
+          currentTaskIndex: taskIndex + 1,
+          passRecords,
+          startedAt,
+        });
         continue;
       }
 
@@ -177,16 +274,19 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         );
       }
 
-      passNumber++;
-
       try {
         const passSummary = await this.executeTaskWithReviewLoop(
           task,
           summaries,
-          passNumber,
         );
         summaries.push(passSummary);
         this.state.addPassSummary(passSummary);
+        passRecords.push({
+          passNumber: passSummary.passNumber,
+          taskId: task.id,
+          agentName: task.agent,
+          timestamp: new Date().toISOString(),
+        });
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
         logger.error(`Task execution failed for ${taskId}`, {
@@ -196,83 +296,76 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         this.emit('error', error, { step: 'task-execution', taskId });
         logger.error(`Task ${taskId} failed: ${error.message}`);
         failedTaskIds.add(taskId);
+        hadErrors = true;
 
         // Continue to next task rather than aborting everything
-        summaries.push({
-          passNumber,
+        const failedSummary: PassSummary = {
+          passNumber: this.globalPassCounter + 1,
           summary: `Task ${taskId} failed: ${error.message}`,
           unresolvedIssues: [`Task ${taskId} failed and needs manual resolution`],
           contextForNextPass: error.message,
-          filesInScope: [],
-        });
+          filesInScope: task.scope.files ?? [],
+        };
+        this.globalPassCounter++;
+        summaries.push(failedSummary);
+        this.state.addPassSummary(failedSummary);
       }
 
-      // Update state progress
-      this.state.saveState({
-        status: 'running',
+      this.persistRunningState({
         userRequest,
         decomposition,
-        currentTaskIndex: executionOrder.indexOf(taskId) + 1,
-        passes: summaries.map((s, i) => ({
-          passNumber: i + 1,
-          taskId: executionOrder[i] ?? taskId,
-          agentName:
-            decomposition.tasks.find((t) => t.id === (executionOrder[i] ?? taskId))
-              ?.agent ?? 'unknown',
-          timestamp: new Date().toISOString(),
-        })),
+        currentTaskIndex: taskIndex + 1,
+        passRecords,
         startedAt,
       });
     }
 
-    // -----------------------------------------------------------------------
-    // Step 6: REPORT
-    // -----------------------------------------------------------------------
-    this.emit('step:start', 'report');
-    logger.info('Generating final report...');
+      // -----------------------------------------------------------------------
+      // Step 6: REPORT
+      // -----------------------------------------------------------------------
+      this.emit('step:start', 'report');
+      logger.info('Generating final report...');
 
-    let finalReport: string;
-    try {
-      finalReport = await report(
-        this.orchestrator,
-        summaries,
+      let finalReport: string;
+      try {
+        finalReport = await report(
+          this.orchestrator,
+          summaries,
+          userRequest,
+          this.orchestratorModel,
+        );
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.emit('error', error, { step: 'report' });
+        logger.error(`Report generation failed: ${error.message}`);
+        logger.error('Report step error details', {
+          error: error.message,
+          stack: error.stack,
+        });
+        hadErrors = true;
+        // Fallback: produce a basic report from summaries
+        finalReport = this.buildFallbackReport(summaries, userRequest);
+      }
+
+      this.emit('step:complete', 'report', { passCount: summaries.length });
+      this.emit('report', finalReport);
+
+      // Mark workflow as completed (or failed when we recovered with a fallback/partial output)
+      this.state.saveState({
+        status: hadErrors ? 'failed' : 'completed',
         userRequest,
-        this.orchestratorModel,
-      );
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.emit('error', error, { step: 'report' });
-      logger.error(`Report generation failed: ${error.message}`);
-      logger.error('Report step error details', {
-        error: error.message,
-        stack: error.stack,
+        decomposition,
+        currentTaskIndex: executionOrder.length,
+        passes: passRecords,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        lastError: hadErrors ? 'One or more tasks failed or were skipped.' : undefined,
       });
-      // Fallback: produce a basic report from summaries
-      finalReport = this.buildFallbackReport(summaries, userRequest);
+
+      return finalReport;
+    } finally {
+      this.activeAbortController = null;
     }
-
-    this.emit('step:complete', 'report', { passCount: summaries.length });
-    this.emit('report', finalReport);
-
-    // Mark workflow as completed
-    this.state.saveState({
-      status: 'completed',
-      userRequest,
-      decomposition,
-      currentTaskIndex: executionOrder.length,
-      passes: summaries.map((s, i) => ({
-        passNumber: i + 1,
-        taskId: executionOrder[i] ?? `task-${i + 1}`,
-        agentName:
-          decomposition.tasks.find((t) => t.id === (executionOrder[i] ?? ''))
-            ?.agent ?? 'unknown',
-        timestamp: new Date().toISOString(),
-      })),
-      startedAt,
-      completedAt: new Date().toISOString(),
-    });
-
-    return finalReport;
   }
 
   /**
@@ -282,7 +375,6 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   async executeTaskWithReviewLoop(
     task: DecomposeOutput['tasks'][number],
     previousSummaries: PassSummary[],
-    passNumber: number,
   ): Promise<PassSummary> {
     const maxPasses = this.getMaxPasses(task.role);
     let currentPass = 1;
@@ -331,6 +423,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
         },
         constraints: {
           model: this.agentModels[task.agent],
+          signal: this.activeAbortController?.signal,
         },
       });
 
@@ -483,6 +576,23 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
   private getMaxPasses(role: string): number {
     const step = this.workflow.steps.find((s) => s.role === role);
     return step?.maxPasses ?? 3;
+  }
+
+  private persistRunningState(params: {
+    userRequest: string;
+    decomposition: DecomposeOutput;
+    currentTaskIndex: number;
+    passRecords: PassRecord[];
+    startedAt: string;
+  }): void {
+    this.state.saveState({
+      status: 'running',
+      userRequest: params.userRequest,
+      decomposition: params.decomposition,
+      currentTaskIndex: params.currentTaskIndex,
+      passes: params.passRecords,
+      startedAt: params.startedAt,
+    });
   }
 
   /**

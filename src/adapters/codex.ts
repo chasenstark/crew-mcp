@@ -160,6 +160,7 @@ export class CodexAdapter implements AgentAdapter {
         result = await execa('codex', args, {
           cwd: task.context.workingDirectory,
           timeout,
+          signal: task.constraints?.signal,
           reject: false,
         });
       } catch (error: unknown) {
@@ -307,6 +308,7 @@ export class CodexAdapter implements AgentAdapter {
         result = await execa('codex', args, {
           cwd: options?.workingDirectory,
           timeout,
+          signal: options?.signal,
           reject: false,
         });
       } catch (error: unknown) {

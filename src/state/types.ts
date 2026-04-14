@@ -13,13 +13,15 @@ export interface DecomposeOutputRef {
 }
 
 export interface WorkflowState {
-  status: 'running' | 'paused' | 'completed' | 'failed';
+  status: 'running' | 'interrupted' | 'completed' | 'failed';
   userRequest: string;
   decomposition: DecomposeOutputRef;
   currentTaskIndex: number;
   passes: PassRecord[];
   startedAt?: string;
   completedAt?: string;
+  interruptedAt?: string;
+  lastError?: string;
 }
 
 export interface PassRecord {
