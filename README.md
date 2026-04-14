@@ -163,6 +163,17 @@ agents:
     strengths: [analysis]
 ```
 
+**Structured output caveat.** The `generic` adapter does not natively enforce
+JSON schemas (generic CLIs have no universal mechanism for this). When an
+orchestrator step requires structured output, the framework falls back to
+prompted JSON: the schema is appended to the prompt, stdout is parsed, and
+validated with Zod — retrying once with validation errors if the first
+attempt is malformed. Reliability depends on the underlying tool's ability
+to follow JSON instructions precisely; tools that wrap output in markdown
+fences, prepend prose, or truncate will retry until the retry budget is
+exhausted. For the orchestrator role itself, prefer `codex` or
+`claude-code`, which support native JSON-schema enforcement.
+
 ## Project Structure
 
 ```
