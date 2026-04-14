@@ -8,6 +8,13 @@ export interface ConfigDiagnostic {
   message: string;
 }
 
+function findReviewStep(config: FullConfig) {
+  return (
+    config.workflow.steps.find((step) => step.role === 'reviewer')
+    ?? config.workflow.steps.find((step) => step.action === 'review')
+  );
+}
+
 function createDiagnostic(
   path: string,
   expected: string,
@@ -46,7 +53,7 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
     );
   }
 
-  const reviewerStep = config.workflow.steps.find((step) => step.role === 'reviewer');
+  const reviewerStep = findReviewStep(config);
   if (reviewerStep && (!Number.isInteger(reviewerStep.maxPasses) || (reviewerStep.maxPasses ?? 0) < 1)) {
     diagnostics.push(
       createDiagnostic(

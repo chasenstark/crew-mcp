@@ -52,6 +52,12 @@ describe('config command handlers', () => {
     expect(projectConfig?.errorHandling.default.retry).toBe(7);
   });
 
+  it('supports next/prev cycling via set command', async () => {
+    await configSetCommand('orchestrator.model', 'next', { cwd });
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.orchestrator.model).toBe('claude-opus-4-6');
+  });
+
   it('sets and shows write scope', async () => {
     await configScopeCommand('global', { cwd });
     expect(readActiveScopePreference(cwd)).toBe('global');

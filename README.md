@@ -108,6 +108,8 @@ Creates `workflow.yaml` with the default workflow configuration.
 ### `orchestrator config`
 
 Interactive and command-based configuration management.
+The wizard is keyboard-driven: use `↑` / `↓` to highlight options and press `Enter` to select.
+For each field, you can also choose `[Custom value...]` or `[Keep current value]`.
 
 ```bash
 # Interactive wizard
@@ -119,7 +121,9 @@ orchestrator config show
 # Set values
 orchestrator config set orchestrator.cli codex
 orchestrator config set orchestrator.model claude-sonnet-4-5
+orchestrator config set orchestrator.model next
 orchestrator config set agents.codex.model gpt-5.4
+orchestrator config set agents.codex.model prev
 orchestrator config set workflow.reviewer.maxPasses 3
 orchestrator config set errorHandling.default.retry 1
 

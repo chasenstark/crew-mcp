@@ -6,6 +6,7 @@ import { getDefaultConfig } from '../../src/workflow/config-codec.js';
 import { loadConfigByScope } from '../../src/workflow/config-repository.js';
 import {
   applyConfigPatch,
+  getConfigValueOptions,
   getConfigScope,
   resetConfig,
   setConfigScope,
@@ -56,6 +57,20 @@ describe('config-service', () => {
     expect(next.workflow.steps.find((step) => step.role === 'reviewer')?.maxPasses).toBe(5);
   });
 
+  it('applies reviewer max passes to review action step when role name is custom', () => {
+    const config = getDefaultConfig();
+    const reviewer = config.workflow.steps.find((step) => step.role === 'reviewer');
+    if (reviewer) reviewer.role = 'qa';
+
+    const next = applyConfigPatch(config, {
+      path: 'workflow.reviewer.maxPasses',
+      value: '4',
+    });
+
+    const reviewStep = next.workflow.steps.find((step) => step.action === 'review');
+    expect(reviewStep?.maxPasses).toBe(4);
+  });
+
   it('throws for unsupported patch path', () => {
     expect(() =>
       applyConfigPatch(getDefaultConfig(), {
@@ -80,6 +95,22 @@ describe('config-service', () => {
     expect(result.nextValue).toBe('gpt-5.4');
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.agents.codex.model).toBe('gpt-5.4');
+  });
+
+  it('supports cycling with "next" for model fields', () => {
+    const result = setConfigValue(cwd, 'orchestrator.model', 'next');
+    expect(typeof result.nextValue).toBe('string');
+    expect(result.nextValue).toBe('claude-opus-4-6');
+  });
+
+  it('supports cycling with "prev" for numeric fields', () => {
+    const result = setConfigValue(cwd, 'errorHandling.default.retry', 'prev');
+    expect(result.nextValue).toBe(0);
+  });
+
+  it('returns preset options for supported fields', () => {
+    const options = getConfigValueOptions(getDefaultConfig(), 'workflow.reviewer.maxPasses');
+    expect(options).toEqual(['1', '2', '3', '4', '5']);
   });
 
   it('rejects invalid integer values', () => {

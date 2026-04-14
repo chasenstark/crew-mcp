@@ -53,6 +53,13 @@ describe('handleConfigSlashCommand', () => {
     expect(projectConfig?.orchestrator.cli).toBe('codex');
   });
 
+  it('supports next/prev cycling tokens in set command', () => {
+    const response = handleConfigSlashCommand('/config set orchestrator.model next', { cwd, isRunning: false });
+    expect(response).toContain('Configuration updated');
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.orchestrator.model).toBe('claude-opus-4-6');
+  });
+
   it('sets active scope', () => {
     const response = handleConfigSlashCommand('/config scope global', { cwd, isRunning: false });
     expect(response).toContain('Active write scope set to global');
