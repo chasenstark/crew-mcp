@@ -12,6 +12,9 @@ export interface AgentConfig {
   auth?: string;
   strengths?: string[];
   model?: string;
+  command?: string;
+  args?: string[];
+  capabilities?: string[];
 }
 
 export interface WorkflowConfig {

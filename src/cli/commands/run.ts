@@ -2,7 +2,7 @@ import { render } from 'ink';
 import React from 'react';
 import { App } from '../ui/App.js';
 import { Pipeline, type AgentRegistry } from '../../orchestrator/pipeline.js';
-import { AdapterRegistry } from '../../adapters/registry.js';
+import { AdapterRegistry, createRegistryFromConfig } from '../../adapters/registry.js';
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
@@ -70,7 +70,7 @@ export async function runCommand(
   const config = loadWorkflowConfig(projectRoot);
 
   // Initialize components
-  const registry = new AdapterRegistry();
+  const registry = createRegistryFromConfig(config.agents);
   const state = new StateStore(projectRoot);
   const worktreeManager = new WorktreeManager(projectRoot);
 

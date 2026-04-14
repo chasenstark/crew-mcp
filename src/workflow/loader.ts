@@ -89,12 +89,21 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         const strengths = Array.isArray(raw.strengths)
           ? raw.strengths.filter((s): s is string => typeof s === 'string')
           : undefined;
+        const args = Array.isArray(raw.args)
+          ? raw.args.filter((a): a is string => typeof a === 'string')
+          : undefined;
+        const capabilities = Array.isArray(raw.capabilities)
+          ? raw.capabilities.filter((c): c is string => typeof c === 'string')
+          : undefined;
 
         acc[name] = {
           adapter: typeof raw.adapter === 'string' ? raw.adapter : undefined,
           auth: typeof raw.auth === 'string' ? raw.auth : undefined,
           strengths,
           model: typeof raw.model === 'string' ? raw.model : undefined,
+          command: typeof raw.command === 'string' ? raw.command : undefined,
+          args,
+          capabilities,
         };
         return acc;
       },

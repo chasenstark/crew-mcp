@@ -47,6 +47,28 @@ orchestrator:
     expect(config.orchestrator.model).toBe('claude-opus-4-1');
   });
 
+  it('parses generic agent command/args/capabilities fields', () => {
+    const yaml = `
+workflow:
+  name: generic-config
+  steps: []
+agents:
+  custom-agent:
+    adapter: generic
+    command: my-tool
+    args: ["--prompt", "{{prompt}}"]
+    capabilities: [analyze, review]
+orchestrator:
+  cli: claude-code
+`;
+    const config = parseWorkflowYaml(yaml);
+    const generic = config.agents['custom-agent'];
+    expect(generic.adapter).toBe('generic');
+    expect(generic.command).toBe('my-tool');
+    expect(generic.args).toEqual(['--prompt', '{{prompt}}']);
+    expect(generic.capabilities).toEqual(['analyze', 'review']);
+  });
+
   it('returns default config', () => {
     const config = getDefaultConfig();
     expect(config.workflow.name).toBe('default');

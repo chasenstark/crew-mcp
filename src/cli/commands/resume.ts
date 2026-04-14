@@ -1,5 +1,5 @@
 import { Pipeline } from '../../orchestrator/pipeline.js';
-import { AdapterRegistry } from '../../adapters/registry.js';
+import { createRegistryFromConfig } from '../../adapters/registry.js';
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
@@ -61,7 +61,7 @@ export async function resumeCommand(options: { onAskUser?: string } = {}): Promi
   logger.info(`Resume log file: ${logFile}`);
 
   const config = loadWorkflowConfig(projectRoot);
-  const registry = new AdapterRegistry();
+  const registry = createRegistryFromConfig(config.agents);
   const worktreeManager = new WorktreeManager(projectRoot);
   const orchestratorAdapter = registry.getOrThrow(config.orchestrator.cli);
 
