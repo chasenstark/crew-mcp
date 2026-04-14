@@ -6,6 +6,7 @@ dist/
 docs/
 
 # Orchestrator state (project-specific, not committed)
+.orchestra/
 .orchestra/worktrees/
 .orchestra/state.json
 .orchestra/passes/
