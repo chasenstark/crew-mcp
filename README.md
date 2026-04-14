@@ -110,6 +110,7 @@ Creates `workflow.yaml` with the default workflow configuration.
 Interactive and command-based configuration management.
 The wizard is keyboard-driven: use `↑` / `↓` to highlight options and press `Enter` to select.
 For each field, you can also choose `[Custom value...]` or `[Keep current value]`.
+If your workflow has no review step, reviewer-pass settings are skipped automatically.
 
 ```bash
 # Interactive wizard

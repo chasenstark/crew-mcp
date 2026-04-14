@@ -101,7 +101,8 @@ export function getConfigValueOptions(config: FullConfig, path: string): string[
 
   if (path === 'workflow.reviewer.maxPasses') {
     const reviewerIndex = readReviewStepIndex(config);
-    const reviewerStep = reviewerIndex >= 0 ? config.workflow.steps[reviewerIndex] : undefined;
+    if (reviewerIndex < 0) return [];
+    const reviewerStep = config.workflow.steps[reviewerIndex];
     const presets = ['1', '2', '3', '4', '5'];
     return withCurrentOption(presets, reviewerStep?.maxPasses);
   }
@@ -171,7 +172,9 @@ function parseNonEmptyString(path: string, raw: unknown, example: string): strin
 function readReviewStepIndex(config: FullConfig): number {
   const roleMatch = config.workflow.steps.findIndex((step) => step.role === 'reviewer');
   if (roleMatch >= 0) return roleMatch;
-  return config.workflow.steps.findIndex((step) => step.action === 'review');
+  const actionMatch = config.workflow.steps.findIndex((step) => step.action === 'review');
+  if (actionMatch >= 0) return actionMatch;
+  return config.workflow.steps.findIndex((step) => step.role.toLowerCase().includes('review'));
 }
 
 function normalizeCycleDirection(raw: unknown): 'next' | 'prev' | null {

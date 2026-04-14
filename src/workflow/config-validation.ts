@@ -12,6 +12,7 @@ function findReviewStep(config: FullConfig) {
   return (
     config.workflow.steps.find((step) => step.role === 'reviewer')
     ?? config.workflow.steps.find((step) => step.action === 'review')
+    ?? config.workflow.steps.find((step) => step.role.toLowerCase().includes('review'))
   );
 }
 

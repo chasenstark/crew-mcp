@@ -398,18 +398,35 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     changes.push({ path, before, after: draft.agents[agentName].model });
   }
 
-  const reviewerMaxPassesValue = await askFieldValue({
-    label: 'workflow.reviewer.maxPasses',
-    currentValue: draft.workflow.steps.find((s) => s.role === 'reviewer')?.maxPasses,
-    defaultValue: defaults.workflow.steps.find((s) => s.role === 'reviewer')?.maxPasses,
-    description: 'Maximum review/fix cycles before fallback.',
-    options: getConfigValueOptions(draft, 'workflow.reviewer.maxPasses'),
-  });
-  if (reviewerMaxPassesValue) {
-    const before = draft.workflow.steps.find((s) => s.role === 'reviewer')?.maxPasses;
-    draft = applyConfigPatch(draft, { path: 'workflow.reviewer.maxPasses', value: reviewerMaxPassesValue });
-    const after = draft.workflow.steps.find((s) => s.role === 'reviewer')?.maxPasses;
-    changes.push({ path: 'workflow.reviewer.maxPasses', before, after });
+  const reviewerOptions = getConfigValueOptions(draft, 'workflow.reviewer.maxPasses');
+  if (reviewerOptions.length === 0) {
+    console.log(
+      chalk.yellow(
+        'Skipping workflow.reviewer.maxPasses: no review step found (role includes "reviewer" or action is "review").',
+      ),
+    );
+  } else {
+    const reviewerCurrent = draft.workflow.steps.find((s) =>
+      s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
+    )?.maxPasses;
+    const reviewerDefault = defaults.workflow.steps.find((s) =>
+      s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
+    )?.maxPasses;
+    const reviewerMaxPassesValue = await askFieldValue({
+      label: 'workflow.reviewer.maxPasses',
+      currentValue: reviewerCurrent,
+      defaultValue: reviewerDefault,
+      description: 'Maximum review/fix cycles before fallback.',
+      options: reviewerOptions,
+    });
+    if (reviewerMaxPassesValue) {
+      const before = reviewerCurrent;
+      draft = applyConfigPatch(draft, { path: 'workflow.reviewer.maxPasses', value: reviewerMaxPassesValue });
+      const after = draft.workflow.steps.find((s) =>
+        s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
+      )?.maxPasses;
+      changes.push({ path: 'workflow.reviewer.maxPasses', before, after });
+    }
   }
 
   const retryCountValue = await askFieldValue({

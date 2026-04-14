@@ -113,6 +113,15 @@ describe('config-service', () => {
     expect(options).toEqual(['1', '2', '3', '4', '5']);
   });
 
+  it('returns no reviewer presets when no review step exists', () => {
+    const config = getDefaultConfig();
+    config.workflow.steps = config.workflow.steps.filter(
+      (step) => step.role !== 'reviewer' && step.action !== 'review',
+    );
+    const options = getConfigValueOptions(config, 'workflow.reviewer.maxPasses');
+    expect(options).toEqual([]);
+  });
+
   it('rejects invalid integer values', () => {
     expect(() =>
       setConfigValue(cwd, 'workflow.reviewer.maxPasses', '0'),
@@ -123,6 +132,16 @@ describe('config-service', () => {
     expect(() =>
       setConfigValue(cwd, 'agents.unknown.model', 'foo'),
     ).toThrow(/unknown agent "unknown"/i);
+  });
+
+  it('rejects reviewer max passes when no review step exists', () => {
+    const config = getDefaultConfig();
+    config.workflow.steps = config.workflow.steps.filter(
+      (step) => step.role !== 'reviewer' && step.action !== 'review',
+    );
+    expect(() =>
+      applyConfigPatch(config, { path: 'workflow.reviewer.maxPasses', value: '3' }),
+    ).toThrow(/no review step exists/i);
   });
 
   it('resets scoped config to defaults', () => {
