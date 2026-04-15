@@ -1,4 +1,5 @@
 import type { FullConfig } from './types.js';
+import { ModelId } from './models.js';
 
 export interface ConfigDiagnostic {
   path: string;
@@ -147,7 +148,7 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
           `agents.${name}.model`,
           'non-empty string',
           agent.model,
-          `/config set agents.${name}.model claude-sonnet-4-5`,
+          `/config set agents.${name}.model ${ModelId.CLAUDE_SONNET}`,
         ),
       );
     }
@@ -196,7 +197,7 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
           `workflow.roleModels.${role}`,
           'role key present in workflow.steps[*].role or workflow.steps[*].action',
           role,
-          '/config set workflow.roleModels.reviewer gpt-5.4',
+          `/config set workflow.roleModels.reviewer ${ModelId.GPT}`,
         ),
       );
     }
@@ -206,7 +207,7 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
           `workflow.roleModels.${role}`,
           'non-empty string',
           model,
-          '/config set workflow.roleModels.reviewer gpt-5.4',
+          `/config set workflow.roleModels.reviewer ${ModelId.GPT}`,
         ),
       );
     }

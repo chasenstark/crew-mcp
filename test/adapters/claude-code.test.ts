@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
+import { ModelId } from '../../src/workflow/models.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -228,13 +229,13 @@ describe('ClaudeCodeAdapter', () => {
       await adapter.execute({
         prompt: 'Test model override',
         context: { workingDirectory: '/tmp/project' },
-        constraints: { model: 'claude-sonnet-4-5' },
+        constraints: { model: ModelId.CLAUDE_SONNET },
       });
 
       const callArgs = mockExeca.mock.calls[0];
       const cliArgs = callArgs[1] as string[];
       expect(cliArgs).toContain('--model');
-      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('claude-sonnet-4-5');
+      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe(ModelId.CLAUDE_SONNET);
     });
   });
 
@@ -422,13 +423,13 @@ describe('ClaudeCodeAdapter', () => {
       });
 
       await adapter.executeWithSchema('Plan tasks', schema, {
-        model: 'claude-sonnet-4-5',
+        model: ModelId.CLAUDE_SONNET,
       });
 
       const callArgs = mockExeca.mock.calls[0];
       const cliArgs = callArgs[1] as string[];
       expect(cliArgs).toContain('--model');
-      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('claude-sonnet-4-5');
+      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe(ModelId.CLAUDE_SONNET);
     });
   });
 

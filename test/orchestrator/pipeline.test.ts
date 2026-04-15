@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter, TaskResult } from '../../src/adapters/types.js';
 import type { PassSummary, WorkflowState } from '../../src/state/types.js';
+import { ModelId } from '../../src/workflow/models.js';
 
 vi.mock('../../src/orchestrator/steps/decompose.js', () => ({
   decompose: vi.fn(),
@@ -295,7 +296,7 @@ describe('Pipeline', () => {
     const { pipeline, agentExecute } = createHarness({
       name: 'role-model-direct',
       steps: [{ role: 'reviewer', agent: 'agent-a', action: 'review' }],
-      roleModels: { review: 'gpt-5.4-mini' },
+      roleModels: { review: ModelId.GPT_MINI },
       completion: { strategy: 'judge_approval', fallback: 'max_passes' },
     }, {
       agentModels: { 'agent-a': 'fallback-agent-model' },
@@ -320,14 +321,14 @@ describe('Pipeline', () => {
     await pipeline.run('Review thing');
 
     const executeCall = agentExecute.mock.calls[0]?.[0];
-    expect(executeCall.constraints?.model).toBe('gpt-5.4-mini');
+    expect(executeCall.constraints?.model).toBe(ModelId.GPT_MINI);
   });
 
   it('uses roleModels.<step role> when task role matches workflow action', async () => {
     const { pipeline, agentExecute } = createHarness({
       name: 'role-model-action-alias',
       steps: [{ role: 'reviewer', agent: 'agent-a', action: 'review' }],
-      roleModels: { reviewer: 'gpt-5.4' },
+      roleModels: { reviewer: ModelId.GPT },
       completion: { strategy: 'judge_approval', fallback: 'max_passes' },
     }, {
       agentModels: { 'agent-a': 'fallback-agent-model' },
@@ -352,23 +353,23 @@ describe('Pipeline', () => {
     await pipeline.run('Review thing');
 
     const executeCall = agentExecute.mock.calls[0]?.[0];
-    expect(executeCall.constraints?.model).toBe('gpt-5.4');
+    expect(executeCall.constraints?.model).toBe(ModelId.GPT);
   });
 
   it('uses workflow judge role model for judge step', async () => {
     const { pipeline } = createHarness({
       name: 'judge-role-model',
       steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
-      roleModels: { judge: 'gpt-5.4' },
+      roleModels: { judge: ModelId.GPT },
       completion: { strategy: 'judge_approval', fallback: 'max_passes' },
     }, {
-      orchestratorModel: 'claude-sonnet-4-5',
+      orchestratorModel: ModelId.CLAUDE_SONNET,
     });
 
     await pipeline.run('Build thing');
 
     const judgeModelArg = mockJudge.mock.calls[0]?.[5];
-    expect(judgeModelArg).toBe('gpt-5.4');
+    expect(judgeModelArg).toBe(ModelId.GPT);
   });
 
   it('requests user input when judge asks user and resumes with response', async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
+import { ModelId } from '../../src/workflow/models.js';
 import { validateConfig } from '../../src/workflow/config-validation.js';
 
 describe('config-validation', () => {
@@ -45,7 +46,7 @@ describe('config-validation', () => {
     const config = getDefaultConfig();
     config.agents.local = {
       adapter: 'openai-compatible',
-      model: 'qwen3:32b',
+      model: ModelId.QWEN,
       apiBase: 'http://127.0.0.1:11434/v1',
     };
 
@@ -56,8 +57,8 @@ describe('config-validation', () => {
   it('accepts role model keys that exist in workflow roles/actions', () => {
     const config = getDefaultConfig();
     config.workflow.roleModels = {
-      reviewer: 'gpt-5.4',
-      fix_review_issues: 'claude-opus-4-6',
+      reviewer: ModelId.GPT,
+      fix_review_issues: ModelId.CLAUDE_OPUS,
     };
 
     const diagnostics = validateConfig(config);
@@ -66,7 +67,7 @@ describe('config-validation', () => {
 
   it('rejects unknown role model keys', () => {
     const config = getDefaultConfig();
-    config.workflow.roleModels = { unknown: 'gpt-5.4' };
+    config.workflow.roleModels = { unknown: ModelId.GPT };
 
     const diagnostics = validateConfig(config);
     expect(diagnostics.some((d) => d.path === 'workflow.roleModels.unknown')).toBe(true);

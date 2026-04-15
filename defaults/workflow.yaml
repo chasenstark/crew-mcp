@@ -7,11 +7,11 @@ workflow:
     mode: judgment
   steps:
     - role: coder
-      agent: claude-code
+      agent: codex
       action: implement
 
     - role: reviewer
-      agent: codex
+      agent: claude-code
       action: review
       max_passes: 3
 
@@ -23,7 +23,7 @@ workflow:
         - "Is the fix complete and correct?"
 
     - role: coder
-      agent: claude-code
+      agent: codex
       action: fix_review_issues
       condition: "judge says fixes needed"
 
@@ -47,14 +47,17 @@ agents:
     auth: subscription
     model: gpt-5.3-codex
     strengths:
+      - implementation
       - review
       - testing
       - Python
+      - TypeScript
+      - React
       - security
 
 orchestrator:
   cli: claude-code
-  model: claude-sonnet-4-5
+  model: claude-sonnet-4-6
 
 error_handling:
   default:

@@ -3,6 +3,7 @@ import type { FullConfig } from './types.js';
 
 export {
   getDefaultConfig,
+  getDefaultWorkflowYamlTemplate,
   mergeConfigs,
   parseWorkflowYaml,
   serializeWorkflowYaml,

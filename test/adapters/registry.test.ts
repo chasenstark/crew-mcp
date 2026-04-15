@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRegistryFromConfig } from '../../src/adapters/registry.js';
+import { ModelId } from '../../src/workflow/models.js';
 
 describe('createRegistryFromConfig', () => {
   it('registers built-ins and configured generic adapters', () => {
@@ -30,7 +31,7 @@ describe('createRegistryFromConfig', () => {
       local: {
         adapter: 'openai-compatible',
         apiBase: 'http://127.0.0.1:11434/v1',
-        model: 'qwen3:32b',
+        model: ModelId.QWEN,
       },
     });
 

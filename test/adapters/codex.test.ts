@@ -2,6 +2,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync as realReadFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { ModelId } from '../../src/workflow/models.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -327,13 +328,13 @@ describe('CodexAdapter', () => {
       await adapter.execute({
         prompt: 'Review code with model override',
         context: { workingDirectory: '/tmp/project' },
-        constraints: { model: 'gpt-5.4-mini' },
+        constraints: { model: ModelId.GPT_MINI },
       });
 
       const callArgs = mockExeca.mock.calls[0];
       const cliArgs = callArgs[1] as string[];
       expect(cliArgs).toContain('--model');
-      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('gpt-5.4-mini');
+      expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe(ModelId.GPT_MINI);
     });
   });
 

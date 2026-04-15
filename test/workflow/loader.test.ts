@@ -7,6 +7,7 @@ import {
   loadWorkflowConfig,
   getGlobalConfigPath,
 } from '../../src/workflow/loader.js';
+import { ModelId } from '../../src/workflow/models.js';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -45,14 +46,14 @@ workflow:
   steps: []
 agents:
   claude-code:
-    model: claude-sonnet-4-5
+    model: ${ModelId.CLAUDE_SONNET}
 orchestrator:
   cli: claude-code
-  model: claude-opus-4-1
+  model: ${ModelId.CLAUDE_OPUS}
 `;
     const config = parseWorkflowYaml(yaml);
-    expect(config.agents['claude-code'].model).toBe('claude-sonnet-4-5');
-    expect(config.orchestrator.model).toBe('claude-opus-4-1');
+    expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
+    expect(config.orchestrator.model).toBe(ModelId.CLAUDE_OPUS);
     expect(config.workflow.execution?.mode).toBe('linear');
   });
 
@@ -75,16 +76,16 @@ orchestrator:
 workflow:
   name: role-models
   role_models:
-    reviewer: gpt-5.4
-    fix_review_issues: claude-opus-4-6
+    reviewer: ${ModelId.GPT}
+    fix_review_issues: ${ModelId.CLAUDE_OPUS}
   steps: []
 orchestrator:
   cli: claude-code
 `;
     const config = parseWorkflowYaml(yaml);
     expect(config.workflow.roleModels).toEqual({
-      reviewer: 'gpt-5.4',
-      fix_review_issues: 'claude-opus-4-6',
+      reviewer: ModelId.GPT,
+      fix_review_issues: ModelId.CLAUDE_OPUS,
     });
   });
 
@@ -168,13 +169,13 @@ describe('mergeConfigs', () => {
     const override = {
       ...getDefaultConfig(),
       agents: {
-        'claude-code': { model: 'claude-sonnet-4-5' },
+        'claude-code': { model: ModelId.CLAUDE_SONNET },
       },
     };
 
     const merged = mergeConfigs(baseConfig, override);
 
-    expect(merged.agents['claude-code'].model).toBe('claude-sonnet-4-5');
+    expect(merged.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
     expect(merged.agents['claude-code'].adapter).toBe(baseConfig.agents['claude-code'].adapter);
     expect(merged.agents['claude-code'].auth).toBe(baseConfig.agents['claude-code'].auth);
     expect(merged.agents['claude-code'].strengths).toEqual(baseConfig.agents['claude-code'].strengths);
@@ -186,46 +187,46 @@ workflow:
   name: override
   steps: []
 orchestrator:
-  model: claude-sonnet-4-5
+  model: ${ModelId.CLAUDE_SONNET}
 `);
 
     const merged = mergeConfigs(baseConfig, override);
-    expect(merged.orchestrator.model).toBe('claude-sonnet-4-5');
+    expect(merged.orchestrator.model).toBe(ModelId.CLAUDE_SONNET);
     expect(merged.orchestrator.cli).toBe(baseConfig.orchestrator.cli);
   });
 
   it('merges workflow role models with override priority', () => {
     const base = getDefaultConfig();
     base.workflow.roleModels = {
-      reviewer: 'gpt-5.3-codex',
-      coder: 'claude-opus-4-6',
+      reviewer: ModelId.GPT_CODEX,
+      coder: ModelId.CLAUDE_OPUS,
     };
 
     const override = getDefaultConfig();
     override.workflow.roleModels = {
-      reviewer: 'gpt-5.4',
-      judge: 'claude-sonnet-4-5',
+      reviewer: ModelId.GPT,
+      judge: ModelId.CLAUDE_SONNET,
     };
 
     const merged = mergeConfigs(base, override);
     expect(merged.workflow.roleModels).toEqual({
-      reviewer: 'gpt-5.4',
-      coder: 'claude-opus-4-6',
-      judge: 'claude-sonnet-4-5',
+      reviewer: ModelId.GPT,
+      coder: ModelId.CLAUDE_OPUS,
+      judge: ModelId.CLAUDE_SONNET,
     });
   });
 
   it('serializes workflow role models as role_models', () => {
     const config = getDefaultConfig();
     config.workflow.roleModels = {
-      reviewer: 'gpt-5.4',
-      judge: 'claude-opus-4-6',
+      reviewer: ModelId.GPT,
+      judge: ModelId.CLAUDE_OPUS,
     };
 
     const yaml = serializeWorkflowYaml(config);
     expect(yaml).toContain('role_models:');
-    expect(yaml).toContain('reviewer: gpt-5.4');
-    expect(yaml).toContain('judge: claude-opus-4-6');
+    expect(yaml).toContain(`reviewer: ${ModelId.GPT}`);
+    expect(yaml).toContain(`judge: ${ModelId.CLAUDE_OPUS}`);
   });
 
   it('override steps replace base steps entirely', () => {

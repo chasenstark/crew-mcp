@@ -124,7 +124,7 @@ orchestrator config show
 
 # Set values
 orchestrator config set orchestrator.cli codex
-orchestrator config set orchestrator.model claude-sonnet-4-5
+orchestrator config set orchestrator.model claude-sonnet-4-6
 orchestrator config set orchestrator.model next
 orchestrator config set workflow.execution.mode judgment
 orchestrator config set workflow.roleModels.reviewer gpt-5.4
@@ -214,11 +214,11 @@ workflow:
   name: default
   steps:
     - role: coder
-      agent: claude-code
+      agent: codex
       action: implement
 
     - role: reviewer
-      agent: codex
+      agent: claude-code
       action: review
       max_passes: 3
 
@@ -240,11 +240,11 @@ agents:
   codex:
     adapter: codex
     model: gpt-5.3-codex
-    strengths: [review, testing, Python, security]
+    strengths: [implementation, review, testing, Python, TypeScript, React, security]
 
 orchestrator:
   cli: claude-code
-  model: claude-sonnet-4-5
+  model: claude-sonnet-4-6
 
 error_handling:
   default:

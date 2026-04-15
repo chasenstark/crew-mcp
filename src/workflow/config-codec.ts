@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import YAML from 'yaml';
 import type { AgentConfig, FullConfig, WorkflowConfig } from './types.js';
 
@@ -223,36 +226,24 @@ export function serializeWorkflowYaml(config: FullConfig): string {
   });
 }
 
+function resolveDefaultWorkflowTemplatePath(): string {
+  const baseDir = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(baseDir, '../../defaults/workflow.yaml'),
+    join(baseDir, '../defaults/workflow.yaml'),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  throw new Error('Could not locate defaults/workflow.yaml');
+}
+
+export function getDefaultWorkflowYamlTemplate(): string {
+  return readFileSync(resolveDefaultWorkflowTemplatePath(), 'utf-8');
+}
+
 export function getDefaultConfig(): FullConfig {
-  return {
-    workflow: {
-      name: 'default',
-      execution: { mode: 'judgment' },
-      steps: [
-        { role: 'coder', agent: 'claude-code', action: 'implement' },
-        { role: 'reviewer', agent: 'codex', action: 'review', maxPasses: 3 },
-        { role: 'judge', agent: 'orchestrator', action: 'evaluate_review', criteria: ['Are the review findings actionable?', 'Is the fix complete and correct?'] },
-        { role: 'coder', agent: 'claude-code', action: 'fix_review_issues', condition: 'judge says fixes needed' },
-      ],
-      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
-    },
-    agents: {
-      'claude-code': {
-        adapter: 'claude-code',
-        auth: 'subscription',
-        model: 'claude-opus-4-6',
-        strengths: ['implementation', 'refactoring', 'TypeScript', 'React'],
-      },
-      'codex': {
-        adapter: 'codex',
-        auth: 'subscription',
-        model: 'gpt-5.3-codex',
-        strengths: ['review', 'testing', 'Python', 'security'],
-      },
-    },
-    orchestrator: { cli: 'claude-code', model: 'claude-sonnet-4-5' },
-    errorHandling: {
-      default: { retry: 1, fallback: null, onExhausted: 'ask_user' },
-    },
-  };
+  return parseWorkflowYaml(getDefaultWorkflowYamlTemplate());
 }

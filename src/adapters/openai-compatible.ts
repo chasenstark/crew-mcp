@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
 import { logger } from '../utils/logger.js';
+import { ModelId } from '../workflow/models.js';
 import type {
   AgentAdapter,
   AgentCapability,
@@ -66,7 +67,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.name = options.name;
-    this.defaultModel = options.model ?? 'qwen3:32b';
+    this.defaultModel = options.model ?? ModelId.QWEN;
     this.apiBase = (options.apiBase ?? process.env.ORCHESTRATOR_OPENAI_BASE_URL ?? 'http://127.0.0.1:11434/v1')
       .replace(/\/+$/, '');
     this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? process.env.ORCHESTRATOR_OPENAI_API_KEY;

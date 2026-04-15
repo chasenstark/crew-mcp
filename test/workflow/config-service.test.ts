@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
+import { ModelId } from '../../src/workflow/models.js';
 import { loadConfigByScope } from '../../src/workflow/config-repository.js';
 import {
   addAgent,
@@ -114,10 +115,10 @@ describe('config-service', () => {
   });
 
   it('can set agent model', () => {
-    const result = setConfigValue(cwd, 'agents.codex.model', 'gpt-5.4');
-    expect(result.nextValue).toBe('gpt-5.4');
+    const result = setConfigValue(cwd, 'agents.codex.model', ModelId.GPT);
+    expect(result.nextValue).toBe(ModelId.GPT);
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.agents.codex.model).toBe('gpt-5.4');
+    expect(projectConfig?.agents.codex.model).toBe(ModelId.GPT);
   });
 
   it('can set generic agent fields', () => {
@@ -134,14 +135,14 @@ describe('config-service', () => {
   it('supports cycling with "next" for model fields', () => {
     const result = setConfigValue(cwd, 'orchestrator.model', 'next');
     expect(typeof result.nextValue).toBe('string');
-    expect(result.nextValue).toBe('claude-opus-4-6');
+    expect(result.nextValue).toBe(ModelId.CLAUDE_OPUS);
   });
 
   it('supports cycling with "next" for role model fields', () => {
     const result = setConfigValue(cwd, 'workflow.roleModels.reviewer', 'next');
-    expect(result.nextValue).toBe('gpt-5.4');
+    expect(result.nextValue).toBe(ModelId.CLAUDE_SONNET);
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.workflow.roleModels?.reviewer).toBe('gpt-5.4');
+    expect(projectConfig?.workflow.roleModels?.reviewer).toBe(ModelId.CLAUDE_SONNET);
   });
 
   it('supports cycling with "prev" for numeric fields', () => {
@@ -167,12 +168,12 @@ describe('config-service', () => {
 
   it('returns role-model options for a role key and action key', () => {
     const reviewerOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.reviewer');
-    expect(reviewerOptions).toContain('gpt-5.4');
-    expect(reviewerOptions).toContain('gpt-5.3-codex');
+    expect(reviewerOptions).toContain(ModelId.CLAUDE_SONNET);
+    expect(reviewerOptions).toContain(ModelId.CLAUDE_OPUS);
 
     const fixOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.fix_review_issues');
-    expect(fixOptions).toContain('claude-sonnet-4-5');
-    expect(fixOptions).toContain('claude-opus-4-6');
+    expect(fixOptions).toContain(ModelId.GPT);
+    expect(fixOptions).toContain(ModelId.GPT_CODEX);
   });
 
   it('returns no reviewer presets when no review step exists', () => {
@@ -204,7 +205,7 @@ describe('config-service', () => {
 
   it('rejects unknown role-model keys', () => {
     expect(() =>
-      setConfigValue(cwd, 'workflow.roleModels.unknownRole', 'gpt-5.4'),
+      setConfigValue(cwd, 'workflow.roleModels.unknownRole', ModelId.GPT),
     ).toThrow(/workflow\.roleModels\.unknownRole/);
   });
 

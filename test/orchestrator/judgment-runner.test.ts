@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import type { AgentAdapter, TaskResult } from '../../src/adapters/types.js';
 import { StateStore } from '../../src/state/store.js';
 import type { WorkflowState } from '../../src/state/types.js';
+import { ModelId } from '../../src/workflow/models.js';
 
 vi.mock('../../src/orchestrator/steps/decompose.js', () => ({
   decompose: vi.fn(),
@@ -224,8 +225,8 @@ describe('JudgmentRunner', () => {
       stateStore,
       worktreeManager as never,
       {
-        orchestratorModel: 'gpt-5.4',
-        agentModels: { 'agent-a': 'gpt-5.3-codex' },
+        orchestratorModel: ModelId.GPT,
+        agentModels: { 'agent-a': ModelId.GPT_CODEX },
       },
     );
 

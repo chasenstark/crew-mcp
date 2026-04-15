@@ -2,6 +2,13 @@ import { getDefaultConfig } from './config-codec.js';
 import type { AgentConfig, FullConfig } from './types.js';
 import type { ConfigScope } from './config-repository.js';
 import {
+  CLAUDE_MODEL_PRESETS,
+  CODEX_MODEL_PRESETS,
+  ModelId,
+  OPENAI_COMPATIBLE_MODEL_PRESETS,
+  ORCHESTRATOR_MODEL_PRESETS,
+} from './models.js';
+import {
   DEFAULT_CONFIG_PROFILE,
   getConfigPaths,
   loadEffectiveConfig,
@@ -90,25 +97,6 @@ const CAPABILITY_PRESETS = [
   'analyze',
 ];
 
-const CLAUDE_MODEL_PRESETS = [
-  'claude-sonnet-4-5',
-  'claude-opus-4-6',
-];
-
-const CODEX_MODEL_PRESETS = [
-  'gpt-5.4',
-  'gpt-5.3-codex',
-  'gpt-5.4-mini',
-];
-
-const ORCHESTRATOR_MODEL_PRESETS = [
-  'claude-sonnet-4-5',
-  'claude-opus-4-6',
-  'gpt-5.4',
-  'gpt-5.3-codex',
-  'qwen3:32b',
-];
-
 function uniqueOrdered(values: string[]): string[] {
   const deduped = new Set<string>();
   const result: string[] = [];
@@ -121,18 +109,18 @@ function uniqueOrdered(values: string[]): string[] {
   return result;
 }
 
-function withCurrentOption(options: string[], current: unknown): string[] {
-  if (current === undefined || current === null) return options;
+function withCurrentOption(options: readonly string[], current: unknown): string[] {
+  if (current === undefined || current === null) return [...options];
   const asString = String(current).trim();
-  if (!asString) return options;
-  if (options.includes(asString)) return options;
+  if (!asString) return [...options];
+  if (options.includes(asString)) return [...options];
   return [...options, asString];
 }
 
-function modelPresetsForAdapterType(adapterType: string): string[] {
+function modelPresetsForAdapterType(adapterType: string): readonly string[] {
   if (adapterType === 'claude-code') return CLAUDE_MODEL_PRESETS;
   if (adapterType === 'codex') return CODEX_MODEL_PRESETS;
-  if (adapterType === 'openai-compatible') return ['qwen3:32b', 'qwen3:14b'];
+  if (adapterType === 'openai-compatible') return [...OPENAI_COMPATIBLE_MODEL_PRESETS];
   return [];
 }
 
@@ -242,12 +230,12 @@ function unsupportedPathError(path: string): Error {
       'Examples:',
       '  /config set orchestrator.cli codex',
       '  /config set workflow.execution.mode judgment',
-      '  /config set workflow.roleModels.reviewer gpt-5.4',
+      `  /config set workflow.roleModels.reviewer ${ModelId.GPT}`,
       '  /config set agents.local-gemma.adapter generic',
       '  /config set agents.local-gemma.command ollama',
       '  /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}',
       '  /config set agents.local-gemma.capabilities implement,review',
-      '  /config set agents.codex.model gpt-5.3-codex',
+      `  /config set agents.codex.model ${ModelId.GPT_CODEX}`,
       '  /config set workflow.reviewer.maxPasses 3',
     ].join('\n'),
   );
@@ -409,7 +397,7 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
     next.orchestrator.model = parseNonEmptyString(
       path,
       resolvedValue,
-      '/config set orchestrator.model claude-sonnet-4-5',
+      `/config set orchestrator.model ${ModelId.CLAUDE_SONNET}`,
     );
     return next;
   }
@@ -441,7 +429,7 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
     next.workflow.roleModels[role] = parseNonEmptyString(
       path,
       resolvedValue,
-      '/config set workflow.roleModels.reviewer gpt-5.4',
+      `/config set workflow.roleModels.reviewer ${ModelId.GPT}`,
     );
     return next;
   }
@@ -493,7 +481,7 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
       next.agents[agentName].model = parseNonEmptyString(
         path,
         resolvedValue,
-        `/config set agents.${agentName}.model gpt-5.3-codex`,
+        `/config set agents.${agentName}.model ${ModelId.GPT_CODEX}`,
       );
       return next;
     }

@@ -12,6 +12,7 @@ import {
   configShowCommand,
 } from '../../../src/cli/commands/config.js';
 import { loadConfigByScope, readActiveScopePreference } from '../../../src/workflow/config-repository.js';
+import { ModelId } from '../../../src/workflow/models.js';
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -59,7 +60,7 @@ describe('config command handlers', () => {
   it('supports next/prev cycling via set command', async () => {
     await configSetCommand('orchestrator.model', 'next', { cwd });
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.orchestrator.model).toBe('claude-opus-4-6');
+    expect(projectConfig?.orchestrator.model).toBe(ModelId.CLAUDE_OPUS);
   });
 
   it('sets active profile', async () => {
@@ -75,9 +76,9 @@ describe('config command handlers', () => {
   });
 
   it('sets role model overrides via set command', async () => {
-    await configSetCommand('workflow.roleModels.reviewer', 'gpt-5.4', { cwd });
+    await configSetCommand('workflow.roleModels.reviewer', ModelId.GPT, { cwd });
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.workflow.roleModels?.reviewer).toBe('gpt-5.4');
+    expect(projectConfig?.workflow.roleModels?.reviewer).toBe(ModelId.GPT);
   });
 
   it('sets and shows write scope', async () => {
