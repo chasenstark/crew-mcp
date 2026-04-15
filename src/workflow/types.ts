@@ -19,6 +19,8 @@ export interface AgentConfig {
   command?: string;
   args?: string[];
   capabilities?: string[];
+  apiBase?: string;
+  apiKey?: string;
 }
 
 export interface WorkflowConfig {

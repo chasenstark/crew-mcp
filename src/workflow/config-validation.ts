@@ -8,7 +8,13 @@ export interface ConfigDiagnostic {
   message: string;
 }
 
-const SUPPORTED_ADAPTERS = new Set(['claude-code', 'codex', 'generic']);
+const SUPPORTED_ADAPTERS = new Set([
+  'claude-code',
+  'codex',
+  'gemini-cli',
+  'generic',
+  'openai-compatible',
+]);
 const SUPPORTED_CAPABILITIES = new Set([
   'implement',
   'review',
@@ -56,12 +62,13 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
     ...Object.keys(config.agents),
     'claude-code',
     'codex',
+    'gemini-cli',
   ]);
   if (!knownOrchestratorCli.has(config.orchestrator.cli)) {
     diagnostics.push(
       createDiagnostic(
         'orchestrator.cli',
-        'a known agent key or built-in adapter key (claude-code|codex)',
+        'a known agent key or built-in adapter key (claude-code|codex|gemini-cli)',
         config.orchestrator.cli,
         '/config set orchestrator.cli codex',
       ),
@@ -111,17 +118,17 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
 
     if (!SUPPORTED_ADAPTERS.has(adapterType)) {
       diagnostics.push(
-        createDiagnostic(
-          `agents.${name}.adapter`,
-          'one of: claude-code, codex, generic',
-          agent.adapter ?? name,
-          `/config set agents.${name}.adapter generic`,
-        ),
+      createDiagnostic(
+        `agents.${name}.adapter`,
+        'one of: claude-code, codex, gemini-cli, generic, openai-compatible',
+        agent.adapter ?? name,
+        `/config set agents.${name}.adapter generic`,
+      ),
       );
     }
 
     if (
-      (adapterType === 'claude-code' || adapterType === 'codex')
+      (adapterType === 'claude-code' || adapterType === 'codex' || adapterType === 'gemini-cli')
       && name !== adapterType
     ) {
       diagnostics.push(

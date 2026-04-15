@@ -6,6 +6,7 @@ describe('createRegistryFromConfig', () => {
     const registry = createRegistryFromConfig({
       'claude-code': { adapter: 'claude-code' },
       codex: { adapter: 'codex' },
+      'gemini-cli': { adapter: 'gemini-cli' },
       custom: {
         adapter: 'generic',
         command: 'my-tool',
@@ -16,11 +17,26 @@ describe('createRegistryFromConfig', () => {
 
     expect(registry.get('claude-code')).toBeDefined();
     expect(registry.get('codex')).toBeDefined();
+    expect(registry.get('gemini-cli')).toBeDefined();
     const custom = registry.get('custom');
     expect(custom).toBeDefined();
     expect(custom?.name).toBe('custom');
     expect(custom?.capabilities).toContain('analyze');
     expect(custom?.capabilities).toContain('review');
+  });
+
+  it('registers openai-compatible adapters under arbitrary keys', () => {
+    const registry = createRegistryFromConfig({
+      local: {
+        adapter: 'openai-compatible',
+        apiBase: 'http://127.0.0.1:11434/v1',
+        model: 'qwen3:32b',
+      },
+    });
+
+    const local = registry.get('local');
+    expect(local).toBeDefined();
+    expect(local?.name).toBe('local');
   });
 
   it('throws when a generic adapter is missing command', () => {

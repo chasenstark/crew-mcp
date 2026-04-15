@@ -1,7 +1,9 @@
 import type { AgentAdapter, AgentCapability, HealthCheckResult } from './types.js';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { CodexAdapter } from './codex.js';
+import { GeminiCliAdapter } from './gemini-cli.js';
 import { GenericAdapter } from './generic.js';
+import { OpenAiCompatibleAdapter } from './openai-compatible.js';
 import type { AgentConfig } from '../workflow/types.js';
 
 export interface RegistryHealthReport {
@@ -15,6 +17,7 @@ export class AdapterRegistry {
     // Pre-register built-in adapters
     this.register(new ClaudeCodeAdapter());
     this.register(new CodexAdapter());
+    this.register(new GeminiCliAdapter());
   }
 
   register(adapter: AgentAdapter): void {
@@ -116,7 +119,20 @@ export function createRegistryFromConfig(
       continue;
     }
 
-    if (adapterType === 'claude-code' || adapterType === 'codex') {
+    if (adapterType === 'openai-compatible') {
+      registry.register(
+        new OpenAiCompatibleAdapter({
+          name,
+          model: config.model,
+          apiBase: config.apiBase,
+          apiKey: config.apiKey,
+          capabilities: toCapabilities(config),
+        }),
+      );
+      continue;
+    }
+
+    if (adapterType === 'claude-code' || adapterType === 'codex' || adapterType === 'gemini-cli') {
       if (name !== adapterType) {
         throw new Error(
           `Built-in adapter "${adapterType}" must be configured under key "${adapterType}" (received "${name}").`,

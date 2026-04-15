@@ -91,6 +91,16 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         command: typeof raw.command === 'string' ? raw.command : undefined,
         args,
         capabilities,
+        apiBase: typeof raw.api_base === 'string'
+          ? raw.api_base
+          : typeof raw.apiBase === 'string'
+            ? raw.apiBase
+            : undefined,
+        apiKey: typeof raw.api_key === 'string'
+          ? raw.api_key
+          : typeof raw.apiKey === 'string'
+            ? raw.apiKey
+            : undefined,
       };
       return acc;
     },
@@ -190,6 +200,8 @@ export function serializeWorkflowYaml(config: FullConfig): string {
           command: agent.command,
           args: agent.args,
           capabilities: agent.capabilities,
+          api_base: agent.apiBase,
+          api_key: agent.apiKey,
         }),
       ]),
     ),

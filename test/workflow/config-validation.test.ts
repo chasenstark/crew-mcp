@@ -41,6 +41,18 @@ describe('config-validation', () => {
     expect(diagnostics.some((d) => d.path === 'agents.custom-codex.adapter')).toBe(true);
   });
 
+  it('accepts openai-compatible adapters without a command field', () => {
+    const config = getDefaultConfig();
+    config.agents.local = {
+      adapter: 'openai-compatible',
+      model: 'qwen3:32b',
+      apiBase: 'http://127.0.0.1:11434/v1',
+    };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'agents.local.command')).toBe(false);
+  });
+
   it('accepts role model keys that exist in workflow roles/actions', () => {
     const config = getDefaultConfig();
     config.workflow.roleModels = {

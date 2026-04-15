@@ -74,7 +74,13 @@ export const SUPPORTED_CONFIG_SET_PATHS = [
   'errorHandling.default.retry',
 ] as const;
 
-const ADAPTER_PRESETS = ['claude-code', 'codex', 'generic'];
+const ADAPTER_PRESETS = [
+  'claude-code',
+  'codex',
+  'gemini-cli',
+  'generic',
+  'openai-compatible',
+];
 const CAPABILITY_PRESETS = [
   'implement',
   'review',
@@ -100,6 +106,7 @@ const ORCHESTRATOR_MODEL_PRESETS = [
   'claude-opus-4-6',
   'gpt-5.4',
   'gpt-5.3-codex',
+  'qwen3:32b',
 ];
 
 function uniqueOrdered(values: string[]): string[] {
@@ -125,6 +132,7 @@ function withCurrentOption(options: string[], current: unknown): string[] {
 function modelPresetsForAdapterType(adapterType: string): string[] {
   if (adapterType === 'claude-code') return CLAUDE_MODEL_PRESETS;
   if (adapterType === 'codex') return CODEX_MODEL_PRESETS;
+  if (adapterType === 'openai-compatible') return ['qwen3:32b', 'qwen3:14b'];
   return [];
 }
 
@@ -159,11 +167,12 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
 export function getConfigValueOptions(config: FullConfig, path: string): string[] {
   if (path === 'orchestrator.cli') {
     const otherAgents = Object.keys(config.agents)
-      .filter((name) => name !== 'claude-code' && name !== 'codex')
+      .filter((name) => name !== 'claude-code' && name !== 'codex' && name !== 'gemini-cli')
       .sort();
     const options = uniqueOrdered([
       'claude-code',
       'codex',
+      'gemini-cli',
       ...otherAgents,
     ]);
     return withCurrentOption(options, config.orchestrator.cli);
