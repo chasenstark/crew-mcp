@@ -10,6 +10,15 @@ import {
   resolveModelAliasOrThrow,
 } from './models.js';
 import {
+  ADAPTER_PRESETS,
+  AdapterId,
+  AgentId,
+  BUILTIN_WORKER_AGENTS,
+  resolveAdapterAlias,
+  resolveAdapterAliasOrThrow,
+  resolveAgentAlias,
+} from './agents.js';
+import {
   DEFAULT_CONFIG_PROFILE,
   getConfigPaths,
   loadEffectiveConfig,
@@ -82,13 +91,6 @@ export const SUPPORTED_CONFIG_SET_PATHS = [
   'errorHandling.default.retry',
 ] as const;
 
-const ADAPTER_PRESETS = [
-  'claude-code',
-  'codex',
-  'gemini-cli',
-  'generic',
-  'openai-compatible',
-];
 const CAPABILITY_PRESETS = [
   'implement',
   'review',
@@ -119,9 +121,9 @@ function withCurrentOption(options: readonly string[], current: unknown): string
 }
 
 function modelPresetsForAdapterType(adapterType: string): readonly string[] {
-  if (adapterType === 'claude-code') return CLAUDE_MODEL_PRESETS;
-  if (adapterType === 'codex') return CODEX_MODEL_PRESETS;
-  if (adapterType === 'openai-compatible') return [...OPENAI_COMPATIBLE_MODEL_PRESETS];
+  if (adapterType === AdapterId.CLAUDE_CODE) return CLAUDE_MODEL_PRESETS;
+  if (adapterType === AdapterId.CODEX) return CODEX_MODEL_PRESETS;
+  if (adapterType === AdapterId.OPENAI_COMPATIBLE) return [...OPENAI_COMPATIBLE_MODEL_PRESETS];
   return [];
 }
 
@@ -136,7 +138,7 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
   const candidates: string[] = [];
   for (const step of config.workflow.steps) {
     if (step.role !== role && step.action !== role) continue;
-    if (step.agent === 'orchestrator') {
+    if (step.agent === AgentId.ORCHESTRATOR) {
       candidates.push(...ORCHESTRATOR_MODEL_PRESETS);
       continue;
     }
@@ -156,12 +158,10 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
 export function getConfigValueOptions(config: FullConfig, path: string): string[] {
   if (path === 'orchestrator.cli') {
     const otherAgents = Object.keys(config.agents)
-      .filter((name) => name !== 'claude-code' && name !== 'codex' && name !== 'gemini-cli')
+      .filter((name) => !BUILTIN_WORKER_AGENTS.includes(name as AgentId))
       .sort();
     const options = uniqueOrdered([
-      'claude-code',
-      'codex',
-      'gemini-cli',
+      ...BUILTIN_WORKER_AGENTS,
       ...otherAgents,
     ]);
     return withCurrentOption(options, config.orchestrator.cli);
@@ -229,10 +229,10 @@ function unsupportedPathError(path: string): Error {
       `Unsupported config path "${path}".`,
       `Supported paths: ${SUPPORTED_CONFIG_SET_PATHS.join(', ')}`,
       'Examples:',
-      '  /config set orchestrator.cli codex',
+      `  /config set orchestrator.cli ${AgentId.CODEX}`,
       '  /config set workflow.execution.mode judgment',
       `  /config set workflow.roleModels.reviewer ${ModelId.GPT}`,
-      '  /config set agents.local-gemma.adapter generic',
+      `  /config set agents.local-gemma.adapter ${AdapterId.GENERIC}`,
       '  /config set agents.local-gemma.command ollama',
       '  /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}',
       '  /config set agents.local-gemma.capabilities implement,review',
@@ -386,11 +386,12 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
   const resolvedValue = resolveConfigInput(next, path, patch.value);
 
   if (path === 'orchestrator.cli') {
-    next.orchestrator.cli = parseNonEmptyString(
+    const parsedAgent = parseNonEmptyString(
       path,
       resolvedValue,
-      '/config set orchestrator.cli codex',
+      `/config set orchestrator.cli ${AgentId.CODEX}`,
     );
+    next.orchestrator.cli = resolveAgentAlias(parsedAgent);
     return next;
   }
 
@@ -473,11 +474,12 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
       );
     }
     if (field === 'adapter') {
-      next.agents[agentName].adapter = parseNonEmptyString(
+      const parsedAdapter = parseNonEmptyString(
         path,
         resolvedValue,
-        `/config set agents.${agentName}.adapter generic`,
+        `/config set agents.${agentName}.adapter ${AdapterId.GENERIC}`,
       );
+      next.agents[agentName].adapter = resolveAdapterAliasOrThrow(parsedAdapter, path);
       return next;
     }
     if (field === 'model') {
@@ -630,7 +632,7 @@ export function addAgent(
     throw new Error(`Agent "${name}" already exists.`);
   }
 
-  const adapter = options.adapter?.trim() || 'generic';
+  const adapter = resolveAdapterAlias(options.adapter?.trim() || AdapterId.GENERIC);
   const model = options.model?.trim();
   const command = options.command?.trim();
   const args = options.args
@@ -646,7 +648,7 @@ export function addAgent(
   if (model) agent.model = model;
   if (command) {
     agent.command = command;
-  } else if (adapter === 'generic') {
+  } else if (adapter === AdapterId.GENERIC) {
     agent.command = name;
   }
   if (args && args.length > 0) agent.args = uniqueOrdered(args);

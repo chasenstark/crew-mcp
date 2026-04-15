@@ -7,6 +7,7 @@ import type { ConfigScope } from '../../workflow/config-repository.js';
 import { getDefaultConfig } from '../../workflow/config-codec.js';
 import { saveConfigByScope } from '../../workflow/config-repository.js';
 import { validateConfig } from '../../workflow/config-validation.js';
+import { AdapterId } from '../../workflow/agents.js';
 import {
   addAgent,
   applyConfigPatch,
@@ -565,7 +566,7 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     }
 
     const adapterType = draft.agents[agentName].adapter ?? agentName;
-    const shouldConfigureGenericFields = adapterType === 'generic'
+    const shouldConfigureGenericFields = adapterType === AdapterId.GENERIC
       || draft.agents[agentName].command !== undefined
       || draft.agents[agentName].args !== undefined;
 

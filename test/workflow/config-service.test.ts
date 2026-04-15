@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
+import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
 import { ModelId } from '../../src/workflow/models.js';
 import { loadConfigByScope } from '../../src/workflow/config-repository.js';
@@ -132,10 +133,26 @@ describe('config-service', () => {
     expect(agentResult.nextValue).toBe(ModelId.GPT_MINI);
   });
 
+  it('resolves agent and adapter aliases when setting config paths', () => {
+    const cliResult = setConfigValue(cwd, 'orchestrator.cli', '${CODEX}');
+    expect(cliResult.nextValue).toBe(AgentId.CODEX);
+
+    addAgent(cwd, 'local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
+    const adapterResult = setConfigValue(cwd, 'agents.local-gemma.adapter', 'OPENAI_COMPATIBLE');
+    expect(adapterResult.nextValue).toBe(AdapterId.OPENAI_COMPATIBLE);
+  });
+
   it('rejects unknown model aliases when setting model paths', () => {
     expect(() =>
       setConfigValue(cwd, 'orchestrator.model', 'NOT_A_MODEL_ALIAS'),
     ).toThrow(/Unknown model alias/);
+  });
+
+  it('rejects unknown adapter aliases when setting adapter paths', () => {
+    addAgent(cwd, 'local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
+    expect(() =>
+      setConfigValue(cwd, 'agents.local-gemma.adapter', 'NOT_A_ADAPTER_ALIAS'),
+    ).toThrow(/Unknown adapter alias/);
   });
 
   it('can set generic agent fields', () => {

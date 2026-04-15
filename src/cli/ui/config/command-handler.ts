@@ -8,6 +8,7 @@ import {
   setConfigScope,
   setConfigValue,
 } from '../../../workflow/config-service.js';
+import { AdapterId } from '../../../workflow/agents.js';
 import { formatShowOutput } from '../../commands/config.js';
 import { parseConfigSlashCommand } from './command-parser.js';
 
@@ -115,7 +116,7 @@ export function handleConfigSlashCommand(
       `profile: ${result.profile}`,
       `file: ${result.filePath}`,
       `name: ${result.name}`,
-      `adapter: ${result.agent.adapter ?? 'generic'}`,
+      `adapter: ${result.agent.adapter ?? AdapterId.GENERIC}`,
       `command: ${result.agent.command ?? '(none)'}`,
     ].join('\n');
   }

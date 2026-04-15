@@ -27,6 +27,7 @@ import type {
 } from './types.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
+import { AgentId } from '../workflow/agents.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -191,7 +192,7 @@ function findError(events: CodexEvent[]): string | undefined {
 }
 
 export class CodexAdapter implements AgentAdapter {
-  readonly name = 'codex';
+  readonly name = AgentId.CODEX;
   readonly capabilities: AgentCapability[] = [
     'implement',
     'review',
@@ -207,7 +208,7 @@ export class CodexAdapter implements AgentAdapter {
   };
 
   async getCliVersionTag(): Promise<string | undefined> {
-    const versionResult = await execa('codex', ['--version'], {
+    const versionResult = await execa(AgentId.CODEX, ['--version'], {
       timeout: 10_000,
       reject: false,
     });
@@ -215,11 +216,11 @@ export class CodexAdapter implements AgentAdapter {
       const match = `${versionResult.stdout ?? ''} ${versionResult.stderr ?? ''}`
         .match(/(\d+\.\d+\.\d+)/);
       if (match) {
-        return buildCliVersionTag('codex', match[1]);
+        return buildCliVersionTag(AgentId.CODEX, match[1]);
       }
     }
 
-    const helpResult = await execa('codex', ['--help'], {
+    const helpResult = await execa(AgentId.CODEX, ['--help'], {
       timeout: 10_000,
       reject: false,
     });
@@ -227,7 +228,7 @@ export class CodexAdapter implements AgentAdapter {
     const fallbackMatch = `${helpResult.stdout ?? ''} ${helpResult.stderr ?? ''}`
       .match(/(\d+\.\d+\.\d+)/);
     if (!fallbackMatch) return undefined;
-    return buildCliVersionTag('codex', fallbackMatch[1]);
+    return buildCliVersionTag(AgentId.CODEX, fallbackMatch[1]);
   }
 
   async execute(task: Task): Promise<TaskResult> {
@@ -251,7 +252,7 @@ export class CodexAdapter implements AgentAdapter {
 
       let result;
       try {
-        const subprocess = execa('codex', args, {
+        const subprocess = execa(AgentId.CODEX, args, {
           cwd: task.context.workingDirectory,
           timeout,
           cancelSignal: task.constraints?.signal,
@@ -436,7 +437,7 @@ export class CodexAdapter implements AgentAdapter {
 
       let result;
       try {
-        result = await execa('codex', args, {
+        result = await execa(AgentId.CODEX, args, {
           cwd: options?.workingDirectory,
           timeout,
           cancelSignal: options?.signal,
@@ -767,7 +768,7 @@ export class CodexAdapter implements AgentAdapter {
 
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
       const args = this.buildResumeArgs(providerSession, pendingPrompt, configFlags);
-      const result = await execa('codex', args, {
+      const result = await execa(AgentId.CODEX, args, {
         cwd: context.workingDirectory,
         cancelSignal: context.signal,
         reject: false,
@@ -971,7 +972,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async healthCheck(): Promise<HealthCheckResult> {
     try {
-      const result = await execa('codex', ['--help'], {
+      const result = await execa(AgentId.CODEX, ['--help'], {
         timeout: 10_000,
         reject: false,
       });

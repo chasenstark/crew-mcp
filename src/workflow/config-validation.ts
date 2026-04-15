@@ -1,5 +1,6 @@
 import type { FullConfig } from './types.js';
 import { ModelId } from './models.js';
+import { ADAPTER_PRESETS, AdapterId, AgentId, BUILTIN_WORKER_AGENTS } from './agents.js';
 
 export interface ConfigDiagnostic {
   path: string;
@@ -9,13 +10,7 @@ export interface ConfigDiagnostic {
   message: string;
 }
 
-const SUPPORTED_ADAPTERS = new Set([
-  'claude-code',
-  'codex',
-  'gemini-cli',
-  'generic',
-  'openai-compatible',
-]);
+const SUPPORTED_ADAPTERS = new Set<string>(ADAPTER_PRESETS);
 const SUPPORTED_CAPABILITIES = new Set([
   'implement',
   'review',
@@ -61,17 +56,15 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
 
   const knownOrchestratorCli = new Set([
     ...Object.keys(config.agents),
-    'claude-code',
-    'codex',
-    'gemini-cli',
+    ...BUILTIN_WORKER_AGENTS,
   ]);
   if (!knownOrchestratorCli.has(config.orchestrator.cli)) {
     diagnostics.push(
       createDiagnostic(
         'orchestrator.cli',
-        'a known agent key or built-in adapter key (claude-code|codex|gemini-cli)',
+        `a known agent key or built-in adapter key (${BUILTIN_WORKER_AGENTS.join('|')})`,
         config.orchestrator.cli,
-        '/config set orchestrator.cli codex',
+        `/config set orchestrator.cli ${AgentId.CODEX}`,
       ),
     );
   }
@@ -121,15 +114,15 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
       diagnostics.push(
       createDiagnostic(
         `agents.${name}.adapter`,
-        'one of: claude-code, codex, gemini-cli, generic, openai-compatible',
+        `one of: ${ADAPTER_PRESETS.join(', ')}`,
         agent.adapter ?? name,
-        `/config set agents.${name}.adapter generic`,
+        `/config set agents.${name}.adapter ${AdapterId.GENERIC}`,
       ),
       );
     }
 
     if (
-      (adapterType === 'claude-code' || adapterType === 'codex' || adapterType === 'gemini-cli')
+      (adapterType === AdapterId.CLAUDE_CODE || adapterType === AdapterId.CODEX || adapterType === AdapterId.GEMINI_CLI)
       && name !== adapterType
     ) {
       diagnostics.push(
@@ -153,7 +146,7 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
       );
     }
 
-    if (adapterType === 'generic' && (!agent.command || agent.command.trim().length === 0)) {
+    if (adapterType === AdapterId.GENERIC && (!agent.command || agent.command.trim().length === 0)) {
       diagnostics.push(
         createDiagnostic(
           `agents.${name}.command`,

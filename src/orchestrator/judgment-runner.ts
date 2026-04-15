@@ -24,6 +24,7 @@ import { executeWithValidation } from '../utils/validate.js';
 import { OrchestratorActionServer } from './action-server.js';
 import type { ProviderSession } from '../provider-session.js';
 import { isCliVersionCompatible } from '../provider-session.js';
+import { AdapterId } from '../workflow/agents.js';
 import { decompose, type DecomposeOutput } from './steps/decompose.js';
 import { dispatch, type DispatchOutput } from './steps/dispatch.js';
 import { ingest, type IngestOutput } from './steps/ingest.js';
@@ -590,9 +591,9 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
   }
 
   private resolveProviderNameForAdapter(adapterName: string): ProviderSession['provider'] {
-    if (adapterName === 'claude-code') return 'claude';
-    if (adapterName === 'codex') return 'codex';
-    if (adapterName === 'gemini-cli') return 'gemini';
+    if (adapterName === AdapterId.CLAUDE_CODE) return 'claude';
+    if (adapterName === AdapterId.CODEX) return 'codex';
+    if (adapterName === AdapterId.GEMINI_CLI) return 'gemini';
     return 'local';
   }
 

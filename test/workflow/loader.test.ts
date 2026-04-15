@@ -7,6 +7,7 @@ import {
   loadWorkflowConfig,
   getGlobalConfigPath,
 } from '../../src/workflow/loader.js';
+import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { ModelId } from '../../src/workflow/models.js';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
@@ -93,6 +94,49 @@ agents:
 `;
 
     expect(() => parseWorkflowYaml(yaml)).toThrow(/Unknown model alias "NOT_A_MODEL_ALIAS"/);
+  });
+
+  it('resolves agent and adapter aliases in YAML', () => {
+    const yaml = `
+workflow:
+  name: agent-aliases
+  steps:
+    - role: coder
+      agent: CODEX
+      action: implement
+agents:
+  CLAUDE_CODE:
+    adapter: CLAUDE_CODE
+    model: ${ModelId.CLAUDE_SONNET}
+  CODEX:
+    adapter: CODEX
+    model: ${ModelId.GPT_CODEX}
+  local:
+    adapter: "\${GENERIC}"
+    command: ollama
+orchestrator:
+  cli: "\${CLAUDE_CODE}"
+`;
+
+    const config = parseWorkflowYaml(yaml);
+    expect(config.workflow.steps[0].agent).toBe(AgentId.CODEX);
+    expect(config.agents[AgentId.CLAUDE_CODE]?.adapter).toBe(AdapterId.CLAUDE_CODE);
+    expect(config.agents[AgentId.CODEX]?.adapter).toBe(AdapterId.CODEX);
+    expect(config.agents.local?.adapter).toBe(AdapterId.GENERIC);
+    expect(config.orchestrator.cli).toBe(AgentId.CLAUDE_CODE);
+  });
+
+  it('throws for unknown adapter aliases in YAML', () => {
+    const yaml = `
+workflow:
+  name: bad-adapter-alias
+  steps: []
+agents:
+  bad:
+    adapter: NOT_A_ADAPTER_ALIAS
+`;
+
+    expect(() => parseWorkflowYaml(yaml)).toThrow(/Unknown adapter alias "NOT_A_ADAPTER_ALIAS"/);
   });
 
   it('parses workflow execution mode', () => {

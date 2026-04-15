@@ -7,23 +7,23 @@ workflow:
     mode: judgment
   steps:
     - role: coder
-      agent: codex
+      agent: CODEX
       action: implement
 
     - role: reviewer
-      agent: claude-code
+      agent: CLAUDE_CODE
       action: review
       max_passes: 3
 
     - role: judge
-      agent: orchestrator
+      agent: ORCHESTRATOR
       action: evaluate_review
       criteria:
         - "Are the review findings actionable?"
         - "Is the fix complete and correct?"
 
     - role: coder
-      agent: codex
+      agent: CODEX
       action: fix_review_issues
       condition: "judge says fixes needed"
 
@@ -32,8 +32,8 @@ workflow:
     fallback: max_passes
 
 agents:
-  claude-code:
-    adapter: claude-code
+  CLAUDE_CODE:
+    adapter: CLAUDE_CODE
     auth: subscription
     model: CLAUDE_OPUS
     strengths:
@@ -42,8 +42,8 @@ agents:
       - TypeScript
       - React
 
-  codex:
-    adapter: codex
+  CODEX:
+    adapter: CODEX
     auth: subscription
     model: GPT_CODEX
     strengths:
@@ -56,7 +56,7 @@ agents:
       - security
 
 orchestrator:
-  cli: claude-code
+  cli: CLAUDE_CODE
   model: CLAUDE_SONNET
 
 error_handling:

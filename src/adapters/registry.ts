@@ -5,6 +5,7 @@ import { GeminiCliAdapter } from './gemini-cli.js';
 import { GenericAdapter } from './generic.js';
 import { OpenAiCompatibleAdapter } from './openai-compatible.js';
 import type { AgentConfig } from '../workflow/types.js';
+import { AdapterId } from '../workflow/agents.js';
 
 export interface RegistryHealthReport {
   [adapterName: string]: HealthCheckResult;
@@ -101,10 +102,10 @@ export function createRegistryFromConfig(
   for (const [name, config] of Object.entries(agents)) {
     const adapterType = config.adapter ?? name;
 
-    if (adapterType === 'generic') {
+    if (adapterType === AdapterId.GENERIC) {
       if (!config.command) {
         throw new Error(
-          `Agent "${name}" uses adapter "generic" but no command is configured.`,
+          `Agent "${name}" uses adapter "${AdapterId.GENERIC}" but no command is configured.`,
         );
       }
 
@@ -119,7 +120,7 @@ export function createRegistryFromConfig(
       continue;
     }
 
-    if (adapterType === 'openai-compatible') {
+    if (adapterType === AdapterId.OPENAI_COMPATIBLE) {
       registry.register(
         new OpenAiCompatibleAdapter({
           name,
@@ -132,7 +133,11 @@ export function createRegistryFromConfig(
       continue;
     }
 
-    if (adapterType === 'claude-code' || adapterType === 'codex' || adapterType === 'gemini-cli') {
+    if (
+      adapterType === AdapterId.CLAUDE_CODE
+      || adapterType === AdapterId.CODEX
+      || adapterType === AdapterId.GEMINI_CLI
+    ) {
       if (name !== adapterType) {
         throw new Error(
           `Built-in adapter "${adapterType}" must be configured under key "${adapterType}" (received "${name}").`,

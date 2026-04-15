@@ -18,6 +18,7 @@ import type {
 } from './types.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
+import { AgentId } from '../workflow/agents.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -205,7 +206,7 @@ function extractFilePaths(text: string): string[] {
 }
 
 export class ClaudeCodeAdapter implements AgentAdapter {
-  readonly name = 'claude-code';
+  readonly name = AgentId.CLAUDE_CODE;
   readonly capabilities: AgentCapability[] = [
     'implement',
     'review',
@@ -231,7 +232,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const text = `${result.stdout ?? ''} ${result.stderr ?? ''}`.trim();
     const match = text.match(/(\d+\.\d+\.\d+)/);
     if (!match) return undefined;
-    return buildCliVersionTag('claude-code', match[1]);
+    return buildCliVersionTag(AgentId.CLAUDE_CODE, match[1]);
   }
 
   async execute(task: Task): Promise<TaskResult> {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
+import { AgentId } from '../workflow/agents.js';
 import type {
   AgentAdapter,
   AgentCapability,
@@ -72,7 +73,7 @@ function extractLastText(events: GeminiEvent[]): string {
 }
 
 export class GeminiCliAdapter implements AgentAdapter {
-  readonly name = 'gemini-cli';
+  readonly name = AgentId.GEMINI_CLI;
   readonly capabilities: AgentCapability[] = [
     'implement',
     'review',
@@ -96,7 +97,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     if (result.exitCode !== 0) return undefined;
     const match = `${result.stdout ?? ''} ${result.stderr ?? ''}`.match(/(\d+\.\d+\.\d+)/);
     if (!match) return undefined;
-    return buildCliVersionTag('gemini-cli', match[1]);
+    return buildCliVersionTag(AgentId.GEMINI_CLI, match[1]);
   }
 
   async execute(task: Task): Promise<TaskResult> {

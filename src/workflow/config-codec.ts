@@ -2,6 +2,11 @@ import { existsSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import YAML from 'yaml';
+import {
+  AgentId,
+  resolveAdapterAliasOrThrow,
+  resolveAgentAlias,
+} from './agents.js';
 import type { AgentConfig, FullConfig, WorkflowConfig } from './types.js';
 import { resolveModelAliasOrThrow } from './models.js';
 
@@ -71,7 +76,11 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   }
 
   const parsedAgents = Object.entries(parsedAgentsRoot).reduce<Record<string, AgentConfig>>(
-    (acc, [name, value]) => {
+    (acc, [rawName, value]) => {
+      const name = resolveAgentAlias(rawName);
+      if (acc[name]) {
+        throw new Error(`Duplicate agent key after alias resolution: "${name}"`);
+      }
       if (!value || typeof value !== 'object') {
         acc[name] = {};
         return acc;
@@ -88,7 +97,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         : undefined;
 
       acc[name] = {
-        adapter: typeof raw.adapter === 'string' ? raw.adapter : undefined,
+        adapter: typeof raw.adapter === 'string'
+          ? resolveAdapterAliasOrThrow(raw.adapter, `agents.${name}.adapter`)
+          : undefined,
         auth: typeof raw.auth === 'string' ? raw.auth : undefined,
         strengths,
         model: typeof raw.model === 'string'
@@ -126,7 +137,7 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
 
     return {
       role: typeof step.role === 'string' ? step.role : 'coder',
-      agent: typeof step.agent === 'string' ? step.agent : 'claude-code',
+      agent: typeof step.agent === 'string' ? resolveAgentAlias(step.agent) : AgentId.CLAUDE_CODE,
       action: typeof step.action === 'string' ? step.action : 'implement',
       maxPasses: typeof step.max_passes === 'number' ? step.max_passes : undefined,
       condition: typeof step.condition === 'string' ? step.condition : undefined,
@@ -155,7 +166,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     },
     agents: parsedAgents,
     orchestrator: {
-      cli: typeof rawOrchestrator.cli === 'string' ? rawOrchestrator.cli : 'claude-code',
+      cli: typeof rawOrchestrator.cli === 'string'
+        ? resolveAgentAlias(rawOrchestrator.cli)
+        : AgentId.CLAUDE_CODE,
       model: typeof rawOrchestrator.model === 'string'
         ? resolveModelAliasOrThrow(rawOrchestrator.model, 'orchestrator.model')
         : undefined,
