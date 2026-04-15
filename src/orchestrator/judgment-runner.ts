@@ -4,7 +4,6 @@ import { z } from 'zod';
 import type {
   AgentAdapter,
   TaskResult,
-  ToolDefinition,
   ToolLoopMessage,
   ToolLoopResult,
 } from '../adapters/types.js';
@@ -22,6 +21,9 @@ import { StateStore } from '../state/store.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { logger } from '../utils/logger.js';
 import { executeWithValidation } from '../utils/validate.js';
+import { OrchestratorActionServer } from './action-server.js';
+import type { ProviderSession } from '../provider-session.js';
+import { isCliVersionCompatible } from '../provider-session.js';
 import { decompose, type DecomposeOutput } from './steps/decompose.js';
 import { dispatch, type DispatchOutput } from './steps/dispatch.js';
 import { ingest, type IngestOutput } from './steps/ingest.js';
@@ -108,6 +110,7 @@ interface RuntimeState {
   deterministicFallbackCount: number;
   replanCount: number;
   nativeToolCalls: number;
+  providerSession?: ProviderSession;
 }
 
 interface ActionDefinition<TInput, TOutput> {
@@ -157,6 +160,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
   private userInputRejecter: ((error: Error) => void) | null = null;
   private activeAbortController: AbortController | null = null;
   private actions: ActionDefinitions;
+  private actionServer: OrchestratorActionServer;
   private guardrails: Guardrails;
 
   constructor(
@@ -184,6 +188,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       ...(options?.guardrails ?? {}),
     };
     this.actions = this.buildActionRegistry();
+    this.actionServer = this.buildActionServer();
   }
 
   requestUserInput(question: string): Promise<string> {
@@ -253,6 +258,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
 
     const runId = workflowState.runId ?? this.createRunId(workflowState.startedAt);
     const startedAt = workflowState.startedAt ?? new Date().toISOString();
+    const providerSession = await this.resolveResumeProviderSession(workflowState.providerSession);
     const runtime = this.createInitialRuntimeState({
       runId,
       startedAt,
@@ -262,6 +268,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       decomposition: workflowState.decomposition,
       toolCallTranscript: workflowState.toolCallTranscript,
       nativeToolCalls: workflowState.nativeToolCalls,
+      providerSession,
     });
 
     if (workflowState.actionHistory && workflowState.actionHistory.length > 0) {
@@ -298,6 +305,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
           interrupted = await this.executeNativeToolLoop(runtime);
         } catch (error: unknown) {
           runtime.hadErrors = true;
+          runtime.providerSession = undefined;
           logger.warn('Native tool-loop failed, falling back to structured decision mode.', {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -315,6 +323,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
         runtime.finalReport = this.buildFallbackReport(runtime.summaries, runtime.userRequest);
       }
 
+      runtime.providerSession = undefined;
       this.state.saveState({
         ...this.toWorkflowState(runtime),
         status: runtime.hadErrors ? 'failed' : 'completed',
@@ -329,6 +338,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       return runtime.finalReport;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
+      runtime.providerSession = undefined;
       this.state.saveState({
         ...this.toWorkflowState(runtime),
         status: 'failed',
@@ -417,7 +427,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       this.orchestrator.orchestratorCapabilities?.supportsPauseForUserInput,
     );
 
-    const tools = this.buildNativeToolDefinitions();
+    const tools = this.actionServer.listTools();
     const startMessages = runtime.toolCallTranscript && runtime.toolCallTranscript.length > 0
       ? runtime.toolCallTranscript.map((message) => ({ ...message }))
       : this.buildNativeStartMessages(runtime);
@@ -453,9 +463,24 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
           },
         };
       },
+      {
+        signal: this.activeAbortController?.signal,
+        workingDirectory: process.cwd(),
+        providerSession: runtime.providerSession,
+        toolNamespace: this.actionServer.toolNamespace,
+        toolSchemaHash: this.actionServer.getToolSchemaHash(),
+        onProviderSession: (session) => {
+          runtime.providerSession = session;
+        },
+      },
     );
 
     runtime.toolCallTranscript = result.transcript;
+    if (result.providerSession) {
+      runtime.providerSession = result.providerSession;
+    } else if (result.pathTaken === 'adapter' || result.pathTaken === 'fallback') {
+      runtime.providerSession = undefined;
+    }
     return this.handleNativeLoopResult(result, runtime);
   }
 
@@ -468,6 +493,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     decomposition?: DecomposeOutputRef;
     toolCallTranscript?: WorkflowState['toolCallTranscript'];
     nativeToolCalls?: number;
+    providerSession?: ProviderSession;
   }): RuntimeState {
     return {
       runId: args.runId,
@@ -499,7 +525,68 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       deterministicFallbackCount: 0,
       replanCount: 0,
       nativeToolCalls: args.nativeToolCalls ?? 0,
+      providerSession: args.providerSession,
     };
+  }
+
+  private async resolveResumeProviderSession(
+    savedSession: ProviderSession | undefined,
+  ): Promise<ProviderSession | undefined> {
+    if (!savedSession) return undefined;
+
+    const expectedProvider = this.resolveProviderNameForAdapter(this.orchestrator.name);
+    if (savedSession.provider !== expectedProvider) {
+      logger.warn(
+        `Dropping provider session from ${savedSession.provider}; active adapter is ${this.orchestrator.name}.`,
+      );
+      return undefined;
+    }
+
+    const currentToolHash = this.actionServer.getToolSchemaHash();
+    if (savedSession.toolSchemaHash !== currentToolHash) {
+      logger.warn('Dropping provider session because tool schema hash changed.', {
+        previous: savedSession.toolSchemaHash,
+        current: currentToolHash,
+      });
+      return undefined;
+    }
+
+    if (!this.orchestrator.getCliVersionTag) {
+      logger.warn('Dropping provider session because adapter cannot validate CLI compatibility.');
+      return undefined;
+    }
+
+    let detectedCliVersion: string | undefined;
+    try {
+      detectedCliVersion = await this.orchestrator.getCliVersionTag();
+    } catch (error: unknown) {
+      logger.warn('Dropping provider session because CLI version detection failed.', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+
+    if (!isCliVersionCompatible(savedSession.cliVersion, detectedCliVersion)) {
+      logger.warn('Dropping provider session because CLI version is incompatible.', {
+        saved: savedSession.cliVersion,
+        detected: detectedCliVersion,
+      });
+      return undefined;
+    }
+
+    return {
+      ...savedSession,
+      cliVersion: detectedCliVersion,
+      toolSchemaHash: currentToolHash,
+      lastTurnAt: new Date().toISOString(),
+    };
+  }
+
+  private resolveProviderNameForAdapter(adapterName: string): ProviderSession['provider'] {
+    if (adapterName === 'claude-code') return 'claude';
+    if (adapterName === 'codex') return 'codex';
+    if (adapterName === 'gemini-cli') return 'gemini';
+    return 'local';
   }
 
   private rehydrateFromActionHistory(runtime: RuntimeState, history: ActionRecord[]): void {
@@ -535,7 +622,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
 
   private toWorkflowState(runtime: RuntimeState): WorkflowState {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       executionMode: 'judgment',
       runId: runtime.runId,
       status: 'running',
@@ -550,6 +637,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       controllerCursor: runtime.controllerCursor,
       toolCallTranscript: runtime.toolCallTranscript,
       nativeToolCalls: runtime.nativeToolCalls,
+      providerSession: runtime.providerSession,
       startedAt: runtime.startedAt,
     };
   }
@@ -948,17 +1036,19 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     };
   }
 
-  private buildNativeToolDefinitions(): ToolDefinition[] {
-    return Object.values(this.actions).map((action) => ({
-      name: action.name,
-      description: action.description,
-      inputSchema: z.toJSONSchema(action.inputSchema) as Record<string, unknown>,
-    }));
+  private buildActionServer(): OrchestratorActionServer {
+    return new OrchestratorActionServer(
+      Object.values(this.actions).map((action) => ({
+        name: action.name,
+        description: action.description,
+        inputSchema: action.inputSchema,
+      })),
+    );
   }
 
   private buildNativeStartMessages(runtime: RuntimeState): ToolLoopMessage[] {
-    const tools = Object.values(this.actions)
-      .map((action) => `- ${action.name}: ${action.description}`)
+    const tools = this.actionServer.listTools()
+      .map((tool) => `- ${tool.name}: ${tool.description}`)
       .join('\n');
 
     const policyHints = this.workflow.steps.flatMap((step) => {
@@ -996,7 +1086,8 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     call: { name: string; input: Record<string, unknown> },
     runtime: RuntimeState,
   ): { decision: ControllerDecision; pathTaken: ActionRecord['pathTaken'] } {
-    const action = ControllerActionNameSchema.safeParse(call.name);
+    const normalizedCall = this.actionServer.resolveToolCall(call);
+    const action = ControllerActionNameSchema.safeParse(normalizedCall.name);
     if (!action.success || action.data === 'finish' || action.data === 'fail') {
       runtime.hadErrors = true;
       runtime.deterministicFallbackCount++;
@@ -1015,22 +1106,25 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     }
 
     const taskId =
-      typeof call.input?.taskId === 'string'
-        ? call.input.taskId
+      typeof normalizedCall.input?.taskId === 'string'
+        ? normalizedCall.input.taskId
         : runtime.activeTaskId;
     const decision: ControllerDecision = {
       reasoning:
-        typeof call.input?.reasoning === 'string'
-          ? call.input.reasoning
+        typeof normalizedCall.input?.reasoning === 'string'
+          ? normalizedCall.input.reasoning
           : `native tool call: ${action.data}`,
       action: action.data,
       target: taskId ? { taskId } : undefined,
-      payload: call.input,
+      payload: normalizedCall.input,
     };
 
     const validated = this.validateDecision(decision, runtime);
     if (validated.ok) {
-      return { decision, pathTaken: 'adapter' };
+      return {
+        decision,
+        pathTaken: runtime.providerSession?.transport ?? 'native',
+      };
     }
 
     runtime.hadErrors = true;

@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { PathTaken, ProviderSession } from '../provider-session.js';
 
 export interface OrchestratorCapabilities {
   supportsToolLoop: boolean;
@@ -32,6 +33,23 @@ export interface ToolLoopResult {
   transcript: ToolLoopMessage[];
   output?: string;
   error?: string;
+  pathTaken?: PathTaken;
+  providerSession?: ProviderSession;
+  telemetry?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    totalTurns?: number;
+  };
+}
+
+export interface ToolLoopContext {
+  signal?: AbortSignal;
+  workingDirectory?: string;
+  providerSession?: ProviderSession;
+  toolNamespace?: string;
+  toolSchemaHash?: string;
+  onProviderSession?: (session: ProviderSession | undefined) => void;
 }
 
 export interface AgentAdapter {
@@ -49,7 +67,9 @@ export interface AgentAdapter {
     tools: ToolDefinition[],
     messages: ToolLoopMessage[],
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context?: ToolLoopContext,
   ): Promise<ToolLoopResult>;
+  getCliVersionTag?(): Promise<string | undefined>;
   healthCheck(): Promise<HealthCheckResult>;
 }
 

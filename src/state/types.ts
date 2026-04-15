@@ -1,4 +1,5 @@
 import type { TaskResult } from '../adapters/types.js';
+import type { PathTaken, ProviderSession } from '../provider-session.js';
 
 export interface DecomposeOutputRef {
   reasoning: string;
@@ -42,7 +43,7 @@ export interface ActionRecord {
   };
   startedAt: string;
   completedAt: string;
-  pathTaken: 'native' | 'adapter' | 'fallback';
+  pathTaken: PathTaken;
 }
 
 export interface ToolTranscriptMessage {
@@ -67,6 +68,7 @@ export interface WorkflowState {
   controllerCursor?: number;
   toolCallTranscript?: ToolTranscriptMessage[];
   nativeToolCalls?: number;
+  providerSession?: ProviderSession;
   startedAt?: string;
   completedAt?: string;
   interruptedAt?: string;
