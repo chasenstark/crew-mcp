@@ -587,6 +587,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--resume', resumedSessionId);
     }
 
+    logger.info('[adapter:claude-code] spawning stream session', {
+      cwd: context.workingDirectory,
+      resumedSessionId,
+      toolCount: tools.length,
+    });
     const subprocess = execa('claude', args, {
       cwd: context.workingDirectory,
       cancelSignal: context.signal,
@@ -599,6 +604,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     if (!subprocess.stdout || !subprocess.stdin) {
       throw new Error('Claude stream session missing stdio pipes.');
     }
+
+    if (subprocess.stderr) {
+      subprocess.stderr.setEncoding('utf-8');
+      subprocess.stderr.on('data', (chunk: string) => {
+        const trimmed = chunk.trim();
+        if (trimmed) logger.warn('[adapter:claude-code] stderr', trimmed);
+      });
+    }
+    subprocess.on('exit', (code, signal) => {
+      logger.info('[adapter:claude-code] subprocess exit', { code, signal });
+    });
 
     const providerSession = {
       provider: 'claude' as const,
@@ -660,9 +676,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             content: pendingPrompt,
           },
         };
+        logger.info('[adapter:claude-code] stream turn start', {
+          turn,
+          promptPreview: preview(pendingPrompt, 200),
+        });
         subprocess.stdin.write(`${JSON.stringify(userMessage)}\n`);
 
         const turnData = await this.readStreamTurn(iterator);
+        logger.info('[adapter:claude-code] stream turn end', {
+          turn,
+          assistantPreview: preview(turnData.assistantText, 200),
+          sessionId: turnData.sessionId,
+        });
         turnCount = turn;
         totalInputTokens += turnData.usage.inputTokens ?? 0;
         totalOutputTokens += turnData.usage.outputTokens ?? 0;
@@ -797,8 +822,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       cachedInputTokens?: number;
     } = {};
 
+    const idleMs = Number(process.env.CREW_STREAM_IDLE_TIMEOUT_MS ?? 120_000);
+
     while (true) {
-      const next = await iterator.next();
+      const next = await this.nextWithIdleTimeout(iterator, idleMs);
       if (next.done) {
         throw new Error('Claude stream ended before result event.');
       }
@@ -838,6 +865,32 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       outputTokens: getNumericField(usage, ['output_tokens']),
       cachedInputTokens: getNumericField(usage, ['cache_read_input_tokens', 'cached_input_tokens']),
     };
+  }
+
+  private async nextWithIdleTimeout<T>(
+    iterator: AsyncIterator<T>,
+    idleMs: number,
+  ): Promise<IteratorResult<T>> {
+    if (!Number.isFinite(idleMs) || idleMs <= 0) {
+      return iterator.next();
+    }
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<IteratorResult<T>>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const seconds = Math.round(idleMs / 1000);
+        const err = new Error(
+          `Claude stream idle for ${seconds}s with no stream-json output — aborting turn. `
+          + `Set CREW_STREAM_IDLE_TIMEOUT_MS to adjust; check that 'claude' CLI is authenticated and reachable.`,
+        );
+        logger.error('[adapter:claude-code] stream idle timeout', { idleMs });
+        reject(err);
+      }, idleMs);
+    });
+    try {
+      return await Promise.race([iterator.next(), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async *streamJsonLines(stream: NodeJS.ReadableStream): AsyncGenerator<string> {

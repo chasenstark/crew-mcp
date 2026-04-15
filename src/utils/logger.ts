@@ -13,15 +13,26 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 
 const MAX_LOG_ARG_LENGTH = 4_000;
 
-function resolveInitialLogLevel(): LogLevel {
-  const envLevel = process.env.CREW_LOG_LEVEL?.toLowerCase();
-  if (envLevel === 'debug' || envLevel === 'info' || envLevel === 'warn' || envLevel === 'error') {
-    return envLevel;
+function parseLevel(raw: string | undefined): LogLevel | undefined {
+  const level = raw?.toLowerCase();
+  if (level === 'debug' || level === 'info' || level === 'warn' || level === 'error') {
+    return level;
   }
-  return 'info';
+  return undefined;
 }
 
-let currentLevel: LogLevel = resolveInitialLogLevel();
+function resolveInitialConsoleLevel(): LogLevel {
+  return parseLevel(process.env.CREW_LOG_LEVEL) ?? 'info';
+}
+
+function resolveInitialFileLevel(): LogLevel {
+  return parseLevel(process.env.CREW_FILE_LOG_LEVEL)
+    ?? parseLevel(process.env.CREW_LOG_LEVEL)
+    ?? 'debug';
+}
+
+let currentLevel: LogLevel = resolveInitialConsoleLevel();
+let fileLevel: LogLevel = resolveInitialFileLevel();
 let logFilePath: string | null = null;
 
 export function setLogLevel(level: LogLevel): void {
@@ -32,8 +43,20 @@ export function getLogLevel(): LogLevel {
   return currentLevel;
 }
 
-function shouldLog(level: LogLevel): boolean {
+export function setFileLogLevel(level: LogLevel): void {
+  fileLevel = level;
+}
+
+export function getFileLogLevel(): LogLevel {
+  return fileLevel;
+}
+
+function shouldLogConsole(level: LogLevel): boolean {
   return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[currentLevel];
+}
+
+function shouldLogFile(level: LogLevel): boolean {
+  return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[fileLevel];
 }
 
 function formatTimestamp(): string {
@@ -86,6 +109,7 @@ function serializeArg(arg: unknown): string {
 
 function appendToLogFile(level: LogLevel, message: string, args: unknown[]): void {
   if (!logFilePath) return;
+  if (!shouldLogFile(level)) return;
   try {
     const serializedArgs = args.length > 0
       ? ` ${args.map(serializeArg).join(' ')}`
@@ -97,9 +121,8 @@ function appendToLogFile(level: LogLevel, message: string, args: unknown[]): voi
 }
 
 function log(level: LogLevel, colorizedLevel: string, message: string, args: unknown[]): void {
-  if (!shouldLog(level)) return;
-
   appendToLogFile(level, message, args);
+  if (!shouldLogConsole(level)) return;
   console.error(
     chalk.gray(`[${formatTimestamp()}]`),
     colorizedLevel,
