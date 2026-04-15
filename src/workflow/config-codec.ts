@@ -3,6 +3,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import YAML from 'yaml';
 import type { AgentConfig, FullConfig, WorkflowConfig } from './types.js';
+import { resolveModelAliasOrThrow } from './models.js';
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object'
@@ -90,7 +91,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         adapter: typeof raw.adapter === 'string' ? raw.adapter : undefined,
         auth: typeof raw.auth === 'string' ? raw.auth : undefined,
         strengths,
-        model: typeof raw.model === 'string' ? raw.model : undefined,
+        model: typeof raw.model === 'string'
+          ? resolveModelAliasOrThrow(raw.model, `agents.${name}.model`)
+          : undefined,
         command: typeof raw.command === 'string' ? raw.command : undefined,
         args,
         capabilities,
@@ -111,7 +114,7 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   );
   const roleModels = Object.entries(parsedRoleModels).reduce<Record<string, string>>((acc, [key, value]) => {
     if (typeof value === 'string') {
-      acc[key] = value;
+      acc[key] = resolveModelAliasOrThrow(value, `workflow.role_models.${key}`);
     }
     return acc;
   }, {});
@@ -153,7 +156,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     agents: parsedAgents,
     orchestrator: {
       cli: typeof rawOrchestrator.cli === 'string' ? rawOrchestrator.cli : 'claude-code',
-      model: typeof rawOrchestrator.model === 'string' ? rawOrchestrator.model : undefined,
+      model: typeof rawOrchestrator.model === 'string'
+        ? resolveModelAliasOrThrow(rawOrchestrator.model, 'orchestrator.model')
+        : undefined,
     },
     errorHandling: {
       default: {

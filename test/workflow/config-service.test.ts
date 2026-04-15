@@ -121,6 +121,23 @@ describe('config-service', () => {
     expect(projectConfig?.agents.codex.model).toBe(ModelId.GPT);
   });
 
+  it('resolves model aliases when setting model paths', () => {
+    const orchestratorResult = setConfigValue(cwd, 'orchestrator.model', 'CLAUDE_OPUS');
+    expect(orchestratorResult.nextValue).toBe(ModelId.CLAUDE_OPUS);
+
+    const roleResult = setConfigValue(cwd, 'workflow.roleModels.reviewer', '${GPT_CODEX}');
+    expect(roleResult.nextValue).toBe(ModelId.GPT_CODEX);
+
+    const agentResult = setConfigValue(cwd, 'agents.codex.model', 'GPT_MINI');
+    expect(agentResult.nextValue).toBe(ModelId.GPT_MINI);
+  });
+
+  it('rejects unknown model aliases when setting model paths', () => {
+    expect(() =>
+      setConfigValue(cwd, 'orchestrator.model', 'NOT_A_MODEL_ALIAS'),
+    ).toThrow(/Unknown model alias/);
+  });
+
   it('can set generic agent fields', () => {
     addAgent(cwd, 'local-gemma', { adapter: 'generic', command: 'ollama' });
 

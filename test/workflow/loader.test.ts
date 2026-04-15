@@ -57,6 +57,44 @@ orchestrator:
     expect(config.workflow.execution?.mode).toBe('linear');
   });
 
+  it('resolves model aliases in YAML', () => {
+    const yaml = `
+workflow:
+  name: model-aliases
+  role_models:
+    reviewer: GPT
+    fix_review_issues: "\${CLAUDE_OPUS}"
+  steps: []
+agents:
+  claude-code:
+    model: CLAUDE_SONNET
+orchestrator:
+  cli: claude-code
+  model: "\${GPT_CODEX}"
+`;
+
+    const config = parseWorkflowYaml(yaml);
+    expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
+    expect(config.orchestrator.model).toBe(ModelId.GPT_CODEX);
+    expect(config.workflow.roleModels).toEqual({
+      reviewer: ModelId.GPT,
+      fix_review_issues: ModelId.CLAUDE_OPUS,
+    });
+  });
+
+  it('throws for unknown model aliases in YAML', () => {
+    const yaml = `
+workflow:
+  name: bad-model-alias
+  steps: []
+agents:
+  codex:
+    model: NOT_A_MODEL_ALIAS
+`;
+
+    expect(() => parseWorkflowYaml(yaml)).toThrow(/Unknown model alias "NOT_A_MODEL_ALIAS"/);
+  });
+
   it('parses workflow execution mode', () => {
     const yaml = `
 workflow:

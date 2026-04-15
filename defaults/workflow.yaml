@@ -35,7 +35,7 @@ agents:
   claude-code:
     adapter: claude-code
     auth: subscription
-    model: claude-opus-4-6
+    model: CLAUDE_OPUS
     strengths:
       - implementation
       - refactoring
@@ -45,7 +45,7 @@ agents:
   codex:
     adapter: codex
     auth: subscription
-    model: gpt-5.3-codex
+    model: GPT_CODEX
     strengths:
       - implementation
       - review
@@ -57,7 +57,7 @@ agents:
 
 orchestrator:
   cli: claude-code
-  model: claude-sonnet-4-6
+  model: CLAUDE_SONNET
 
 error_handling:
   default:

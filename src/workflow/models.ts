@@ -8,6 +8,47 @@ export enum ModelId {
   QWEN_MINI = 'qwen3:14b',
 }
 
+const MODEL_ALIASES: Record<string, ModelId> = {
+  CLAUDE_SONNET: ModelId.CLAUDE_SONNET,
+  CLAUDE_OPUS: ModelId.CLAUDE_OPUS,
+  GPT: ModelId.GPT,
+  GPT_CODEX: ModelId.GPT_CODEX,
+  GPT_MINI: ModelId.GPT_MINI,
+  QWEN: ModelId.QWEN,
+  QWEN_MINI: ModelId.QWEN_MINI,
+};
+
+function toAliasToken(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const wrapped = /^\$\{([A-Za-z][A-Za-z0-9_]*)\}$/.exec(trimmed);
+  if (wrapped) return wrapped[1].toUpperCase();
+
+  if (/^[A-Z][A-Z0-9_]*$/.test(trimmed)) return trimmed.toUpperCase();
+  return null;
+}
+
+export function resolveModelAlias(value: string): string {
+  const trimmed = value.trim();
+  const token = toAliasToken(trimmed);
+  if (!token) return trimmed;
+  return MODEL_ALIASES[token] ?? trimmed;
+}
+
+export function resolveModelAliasOrThrow(value: string, contextPath?: string): string {
+  const trimmed = value.trim();
+  const token = toAliasToken(trimmed);
+  if (!token) return trimmed;
+
+  const resolved = MODEL_ALIASES[token];
+  if (resolved) return resolved;
+
+  const location = contextPath ? ` for ${contextPath}` : '';
+  const supported = Object.keys(MODEL_ALIASES).join(', ');
+  throw new Error(`Unknown model alias "${token}"${location}. Supported aliases: ${supported}`);
+}
+
 export const CLAUDE_MODEL_PRESETS: readonly ModelId[] = [
   ModelId.CLAUDE_SONNET,
   ModelId.CLAUDE_OPUS,

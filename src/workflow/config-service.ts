@@ -7,6 +7,7 @@ import {
   ModelId,
   OPENAI_COMPATIBLE_MODEL_PRESETS,
   ORCHESTRATOR_MODEL_PRESETS,
+  resolveModelAliasOrThrow,
 } from './models.js';
 import {
   DEFAULT_CONFIG_PROFILE,
@@ -394,11 +395,12 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
   }
 
   if (path === 'orchestrator.model') {
-    next.orchestrator.model = parseNonEmptyString(
+    const parsedModel = parseNonEmptyString(
       path,
       resolvedValue,
       `/config set orchestrator.model ${ModelId.CLAUDE_SONNET}`,
     );
+    next.orchestrator.model = resolveModelAliasOrThrow(parsedModel, path);
     return next;
   }
 
@@ -426,11 +428,12 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
   if (roleModelMatch) {
     const role = roleModelMatch[1];
     if (!next.workflow.roleModels) next.workflow.roleModels = {};
-    next.workflow.roleModels[role] = parseNonEmptyString(
+    const parsedModel = parseNonEmptyString(
       path,
       resolvedValue,
       `/config set workflow.roleModels.reviewer ${ModelId.GPT}`,
     );
+    next.workflow.roleModels[role] = resolveModelAliasOrThrow(parsedModel, path);
     return next;
   }
 
@@ -478,11 +481,12 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
       return next;
     }
     if (field === 'model') {
-      next.agents[agentName].model = parseNonEmptyString(
+      const parsedModel = parseNonEmptyString(
         path,
         resolvedValue,
         `/config set agents.${agentName}.model ${ModelId.GPT_CODEX}`,
       );
+      next.agents[agentName].model = resolveModelAliasOrThrow(parsedModel, path);
       return next;
     }
     if (field === 'command') {
