@@ -49,8 +49,8 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
-    it('advertises native tool-loop support for captain mode', () => {
-      expect(adapter.captainCapabilities?.supportsToolLoop).toBe(true);
+    it('exposes captain capabilities (structured decisions, no native tool loop)', () => {
+      expect(adapter.captainCapabilities?.supportsToolLoop).toBe(false);
       expect(adapter.captainCapabilities?.supportsStructuredDecisions).toBe(true);
       expect(adapter.captainCapabilities?.supportsPauseForUserInput).toBe(true);
     });

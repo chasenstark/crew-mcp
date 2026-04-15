@@ -208,7 +208,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   ];
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {
-    supportsToolLoop: true,
+    // claude -p answers prompt-described tool catalogs in prose, not JSON.
+    supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };

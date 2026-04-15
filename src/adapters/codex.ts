@@ -193,7 +193,8 @@ export class CodexAdapter implements AgentAdapter {
   ];
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {
-    supportsToolLoop: true,
+    // codex CLI answers prompt-described tool catalogs in prose, not JSON.
+    supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
