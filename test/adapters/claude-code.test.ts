@@ -66,6 +66,19 @@ describe('ClaudeCodeAdapter', () => {
     });
   });
 
+  describe('getCliVersionTag', () => {
+    it('extracts semantic version from --version output', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: 'claude-code 2.1.108',
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const tag = await adapter.getCliVersionTag();
+      expect(tag).toBe('claude-code@2.1.108');
+    });
+  });
+
   describe('execute', () => {
     it('parses successful JSON output', async () => {
       mockExeca.mockResolvedValueOnce({
@@ -416,6 +429,32 @@ describe('ClaudeCodeAdapter', () => {
       const cliArgs = callArgs[1] as string[];
       expect(cliArgs).toContain('--model');
       expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe('claude-sonnet-4-5');
+    });
+  });
+
+  describe('executeWithTools', () => {
+    it('returns interrupted and skips prompt-loop fallback when signal is already aborted', async () => {
+      const executeWithSchemaSpy = vi.spyOn(adapter, 'executeWithSchema');
+      vi.spyOn(adapter as any, 'executeWithStreamSession').mockRejectedValueOnce(
+        new Error('stateful path failed'),
+      );
+
+      const controller = new AbortController();
+      controller.abort('Cancelled by test');
+
+      const result = await adapter.executeWithTools(
+        [],
+        [{ role: 'system', content: 'test' }],
+        vi.fn(async () => ({ output: { ok: true } })),
+        {
+          signal: controller.signal,
+          toolNamespace: 'mcp__orchestrator__',
+          toolSchemaHash: 'abc',
+        },
+      );
+
+      expect(result.status).toBe('interrupted');
+      expect(executeWithSchemaSpy).not.toHaveBeenCalled();
     });
   });
 

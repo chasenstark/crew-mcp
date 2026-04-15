@@ -126,6 +126,7 @@ type ActionDefinitions = {
 
 interface Guardrails {
   maxTotalActions: number;
+  maxNativeToolCalls: number;
   maxAgentExecutionsPerTask: number;
   maxConsecutiveSameAction: number;
   maxReplans: number;
@@ -134,6 +135,7 @@ interface Guardrails {
 
 const DEFAULT_GUARDRAILS: Guardrails = {
   maxTotalActions: 200,
+  maxNativeToolCalls: 300,
   maxAgentExecutionsPerTask: 6,
   maxConsecutiveSameAction: 5,
   maxReplans: 3,
@@ -437,6 +439,11 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       startMessages,
       async (call) => {
         runtime.nativeToolCalls++;
+        if (runtime.nativeToolCalls > this.guardrails.maxNativeToolCalls) {
+          throw new Error(
+            `Native tool-call budget exceeded (${this.guardrails.maxNativeToolCalls}).`,
+          );
+        }
         const { decision, pathTaken } = this.resolveNativeToolDecision(call, runtime);
         if (decision.action === 'finish' || decision.action === 'fail') {
           return {

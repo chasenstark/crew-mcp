@@ -229,7 +229,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     if (result.exitCode !== 0) return undefined;
 
     const text = `${result.stdout ?? ''} ${result.stderr ?? ''}`.trim();
-    const match = text.match(/(\\d+\\.\\d+\\.\\d+)/);
+    const match = text.match(/(\d+\.\d+\.\d+)/);
     if (!match) return undefined;
     return buildCliVersionTag('claude-code', match[1]);
   }
@@ -525,6 +525,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     try {
       return await this.executeWithStreamSession(tools, messages, onToolCall, context);
     } catch (error: unknown) {
+      if (context.signal?.aborted) {
+        return {
+          status: 'interrupted',
+          transcript: [...messages],
+          pathTaken: 'fallback',
+          error: String(context.signal.reason ?? 'Cancelled'),
+        };
+      }
       logger.warn('[adapter:claude-code] stateful stream path failed; falling back to adapter loop', {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -537,7 +545,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
       });
-      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall);
+      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall, context);
       return {
         ...fallbackResult,
         pathTaken: 'adapter',
@@ -549,6 +557,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     tools: ToolDefinition[],
     messages: ToolLoopMessage[],
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context?: ToolLoopContext,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
 
@@ -606,7 +615,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
       let decision: ToolLoopDecision;
       try {
-        decision = await this.executeWithSchema(buildPrompt(), ToolLoopDecisionSchema);
+        decision = await this.executeWithSchema(
+          buildPrompt(),
+          ToolLoopDecisionSchema,
+          {
+            signal: context?.signal,
+            workingDirectory: context?.workingDirectory,
+          },
+        );
       } catch (error: unknown) {
         return {
           status: 'failed',

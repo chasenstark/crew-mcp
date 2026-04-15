@@ -118,7 +118,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     return {
       output,
       filesModified: [],
-      status: result.exitCode === 0 ? 'success' : 'partial',
+      status: result.exitCode === 0 ? 'success' : 'error',
       metadata: {
         rawEvents: events,
       },
@@ -154,6 +154,14 @@ export class GeminiCliAdapter implements AgentAdapter {
     try {
       return await this.executeWithResumeSession(tools, messages, onToolCall, context);
     } catch (error: unknown) {
+      if (context.signal?.aborted) {
+        return {
+          status: 'interrupted',
+          transcript: [...messages],
+          pathTaken: 'fallback',
+          error: String(context.signal.reason ?? 'Cancelled'),
+        };
+      }
       logger.warn('[adapter:gemini-cli] resume path failed; using adapter loop fallback', {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -166,7 +174,7 @@ export class GeminiCliAdapter implements AgentAdapter {
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
       });
-      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall);
+      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall, context);
       return {
         ...fallbackResult,
         pathTaken: 'adapter',
@@ -341,6 +349,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     tools: ToolDefinition[],
     messages: ToolLoopMessage[],
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context?: ToolLoopContext,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
 
@@ -398,7 +407,14 @@ export class GeminiCliAdapter implements AgentAdapter {
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
       let decision: z.infer<typeof ToolLoopDecisionSchema>;
       try {
-        decision = await this.executeWithSchema(buildPrompt(), ToolLoopDecisionSchema);
+        decision = await this.executeWithSchema(
+          buildPrompt(),
+          ToolLoopDecisionSchema,
+          {
+            signal: context?.signal,
+            workingDirectory: context?.workingDirectory,
+          },
+        );
       } catch (error: unknown) {
         return {
           status: 'failed',

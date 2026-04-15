@@ -371,35 +371,45 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     signal?: AbortSignal;
   }): Promise<any> {
     const controller = params.timeoutMs ? new AbortController() : undefined;
+    let timeoutHandle: NodeJS.Timeout | undefined;
     if (controller && params.signal) {
       params.signal.addEventListener('abort', () => controller.abort(params.signal?.reason), { once: true });
     }
     if (controller && params.timeoutMs) {
-      setTimeout(() => controller.abort('OpenAI-compatible request timed out'), params.timeoutMs);
-    }
-
-    const response = await fetch(`${this.apiBase}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model: params.model,
-        messages: params.messages,
-        tools: params.tools,
-        tool_choice: params.tools ? 'auto' : undefined,
-      }),
-      signal: controller?.signal ?? params.signal,
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(
-        `OpenAI-compatible request failed (${response.status}): ${text}`,
+      timeoutHandle = setTimeout(
+        () => controller.abort('OpenAI-compatible request timed out'),
+        params.timeoutMs,
       );
     }
 
-    return response.json();
+    try {
+      const response = await fetch(`${this.apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model: params.model,
+          messages: params.messages,
+          tools: params.tools,
+          tool_choice: params.tools ? 'auto' : undefined,
+        }),
+        signal: controller?.signal ?? params.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(
+          `OpenAI-compatible request failed (${response.status}): ${text}`,
+        );
+      }
+
+      return response.json();
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 }

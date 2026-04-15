@@ -85,6 +85,36 @@ describe('CodexAdapter', () => {
     });
   });
 
+  describe('getCliVersionTag', () => {
+    it('extracts semantic version from codex --version output', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: 'codex 0.120.0',
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const tag = await adapter.getCliVersionTag();
+      expect(tag).toBe('codex@0.120.0');
+    });
+
+    it('falls back to parsing --help when --version does not provide a version', async () => {
+      mockExeca
+        .mockResolvedValueOnce({
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: 'codex v0.121.2',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      const tag = await adapter.getCliVersionTag();
+      expect(tag).toBe('codex@0.121.2');
+    });
+  });
+
   describe('executeWithTools', () => {
     it('runs tool calls and completes when the controller emits finish', async () => {
       const schemaSpy = vi
@@ -153,6 +183,30 @@ describe('CodexAdapter', () => {
       const prompt = schemaSpy.mock.calls[0][0];
       expect(prompt).toContain('omitted 6 earlier transcript messages');
       expect(prompt).not.toContain(`${'x'.repeat(2000)}`);
+    });
+
+    it('returns interrupted and skips prompt-loop fallback when signal is already aborted', async () => {
+      const executeWithSchemaSpy = vi.spyOn(adapter, 'executeWithSchema');
+      vi.spyOn(adapter as any, 'executeWithResumeSession').mockRejectedValueOnce(
+        new Error('resume session failed'),
+      );
+
+      const controller = new AbortController();
+      controller.abort('Cancelled by test');
+
+      const result = await adapter.executeWithTools(
+        [],
+        [{ role: 'system', content: 'test' }],
+        vi.fn(async () => ({ output: { ok: true } })),
+        {
+          signal: controller.signal,
+          toolNamespace: 'mcp__orchestrator__',
+          toolSchemaHash: 'abc',
+        },
+      );
+
+      expect(result.status).toBe('interrupted');
+      expect(executeWithSchemaSpy).not.toHaveBeenCalled();
     });
   });
 
