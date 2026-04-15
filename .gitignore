@@ -5,7 +5,7 @@ dist/
 # Local-only planning notes
 docs/plans/
 
-# Captain state (project-specific, not committed)
+# Crew state (project-specific, not committed)
 .crew/
 .crew/worktrees/
 .crew/state.json
@@ -13,6 +13,9 @@ docs/plans/
 .crew/summaries/
 .crew/conversation.json
 .crew/logs
+
+# Legacy state dir (pre-rename); keep ignored until local copies are cleaned up
+.orchestra/
 
 # Keep the workflow config
 !.crew/workflow.yaml
