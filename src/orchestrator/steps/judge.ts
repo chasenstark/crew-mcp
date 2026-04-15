@@ -3,10 +3,22 @@ import type { z } from 'zod';
 import { JudgeOutputSchema } from '../schemas.js';
 import { IngestOutputSchema } from '../schemas.js';
 import { buildJudgePrompt } from '../prompts.js';
-import { executeWithValidation } from '../../utils/validate.js';
 import type { PassSummary } from '../../state/types.js';
+import { runStructuredStep } from './run-structured-step.js';
 
 export type JudgeOutput = z.infer<typeof JudgeOutputSchema>;
+export interface JudgeStepInput {
+  ingestResult: z.infer<typeof IngestOutputSchema>;
+  previousSummaries: PassSummary[];
+  currentPass: number;
+  maxPasses: number;
+}
+
+export const judgeStepDefinition = {
+  schema: JudgeOutputSchema,
+  buildPrompt: ({ ingestResult, previousSummaries, currentPass, maxPasses }: JudgeStepInput) =>
+    buildJudgePrompt(ingestResult, previousSummaries, currentPass, maxPasses),
+};
 
 export async function judge(
   orchestrator: AgentAdapter,
@@ -16,6 +28,10 @@ export async function judge(
   maxPasses: number,
   model?: string,
 ): Promise<JudgeOutput> {
-  const prompt = buildJudgePrompt(ingestResult, previousSummaries, currentPass, maxPasses);
-  return executeWithValidation(orchestrator, prompt, JudgeOutputSchema, { model });
+  return runStructuredStep(
+    orchestrator,
+    judgeStepDefinition,
+    { ingestResult, previousSummaries, currentPass, maxPasses },
+    model,
+  );
 }

@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import type { WorkflowState, PassSummary, Message } from './types.js';
+import { atomicWrite } from '../utils/atomic-write.js';
 
 export class StateStore {
   private basePath: string;
@@ -12,14 +13,8 @@ export class StateStore {
     mkdirSync(join(this.basePath, 'runs'), { recursive: true });
   }
 
-  private atomicWrite(filePath: string, data: string): void {
-    const tmp = filePath + '.tmp';
-    writeFileSync(tmp, data);
-    renameSync(tmp, filePath);
-  }
-
   saveState(state: WorkflowState): void {
-    this.atomicWrite(
+    atomicWrite(
       join(this.basePath, 'state.json'),
       JSON.stringify(state, null, 2),
     );
@@ -60,7 +55,7 @@ export class StateStore {
     const resolvedRunId = this.resolveRunId(runId);
     if (resolvedRunId) {
       this.ensureRunDirs(resolvedRunId);
-      this.atomicWrite(
+      atomicWrite(
         join(
           this.getRunPath(resolvedRunId),
           'summaries',
@@ -71,7 +66,7 @@ export class StateStore {
       return;
     }
 
-    this.atomicWrite(
+    atomicWrite(
       join(this.basePath, 'summaries', `pass-${String(summary.passNumber).padStart(3, '0')}.json`),
       JSON.stringify(summary, null, 2),
     );
@@ -97,7 +92,7 @@ export class StateStore {
     const resolvedRunId = this.resolveRunId(runId);
     if (resolvedRunId) {
       this.ensureRunDirs(resolvedRunId);
-      this.atomicWrite(
+      atomicWrite(
         join(
           this.getRunPath(resolvedRunId),
           'passes',
@@ -108,14 +103,14 @@ export class StateStore {
       return;
     }
 
-    this.atomicWrite(
+    atomicWrite(
       join(this.basePath, 'passes', `pass-${String(passNumber).padStart(3, '0')}.json`),
       JSON.stringify(output, null, 2),
     );
   }
 
   saveConversation(messages: Message[]): void {
-    this.atomicWrite(
+    atomicWrite(
       join(this.basePath, 'conversation.json'),
       JSON.stringify(messages, null, 2),
     );

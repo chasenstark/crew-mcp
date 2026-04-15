@@ -1,18 +1,30 @@
-import { EventEmitter } from 'eventemitter3';
 import type { AgentAdapter, TaskResult } from '../adapters/types.js';
 import type { WorkflowConfig } from '../workflow/types.js';
 import type { PassRecord, PassSummary, WorkflowState } from '../state/types.js';
 import { StateStore } from '../state/store.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { logger } from '../utils/logger.js';
-import { isAbsolute, resolve, sep } from 'path';
-import { decompose, type DecomposeOutput } from './steps/decompose.js';
-import { dispatch } from './steps/dispatch.js';
-import { ingest, type IngestOutput } from './steps/ingest.js';
-import { summarize } from './steps/summarize.js';
-import { judge } from './steps/judge.js';
-import { report } from './steps/report.js';
+import {
+  decompose,
+  dispatch,
+  ingest,
+  judge,
+  report,
+  summarize,
+  type DecomposeOutput,
+  type IngestOutput,
+} from './steps/index.js';
 import type { OrchestrationRunner, ResumeParams } from './runner.js';
+import { RunnerBase } from './runner-base.js';
+import {
+  buildFallbackReport as buildWorkflowFallbackReport,
+  createRunId as createWorkflowRunId,
+  getMaxPasses,
+  resolveOrchestratorModel,
+  resolveTaskModel,
+  resolveTaskWorkingDirectory,
+  type OrchestratorStage,
+} from './task-execution-core.js';
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -38,13 +50,11 @@ export interface AgentRegistry {
   list(): { name: string; capabilities: string[] }[];
 }
 
-type OrchestratorStage = 'decompose' | 'dispatch' | 'ingest' | 'summarize' | 'judge' | 'report';
-
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
-export class Pipeline extends EventEmitter<PipelineEvents> implements OrchestrationRunner {
+export class Pipeline extends RunnerBase implements OrchestrationRunner {
   private orchestrator: AgentAdapter;
   private registry: AgentRegistry;
   private workflow: WorkflowConfig;
@@ -53,10 +63,6 @@ export class Pipeline extends EventEmitter<PipelineEvents> implements Orchestrat
   private orchestratorModel?: string;
   private agentModels: Record<string, string | undefined>;
   private globalPassCounter = 0;
-  private userInputResolver: ((input: string) => void) | null = null;
-  private userInputRejecter: ((error: Error) => void) | null = null;
-  private activeAbortController: AbortController | null = null;
-
   constructor(
     orchestratorAdapter: AgentAdapter,
     registry: AgentRegistry,
@@ -68,7 +74,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> implements Orchestrat
       agentModels?: Record<string, string | undefined>;
     },
   ) {
-    super();
+    super(state);
     this.orchestrator = orchestratorAdapter;
     this.registry = registry;
     this.workflow = workflow;
@@ -78,87 +84,12 @@ export class Pipeline extends EventEmitter<PipelineEvents> implements Orchestrat
     this.agentModels = options?.agentModels ?? {};
   }
 
-  /**
-   * Request input from the user. Emits 'ask_user' and returns a Promise
-   * that resolves when provideUserInput() is called.
-   */
-  requestUserInput(question: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.userInputResolver = resolve;
-      this.userInputRejecter = reject;
-      this.emit('ask_user', question);
-    });
-  }
-
-  /**
-   * Provide user input to a waiting requestUserInput() call.
-   */
-  provideUserInput(input: string): void {
-    if (this.userInputResolver) {
-      const resolve = this.userInputResolver;
-      this.userInputResolver = null;
-      this.userInputRejecter = null;
-      resolve(input);
-    }
-  }
-
-  private rejectPendingUserInput(reason: string): void {
-    if (this.userInputRejecter) {
-      const reject = this.userInputRejecter;
-      this.userInputResolver = null;
-      this.userInputRejecter = null;
-      reject(new Error(reason));
-    }
-  }
-
-  /**
-   * Mark the current workflow as interrupted so it can be resumed later.
-   */
-  markInterrupted(reason = 'Interrupted by user'): void {
-    const snapshot = this.state.loadState();
-    if (!snapshot) return;
-    if (snapshot.status !== 'running' && snapshot.status !== 'interrupted') return;
-
-    this.state.saveState({
-      ...snapshot,
-      status: 'interrupted',
-      interruptedAt: new Date().toISOString(),
-      lastError: reason,
-    });
-  }
-
-  /**
-   * Cancel active work and persist interrupted state.
-   */
-  cancel(reason = 'Cancelled by user'): void {
-    this.markInterrupted(reason);
-    if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
-      this.activeAbortController.abort(reason);
-    }
-    this.rejectPendingUserInput(reason);
-  }
-
   private resolveTaskModel(task: { role: string; agent: string }): string | undefined {
-    const roleModels = this.workflow.roleModels ?? {};
-    const directRoleModel = roleModels[task.role]?.trim();
-    if (directRoleModel) return directRoleModel;
-
-    const stepByAction = this.workflow.steps.find((step) => step.action === task.role);
-    if (stepByAction) {
-      const stepRoleModel = roleModels[stepByAction.role]?.trim();
-      if (stepRoleModel) return stepRoleModel;
-    }
-
-    const agentModel = this.agentModels[task.agent]?.trim();
-    return agentModel || undefined;
+    return resolveTaskModel(this.workflow, this.agentModels, task);
   }
 
   private resolveOrchestratorModel(stage: OrchestratorStage): string | undefined {
-    if (stage === 'judge') {
-      const roleModel = this.workflow.roleModels?.judge?.trim();
-      if (roleModel) return roleModel;
-    }
-    return this.orchestratorModel;
+    return resolveOrchestratorModel(this.workflow, this.orchestratorModel, stage);
   }
 
   /**
@@ -648,54 +579,11 @@ export class Pipeline extends EventEmitter<PipelineEvents> implements Orchestrat
    * Determine max passes for a given task role.
    */
   private getMaxPasses(role: string): number {
-    const normalizedRole = role.trim().toLowerCase();
-    const aliasMap: Record<string, string[]> = {
-      implement: ['implement', 'coder'],
-      refactor: ['refactor', 'coder'],
-      document: ['document', 'coder'],
-      review: ['review', 'reviewer'],
-      test: ['test', 'reviewer'],
-      analyze: ['analyze', 'reviewer', 'judge'],
-    };
-    const candidates = aliasMap[normalizedRole] ?? [normalizedRole];
-
-    for (const candidate of candidates) {
-      const step = this.workflow.steps.find(
-        (s) => s.role.trim().toLowerCase() === candidate,
-      );
-      if (typeof step?.maxPasses === 'number') {
-        return step.maxPasses;
-      }
-    }
-
-    return 3;
+    return getMaxPasses(this.workflow, role);
   }
 
   private resolveTaskWorkingDirectory(taskWorktree: string, requested?: string): string {
-    if (!requested || !requested.trim()) return taskWorktree;
-    const candidate = requested.trim();
-
-    const ensureWithinTaskWorktree = (pathValue: string): string => {
-      const normalizedWorktree = resolve(taskWorktree);
-      const normalizedPath = resolve(pathValue);
-      if (
-        normalizedPath === normalizedWorktree ||
-        normalizedPath.startsWith(normalizedWorktree + sep)
-      ) {
-        return normalizedPath;
-      }
-
-      logger.warn(
-        `Ignoring workingDirectory "${requested}" because it is outside task worktree ${taskWorktree}`,
-      );
-      return taskWorktree;
-    };
-
-    if (isAbsolute(candidate)) {
-      return ensureWithinTaskWorktree(candidate);
-    }
-
-    return ensureWithinTaskWorktree(resolve(taskWorktree, candidate));
+    return resolveTaskWorkingDirectory(taskWorktree, requested);
   }
 
   private handleInterruptedWorkflow(params: {
@@ -743,8 +631,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> implements Orchestrat
   }
 
   private createRunId(seed?: string): string {
-    const source = (seed ?? new Date().toISOString()).replace(/[:.]/g, '-');
-    return `run-${source}-${Math.random().toString(36).slice(2, 8)}`;
+    return createWorkflowRunId(seed);
   }
 
   /**
@@ -754,21 +641,6 @@ export class Pipeline extends EventEmitter<PipelineEvents> implements Orchestrat
     summaries: PassSummary[],
     userRequest: string,
   ): string {
-    const lines = [`# Workflow Report`, '', `**Request:** ${userRequest}`, ''];
-
-    for (const s of summaries) {
-      lines.push(`## Pass ${s.passNumber}`);
-      lines.push(s.summary);
-      if (s.unresolvedIssues.length > 0) {
-        lines.push('');
-        lines.push('**Unresolved issues:**');
-        for (const issue of s.unresolvedIssues) {
-          lines.push(`- ${issue}`);
-        }
-      }
-      lines.push('');
-    }
-
-    return lines.join('\n');
+    return buildWorkflowFallbackReport(summaries, userRequest);
   }
 }

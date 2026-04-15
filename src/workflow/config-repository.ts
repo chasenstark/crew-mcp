@@ -1,22 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import type { FullConfig } from './types.js';
 import { getDefaultConfig, mergeConfigs, parseWorkflowYaml, serializeWorkflowYaml } from './config-codec.js';
+import { atomicWrite } from '../utils/atomic-write.js';
+import { normalizeProfileName } from './config-normalization.js';
 
 export type ConfigScope = 'project' | 'global';
 export const DEFAULT_CONFIG_PROFILE = 'default';
-
-function normalizeProfileName(profile: string): string {
-  const normalized = profile.trim();
-  if (!normalized) {
-    throw new Error('Profile name is required.');
-  }
-  if (!/^[A-Za-z0-9._-]+$/.test(normalized)) {
-    throw new Error(`Invalid profile "${profile}". Use only letters, numbers, ".", "_", or "-".`);
-  }
-  return normalized;
-}
 
 export interface ConfigPaths {
   profile: string;
@@ -182,11 +173,4 @@ function loadRawConfig(configPath: string): FullConfig | null {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to parse ${configPath}: ${msg}`);
   }
-}
-
-function atomicWrite(targetPath: string, contents: string): void {
-  mkdirSync(dirname(targetPath), { recursive: true });
-  const tempPath = `${targetPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync(tempPath, contents, 'utf-8');
-  renameSync(tempPath, targetPath);
 }

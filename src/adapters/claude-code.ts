@@ -19,6 +19,12 @@ import type {
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
+import { executePromptToolLoop } from './tool-loop/controller.js';
+import {
+  ToolLoopDecisionSchema,
+  type ToolLoopDecision,
+} from './tool-loop/decision.js';
+import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -37,21 +43,6 @@ const ClaudeResponseSchema = z.object({
 });
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
-
-const ToolLoopDecisionSchema = z.object({
-  type: z.enum(['tool_call', 'finish', 'fail']),
-  reasoning: z.string().optional(),
-  tool: z.string().optional(),
-  input: z.record(z.string(), z.unknown()).optional(),
-  output: z.string().optional(),
-  error: z.string().optional(),
-});
-
-type ToolLoopDecision = z.infer<typeof ToolLoopDecisionSchema>;
-
-const TOOL_LOOP_MAX_TURNS = 200;
-const TOOL_LOOP_TRANSCRIPT_WINDOW = 24;
-const TOOL_LOOP_MESSAGE_CHAR_LIMIT = 1_500;
 
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
@@ -560,154 +551,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
     context?: ToolLoopContext,
   ): Promise<ToolLoopResult> {
-    const transcript: ToolLoopMessage[] = [...messages];
-
-    const renderToolCatalog = (): string => {
-      return tools
-        .map((tool) => {
-          const schema = JSON.stringify(tool.inputSchema);
-          return `- ${tool.name}: ${tool.description}\n  input_schema: ${schema}`;
-        })
-        .join('\n');
-    };
-
-    const renderTranscript = (): string => {
-      if (transcript.length === 0) return '(empty)';
-      const windowed = transcript.length > TOOL_LOOP_TRANSCRIPT_WINDOW
-        ? transcript.slice(-TOOL_LOOP_TRANSCRIPT_WINDOW)
-        : transcript;
-      const omitted = transcript.length - windowed.length;
-      const summaryPrefix = omitted > 0
-        ? `(omitted ${omitted} earlier transcript messages)\n`
-        : '';
-
-      return summaryPrefix + windowed
-        .map((message, index) => {
-          const role = message.name ? `${message.role}(${message.name})` : message.role;
-          const content = message.content.length > TOOL_LOOP_MESSAGE_CHAR_LIMIT
-            ? `${message.content.slice(0, TOOL_LOOP_MESSAGE_CHAR_LIMIT - 1)}…`
-            : message.content;
-          return `${index + 1}. ${role}: ${content}`;
-        })
-        .join('\n');
-    };
-
-    const buildPrompt = (): string => {
-      return [
-        'You are a workflow controller using external tools.',
-        'Decide exactly one next step per turn.',
-        '',
-        'Available tools:',
-        renderToolCatalog(),
-        '',
-        'Conversation transcript:',
-        renderTranscript(),
-        '',
-        'Respond with one JSON object matching the schema.',
-        '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
-        '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
-        '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
-        'Rules:',
-        '- Never emit multiple tool calls in one turn.',
-        '- tool must match exactly one available tool name.',
-      ].join('\n');
-    };
-
-    for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
-      let decision: ToolLoopDecision;
-      try {
-        decision = await this.executeWithSchema(
-          buildPrompt(),
-          ToolLoopDecisionSchema,
-          {
-            signal: context?.signal,
-            workingDirectory: context?.workingDirectory,
-          },
-        );
-      } catch (error: unknown) {
-        return {
-          status: 'failed',
-          transcript,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-
-      if (decision.reasoning) {
-        transcript.push({
-          role: 'assistant',
-          content: decision.reasoning,
-        });
-      }
-
-      if (decision.type === 'finish') {
-        const output = decision.output ?? decision.reasoning ?? '';
-        return {
-          status: 'completed',
-          transcript,
-          output,
-        };
-      }
-
-      if (decision.type === 'fail') {
-        return {
-          status: 'failed',
-          transcript,
-          error: decision.error ?? decision.reasoning ?? 'Controller requested fail',
-        };
-      }
-
-      const toolName = decision.tool?.trim();
-      if (!toolName) {
-        return {
-          status: 'failed',
-          transcript,
-          error: 'Tool call missing tool name.',
-        };
-      }
-
-      const knownTool = tools.find((tool) => tool.name === toolName);
-      if (!knownTool) {
-        return {
-          status: 'failed',
-          transcript,
-          error: `Unknown tool "${toolName}".`,
-        };
-      }
-
-      const toolInput = decision.input ?? {};
-      transcript.push({
-        role: 'assistant',
-        content: JSON.stringify({
-          type: 'tool_call',
-          tool: toolName,
-          input: toolInput,
+    return executePromptToolLoop(
+      tools,
+      messages,
+      onToolCall,
+      (prompt) =>
+        this.executeWithSchema(prompt, ToolLoopDecisionSchema, {
+          signal: context?.signal,
+          workingDirectory: context?.workingDirectory,
         }),
-      });
-
-      let toolResult: ToolResult;
-      try {
-        toolResult = await onToolCall({ name: toolName, input: toolInput });
-      } catch (error: unknown) {
-        return {
-          status: 'failed',
-          transcript,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-
-      transcript.push({
-        role: 'tool',
-        name: toolName,
-        content: JSON.stringify(toolResult.output),
-      });
-    }
-
-    return {
-      status: 'failed',
-      transcript,
-      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
-      pathTaken: 'adapter',
-    };
+      { pathTaken: 'adapter' },
+    );
   }
 
   private async executeWithStreamSession(

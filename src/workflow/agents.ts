@@ -1,3 +1,5 @@
+import { toAliasToken } from './alias-token.js';
+
 export enum AgentId {
   CLAUDE_CODE = 'claude-code',
   CODEX = 'codex',
@@ -41,17 +43,6 @@ const ADAPTER_ALIASES: Record<string, AdapterId> = {
   GENERIC: AdapterId.GENERIC,
   OPENAI_COMPATIBLE: AdapterId.OPENAI_COMPATIBLE,
 };
-
-function toAliasToken(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  const wrapped = /^\$\{([A-Za-z][A-Za-z0-9_]*)\}$/.exec(trimmed);
-  if (wrapped) return wrapped[1].toUpperCase();
-
-  if (/^[A-Z][A-Z0-9_]*$/.test(trimmed)) return trimmed.toUpperCase();
-  return null;
-}
 
 export function resolveAgentAlias(value: string): string {
   const trimmed = value.trim();

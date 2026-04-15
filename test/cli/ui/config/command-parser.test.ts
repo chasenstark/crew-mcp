@@ -62,6 +62,14 @@ describe('parseConfigSlashCommand', () => {
     });
   });
 
+  it('returns invalid for unsupported set paths', () => {
+    const parsed = parseConfigSlashCommand('/config set workflow.name new-name');
+    expect(parsed).toEqual({
+      kind: 'invalid',
+      reason: 'Unsupported config path "workflow.name".',
+    });
+  });
+
   it('returns invalid for malformed add-agent command', () => {
     const parsed = parseConfigSlashCommand('/config add-agent');
     expect(parsed).toEqual({

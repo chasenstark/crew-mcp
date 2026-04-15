@@ -1,6 +1,7 @@
 import type { FullConfig } from './types.js';
 import { ModelId } from './models.js';
 import { ADAPTER_PRESETS, AdapterId, AgentId, BUILTIN_WORKER_AGENTS } from './agents.js';
+import { findReviewStep } from './review-step.js';
 
 export interface ConfigDiagnostic {
   path: string;
@@ -19,14 +20,6 @@ const SUPPORTED_CAPABILITIES = new Set([
   'document',
   'analyze',
 ]);
-
-function findReviewStep(config: FullConfig) {
-  return (
-    config.workflow.steps.find((step) => step.role === 'reviewer')
-    ?? config.workflow.steps.find((step) => step.action === 'review')
-    ?? config.workflow.steps.find((step) => step.role.toLowerCase().includes('review'))
-  );
-}
 
 function createDiagnostic(
   path: string,

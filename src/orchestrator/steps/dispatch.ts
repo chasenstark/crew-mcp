@@ -2,10 +2,22 @@ import type { AgentAdapter } from '../../adapters/types.js';
 import type { z } from 'zod';
 import { DispatchOutputSchema } from '../schemas.js';
 import { buildDispatchPrompt } from '../prompts.js';
-import { executeWithValidation } from '../../utils/validate.js';
 import type { PassSummary } from '../../state/types.js';
+import { runStructuredStep } from './run-structured-step.js';
 
 export type DispatchOutput = z.infer<typeof DispatchOutputSchema>;
+export interface DispatchStepInput {
+  taskDescription: string;
+  taskRole: string;
+  previousSummaries: PassSummary[];
+  passNumber: number;
+}
+
+export const dispatchStepDefinition = {
+  schema: DispatchOutputSchema,
+  buildPrompt: ({ taskDescription, taskRole, previousSummaries, passNumber }: DispatchStepInput) =>
+    buildDispatchPrompt(taskDescription, taskRole, previousSummaries, passNumber),
+};
 
 export async function dispatch(
   orchestrator: AgentAdapter,
@@ -14,11 +26,15 @@ export async function dispatch(
   passNumber: number,
   model?: string,
 ): Promise<DispatchOutput> {
-  const prompt = buildDispatchPrompt(
-    task.description,
-    task.role,
-    previousSummaries,
-    passNumber,
+  return runStructuredStep(
+    orchestrator,
+    dispatchStepDefinition,
+    {
+      taskDescription: task.description,
+      taskRole: task.role,
+      previousSummaries,
+      passNumber,
+    },
+    model,
   );
-  return executeWithValidation(orchestrator, prompt, DispatchOutputSchema, { model });
 }

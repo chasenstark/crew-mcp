@@ -1,0 +1,3 @@
+export const TOOL_LOOP_MAX_TURNS = 200;
+export const TOOL_LOOP_TRANSCRIPT_WINDOW = 24;
+export const TOOL_LOOP_MESSAGE_CHAR_LIMIT = 1_500;

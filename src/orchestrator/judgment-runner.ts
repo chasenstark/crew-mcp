@@ -1,5 +1,3 @@
-import { EventEmitter } from 'eventemitter3';
-import { isAbsolute, resolve, sep } from 'path';
 import { z } from 'zod';
 import type {
   AgentAdapter,
@@ -25,14 +23,31 @@ import { OrchestratorActionServer } from './action-server.js';
 import type { ProviderSession } from '../provider-session.js';
 import { isCliVersionCompatible } from '../provider-session.js';
 import { AdapterId } from '../workflow/agents.js';
-import { decompose, type DecomposeOutput } from './steps/decompose.js';
-import { dispatch, type DispatchOutput } from './steps/dispatch.js';
-import { ingest, type IngestOutput } from './steps/ingest.js';
-import { summarize, type SummarizeOutput } from './steps/summarize.js';
-import { judge, type JudgeOutput } from './steps/judge.js';
-import { report } from './steps/report.js';
+import {
+  decompose,
+  dispatch,
+  ingest,
+  judge,
+  report,
+  summarize,
+  type DecomposeOutput,
+  type IngestOutput,
+} from './steps/index.js';
+import type { DispatchOutput } from './steps/dispatch.js';
+import type { SummarizeOutput } from './steps/summarize.js';
+import type { JudgeOutput } from './steps/judge.js';
 import type { AgentRegistry, PipelineEvents } from './pipeline.js';
 import type { OrchestrationRunner, ResumeParams } from './runner.js';
+import { RunnerBase } from './runner-base.js';
+import {
+  buildFallbackReport as buildWorkflowFallbackReport,
+  createRunId as createWorkflowRunId,
+  getMaxPasses,
+  resolveOrchestratorModel,
+  resolveTaskModel,
+  resolveTaskWorkingDirectory,
+  type OrchestratorStage,
+} from './task-execution-core.js';
 
 const ControllerActionNameSchema = z.enum([
   'run_decompose',
@@ -143,15 +158,7 @@ const DEFAULT_GUARDRAILS: Guardrails = {
   maxDeterministicFallbacks: 6,
 };
 
-type OrchestratorStage =
-  | 'decompose'
-  | 'dispatch'
-  | 'ingest'
-  | 'summarize'
-  | 'judge'
-  | 'report';
-
-export class JudgmentRunner extends EventEmitter<PipelineEvents> implements OrchestrationRunner {
+export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
   private orchestrator: AgentAdapter;
   private registry: AgentRegistry;
   private workflow: WorkflowConfig;
@@ -159,9 +166,6 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
   private worktreeManager: WorktreeManager;
   private orchestratorModel?: string;
   private agentModels: Record<string, string | undefined>;
-  private userInputResolver: ((input: string) => void) | null = null;
-  private userInputRejecter: ((error: Error) => void) | null = null;
-  private activeAbortController: AbortController | null = null;
   private actions: ActionDefinitions;
   private actionServer: OrchestratorActionServer;
   private guardrails: Guardrails;
@@ -178,7 +182,7 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
       guardrails?: Partial<Guardrails>;
     },
   ) {
-    super();
+    super(state);
     this.orchestrator = orchestratorAdapter;
     this.registry = registry;
     this.workflow = workflow;
@@ -192,53 +196,6 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
     };
     this.actions = this.buildActionRegistry();
     this.actionServer = this.buildActionServer();
-  }
-
-  requestUserInput(question: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.userInputResolver = resolve;
-      this.userInputRejecter = reject;
-      this.emit('ask_user', question);
-    });
-  }
-
-  provideUserInput(input: string): void {
-    if (this.userInputResolver) {
-      const resolve = this.userInputResolver;
-      this.userInputResolver = null;
-      this.userInputRejecter = null;
-      resolve(input);
-    }
-  }
-
-  private rejectPendingUserInput(reason: string): void {
-    if (this.userInputRejecter) {
-      const reject = this.userInputRejecter;
-      this.userInputResolver = null;
-      this.userInputRejecter = null;
-      reject(new Error(reason));
-    }
-  }
-
-  markInterrupted(reason = 'Interrupted by user'): void {
-    const snapshot = this.state.loadState();
-    if (!snapshot) return;
-    if (snapshot.status !== 'running' && snapshot.status !== 'interrupted') return;
-
-    this.state.saveState({
-      ...snapshot,
-      status: 'interrupted',
-      interruptedAt: new Date().toISOString(),
-      lastError: reason,
-    });
-  }
-
-  cancel(reason = 'Cancelled by user'): void {
-    this.markInterrupted(reason);
-    if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
-      this.activeAbortController.abort(reason);
-    }
-    this.rejectPendingUserInput(reason);
   }
 
   async run(userRequest: string): Promise<string> {
@@ -675,26 +632,11 @@ export class JudgmentRunner extends EventEmitter<PipelineEvents> implements Orch
   }
 
   private resolveTaskModel(task: { role: string; agent: string }): string | undefined {
-    const roleModels = this.workflow.roleModels ?? {};
-    const directRoleModel = roleModels[task.role]?.trim();
-    if (directRoleModel) return directRoleModel;
-
-    const stepByAction = this.workflow.steps.find((step) => step.action === task.role);
-    if (stepByAction) {
-      const stepRoleModel = roleModels[stepByAction.role]?.trim();
-      if (stepRoleModel) return stepRoleModel;
-    }
-
-    const agentModel = this.agentModels[task.agent]?.trim();
-    return agentModel || undefined;
+    return resolveTaskModel(this.workflow, this.agentModels, task);
   }
 
   private resolveOrchestratorModel(stage: OrchestratorStage): string | undefined {
-    if (stage === 'judge') {
-      const roleModel = this.workflow.roleModels?.judge?.trim();
-      if (roleModel) return roleModel;
-    }
-    return this.orchestratorModel;
+    return resolveOrchestratorModel(this.workflow, this.orchestratorModel, stage);
   }
 
   private buildActionRegistry(): ActionDefinitions {
@@ -1664,77 +1606,18 @@ Return valid JSON matching the schema.`;
   }
 
   private resolveTaskWorkingDirectory(taskWorktree: string, requested?: string): string {
-    if (!requested || !requested.trim()) return taskWorktree;
-    const candidate = requested.trim();
-
-    const ensureWithinTaskWorktree = (pathValue: string): string => {
-      const normalizedWorktree = resolve(taskWorktree);
-      const normalizedPath = resolve(pathValue);
-      if (
-        normalizedPath === normalizedWorktree ||
-        normalizedPath.startsWith(normalizedWorktree + sep)
-      ) {
-        return normalizedPath;
-      }
-
-      logger.warn(
-        `Ignoring workingDirectory "${requested}" because it is outside task worktree ${taskWorktree}`,
-      );
-      return taskWorktree;
-    };
-
-    if (isAbsolute(candidate)) {
-      return ensureWithinTaskWorktree(candidate);
-    }
-
-    return ensureWithinTaskWorktree(resolve(taskWorktree, candidate));
+    return resolveTaskWorkingDirectory(taskWorktree, requested);
   }
 
   private getMaxPasses(role: string): number {
-    const normalizedRole = role.trim().toLowerCase();
-    const aliasMap: Record<string, string[]> = {
-      implement: ['implement', 'coder'],
-      refactor: ['refactor', 'coder'],
-      document: ['document', 'coder'],
-      review: ['review', 'reviewer'],
-      test: ['test', 'reviewer'],
-      analyze: ['analyze', 'reviewer', 'judge'],
-    };
-    const candidates = aliasMap[normalizedRole] ?? [normalizedRole];
-
-    for (const candidate of candidates) {
-      const step = this.workflow.steps.find(
-        (s) => s.role.trim().toLowerCase() === candidate,
-      );
-      if (typeof step?.maxPasses === 'number') {
-        return step.maxPasses;
-      }
-    }
-
-    return 3;
+    return getMaxPasses(this.workflow, role);
   }
 
   private createRunId(seed?: string): string {
-    const source = (seed ?? new Date().toISOString()).replace(/[:.]/g, '-');
-    return `run-${source}-${Math.random().toString(36).slice(2, 8)}`;
+    return createWorkflowRunId(seed);
   }
 
   private buildFallbackReport(summaries: PassSummary[], userRequest: string): string {
-    const lines = ['# Workflow Report', '', `**Request:** ${userRequest}`, ''];
-
-    for (const summary of summaries) {
-      lines.push(`## Pass ${summary.passNumber}`);
-      lines.push(summary.summary);
-      if (summary.unresolvedIssues.length > 0) {
-        lines.push('');
-        lines.push('**Unresolved issues:**');
-        for (const issue of summary.unresolvedIssues) {
-          lines.push(`- ${issue}`);
-        }
-      }
-      lines.push('');
-    }
-
-    return lines.join('\n');
+    return buildWorkflowFallbackReport(summaries, userRequest);
   }
 }

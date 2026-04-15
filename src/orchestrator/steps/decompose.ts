@@ -2,10 +2,21 @@ import type { AgentAdapter } from '../../adapters/types.js';
 import type { z } from 'zod';
 import { DecomposeOutputSchema } from '../schemas.js';
 import { buildDecomposePrompt } from '../prompts.js';
-import { executeWithValidation } from '../../utils/validate.js';
 import type { WorkflowConfig } from '../../workflow/types.js';
+import { runStructuredStep } from './run-structured-step.js';
 
 export type DecomposeOutput = z.infer<typeof DecomposeOutputSchema>;
+export interface DecomposeStepInput {
+  userRequest: string;
+  agents: { name: string; capabilities: string[] }[];
+  workflow: WorkflowConfig;
+}
+
+export const decomposeStepDefinition = {
+  schema: DecomposeOutputSchema,
+  buildPrompt: ({ userRequest, agents, workflow }: DecomposeStepInput) =>
+    buildDecomposePrompt(userRequest, agents, workflow),
+};
 
 export async function decompose(
   orchestrator: AgentAdapter,
@@ -14,6 +25,10 @@ export async function decompose(
   workflow: WorkflowConfig,
   model?: string,
 ): Promise<DecomposeOutput> {
-  const prompt = buildDecomposePrompt(userRequest, agents, workflow);
-  return executeWithValidation(orchestrator, prompt, DecomposeOutputSchema, { model });
+  return runStructuredStep(
+    orchestrator,
+    decomposeStepDefinition,
+    { userRequest, agents, workflow },
+    model,
+  );
 }

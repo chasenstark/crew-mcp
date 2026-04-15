@@ -9,7 +9,8 @@ import {
   setConfigValue,
 } from '../../../workflow/config-service.js';
 import { AdapterId } from '../../../workflow/agents.js';
-import { formatShowOutput } from '../../commands/config.js';
+import { configPathHelpLines } from '../../../workflow/config-path-registry.js';
+import { formatChangedValue, formatShowOutput } from '../../commands/config.js';
 import { parseConfigSlashCommand } from './command-parser.js';
 
 interface HandleConfigCommandOptions {
@@ -17,12 +18,8 @@ interface HandleConfigCommandOptions {
   isRunning: boolean;
 }
 
-function formatChangedValue(value: unknown): string {
-  if (typeof value === 'string') return `"${value}"`;
-  return JSON.stringify(value);
-}
-
 function helpText(): string {
+  const setExamples = configPathHelpLines().map((line) => `  ${line}`);
   return [
     'Config commands:',
     '  /config',
@@ -36,20 +33,7 @@ function helpText(): string {
     '  /config edit',
     '  /config add-agent <name> [adapter] [command]',
     '  /config remove-agent <name>',
-    '  /config set orchestrator.cli <value>',
-    '  /config set orchestrator.model <value>',
-    '  /config set orchestrator.model next',
-    '  /config set workflow.execution.mode <linear|judgment>',
-    '  /config set workflow.roleModels.<role> <value>',
-    '  /config set workflow.roleModels.reviewer next',
-    '  /config set agents.<name>.adapter <value>',
-    '  /config set agents.<name>.model <value>',
-    '  /config set agents.<name>.command <value>',
-    '  /config set agents.<name>.args <csv|json>',
-    '  /config set agents.<name>.capabilities <csv|json>',
-    '  /config set agents.<name>.model prev',
-    '  /config set workflow.reviewer.maxPasses <number>',
-    '  /config set errorHandling.default.retry <number>',
+    ...setExamples,
     '  /config reset',
   ].join('\n');
 }

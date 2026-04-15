@@ -8,6 +8,7 @@ import { getDefaultConfig } from '../../workflow/config-codec.js';
 import { saveConfigByScope } from '../../workflow/config-repository.js';
 import { validateConfig } from '../../workflow/config-validation.js';
 import { AdapterId } from '../../workflow/agents.js';
+import { normalizeProfileName, parseConfigScope } from '../../workflow/config-normalization.js';
 import {
   addAgent,
   applyConfigPatch,
@@ -71,20 +72,12 @@ function renderProfileOutput(cwd: string): string {
 
 function parseScopeOption(raw: string | undefined): ConfigScope | undefined {
   if (raw === undefined) return undefined;
-  if (raw === 'project' || raw === 'global') return raw;
-  throw new Error(`Invalid scope "${raw}". Expected "project" or "global".`);
+  return parseConfigScope(raw);
 }
 
 function parseProfileOption(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
-  const normalized = raw.trim();
-  if (!normalized) {
-    throw new Error('Profile name is required.');
-  }
-  if (!/^[A-Za-z0-9._-]+$/.test(normalized)) {
-    throw new Error(`Invalid profile "${raw}". Use only letters, numbers, ".", "_", or "-".`);
-  }
-  return normalized;
+  return normalizeProfileName(raw);
 }
 
 function splitCsvList(raw: string | undefined): string[] | undefined {
@@ -96,7 +89,7 @@ function splitCsvList(raw: string | undefined): string[] | undefined {
   return parsed.length > 0 ? parsed : undefined;
 }
 
-function formatChangedValue(value: unknown): string {
+export function formatChangedValue(value: unknown): string {
   if (typeof value === 'string') return `"${value}"`;
   return JSON.stringify(value);
 }

@@ -31,6 +31,12 @@ The orchestrator runs a **6-step pipeline** for each workflow cycle:
 
 Each agent works in its own **git worktree** — full repo access, zero interference. The orchestrator uses **Zod schemas** with native JSON schema enforcement for structured LLM output at every step.
 
+## Architecture Notes
+
+- Runner core and policy split: `docs/architecture/runners.md`
+- Adapter tool-loop abstraction: `docs/architecture/adapters.md`
+- Declarative config path registry: `docs/architecture/config-registry.md`
+
 ## Requirements
 
 - **Node.js 20+**

@@ -3,9 +3,19 @@ import type { z } from 'zod';
 import { SummarizeOutputSchema } from '../schemas.js';
 import { IngestOutputSchema } from '../schemas.js';
 import { buildSummarizePrompt } from '../prompts.js';
-import { executeWithValidation } from '../../utils/validate.js';
+import { runStructuredStep } from './run-structured-step.js';
 
 export type SummarizeOutput = z.infer<typeof SummarizeOutputSchema>;
+export interface SummarizeStepInput {
+  ingestResult: z.infer<typeof IngestOutputSchema>;
+  passNumber: number;
+}
+
+export const summarizeStepDefinition = {
+  schema: SummarizeOutputSchema,
+  buildPrompt: ({ ingestResult, passNumber }: SummarizeStepInput) =>
+    buildSummarizePrompt(ingestResult, passNumber),
+};
 
 export async function summarize(
   orchestrator: AgentAdapter,
@@ -13,6 +23,10 @@ export async function summarize(
   passNumber: number,
   model?: string,
 ): Promise<SummarizeOutput> {
-  const prompt = buildSummarizePrompt(ingestResult, passNumber);
-  return executeWithValidation(orchestrator, prompt, SummarizeOutputSchema, { model });
+  return runStructuredStep(
+    orchestrator,
+    summarizeStepDefinition,
+    { ingestResult, passNumber },
+    model,
+  );
 }

@@ -34,8 +34,8 @@ describe('handleConfigSlashCommand', () => {
   it('returns help text', () => {
     const response = handleConfigSlashCommand('/config', { cwd, isRunning: false });
     expect(response).toContain('/config help');
-    expect(response).toContain('/config set orchestrator.cli <value>');
-    expect(response).toContain('/config set workflow.roleModels.<role> <value>');
+    expect(response).toContain('/config set orchestrator.cli codex');
+    expect(response).toContain('/config set workflow.roleModels.reviewer gpt-5.4');
     expect(response).toContain('/config profile <name>');
     expect(response).toContain('/config add-agent <name> [adapter] [command]');
   });

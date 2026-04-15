@@ -48,3 +48,8 @@
 - Config/state lives under `.orchestra/` (project-local) and `~/.orchestra/` (global).
 - Do not commit local runtime artifacts or machine-specific state.
 - This project uses CLI-based auth for providers; avoid introducing API-key-only workflows unless discussed first.
+
+## Architecture References
+- Runner lifecycle/core split: `docs/architecture/runners.md`
+- Adapter tool-loop abstractions: `docs/architecture/adapters.md`
+- Config path registry contract: `docs/architecture/config-registry.md`

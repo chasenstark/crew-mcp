@@ -1,4 +1,5 @@
 import type { ConfigScope } from '../../../workflow/config-repository.js';
+import { resolveConfigPath } from '../../../workflow/config-path-registry.js';
 
 export type ConfigSlashCommand =
   | { kind: 'help' }
@@ -77,9 +78,16 @@ export function parseConfigSlashCommand(input: string): ConfigSlashCommand | nul
         reason: 'Usage: /config set <path> <value>',
       };
     }
+    const path = tokens[2];
+    if (!resolveConfigPath(path)) {
+      return {
+        kind: 'invalid',
+        reason: `Unsupported config path "${path}".`,
+      };
+    }
     return {
       kind: 'set',
-      path: tokens[2],
+      path,
       value: tokens.slice(3).join(' '),
     };
   }

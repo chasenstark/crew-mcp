@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
 import { logger } from '../utils/logger.js';
 import { ModelId } from '../workflow/models.js';
+import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
+import { ToolLoopDecisionSchema } from './tool-loop/decision.js';
 import type {
   AgentAdapter,
   AgentCapability,
@@ -16,17 +18,6 @@ import type {
   ToolLoopResult,
   ToolResult,
 } from './types.js';
-
-const TOOL_LOOP_MAX_TURNS = 200;
-
-const ToolLoopDecisionSchema = z.object({
-  type: z.enum(['tool_call', 'finish', 'fail']),
-  reasoning: z.string().optional(),
-  tool: z.string().optional(),
-  input: z.record(z.string(), z.unknown()).optional(),
-  output: z.string().optional(),
-  error: z.string().optional(),
-});
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
