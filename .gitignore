@@ -2,8 +2,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Local-only docs and planning notes
-docs/
+# Local-only planning notes
+docs/plans/
 
 # Orchestrator state (project-specific, not committed)
 .orchestra/
