@@ -77,16 +77,35 @@ const ExecutableActionNameSchema = z.enum([
   'finalize_report',
 ]);
 
+// Per-action payload fields, unioned into a bounded loose shape.
+// Anthropic structured-output stalls 5m on z.record(string, unknown)'s rendered
+// schema (propertyNames + additionalProperties:{}). z.any() avoids the stall
+// but renders as `{}`, giving the model no structure hint about what fields
+// each action expects. This explicit object renders as a plain JSON Schema
+// object with `properties` and `additionalProperties: false`, which the API
+// accepts and which nudges the model toward the right per-action fields:
+//   - taskId: select_task, run_dispatch, run_execute, run_ingest,
+//             run_summarize, run_judge
+//   - question: ask_user
+//   - reason: replan
+//   - tasks / suggestedOrder: result fields from run_decompose / replan
+// Per-action input is still re-validated by each action's inputSchema in
+// executeActionDecision, so extra properties here are harmless.
+const ControllerDecisionPayloadSchema = z.object({
+  taskId: z.string().optional(),
+  question: z.string().optional(),
+  reason: z.string().optional(),
+  tasks: z.array(z.any()).optional(),
+  suggestedOrder: z.array(z.string()).optional(),
+}).optional();
+
 const ControllerDecisionSchema = z.object({
   reasoning: z.string(),
   action: ControllerActionNameSchema,
   target: z.object({
     taskId: z.string().optional(),
   }).optional(),
-  // Anthropic structured-output stalls for 5m on z.record's rendered schema
-  // (propertyNames + additionalProperties:{}). Per-action payload is
-  // re-validated against the action's own inputSchema when consumed.
-  payload: z.any().optional(),
+  payload: ControllerDecisionPayloadSchema,
 });
 
 type ControllerDecision = z.infer<typeof ControllerDecisionSchema>;
