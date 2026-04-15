@@ -262,6 +262,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         timeout,
         cancelSignal: task.constraints?.signal,
         reject: false,
+        stdin: 'ignore',
       });
 
       if (streaming && subprocess.stdout) {
@@ -435,6 +436,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         timeout,
         cancelSignal: options?.signal,
         reject: false,
+        stdin: 'ignore',
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown execution error';

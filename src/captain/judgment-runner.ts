@@ -83,7 +83,10 @@ const ControllerDecisionSchema = z.object({
   target: z.object({
     taskId: z.string().optional(),
   }).optional(),
-  payload: z.record(z.string(), z.unknown()).optional(),
+  // Anthropic structured-output stalls for 5m on z.record's rendered schema
+  // (propertyNames + additionalProperties:{}). Per-action payload is
+  // re-validated against the action's own inputSchema when consumed.
+  payload: z.any().optional(),
 });
 
 type ControllerDecision = z.infer<typeof ControllerDecisionSchema>;
