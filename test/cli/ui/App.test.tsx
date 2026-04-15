@@ -3,8 +3,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import { Text } from 'ink';
 import { EventEmitter } from 'eventemitter3';
-import type { PipelineEvents } from '../../../src/orchestrator/pipeline.js';
-import type { OrchestrationRunner } from '../../../src/orchestrator/runner.js';
+import type { PipelineEvents } from '../../../src/captain/pipeline.js';
+import type { CrewRunner } from '../../../src/captain/runner.js';
 
 // Shared handle to the latest PromptInput onSubmit callback, set by the mock.
 let latestSubmit: ((value: string) => void) | null = null;
@@ -51,7 +51,7 @@ function createFakePipeline() {
     markInterrupted: vi.fn(),
   };
 
-  return { pipeline: fake as unknown as OrchestrationRunner, emitter, fake };
+  return { pipeline: fake as unknown as CrewRunner, emitter, fake };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 20));
@@ -235,7 +235,7 @@ describe('App', () => {
     await flush();
     expect(fake.run).toHaveBeenCalledTimes(1);
 
-    submit('/config set orchestrator.cli codex');
+    submit('/config set captain.cli codex');
     await flush();
 
     expect(lastFrame()).toContain('Cannot mutate config while a workflow is running');

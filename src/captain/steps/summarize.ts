@@ -18,13 +18,13 @@ export const summarizeStepDefinition = {
 };
 
 export async function summarize(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   ingestResult: z.infer<typeof IngestOutputSchema>,
   passNumber: number,
   model?: string,
 ): Promise<SummarizeOutput> {
   return runStructuredStep(
-    orchestrator,
+    captain,
     summarizeStepDefinition,
     { ingestResult, passNumber },
     model,

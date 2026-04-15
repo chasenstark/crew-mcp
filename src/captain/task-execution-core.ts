@@ -3,7 +3,7 @@ import type { WorkflowConfig } from '../workflow/types.js';
 import type { PassSummary } from '../state/types.js';
 import { logger } from '../utils/logger.js';
 
-export type OrchestratorStage =
+export type CaptainStage =
   | 'decompose'
   | 'dispatch'
   | 'ingest'
@@ -30,16 +30,16 @@ export function resolveTaskModel(
   return agentModel || undefined;
 }
 
-export function resolveOrchestratorModel(
+export function resolveCaptainModel(
   workflow: WorkflowConfig,
-  orchestratorModel: string | undefined,
-  stage: OrchestratorStage,
+  captainModel: string | undefined,
+  stage: CaptainStage,
 ): string | undefined {
   if (stage === 'judge') {
     const roleModel = workflow.roleModels?.judge?.trim();
     if (roleModel) return roleModel;
   }
-  return orchestratorModel;
+  return captainModel;
 }
 
 export function resolveTaskWorkingDirectory(taskWorktree: string, requested?: string): string {

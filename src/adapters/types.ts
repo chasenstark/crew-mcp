@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import type { PathTaken, ProviderSession } from '../provider-session.js';
 
-export interface OrchestratorCapabilities {
+export interface CaptainCapabilities {
   supportsToolLoop: boolean;
   supportsStructuredDecisions: boolean;
   supportsPauseForUserInput: boolean;
@@ -56,7 +56,7 @@ export interface AgentAdapter {
   readonly name: string;
   readonly capabilities: AgentCapability[];
   readonly supportsJsonSchema: boolean;
-  readonly orchestratorCapabilities?: OrchestratorCapabilities;
+  readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
   executeWithSchema?<T extends z.ZodType>(
     prompt: string,

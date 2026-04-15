@@ -10,10 +10,10 @@ export async function initCommand(options: { project?: boolean; cwd?: string } =
 
   if (options.project) {
     const workingDir = options.cwd ?? process.cwd();
-    configDir = join(workingDir, '.orchestra');
+    configDir = join(workingDir, '.crew');
     workflowFile = join(configDir, 'workflow.yaml');
   } else {
-    configDir = join(homedir(), '.orchestra');
+    configDir = join(homedir(), '.crew');
     workflowFile = join(configDir, 'workflow.yaml');
   }
 
@@ -34,7 +34,7 @@ export async function initCommand(options: { project?: boolean; cwd?: string } =
     writeFileSync(workflowFile, getDefaultWorkflowYamlTemplate(), 'utf-8');
 
     const label = options.project ? 'project' : 'global';
-    console.log(chalk.green(`\u2713 Initialized ${label} orchestrator configuration.\n`));
+    console.log(chalk.green(`\u2713 Initialized ${label} captain configuration.\n`));
     console.log(`  ${chalk.dim('Config directory:')} ${configDir}`);
     console.log(`  ${chalk.dim('Workflow file:')}    ${workflowFile}`);
     console.log();
@@ -44,7 +44,7 @@ export async function initCommand(options: { project?: boolean; cwd?: string } =
       );
     } else {
       console.log(
-        chalk.dim('This config applies to all projects. Override per-project with `orchestrator init --project`.'),
+        chalk.dim('This config applies to all projects. Override per-project with `crew init --project`.'),
       );
     }
   } catch (error: unknown) {

@@ -1,4 +1,4 @@
-# Agent Implementation Guide: Provider-Agnostic Agent Orchestration CLI
+# Agent Implementation Guide: Provider-Agnostic Multi-Agent Crew CLI
 
 > **This document is a complete implementation specification.** It contains everything
 > needed to build the MVP from scratch. Follow the phases in order — each phase builds
@@ -14,7 +14,7 @@
 4. [Project Structure](#4-project-structure)
 5. [Phase 0: Scaffold](#5-phase-0-scaffold)
 6. [Phase 1: CLI Adapters](#6-phase-1-cli-adapters)
-7. [Phase 2: Orchestrator Core](#7-phase-2-orchestrator-core)
+7. [Phase 2: Captain Core](#7-phase-2-captain-core)
 8. [Phase 3: Git Worktrees](#8-phase-3-git-worktrees)
 9. [Phase 4: State Persistence](#9-phase-4-state-persistence)
 10. [Phase 5: CLI & Conversation UI](#10-phase-5-cli--conversation-ui)
@@ -30,7 +30,7 @@
 
 ### What We're Building
 
-A CLI tool that lets a solo developer have a conversation with one LLM (the "orchestrator"),
+A CLI tool that lets a solo developer have a conversation with one LLM (the "captain"),
 which autonomously delegates coding and review tasks to other AI coding agents (Claude Code,
 Codex CLI, Gemini CLI, or any CLI-based agent). The user talks to one agent; that agent
 manages everything else.
@@ -40,15 +40,15 @@ manages everything else.
 ```
 User: "Build a DatePicker component. Claude builds, Codex reviews."
 
-  → Orchestrator LLM decomposes the request into tasks
+  → Captain LLM decomposes the request into tasks
   → Dispatches implementation task to Claude Code CLI (in a git worktree)
   → Claude Code writes the component
   → Dispatches review task to Codex CLI (reads same worktree)
   → Codex reviews the code, finds issues
-  → Orchestrator evaluates review findings
+  → Captain evaluates review findings
   → Dispatches fix task back to Claude Code
   → Codex re-reviews → clean
-  → Orchestrator reports back to user: "Done. Want a PR?"
+  → Captain reports back to user: "Done. Want a PR?"
 ```
 
 ### Key Design Decisions (Already Made)
@@ -59,16 +59,16 @@ User: "Build a DatePicker component. Claude builds, Codex reviews."
 | Target user | Solo dev already using AI coding agents |
 | Unit of work | Feature-level and task-level |
 | Agent routing | Configurable defaults, user can override in conversation |
-| Work sharing | Hybrid — filesystem (git worktrees) + orchestrator-curated context |
+| Work sharing | Hybrid — filesystem (git worktrees) + captain-curated context |
 | Workflow enforcement | Opinionated defaults, fully configurable via YAML |
 | Agent adapters | Built-in for Claude Code + Codex, plus generic escape hatch |
 | Language | TypeScript/Node |
 | Auth | CLI subscription auth everywhere — zero API keys required |
-| Orchestrator output format | Native JSON schema enforcement via CLI flags (with prompted-JSON fallback) |
+| Captain output format | Native JSON schema enforcement via CLI flags (with prompted-JSON fallback) |
 | Context management | Tiered — full output for current pass, summaries for older passes |
-| Result passing | Orchestrator LLM decides what's relevant to forward |
+| Result passing | Captain LLM decides what's relevant to forward |
 | Error handling | Configurable retry/fallback per workflow step |
-| State persistence | Yes — `.orchestra/` directory, resumable workflows |
+| State persistence | Yes — `.crew/` directory, resumable workflows |
 | Packaging | CLI first (`npx` or global install) |
 
 ### Positioning
@@ -89,7 +89,7 @@ User: "Build a DatePicker component. Claude builds, Codex reviews."
                        │
                        ▼
 ┌─────────────────────────────────────────────────┐
-│              Orchestrator LLM                    │
+│              Captain LLM                    │
 │    (any CLI: claude -p, codex exec, etc.)        │
 │    Reasoning via subscription auth — no API keys │
 │                                                  │
@@ -113,7 +113,7 @@ User: "Build a DatePicker component. Claude builds, Codex reviews."
         Shared Repository (main)
 ```
 
-### The 6-Step Orchestrator Pipeline
+### The 6-Step Captain Pipeline
 
 Every workflow cycle runs these steps as separate LLM calls:
 
@@ -124,7 +124,7 @@ Every workflow cycle runs these steps as separate LLM calls:
 5. **JUDGE** — Decide: done / iterate / ask user
 6. **REPORT** — Summarize results for user in natural language
 
-Each step (except REPORT) produces validated JSON output. The orchestrator uses
+Each step (except REPORT) produces validated JSON output. The captain uses
 native `--json-schema` / `--output-schema` CLI flags when available, with a
 prompted-JSON + Zod validation fallback for generic adapters.
 
@@ -132,11 +132,11 @@ prompted-JSON + Zod validation fallback for generic adapters.
 
 | Pass | Context treatment |
 |------|------------------|
-| Current pass | Full agent output — orchestrator needs complete fidelity |
+| Current pass | Full agent output — captain needs complete fidelity |
 | Previous pass | Structured summary: what was attempted, found, decided |
 | Older passes | Compressed to single paragraph of key decisions |
 
-After each step, the orchestrator summarizes before moving on. This keeps the
+After each step, the captain summarizes before moving on. This keeps the
 context window bounded even over many review iterations.
 
 ---
@@ -212,8 +212,8 @@ Create this exact directory structure:
 │   │       ├── AgentStatus.tsx        # Live agent status panel
 │   │       └── PromptInput.tsx        # User text input
 │   │
-│   ├── orchestrator/
-│   │   ├── index.ts                    # Orchestrator public API
+│   ├── captain/
+│   │   ├── index.ts                    # Captain public API
 │   │   ├── pipeline.ts                # 6-step pipeline runner
 │   │   ├── steps/
 │   │   │   ├── decompose.ts           # Step 1
@@ -239,8 +239,8 @@ Create this exact directory structure:
 │   │
 │   ├── state/
 │   │   ├── types.ts                    # State types
-│   │   ├── store.ts                   # Read/write .orchestra/ state
-│   │   └── context.ts                 # Build orchestrator context from state
+│   │   ├── store.ts                   # Read/write .crew/ state
+│   │   └── context.ts                 # Build captain context from state
 │   │
 │   ├── git/
 │   │   ├── worktree.ts                # Create/manage worktrees
@@ -269,7 +269,7 @@ Create this exact directory structure:
     │       ├── codex-success.jsonl     # Sample Codex JSONL output
     │       ├── codex-error.jsonl
     │       └── codex-structured.json
-    ├── orchestrator/
+    ├── captain/
     │   ├── decompose.test.ts
     │   ├── judge.test.ts
     │   └── pipeline.test.ts
@@ -299,7 +299,7 @@ pnpm init
 {
   "name": "[project-name]",
   "version": "0.1.0",
-  "description": "Provider-agnostic agent orchestration through conversation",
+  "description": "Provider-agnostic multi-agent coding crew through conversation",
   "type": "module",
   "bin": {
     "[project-name]": "./dist/index.js"
@@ -320,7 +320,7 @@ pnpm init
     "defaults"
   ],
   "keywords": [
-    "ai", "agent", "orchestrator", "claude", "codex", "multi-agent", "cli"
+    "ai", "agent", "captain", "claude", "codex", "multi-agent", "cli"
   ]
 }
 ```
@@ -394,15 +394,15 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Orchestrator state (project-specific, not committed)
-.orchestra/worktrees/
-.orchestra/state.json
-.orchestra/passes/
-.orchestra/summaries/
-.orchestra/conversation.json
+# Captain state (project-specific, not committed)
+.crew/worktrees/
+.crew/state.json
+.crew/passes/
+.crew/summaries/
+.crew/conversation.json
 
 # Keep the workflow config
-!.orchestra/workflow.yaml
+!.crew/workflow.yaml
 ```
 
 ### Step 0.7: Install dependencies
@@ -420,7 +420,7 @@ import { program } from 'commander';
 
 program
   .name('[project-name]')
-  .description('Provider-agnostic agent orchestration through conversation')
+  .description('Provider-agnostic multi-agent coding crew through conversation')
   .version('0.1.0');
 
 program
@@ -438,7 +438,7 @@ program
 
 program
   .command('init')
-  .description('Initialize orchestrator config in the current project')
+  .description('Initialize crew config in the current project')
   .action(async () => {
     console.log('Initializing config...');
     console.log('(Not yet implemented — Phase 0 completion)');
@@ -572,7 +572,7 @@ export interface AgentAdapter {
 
   /**
    * Execute with native JSON schema enforcement.
-   * Used for orchestrator reasoning calls where we need structured output.
+   * Used for captain reasoning calls where we need structured output.
    * Only available when supportsJsonSchema is true.
    */
   executeWithSchema?<T extends z.ZodType>(
@@ -862,7 +862,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly supportsJsonSchema = true;
 
   async execute(task: Task): Promise<TaskResult> {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'orchestrator-codex-'));
+    const tmpDir = mkdtempSync(join(tmpdir(), 'captain-codex-'));
     const outputFile = join(tmpDir, 'output.txt');
 
     const args = this.buildArgs(task, outputFile);
@@ -930,7 +930,7 @@ export class CodexAdapter implements AgentAdapter {
   ): Promise<z.infer<T>> {
     const jsonSchema = zodToJsonSchema(schema, { target: 'jsonSchema7' });
 
-    const tmpDir = mkdtempSync(join(tmpdir(), 'orchestrator-codex-'));
+    const tmpDir = mkdtempSync(join(tmpdir(), 'captain-codex-'));
     const schemaFile = join(tmpDir, 'schema.json');
     const outputFile = join(tmpDir, 'result.json');
 
@@ -1438,11 +1438,11 @@ import { join } from 'path';
 import chalk from 'chalk';
 
 export async function initCommand(): Promise<void> {
-  const configDir = join(process.cwd(), '.orchestra');
+  const configDir = join(process.cwd(), '.crew');
   const configFile = join(configDir, 'workflow.yaml');
 
   if (existsSync(configFile)) {
-    console.log(chalk.yellow('\n  .orchestra/workflow.yaml already exists. Skipping.\n'));
+    console.log(chalk.yellow('\n  .crew/workflow.yaml already exists. Skipping.\n'));
     return;
   }
 
@@ -1456,7 +1456,7 @@ export async function initCommand(): Promise<void> {
 
   writeFileSync(configFile, defaultWorkflow);
 
-  console.log(chalk.green('\n  ✓ Created .orchestra/workflow.yaml'));
+  console.log(chalk.green('\n  ✓ Created .crew/workflow.yaml'));
   console.log(chalk.dim('    Edit this file to customize your workflow.\n'));
 }
 ```
@@ -1476,12 +1476,12 @@ export async function initCommand(): Promise<void> {
 
 ---
 
-## 7. Phase 2: Orchestrator Core
+## 7. Phase 2: Captain Core
 
 **Goal:** The 6-step pipeline works end-to-end with mocked agents.
 **Time estimate:** ~4 hours
 
-This phase builds the orchestrator pipeline, Zod schemas for each step, system
+This phase builds the captain pipeline, Zod schemas for each step, system
 prompt templates, and the validation/retry logic. The full schemas and prompts
 are in Appendix A and Appendix B respectively.
 
@@ -1537,7 +1537,7 @@ import type { AgentAdapter } from '../adapters/types.js';
 import { extractJson } from './json-parse.js';
 
 /**
- * Execute an orchestrator reasoning call with schema validation.
+ * Execute an captain reasoning call with schema validation.
  *
  * Strategy:
  * 1. If the adapter supports native JSON schema enforcement, use it
@@ -1640,26 +1640,26 @@ export const logger = {
 
 ### Step 2.2: Create all Zod schemas
 
-Create `src/orchestrator/schemas.ts` with the complete schemas from Appendix A.
+Create `src/captain/schemas.ts` with the complete schemas from Appendix A.
 This is a single file containing all 5 output schemas (DECOMPOSE, DISPATCH,
 INGEST, SUMMARIZE, JUDGE). REPORT does not have a schema — it produces
 natural language.
 
 ### Step 2.3: Create all system prompts
 
-Create `src/orchestrator/prompts.ts` with the complete prompt templates from
+Create `src/captain/prompts.ts` with the complete prompt templates from
 Appendix B. Each prompt is a function that accepts context variables and returns
 the formatted system prompt string.
 
 ### Step 2.4: Implement each pipeline step
 
-Create one file per step in `src/orchestrator/steps/`. Each step:
+Create one file per step in `src/captain/steps/`. Each step:
 1. Builds its system prompt from the template
-2. Calls the orchestrator LLM via `executeWithValidation()`
+2. Calls the captain LLM via `executeWithValidation()`
 3. Returns the validated, typed result
 
 ```typescript
-// src/orchestrator/steps/decompose.ts
+// src/captain/steps/decompose.ts
 import type { AgentAdapter } from '../../adapters/types.js';
 import type { z } from 'zod';
 import { DecomposeOutputSchema } from '../schemas.js';
@@ -1670,13 +1670,13 @@ import type { WorkflowConfig } from '../../workflow/types.js';
 export type DecomposeOutput = z.infer<typeof DecomposeOutputSchema>;
 
 export async function decompose(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   userRequest: string,
   agents: { name: string; capabilities: string[] }[],
   workflow: WorkflowConfig,
 ): Promise<DecomposeOutput> {
   const prompt = buildDecomposePrompt(userRequest, agents, workflow);
-  return executeWithValidation(orchestrator, prompt, DecomposeOutputSchema);
+  return executeWithValidation(captain, prompt, DecomposeOutputSchema);
 }
 ```
 
@@ -1685,19 +1685,19 @@ Follow the same pattern for dispatch, ingest, summarize, and judge.
 The report step is different — it produces natural language:
 
 ```typescript
-// src/orchestrator/steps/report.ts
+// src/captain/steps/report.ts
 import type { AgentAdapter } from '../../adapters/types.js';
 import { buildReportPrompt } from '../prompts.js';
 import type { PassSummary } from '../../state/types.js';
 
 export async function report(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   summaries: PassSummary[],
   userRequest: string,
 ): Promise<string> {
   const prompt = buildReportPrompt(summaries, userRequest);
 
-  const result = await orchestrator.execute({
+  const result = await captain.execute({
     prompt,
     context: { workingDirectory: process.cwd() },
     constraints: { maxTurns: 1, timeout: 30_000 },
@@ -1710,7 +1710,7 @@ export async function report(
 ### Step 2.5: Build the pipeline runner
 
 ```typescript
-// src/orchestrator/pipeline.ts
+// src/captain/pipeline.ts
 import { EventEmitter } from 'eventemitter3';
 import type { AgentAdapter } from '../adapters/types.js';
 import type { AdapterRegistry } from '../adapters/registry.js';
@@ -1737,7 +1737,7 @@ interface PipelineEvents {
 
 export class Pipeline extends EventEmitter<PipelineEvents> {
   constructor(
-    private orchestratorAdapter: AgentAdapter,
+    private captainAdapter: AgentAdapter,
     private registry: AdapterRegistry,
     private workflow: WorkflowConfig,
     private state: StateStore,
@@ -1758,7 +1758,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       });
 
       const decomposition = await decompose(
-        this.orchestratorAdapter,
+        this.captainAdapter,
         userRequest,
         agents,
         this.workflow,
@@ -1788,7 +1788,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       this.emit('step:start', 'report');
       const summaries = this.state.loadPassSummaries();
       const finalReport = await report(
-        this.orchestratorAdapter,
+        this.captainAdapter,
         summaries,
         userRequest,
       );
@@ -1838,7 +1838,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       this.emit('step:start', 'dispatch');
       const previousSummaries = this.state.loadPassSummaries();
       const dispatched = await dispatch(
-        this.orchestratorAdapter,
+        this.captainAdapter,
         task,
         previousSummaries,
         passNumber,
@@ -1870,7 +1870,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       // Step 3: Ingest
       this.emit('step:start', 'ingest');
       const ingested = await ingest(
-        this.orchestratorAdapter,
+        this.captainAdapter,
         task.description,
         agentResult,
       );
@@ -1879,7 +1879,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       // Step 4: Summarize
       this.emit('step:start', 'summarize');
       const summary = await summarize(
-        this.orchestratorAdapter,
+        this.captainAdapter,
         ingested,
         passNumber,
       );
@@ -1891,7 +1891,7 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
       if (task.role === 'review' || passNumber > 1) {
         this.emit('step:start', 'judge');
         const judgment = await judge(
-          this.orchestratorAdapter,
+          this.captainAdapter,
           ingested,
           previousSummaries,
           passNumber,
@@ -1941,15 +1941,15 @@ export class Pipeline extends EventEmitter<PipelineEvents> {
 - [ ] `src/utils/json-parse.ts` — JSON extraction from messy LLM output
 - [ ] `src/utils/validate.ts` — schema validation with native + fallback strategies
 - [ ] `src/utils/logger.ts` — structured logging
-- [ ] `src/orchestrator/schemas.ts` — all 5 Zod schemas (see Appendix A)
-- [ ] `src/orchestrator/prompts.ts` — all 6 system prompt templates (see Appendix B)
-- [ ] `src/orchestrator/steps/decompose.ts`
-- [ ] `src/orchestrator/steps/dispatch.ts`
-- [ ] `src/orchestrator/steps/ingest.ts`
-- [ ] `src/orchestrator/steps/summarize.ts`
-- [ ] `src/orchestrator/steps/judge.ts`
-- [ ] `src/orchestrator/steps/report.ts`
-- [ ] `src/orchestrator/pipeline.ts` — full pipeline runner with event emission
+- [ ] `src/captain/schemas.ts` — all 5 Zod schemas (see Appendix A)
+- [ ] `src/captain/prompts.ts` — all 6 system prompt templates (see Appendix B)
+- [ ] `src/captain/steps/decompose.ts`
+- [ ] `src/captain/steps/dispatch.ts`
+- [ ] `src/captain/steps/ingest.ts`
+- [ ] `src/captain/steps/summarize.ts`
+- [ ] `src/captain/steps/judge.ts`
+- [ ] `src/captain/steps/report.ts`
+- [ ] `src/captain/pipeline.ts` — full pipeline runner with event emission
 - [ ] Unit tests for each step with mocked adapters
 - [ ] Pipeline integration test with fully mocked adapters
 
@@ -1974,12 +1974,12 @@ export class WorktreeManager {
 
   constructor(projectRoot: string) {
     this.git = simpleGit(projectRoot);
-    this.basePath = join(projectRoot, '.orchestra', 'worktrees');
+    this.basePath = join(projectRoot, '.crew', 'worktrees');
     mkdirSync(this.basePath, { recursive: true });
   }
 
   async createWorktree(taskId: string): Promise<string> {
-    const branchName = `orchestra/${taskId}`;
+    const branchName = `crew/${taskId}`;
     const worktreePath = join(this.basePath, taskId);
 
     if (existsSync(worktreePath)) {
@@ -2010,18 +2010,18 @@ export class WorktreeManager {
   }
 
   async mergeWorktree(taskId: string, targetBranch?: string): Promise<void> {
-    const branchName = `orchestra/${taskId}`;
+    const branchName = `crew/${taskId}`;
 
     if (targetBranch) {
       await this.git.checkout(targetBranch);
     }
 
-    await this.git.merge([branchName, '--no-ff', '-m', `Merge orchestra/${taskId}`]);
+    await this.git.merge([branchName, '--no-ff', '-m', `Merge crew/${taskId}`]);
   }
 
   async cleanupWorktree(taskId: string): Promise<void> {
     const worktreePath = this.getWorktreePath(taskId);
-    const branchName = `orchestra/${taskId}`;
+    const branchName = `crew/${taskId}`;
 
     try {
       await this.git.raw(['worktree', 'remove', worktreePath, '--force']);
@@ -2036,7 +2036,7 @@ export class WorktreeManager {
     // List all orchestra worktrees
     const raw = await this.git.raw(['worktree', 'list', '--porcelain']);
     const worktrees = raw.split('\n\n')
-      .filter(block => block.includes('.orchestra/worktrees/'))
+      .filter(block => block.includes('.crew/worktrees/'))
       .map(block => {
         const match = block.match(/worktree (.+)/);
         return match?.[1];
@@ -2095,14 +2095,14 @@ export async function mergeAllWorktrees(
 
 ## 9. Phase 4: State Persistence
 
-**Goal:** Save workflow state to `.orchestra/` for resume capability.
+**Goal:** Save workflow state to `.crew/` for resume capability.
 **Time estimate:** ~1 hour
 
 ### Step 4.1: Define state types
 
 ```typescript
 // src/state/types.ts
-import type { DecomposeOutput } from '../orchestrator/steps/decompose.js';
+import type { DecomposeOutput } from '../captain/steps/decompose.js';
 
 export interface WorkflowState {
   status: 'running' | 'paused' | 'completed' | 'failed';
@@ -2148,7 +2148,7 @@ export class StateStore {
   private basePath: string;
 
   constructor(projectRoot: string) {
-    this.basePath = join(projectRoot, '.orchestra');
+    this.basePath = join(projectRoot, '.crew');
     mkdirSync(join(this.basePath, 'passes'), { recursive: true });
     mkdirSync(join(this.basePath, 'summaries'), { recursive: true });
   }
@@ -2242,7 +2242,7 @@ import type { StateStore } from './store.js';
 import type { PassSummary } from './types.js';
 
 /**
- * Build the tiered context object for orchestrator reasoning calls.
+ * Build the tiered context object for captain reasoning calls.
  *
  * Tiered strategy:
  * - Current pass: included as full data (passed separately)
@@ -2314,7 +2314,7 @@ and connects to the Pipeline's event emitter.
 ### Step 5.2: Wire up the `run` command
 
 The `run` command should:
-1. Load workflow config from `.orchestra/workflow.yaml` (or defaults)
+1. Load workflow config from `.crew/workflow.yaml` (or defaults)
 2. Initialize adapter registry and health-check agents
 3. Create state store and worktree manager
 4. If a prompt is provided as an argument, run it immediately
@@ -2324,7 +2324,7 @@ The `run` command should:
 ### Step 5.3: Wire up the `resume` command
 
 The `resume` command should:
-1. Check for `.orchestra/state.json`
+1. Check for `.crew/state.json`
 2. If interrupted workflow found, display summary and ask to resume or start fresh
 3. If resumed, rebuild pipeline state from summaries and continue from last step
 
@@ -2359,7 +2359,7 @@ The `resume` command should:
 Expect these issues and budget time to fix:
 
 1. **CLI output format mismatches** — the exact JSON/JSONL shape may differ from docs
-2. **Prompt engineering** — orchestrator decomposition/judge quality needs iteration
+2. **Prompt engineering** — captain decomposition/judge quality needs iteration
 3. **Timing** — agent execution takes 30s-5min, UI needs to show progress
 4. **Worktree edge cases** — uncommitted changes, merge conflicts
 5. **Context size** — large agent outputs may need truncation before ingesting
@@ -2368,7 +2368,7 @@ Expect these issues and budget time to fix:
 
 - [ ] End-to-end workflow completes with real Claude Code + Codex
 - [ ] Adapters handle real CLI output (not just fixtures)
-- [ ] Prompts refined based on actual orchestrator output quality
+- [ ] Prompts refined based on actual captain output quality
 - [ ] State persistence works across interrupt/resume
 - [ ] Error handling works for: timeout, bad JSON, agent crash
 - [ ] README written with install, setup, and usage instructions
@@ -2378,7 +2378,7 @@ Expect these issues and budget time to fix:
 ## Appendix A: Complete Zod Schemas
 
 ```typescript
-// src/orchestrator/schemas.ts
+// src/captain/schemas.ts
 import { z } from 'zod';
 
 // ── Step 1: DECOMPOSE ─────────────────────────────────────────
@@ -2481,7 +2481,7 @@ export const JudgeOutputSchema = z.object({
 ## Appendix B: Complete System Prompts
 
 ```typescript
-// src/orchestrator/prompts.ts
+// src/captain/prompts.ts
 import type { WorkflowConfig } from '../workflow/types.js';
 import type { PassSummary } from '../state/types.js';
 import type { TaskResult } from '../adapters/types.js';
@@ -2696,8 +2696,8 @@ ${formatSummaries(summaries)}`;
 
 ```yaml
 # defaults/workflow.yaml
-# Default workflow configuration for the orchestrator.
-# Copy to .orchestra/workflow.yaml and customize.
+# Default workflow configuration for the captain.
+# Copy to .crew/workflow.yaml and customize.
 
 workflow:
   name: default
@@ -2712,7 +2712,7 @@ workflow:
       max_passes: 3
 
     - role: judge
-      agent: orchestrator
+      agent: captain
       action: evaluate_review
       criteria:
         - "Are the review findings actionable?"
@@ -2746,7 +2746,7 @@ agents:
       - Python
       - security
 
-orchestrator:
+captain:
   cli: claude-code
 
 error_handling:
@@ -2879,7 +2879,7 @@ error_handling:
 |-------|------|-----------|----------------|
 | 0 | Scaffold | 2h | CLI runs, build works, tests pass |
 | 1 | Adapters | 3h | Can invoke Claude Code + Codex programmatically |
-| 2 | Orchestrator | 4h | 6-step pipeline with schemas and prompts |
+| 2 | Captain | 4h | 6-step pipeline with schemas and prompts |
 | 3 | Git worktrees | 2h | Agent isolation working |
 | 4 | State persistence | 1h | Resume interrupted workflows |
 | 5 | CLI & UI | 3h | Interactive conversation with agent status |

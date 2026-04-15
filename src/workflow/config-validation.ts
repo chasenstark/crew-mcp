@@ -47,17 +47,17 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
     ...config.workflow.steps.map((step) => step.action),
   ]);
 
-  const knownOrchestratorCli = new Set([
+  const knownCaptainCli = new Set([
     ...Object.keys(config.agents),
     ...BUILTIN_WORKER_AGENTS,
   ]);
-  if (!knownOrchestratorCli.has(config.orchestrator.cli)) {
+  if (!knownCaptainCli.has(config.captain.cli)) {
     diagnostics.push(
       createDiagnostic(
-        'orchestrator.cli',
+        'captain.cli',
         `a known agent key or built-in adapter key (${BUILTIN_WORKER_AGENTS.join('|')})`,
-        config.orchestrator.cli,
-        `/config set orchestrator.cli ${AgentId.CODEX}`,
+        config.captain.cli,
+        `/config set captain.cli ${AgentId.CODEX}`,
       ),
     );
   }

@@ -6,7 +6,7 @@ export interface ResumeParams {
   previousSummaries: PassSummary[];
 }
 
-export interface OrchestrationRunner {
+export interface CrewRunner {
   run(userRequest: string): Promise<string>;
   resume(params: ResumeParams): Promise<string>;
   requestUserInput(question: string): Promise<string>;

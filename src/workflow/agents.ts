@@ -4,7 +4,7 @@ export enum AgentId {
   CLAUDE_CODE = 'claude-code',
   CODEX = 'codex',
   GEMINI_CLI = 'gemini-cli',
-  ORCHESTRATOR = 'orchestrator',
+  CAPTAIN = 'captain',
 }
 
 export enum AdapterId {
@@ -33,7 +33,7 @@ const AGENT_ALIASES: Record<string, AgentId> = {
   CLAUDE_CODE: AgentId.CLAUDE_CODE,
   CODEX: AgentId.CODEX,
   GEMINI_CLI: AgentId.GEMINI_CLI,
-  ORCHESTRATOR: AgentId.ORCHESTRATOR,
+  CAPTAIN: AgentId.CAPTAIN,
 };
 
 const ADAPTER_ALIASES: Record<string, AdapterId> = {

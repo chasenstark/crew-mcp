@@ -31,9 +31,9 @@ describe('parseConfigSlashCommand', () => {
   });
 
   it('parses set command values with spaces', () => {
-    expect(parseConfigSlashCommand('/config set orchestrator.model claude sonnet')).toEqual({
+    expect(parseConfigSlashCommand('/config set captain.model claude sonnet')).toEqual({
       kind: 'set',
-      path: 'orchestrator.model',
+      path: 'captain.model',
       value: 'claude sonnet',
     });
   });
@@ -55,7 +55,7 @@ describe('parseConfigSlashCommand', () => {
   });
 
   it('returns invalid for malformed set command', () => {
-    const parsed = parseConfigSlashCommand('/config set orchestrator.model');
+    const parsed = parseConfigSlashCommand('/config set captain.model');
     expect(parsed).toEqual({
       kind: 'invalid',
       reason: 'Usage: /config set <path> <value>',

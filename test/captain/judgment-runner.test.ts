@@ -7,32 +7,32 @@ import { StateStore } from '../../src/state/store.js';
 import type { WorkflowState } from '../../src/state/types.js';
 import { ModelId } from '../../src/workflow/models.js';
 
-vi.mock('../../src/orchestrator/steps/decompose.js', () => ({
+vi.mock('../../src/captain/steps/decompose.js', () => ({
   decompose: vi.fn(),
 }));
-vi.mock('../../src/orchestrator/steps/dispatch.js', () => ({
+vi.mock('../../src/captain/steps/dispatch.js', () => ({
   dispatch: vi.fn(),
 }));
-vi.mock('../../src/orchestrator/steps/ingest.js', () => ({
+vi.mock('../../src/captain/steps/ingest.js', () => ({
   ingest: vi.fn(),
 }));
-vi.mock('../../src/orchestrator/steps/summarize.js', () => ({
+vi.mock('../../src/captain/steps/summarize.js', () => ({
   summarize: vi.fn(),
 }));
-vi.mock('../../src/orchestrator/steps/judge.js', () => ({
+vi.mock('../../src/captain/steps/judge.js', () => ({
   judge: vi.fn(),
 }));
-vi.mock('../../src/orchestrator/steps/report.js', () => ({
+vi.mock('../../src/captain/steps/report.js', () => ({
   report: vi.fn(),
 }));
 
-const { JudgmentRunner } = await import('../../src/orchestrator/judgment-runner.js');
-const { decompose } = await import('../../src/orchestrator/steps/decompose.js');
-const { dispatch } = await import('../../src/orchestrator/steps/dispatch.js');
-const { ingest } = await import('../../src/orchestrator/steps/ingest.js');
-const { summarize } = await import('../../src/orchestrator/steps/summarize.js');
-const { judge } = await import('../../src/orchestrator/steps/judge.js');
-const { report } = await import('../../src/orchestrator/steps/report.js');
+const { JudgmentRunner } = await import('../../src/captain/judgment-runner.js');
+const { decompose } = await import('../../src/captain/steps/decompose.js');
+const { dispatch } = await import('../../src/captain/steps/dispatch.js');
+const { ingest } = await import('../../src/captain/steps/ingest.js');
+const { summarize } = await import('../../src/captain/steps/summarize.js');
+const { judge } = await import('../../src/captain/steps/judge.js');
+const { report } = await import('../../src/captain/steps/report.js');
 
 const mockDecompose = vi.mocked(decompose);
 const mockDispatch = vi.mocked(dispatch);
@@ -68,10 +68,10 @@ function createDecisionAdapter(decisions: Array<Record<string, unknown>>) {
   });
 
   const adapter: AgentAdapter = {
-    name: 'orchestrator',
+    name: 'captain',
     capabilities: ['analyze'],
     supportsJsonSchema: true,
-    orchestratorCapabilities: {
+    captainCapabilities: {
       supportsToolLoop: false,
       supportsStructuredDecisions: true,
       supportsPauseForUserInput: false,
@@ -105,10 +105,10 @@ function createToolLoopAdapter(
   });
 
   const adapter: AgentAdapter = {
-    name: 'orchestrator',
+    name: 'captain',
     capabilities: ['analyze'],
     supportsJsonSchema: true,
-    orchestratorCapabilities: {
+    captainCapabilities: {
       supportsToolLoop: true,
       supportsStructuredDecisions: true,
       supportsPauseForUserInput: options?.supportsPauseForUserInput ?? true,
@@ -130,7 +130,7 @@ function createAgentRegistry(agentExecute: ReturnType<typeof vi.fn>) {
         name: 'agent-a',
         capabilities: ['implement'],
         supportsJsonSchema: false,
-        orchestratorCapabilities: {
+        captainCapabilities: {
           supportsToolLoop: false,
           supportsStructuredDecisions: true,
           supportsPauseForUserInput: false,
@@ -149,7 +149,7 @@ describe('JudgmentRunner', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tmpDir = mkdtempSync(join(tmpdir(), 'orchestrator-judgment-test-'));
+    tmpDir = mkdtempSync(join(tmpdir(), 'captain-judgment-test-'));
     stateStore = new StateStore(tmpDir);
 
     mockDecompose.mockResolvedValue(singleTaskDecomposition());
@@ -225,7 +225,7 @@ describe('JudgmentRunner', () => {
       stateStore,
       worktreeManager as never,
       {
-        orchestratorModel: ModelId.GPT,
+        captainModel: ModelId.GPT,
         agentModels: { 'agent-a': ModelId.GPT_CODEX },
       },
     );

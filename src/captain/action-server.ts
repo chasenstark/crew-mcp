@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { ToolCall, ToolDefinition } from '../adapters/types.js';
 
-export const DEFAULT_TOOL_NAMESPACE = 'mcp__orchestrator__';
+export const DEFAULT_TOOL_NAMESPACE = 'mcp__crew__';
 
 export interface ActionCatalogEntry {
   name: string;
@@ -10,7 +10,7 @@ export interface ActionCatalogEntry {
   inputSchema: z.ZodType;
 }
 
-export class OrchestratorActionServer {
+export class CaptainActionServer {
   readonly toolNamespace: string;
 
   constructor(

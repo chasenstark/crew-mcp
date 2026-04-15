@@ -207,7 +207,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     'analyze',
   ];
   readonly supportsJsonSchema = true;
-  readonly orchestratorCapabilities = {
+  readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
@@ -408,7 +408,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // OAuth/keychain auth working (unlike --bare which disables them).
       '--system-prompt',
       'You are a structured data extraction engine. Return ONLY valid JSON matching the provided schema. No prose, no markdown, no explanations.',
-      // Disable all tools — orchestrator steps only need to analyze the prompt
+      // Disable all tools — captain steps only need to analyze the prompt
       // and return JSON, never browse files or run commands.
       '--tools',
       '',
@@ -532,7 +532,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         provider: 'claude',
         transport: 'adapter',
         cliVersion: await this.getCliVersionTag(),
-        toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+        toolNamespace: context.toolNamespace ?? 'mcp__crew__',
         toolSchemaHash: context.toolSchemaHash ?? '',
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
@@ -605,7 +605,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       transport: resumedSessionId ? 'stateful-resume' as const : 'native' as const,
       sessionId: resumedSessionId,
       cliVersion,
-      toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+      toolNamespace: context.toolNamespace ?? 'mcp__crew__',
       toolSchemaHash: context.toolSchemaHash ?? '',
       startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
       lastTurnAt: new Date().toISOString(),

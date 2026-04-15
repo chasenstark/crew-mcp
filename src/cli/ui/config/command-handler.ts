@@ -69,7 +69,7 @@ export function handleConfigSlashCommand(
   if (parsed.kind === 'edit') {
     return [
       'Interactive editing is available in the dedicated config command.',
-      'Run: orchestrator config edit',
+      'Run: crew config edit',
     ].join('\n');
   }
 

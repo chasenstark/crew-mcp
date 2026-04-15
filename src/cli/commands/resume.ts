@@ -29,7 +29,7 @@ export async function resumeCommand(options: { onAskUser?: string } = {}): Promi
 
   let sawPipelineError = false;
 
-  console.log(chalk.blue('\n  orchestrator') + chalk.dim(' - resuming workflow\n'));
+  console.log(chalk.blue('\n  captain') + chalk.dim(' - resuming workflow\n'));
   console.log(chalk.dim(`  log: ${logFile}\n`));
   console.log(chalk.yellow(`  Request: "${workflowState.userRequest}"`));
   console.log(chalk.dim(`  Progress: task ${workflowState.currentTaskIndex + 1} of ${workflowState.decomposition.tasks.length}\n`));

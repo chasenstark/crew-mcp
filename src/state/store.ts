@@ -7,7 +7,7 @@ export class StateStore {
   private basePath: string;
 
   constructor(projectRoot: string) {
-    this.basePath = join(projectRoot, '.orchestra');
+    this.basePath = join(projectRoot, '.crew');
     mkdirSync(join(this.basePath, 'passes'), { recursive: true });
     mkdirSync(join(this.basePath, 'summaries'), { recursive: true });
     mkdirSync(join(this.basePath, 'runs'), { recursive: true });

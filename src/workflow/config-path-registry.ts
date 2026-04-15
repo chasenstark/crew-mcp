@@ -11,7 +11,7 @@ import {
   CODEX_MODEL_PRESETS,
   ModelId,
   OPENAI_COMPATIBLE_MODEL_PRESETS,
-  ORCHESTRATOR_MODEL_PRESETS,
+  CAPTAIN_MODEL_PRESETS,
   resolveModelAliasOrThrow,
 } from './models.js';
 import type { FullConfig } from './types.js';
@@ -156,8 +156,8 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
   const candidates: string[] = [];
   for (const step of config.workflow.steps) {
     if (step.role !== role && step.action !== role) continue;
-    if (step.agent === AgentId.ORCHESTRATOR) {
-      candidates.push(...ORCHESTRATOR_MODEL_PRESETS);
+    if (step.agent === AgentId.CAPTAIN) {
+      candidates.push(...CAPTAIN_MODEL_PRESETS);
       continue;
     }
     candidates.push(...modelPresetsForAgent(config, step.agent));
@@ -165,7 +165,7 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
 
   if (candidates.length === 0) {
     if (role === 'judge') {
-      candidates.push(...ORCHESTRATOR_MODEL_PRESETS);
+      candidates.push(...CAPTAIN_MODEL_PRESETS);
     } else {
       candidates.push(...CLAUDE_MODEL_PRESETS, ...CODEX_MODEL_PRESETS);
     }
@@ -187,15 +187,15 @@ function regexPath(regex: RegExp): (candidate: string) => Record<string, string>
 
 export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
   {
-    path: 'orchestrator.cli',
-    examples: [`/config set orchestrator.cli ${AgentId.CODEX}`],
-    match: exactPath('orchestrator.cli'),
-    read: (config) => config.orchestrator.cli,
+    path: 'captain.cli',
+    examples: [`/config set captain.cli ${AgentId.CODEX}`],
+    match: exactPath('captain.cli'),
+    read: (config) => config.captain.cli,
     parse: (raw, _config, _params, path) => resolveAgentAlias(
-      parseNonEmptyString(path, raw, `/config set orchestrator.cli ${AgentId.CODEX}`),
+      parseNonEmptyString(path, raw, `/config set captain.cli ${AgentId.CODEX}`),
     ),
     write: (config, _params, value) => {
-      config.orchestrator.cli = String(value);
+      config.captain.cli = String(value);
     },
     options: (config) => {
       const otherAgents = Object.keys(config.agents)
@@ -205,22 +205,22 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
         ...BUILTIN_WORKER_AGENTS,
         ...otherAgents,
       ]);
-      return withCurrentOption(options, config.orchestrator.cli);
+      return withCurrentOption(options, config.captain.cli);
     },
   },
   {
-    path: 'orchestrator.model',
-    examples: [`/config set orchestrator.model ${ModelId.CLAUDE_SONNET}`],
-    match: exactPath('orchestrator.model'),
-    read: (config) => config.orchestrator.model,
+    path: 'captain.model',
+    examples: [`/config set captain.model ${ModelId.CLAUDE_SONNET}`],
+    match: exactPath('captain.model'),
+    read: (config) => config.captain.model,
     parse: (raw, _config, _params, path) => resolveModelAliasOrThrow(
-      parseNonEmptyString(path, raw, `/config set orchestrator.model ${ModelId.CLAUDE_SONNET}`),
+      parseNonEmptyString(path, raw, `/config set captain.model ${ModelId.CLAUDE_SONNET}`),
       path,
     ),
     write: (config, _params, value) => {
-      config.orchestrator.model = String(value);
+      config.captain.model = String(value);
     },
-    options: (config) => withCurrentOption(ORCHESTRATOR_MODEL_PRESETS, config.orchestrator.model),
+    options: (config) => withCurrentOption(CAPTAIN_MODEL_PRESETS, config.captain.model),
   },
   {
     path: 'workflow.execution.mode',

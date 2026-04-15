@@ -9,12 +9,12 @@ export class WorktreeManager {
 
   constructor(projectRoot: string) {
     this.git = simpleGit(projectRoot);
-    this.basePath = join(projectRoot, '.orchestra', 'worktrees');
+    this.basePath = join(projectRoot, '.crew', 'worktrees');
     mkdirSync(this.basePath, { recursive: true });
   }
 
   async createWorktree(taskId: string): Promise<string> {
-    const branchName = `orchestra/${taskId}`;
+    const branchName = `crew/${taskId}`;
     const worktreePath = join(this.basePath, taskId);
     if (existsSync(worktreePath)) {
       // Validate the worktree is healthy
@@ -48,7 +48,7 @@ export class WorktreeManager {
   }
 
   async mergeWorktree(taskId: string, targetBranch?: string): Promise<void> {
-    const branchName = `orchestra/${taskId}`;
+    const branchName = `crew/${taskId}`;
     const target = await this.resolveMergeTargetBranch(targetBranch);
 
     // First, commit any uncommitted changes in the worktree
@@ -57,14 +57,14 @@ export class WorktreeManager {
     const worktreeStatus = await worktreeGit.status();
     if (worktreeStatus.modified.length > 0 || worktreeStatus.created.length > 0 || worktreeStatus.not_added.length > 0) {
       await worktreeGit.add('.');
-      await worktreeGit.commit('orchestra: auto-commit before merge');
+      await worktreeGit.commit('crew: auto-commit before merge');
     }
 
     // Refuse to merge if the user's working directory has uncommitted changes
     const mainStatus = await this.git.status();
     if (mainStatus.modified.length > 0 || mainStatus.not_added.length > 0 || mainStatus.created.length > 0) {
       throw new Error(
-        `Cannot merge orchestra/${taskId}: working directory has uncommitted changes. ` +
+        `Cannot merge crew/${taskId}: working directory has uncommitted changes. ` +
         'Please commit or stash your changes first.'
       );
     }
@@ -73,7 +73,7 @@ export class WorktreeManager {
     if (currentBranch !== target) {
       await this.git.checkout(target);
     }
-    await this.git.merge([branchName, '--no-ff', '-m', `Merge orchestra/${taskId}`]);
+    await this.git.merge([branchName, '--no-ff', '-m', `Merge crew/${taskId}`]);
   }
 
   private async resolveMergeTargetBranch(targetBranch?: string): Promise<string> {
@@ -107,7 +107,7 @@ export class WorktreeManager {
 
   async cleanupWorktree(taskId: string): Promise<void> {
     const worktreePath = this.getWorktreePath(taskId);
-    const branchName = `orchestra/${taskId}`;
+    const branchName = `crew/${taskId}`;
     try {
       await this.git.raw(['worktree', 'remove', worktreePath, '--force']);
     } catch (err) {
@@ -125,7 +125,7 @@ export class WorktreeManager {
   async cleanupAll(): Promise<void> {
     const raw = await this.git.raw(['worktree', 'list', '--porcelain']);
     const worktreeBlocks = raw.split('\n\n')
-      .filter(block => block.includes('.orchestra/worktrees/'));
+      .filter(block => block.includes('.crew/worktrees/'));
 
     for (const block of worktreeBlocks) {
       const pathMatch = block.match(/worktree (.+)/);

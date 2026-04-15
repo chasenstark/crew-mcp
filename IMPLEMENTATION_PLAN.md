@@ -14,10 +14,10 @@ This document translates the findings in `ANALYSIS.md` into a corrected, priorit
 
 Target files:
 
-- `src/orchestrator/pipeline.ts`
+- `src/captain/pipeline.ts`
 - `src/utils/json-parse.ts`
 - `src/utils/validate.ts`
-- `test/orchestrator/pipeline.test.ts` (new)
+- `test/captain/pipeline.test.ts` (new)
 - `test/utils/json-parse.test.ts` (new)
 - `test/smoke.test.ts`
 
@@ -37,7 +37,7 @@ Reason:
 Target files:
 
 - `src/cli/commands/run.ts`
-- `src/orchestrator/pipeline.ts`
+- `src/captain/pipeline.ts`
 - `src/state/store.ts`
 - `src/state/types.ts`
 
@@ -52,7 +52,7 @@ Scope:
 Target files:
 
 - `src/cli/commands/resume.ts`
-- `src/orchestrator/pipeline.ts`
+- `src/captain/pipeline.ts`
 - `src/state/store.ts`
 
 Scope:
@@ -83,7 +83,7 @@ Note:
 
 Target files:
 
-- `src/orchestrator/pipeline.ts`
+- `src/captain/pipeline.ts`
 - `src/cli/commands/run.ts`
 - `src/cli/ui/App.tsx`
 - `src/adapters/codex.ts`

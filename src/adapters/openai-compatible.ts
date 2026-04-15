@@ -46,7 +46,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly name: string;
   readonly capabilities: AgentCapability[];
   readonly supportsJsonSchema = false;
-  readonly orchestratorCapabilities = {
+  readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
@@ -59,9 +59,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.name = options.name;
     this.defaultModel = options.model ?? ModelId.QWEN;
-    this.apiBase = (options.apiBase ?? process.env.ORCHESTRATOR_OPENAI_BASE_URL ?? 'http://127.0.0.1:11434/v1')
+    this.apiBase = (options.apiBase ?? process.env.CREW_OPENAI_BASE_URL ?? 'http://127.0.0.1:11434/v1')
       .replace(/\/+$/, '');
-    this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? process.env.ORCHESTRATOR_OPENAI_API_KEY;
+    this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? process.env.CREW_OPENAI_API_KEY;
     this.capabilities = options.capabilities ?? [
       'implement',
       'review',
@@ -149,7 +149,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     const providerSession = {
       provider: 'local' as const,
       transport: 'prefix-cached' as const,
-      toolNamespace: context?.toolNamespace ?? 'mcp__orchestrator__',
+      toolNamespace: context?.toolNamespace ?? 'mcp__crew__',
       toolSchemaHash: context?.toolSchemaHash ?? '',
       startedAt: context?.providerSession?.startedAt ?? new Date().toISOString(),
       lastTurnAt: new Date().toISOString(),

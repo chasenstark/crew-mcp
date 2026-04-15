@@ -7,14 +7,14 @@ import type { PassSummary } from '../../state/types.js';
  * Unlike other steps this returns free-form text, not validated JSON.
  */
 export async function report(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   summaries: PassSummary[],
   userRequest: string,
   model?: string,
 ): Promise<string> {
   const prompt = buildReportPrompt(summaries, userRequest);
 
-  const result = await orchestrator.execute({
+  const result = await captain.execute({
     prompt,
     context: {
       workingDirectory: process.cwd(),

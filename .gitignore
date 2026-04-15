@@ -5,14 +5,14 @@ dist/
 # Local-only planning notes
 docs/plans/
 
-# Orchestrator state (project-specific, not committed)
-.orchestra/
-.orchestra/worktrees/
-.orchestra/state.json
-.orchestra/passes/
-.orchestra/summaries/
-.orchestra/conversation.json
-.orchestra/logs
+# Captain state (project-specific, not committed)
+.crew/
+.crew/worktrees/
+.crew/state.json
+.crew/passes/
+.crew/summaries/
+.crew/conversation.json
+.crew/logs
 
 # Keep the workflow config
-!.orchestra/workflow.yaml
+!.crew/workflow.yaml

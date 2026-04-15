@@ -9,7 +9,7 @@ describe('initCommand', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `orchestrator-init-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = join(tmpdir(), `captain-init-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -23,7 +23,7 @@ describe('initCommand', () => {
 
     await initCommand({ project: true, cwd: projectDir });
 
-    const workflowFile = join(projectDir, '.orchestra', 'workflow.yaml');
+    const workflowFile = join(projectDir, '.crew', 'workflow.yaml');
     expect(existsSync(workflowFile)).toBe(true);
   });
 
@@ -34,21 +34,21 @@ describe('initCommand', () => {
     await initCommand({ project: true, cwd: projectDir });
 
     const { readFileSync } = await import('fs');
-    const workflowFile = join(projectDir, '.orchestra', 'workflow.yaml');
+    const workflowFile = join(projectDir, '.crew', 'workflow.yaml');
     const raw = readFileSync(workflowFile, 'utf-8');
     const parsed = parseWorkflowYaml(raw);
 
     expect(parsed.workflow.name).toBe('default');
     expect(parsed.workflow.steps.length).toBeGreaterThan(0);
     expect(parsed.workflow.steps[0]?.agent).toBe('codex');
-    expect(parsed.orchestrator.cli).toBe('claude-code');
+    expect(parsed.captain.cli).toBe('claude-code');
     expect(parsed.agents['claude-code']).toBeDefined();
     expect(parsed.errorHandling.default.onExhausted).toBe('ask_user');
   });
 
   it('does not overwrite existing config', async () => {
     const projectDir = join(tmpDir, 'existing');
-    const orchestraDir = join(projectDir, '.orchestra');
+    const orchestraDir = join(projectDir, '.crew');
     mkdirSync(orchestraDir, { recursive: true });
 
     const { writeFileSync, readFileSync } = await import('fs');

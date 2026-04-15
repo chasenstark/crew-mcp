@@ -33,7 +33,7 @@ describe('config-repository', () => {
   let cwd: string;
 
   beforeEach(() => {
-    tmpRoot = join(tmpdir(), `orchestrator-config-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpRoot = join(tmpdir(), `captain-config-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     cwd = join(tmpRoot, 'project');
     mkdirSync(cwd, { recursive: true });
     mockedHomedir.mockReturnValue(join(tmpRoot, 'home'));
@@ -47,8 +47,8 @@ describe('config-repository', () => {
   it('returns project/global/effective paths', () => {
     const paths = getConfigPaths(cwd);
     expect(paths.profile).toBe(DEFAULT_CONFIG_PROFILE);
-    expect(paths.project).toBe(join(cwd, '.orchestra', 'workflow.yaml'));
-    expect(paths.global).toBe(join(tmpRoot, 'home', '.orchestra', 'workflow.yaml'));
+    expect(paths.project).toBe(join(cwd, '.crew', 'workflow.yaml'));
+    expect(paths.global).toBe(join(tmpRoot, 'home', '.crew', 'workflow.yaml'));
     expect(paths.effective).toBeNull();
   });
 
@@ -62,7 +62,7 @@ describe('config-repository', () => {
     const loaded = loadConfigByScope('project', cwd);
     expect(loaded?.workflow.name).toBe('repo-test');
 
-    const dirEntries = readdirSync(join(cwd, '.orchestra'));
+    const dirEntries = readdirSync(join(cwd, '.crew'));
     expect(dirEntries.some((entry) => entry.startsWith('workflow.yaml.tmp-'))).toBe(false);
   });
 
@@ -81,18 +81,18 @@ describe('config-repository', () => {
   it('loads effective config by merging project over global', () => {
     const global = getDefaultConfig();
     global.workflow.name = 'global';
-    global.orchestrator.model = 'global-model';
+    global.captain.model = 'global-model';
     saveConfigByScope('global', cwd, global);
 
     const project = getDefaultConfig();
     project.workflow.name = 'project';
     project.errorHandling.default.retry = 3;
-    project.orchestrator.model = undefined;
+    project.captain.model = undefined;
     saveConfigByScope('project', cwd, project);
 
     const effective = loadEffectiveConfig(cwd);
     expect(effective.workflow.name).toBe('project');
-    expect(effective.orchestrator.model).toBe('global-model');
+    expect(effective.captain.model).toBe('global-model');
     expect(effective.errorHandling.default.retry).toBe(3);
   });
 
@@ -106,7 +106,7 @@ describe('config-repository', () => {
   });
 
   it('throws with path context on parse failures', () => {
-    const projectConfigDir = join(cwd, '.orchestra');
+    const projectConfigDir = join(cwd, '.crew');
     mkdirSync(projectConfigDir, { recursive: true });
     writeFileSync(join(projectConfigDir, 'workflow.yaml'), 'workflow:\n  steps: "bad"', 'utf-8');
 
@@ -116,7 +116,7 @@ describe('config-repository', () => {
   it('reads and writes active scope preference', () => {
     expect(readActiveScopePreference(cwd)).toBeNull();
     const scopeFile = saveActiveScopePreference(cwd, 'global');
-    expect(scopeFile).toBe(join(cwd, '.orchestra', 'config-scope'));
+    expect(scopeFile).toBe(join(cwd, '.crew', 'config-scope'));
     expect(readActiveScopePreference(cwd)).toBe('global');
   });
 
@@ -128,13 +128,13 @@ describe('config-repository', () => {
   });
 
   it('exposes global config path under homedir', () => {
-    expect(getGlobalConfigPath()).toBe(join(tmpRoot, 'home', '.orchestra', 'workflow.yaml'));
+    expect(getGlobalConfigPath()).toBe(join(tmpRoot, 'home', '.crew', 'workflow.yaml'));
   });
 
   it('exposes profile config paths under project and home directories', () => {
     expect(getProjectProfileConfigPath(cwd, 'claude-first'))
-      .toBe(join(cwd, '.orchestra', 'profiles', 'claude-first', 'workflow.yaml'));
+      .toBe(join(cwd, '.crew', 'profiles', 'claude-first', 'workflow.yaml'));
     expect(getGlobalProfileConfigPath('claude-first'))
-      .toBe(join(tmpRoot, 'home', '.orchestra', 'profiles', 'claude-first', 'workflow.yaml'));
+      .toBe(join(tmpRoot, 'home', '.crew', 'profiles', 'claude-first', 'workflow.yaml'));
   });
 });

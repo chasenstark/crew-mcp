@@ -307,9 +307,9 @@ export function removeAgent(
   if (!existing) {
     throw new Error(`Agent "${name}" does not exist.`);
   }
-  if (current.orchestrator.cli === name) {
+  if (current.captain.cli === name) {
     throw new Error(
-      `Cannot remove agent "${name}" because orchestrator.cli is set to it. Set orchestrator.cli first.`,
+      `Cannot remove agent "${name}" because captain.cli is set to it. Set captain.cli first.`,
     );
   }
   const referencedSteps = current.workflow.steps.filter((step) => step.agent === name);

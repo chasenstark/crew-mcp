@@ -17,13 +17,13 @@ export const ingestStepDefinition = {
 };
 
 export async function ingest(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   taskDescription: string,
   agentResult: TaskResult,
   model?: string,
 ): Promise<IngestOutput> {
   return runStructuredStep(
-    orchestrator,
+    captain,
     ingestStepDefinition,
     { taskDescription, agentResult },
     model,

@@ -58,7 +58,7 @@ describe('GeminiCliAdapter', () => {
       vi.fn(async () => ({ output: { ok: true } })),
       {
         signal: controller.signal,
-        toolNamespace: 'mcp__orchestrator__',
+        toolNamespace: 'mcp__crew__',
         toolSchemaHash: 'abc',
       },
     );

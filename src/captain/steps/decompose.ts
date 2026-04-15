@@ -19,14 +19,14 @@ export const decomposeStepDefinition = {
 };
 
 export async function decompose(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   userRequest: string,
   agents: { name: string; capabilities: string[] }[],
   workflow: WorkflowConfig,
   model?: string,
 ): Promise<DecomposeOutput> {
   return runStructuredStep(
-    orchestrator,
+    captain,
     decomposeStepDefinition,
     { userRequest, agents, workflow },
     model,

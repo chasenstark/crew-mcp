@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'process';
-import type { OrchestrationRunner } from '../../orchestrator/runner.js';
+import type { CrewRunner } from '../../captain/runner.js';
 
 export type AskUserPolicy = 'fail' | 'prompt';
 
@@ -13,7 +13,7 @@ export function normalizeAskUserPolicy(raw: string | undefined, fallback: AskUse
 }
 
 export function attachAskUserHandler(
-  runner: OrchestrationRunner,
+  runner: CrewRunner,
   options: {
     policy: AskUserPolicy;
     failPrefix: string;
@@ -29,7 +29,7 @@ export function attachAskUserHandler(
 
     const rl = createInterface({ input, output });
     try {
-      const response = await rl.question(`\n[orchestrator] ${question}\n> `);
+      const response = await rl.question(`\n[captain] ${question}\n> `);
       runner.provideUserInput(response);
     } finally {
       rl.close();

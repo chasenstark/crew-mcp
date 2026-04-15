@@ -35,15 +35,15 @@ export interface GenericAdapterOptions {
  *     given instructions in the prompt.
  *   - Tools that prepend prose, wrap JSON in markdown fences, or truncate
  *     output will fail validation and trigger retries.
- *   - For orchestrator steps (decompose/ingest/etc.), agents backed by a
+ *   - For captain steps (decompose/ingest/etc.), agents backed by a
  *     GenericAdapter are best used for non-structured work; prefer Codex or
- *     Claude Code for the orchestrator role itself.
+ *     Claude Code for the captain role itself.
  */
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;
   readonly capabilities: AgentCapability[];
   readonly supportsJsonSchema = false;
-  readonly orchestratorCapabilities = {
+  readonly captainCapabilities = {
     supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,

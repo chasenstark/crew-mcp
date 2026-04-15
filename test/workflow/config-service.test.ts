@@ -34,7 +34,7 @@ describe('config-service', () => {
   let cwd: string;
 
   beforeEach(() => {
-    tmpRoot = join(tmpdir(), `orchestrator-config-service-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpRoot = join(tmpdir(), `captain-config-service-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     cwd = join(tmpRoot, 'project');
     mkdirSync(cwd, { recursive: true });
     mockedHomedir.mockReturnValue(join(tmpRoot, 'home'));
@@ -123,8 +123,8 @@ describe('config-service', () => {
   });
 
   it('resolves model aliases when setting model paths', () => {
-    const orchestratorResult = setConfigValue(cwd, 'orchestrator.model', 'CLAUDE_OPUS');
-    expect(orchestratorResult.nextValue).toBe(ModelId.CLAUDE_OPUS);
+    const captainResult = setConfigValue(cwd, 'captain.model', 'CLAUDE_OPUS');
+    expect(captainResult.nextValue).toBe(ModelId.CLAUDE_OPUS);
 
     const roleResult = setConfigValue(cwd, 'workflow.roleModels.reviewer', '${GPT_CODEX}');
     expect(roleResult.nextValue).toBe(ModelId.GPT_CODEX);
@@ -134,7 +134,7 @@ describe('config-service', () => {
   });
 
   it('resolves agent and adapter aliases when setting config paths', () => {
-    const cliResult = setConfigValue(cwd, 'orchestrator.cli', '${CODEX}');
+    const cliResult = setConfigValue(cwd, 'captain.cli', '${CODEX}');
     expect(cliResult.nextValue).toBe(AgentId.CODEX);
 
     addAgent(cwd, 'local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
@@ -144,7 +144,7 @@ describe('config-service', () => {
 
   it('rejects unknown model aliases when setting model paths', () => {
     expect(() =>
-      setConfigValue(cwd, 'orchestrator.model', 'NOT_A_MODEL_ALIAS'),
+      setConfigValue(cwd, 'captain.model', 'NOT_A_MODEL_ALIAS'),
     ).toThrow(/Unknown model alias/);
   });
 
@@ -167,7 +167,7 @@ describe('config-service', () => {
   });
 
   it('supports cycling with "next" for model fields', () => {
-    const result = setConfigValue(cwd, 'orchestrator.model', 'next');
+    const result = setConfigValue(cwd, 'captain.model', 'next');
     expect(typeof result.nextValue).toBe('string');
     expect(result.nextValue).toBe(ModelId.CLAUDE_OPUS);
   });
@@ -257,8 +257,8 @@ describe('config-service', () => {
     expect(loadConfigByScope('project', cwd)?.agents['local-gemma']).toBeUndefined();
   });
 
-  it('prevents removing agent referenced by orchestrator.cli', () => {
-    expect(() => removeAgent(cwd, 'claude-code')).toThrow(/orchestrator\.cli/i);
+  it('prevents removing agent referenced by captain.cli', () => {
+    expect(() => removeAgent(cwd, 'claude-code')).toThrow(/captain\.cli/i);
   });
 
   it('rejects reviewer max passes when no review step exists', () => {
@@ -281,20 +281,20 @@ describe('config-service', () => {
   });
 
   it('shows effective config and paths', () => {
-    setConfigValue(cwd, 'orchestrator.cli', 'codex');
+    setConfigValue(cwd, 'captain.cli', 'codex');
     const shown = showConfig(cwd);
     expect(shown.activeScope).toBe('project');
     expect(shown.activeProfile).toBe('default');
-    expect(shown.effectiveConfig.orchestrator.cli).toBe('codex');
-    expect(shown.paths.project).toContain('.orchestra/workflow.yaml');
+    expect(shown.effectiveConfig.captain.cli).toBe('codex');
+    expect(shown.paths.project).toContain('.crew/workflow.yaml');
   });
 
   it('writes to explicit profile when provided', () => {
-    const result = setConfigValue(cwd, 'orchestrator.cli', 'codex', { profile: 'codex-first' });
+    const result = setConfigValue(cwd, 'captain.cli', 'codex', { profile: 'codex-first' });
     expect(result.profile).toBe('codex-first');
 
     const profileConfig = loadConfigByScope('project', cwd, { profile: 'codex-first' });
-    expect(profileConfig?.orchestrator.cli).toBe('codex');
+    expect(profileConfig?.captain.cli).toBe('codex');
 
     const defaultConfig = loadConfigByScope('project', cwd);
     expect(defaultConfig).toBeNull();
@@ -302,10 +302,10 @@ describe('config-service', () => {
 
   it('writes to active profile when no profile option is provided', () => {
     setConfigProfile(cwd, 'claude-first');
-    const result = setConfigValue(cwd, 'orchestrator.cli', 'codex');
+    const result = setConfigValue(cwd, 'captain.cli', 'codex');
     expect(result.profile).toBe('claude-first');
 
     const activeProfileConfig = loadConfigByScope('project', cwd, { profile: 'claude-first' });
-    expect(activeProfileConfig?.orchestrator.cli).toBe('codex');
+    expect(activeProfileConfig?.captain.cli).toBe('codex');
   });
 });

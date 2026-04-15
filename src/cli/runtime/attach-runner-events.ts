@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { formatStepComplete, formatStepStart } from '../step-status.js';
-import type { OrchestrationRunner } from '../../orchestrator/runner.js';
+import type { CrewRunner } from '../../captain/runner.js';
 
 interface RunnerEventStyle {
   agentStartSymbol: string;
@@ -10,7 +10,7 @@ interface RunnerEventStyle {
 }
 
 export function attachRunnerEvents(
-  runner: OrchestrationRunner,
+  runner: CrewRunner,
   style: RunnerEventStyle,
   onError: (error: Error) => void,
 ): void {

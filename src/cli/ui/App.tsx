@@ -4,7 +4,7 @@ import { ConversationView, type ChatMessage } from './ConversationView.js';
 import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
 import { handleConfigSlashCommand } from './config/command-handler.js';
-import type { OrchestrationRunner } from '../../orchestrator/runner.js';
+import type { CrewRunner } from '../../captain/runner.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
 function summarizeTask(description: string, taskId: string, maxLen = 60): string {
@@ -16,7 +16,7 @@ function summarizeTask(description: string, taskId: string, maxLen = 60): string
 }
 
 interface Props {
-  pipeline: OrchestrationRunner;
+  pipeline: CrewRunner;
   initialPrompt?: string;
 }
 
@@ -211,8 +211,8 @@ export function App({ pipeline, initialPrompt }: Props) {
   return (
     <Box flexDirection="column" minHeight={10}>
       <Box borderStyle="round" borderColor="blue" paddingX={1} marginBottom={1}>
-        <Text bold color="blue"> orchestrator </Text>
-        <Text dimColor> {'\u2014'} agent orchestration through conversation</Text>
+        <Text bold color="blue"> captain </Text>
+        <Text dimColor> {'\u2014'} multi-agent coding crew through conversation</Text>
       </Box>
 
       <ConversationView messages={messages} />

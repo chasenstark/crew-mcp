@@ -56,7 +56,7 @@ export const OPENAI_COMPATIBLE_MODEL_PRESETS: readonly ModelId[] = [
   ModelId.QWEN_MINI,
 ];
 
-export const ORCHESTRATOR_MODEL_PRESETS: readonly ModelId[] = [
+export const CAPTAIN_MODEL_PRESETS: readonly ModelId[] = [
   ModelId.CLAUDE_SONNET,
   ModelId.CLAUDE_OPUS,
   ModelId.GPT,

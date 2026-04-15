@@ -1,0 +1,86 @@
+{
+  "status": "success",
+  "summary": "The agent performed a comprehensive read-only analysis of the interactive config wizard codebase, producing a detailed extension point document covering the wizard entry point, prompt structure, config storage/schema, and repository function inventory. No files were modified — the output is purely a documentation/planning artifact with line-level references, function signatures, and a 10-step refactor plan for adding create/edit/delete/clone profile flows.",
+  "filesModified": [],
+  "decisions": [
+    "Recommended keeping profile management interactive flows in the CLI command layer rather than slash command handlers, due to the synchronous string-return architecture of command-handler.ts making interactive prompts infeasible",
+    "Proposed extracting wizard field definitions into a declarative WizardFieldDefinition[] data structure (Step 1) before adding profile support, to avoid duplicating prompt logic across profile flows",
+    "Decided that listProfiles() should scan both project-scoped (.orchestra/profiles/) and global-scoped (~/.orchestra/profiles/) directories and return scope-annotated results",
+    "Proposed adding readdirSync and unlinkSync to fs imports in config-repository.ts (currently missing) as prerequisites for listProfiles and deleteProfile",
+    "Recommended using atomicWrite (temp-file + rename) as the canonical write pattern for all new profile functions, consistent with saveConfigByScope",
+    "Determined that the default profile ('default') maps to the root workflow.yaml rather than profiles/default/workflow.yaml — this asymmetry is a critical invariant that new functions must respect",
+    "Proposed a 3-parameter extension to configWizardCommand options ({ cwd?, profile?, initialConfig? }) to support both create and edit profile flows without duplicating wizard logic",
+    "Recommended non-interactive slash command subcommands (profiles, clone-profile, delete-profile) with interactive create-profile redirecting to CLI, consistent with existing /config edit behavior",
+    "Flagged that command-parser.ts was NOT examined and must be reviewed before implementing new slash command kinds",
+    "Decided deleteProfile should reset the active profile preference to 'default' if the deleted profile was the currently active one"
+  ],
+  "concerns": [
+    {
+      "severity": "warning",
+      "description": "command-parser.ts was explicitly not examined during this analysis pass. New slash command kinds (profiles, create-profile, delete-profile, clone-profile) require parser additions, but the parser grammar and extension pattern are unknown — this is a gap in the extension point document."
+    },
+    {
+      "severity": "warning",
+      "description": "The agent notes a TOCTOU race in cloneProfile: it reads source config then writes target with no lock, meaning a concurrent write to the source between read and write could produce a stale clone. The agent dismisses this as acceptable for a CLI tool but does not formally document it as a known limitation."
+    },
+    {
+      "severity": "warning",
+      "description": "Unresolved question #4 flags a naming inconsistency: profiles use 'workflow.yaml' as the filename, which predates a config refactor. Any new tooling that assumes this filename is correct today could become incorrect if the filename is ever normalized. No decision was made."
+    },
+    {
+      "severity": "info",
+      "description": "The analysis confirms Zod is not used in the config layer — only the hand-rolled ConfigDiagnostic system exists. New profile functions that add validation will need to follow the same pattern or explicitly introduce Zod, which would be a style inconsistency."
+    },
+    {
+      "severity": "info",
+      "description": "The agent did not verify that the line numbers cited (e.g., L444–682 in config.ts, L112–123 in config-repository.ts) are current — they may drift if the codebase has been modified since the analysis. All implementation work should re-verify line numbers before use."
+    },
+    {
+      "severity": "info",
+      "description": "The refactor plan's Step 1 (extract WizardFieldDefinition[]) is a prerequisite for Steps 2–4 and could introduce regressions in the existing wizard if not done carefully. No test strategy is described for validating behavioral equivalence after extraction."
+    },
+    {
+      "severity": "info",
+      "description": "Unresolved question #2 (what happens to active profile preference when the active profile config file is deleted) is partially answered in Section 5d but marked as a decision point — the behavior of readActiveProfilePreference returning a name that points to a nonexistent file could cause silent fallback behavior that surprises users."
+    }
+  ],
+  "needsHumanAttention": true,
+  "humanAttentionReason": "Seven unresolved design questions require explicit decisions before implementation can begin, most critically: (1) command-parser.ts was not analyzed, blocking slash command implementation; (2) whether profile listing should show both project and global scopes or only active scope; (3) whether deleteProfile should auto-reset the active profile preference; and (4) whether createProfile should require the full wizard or support --from-defaults/--clone flags. These are business logic decisions that cannot be inferred from the codebase alone.",
+  "reviewFindings": [
+    {
+      "severity": "major",
+      "description": "command-parser.ts was not examined during the analysis pass. The extension point document is incomplete for slash command integration — parser grammar, token types, and extension pattern are undocumented.",
+      "file": "src/cli/ui/config/command-parser.ts",
+      "actionable": true
+    },
+    {
+      "severity": "major",
+      "description": "activeProfile is captured as a const at line 451 and never re-prompted. The Step 3 refactor (change const to let and add options.profile parameter) is a required prerequisite for both create and edit profile flows — without it, the wizard always edits the currently active profile.",
+      "file": "src/cli/commands/config.ts",
+      "actionable": true
+    },
+    {
+      "severity": "minor",
+      "description": "readdirSync and unlinkSync are not currently imported in config-repository.ts. Both are needed for listProfiles() and deleteProfile() respectively — the fs import at line 1 must be updated as part of those additions.",
+      "file": "src/workflow/config-repository.ts",
+      "actionable": true
+    },
+    {
+      "severity": "minor",
+      "description": "The DEFAULT_CONFIG_PROFILE ('default') maps to the root workflow.yaml, not profiles/default/workflow.yaml. Any new listProfiles() implementation must special-case this to avoid returning a path that doesn't exist for the default profile.",
+      "file": "src/workflow/config-repository.ts",
+      "actionable": true
+    },
+    {
+      "severity": "suggestion",
+      "description": "The /config edit slash command handler (lines 83–88) returns a static redirect string. If profile management non-interactive commands are added to the slash handler (profiles, clone-profile, delete-profile), the handler signature must remain synchronous — consider documenting this constraint explicitly in the handler file.",
+      "file": "src/cli/ui/config/command-handler.ts",
+      "actionable": false
+    },
+    {
+      "severity": "suggestion",
+      "description": "No test strategy is described for validating behavioral equivalence after the Step 1 wizard field extraction refactor. Given the wizard has 10+ prompt steps with conditional logic (agents loop, reviewer step guard), a regression test or snapshot approach should be defined before refactoring.",
+      "actionable": true
+    }
+  ]
+}

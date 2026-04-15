@@ -3,14 +3,14 @@ import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createRunner } from '../../../src/cli/runtime/create-runner.js';
-import { Pipeline } from '../../../src/orchestrator/pipeline.js';
-import { JudgmentRunner } from '../../../src/orchestrator/judgment-runner.js';
+import { Pipeline } from '../../../src/captain/pipeline.js';
+import { JudgmentRunner } from '../../../src/captain/judgment-runner.js';
 
 describe('createRunner', () => {
   let projectRoot: string;
 
   beforeEach(() => {
-    projectRoot = join(tmpdir(), `orchestrator-create-runner-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    projectRoot = join(tmpdir(), `captain-create-runner-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(projectRoot, { recursive: true });
   });
 

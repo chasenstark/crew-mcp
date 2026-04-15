@@ -471,30 +471,30 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     }
   }
 
-  const orchestratorCliValue = await askFieldValue({
-    label: 'orchestrator.cli',
-    currentValue: draft.orchestrator.cli,
-    defaultValue: defaults.orchestrator.cli,
-    description: 'Which configured adapter should run orchestration decisions.',
-    options: getConfigValueOptions(draft, 'orchestrator.cli'),
+  const captainCliValue = await askFieldValue({
+    label: 'captain.cli',
+    currentValue: draft.captain.cli,
+    defaultValue: defaults.captain.cli,
+    description: 'Which configured adapter acts as the captain.',
+    options: getConfigValueOptions(draft, 'captain.cli'),
   });
-  if (orchestratorCliValue) {
-    const before = draft.orchestrator.cli;
-    draft = applyConfigPatch(draft, { path: 'orchestrator.cli', value: orchestratorCliValue });
-    changes.push({ path: 'orchestrator.cli', before, after: draft.orchestrator.cli });
+  if (captainCliValue) {
+    const before = draft.captain.cli;
+    draft = applyConfigPatch(draft, { path: 'captain.cli', value: captainCliValue });
+    changes.push({ path: 'captain.cli', before, after: draft.captain.cli });
   }
 
-  const orchestratorModelValue = await askFieldValue({
-    label: 'orchestrator.model',
-    currentValue: draft.orchestrator.model,
-    defaultValue: defaults.orchestrator.model,
-    description: 'Model used by the orchestrator adapter.',
-    options: getConfigValueOptions(draft, 'orchestrator.model'),
+  const captainModelValue = await askFieldValue({
+    label: 'captain.model',
+    currentValue: draft.captain.model,
+    defaultValue: defaults.captain.model,
+    description: 'Model used by the captain adapter.',
+    options: getConfigValueOptions(draft, 'captain.model'),
   });
-  if (orchestratorModelValue) {
-    const before = draft.orchestrator.model;
-    draft = applyConfigPatch(draft, { path: 'orchestrator.model', value: orchestratorModelValue });
-    changes.push({ path: 'orchestrator.model', before, after: draft.orchestrator.model });
+  if (captainModelValue) {
+    const before = draft.captain.model;
+    draft = applyConfigPatch(draft, { path: 'captain.model', value: captainModelValue });
+    changes.push({ path: 'captain.model', before, after: draft.captain.model });
   }
 
   const executionModeValue = await askFieldValue({
@@ -702,7 +702,7 @@ async function runWithExitCode(action: () => Promise<void>): Promise<void> {
 export function registerConfigCommand(program: Command): void {
   const command = program
     .command('config')
-    .description('Inspect and update orchestrator configuration');
+    .description('Inspect and update captain configuration');
 
   command.action(() => runWithExitCode(() => configWizardCommand()));
 
@@ -769,7 +769,7 @@ export function registerConfigCommand(program: Command): void {
   command
     .command('profile')
     .description('Show or set active config profile')
-    .argument('[profile]', 'Profile name (for example: claude-orchestrator)')
+    .argument('[profile]', 'Profile name (for example: claude-captain)')
     .action((profile: string | undefined) =>
       runWithExitCode(() => configProfileCommand(profile)),
     );

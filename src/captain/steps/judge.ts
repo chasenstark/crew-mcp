@@ -21,7 +21,7 @@ export const judgeStepDefinition = {
 };
 
 export async function judge(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   ingestResult: z.infer<typeof IngestOutputSchema>,
   previousSummaries: PassSummary[],
   currentPass: number,
@@ -29,7 +29,7 @@ export async function judge(
   model?: string,
 ): Promise<JudgeOutput> {
   return runStructuredStep(
-    orchestrator,
+    captain,
     judgeStepDefinition,
     { ingestResult, previousSummaries, currentPass, maxPasses },
     model,

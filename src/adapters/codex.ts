@@ -192,7 +192,7 @@ export class CodexAdapter implements AgentAdapter {
     'analyze',
   ];
   readonly supportsJsonSchema = true;
-  readonly orchestratorCapabilities = {
+  readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
@@ -528,7 +528,7 @@ export class CodexAdapter implements AgentAdapter {
         provider: 'codex',
         transport: 'adapter',
         cliVersion: await this.getCliVersionTag(),
-        toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+        toolNamespace: context.toolNamespace ?? 'mcp__crew__',
         toolSchemaHash: context.toolSchemaHash ?? '',
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
@@ -576,7 +576,7 @@ export class CodexAdapter implements AgentAdapter {
       sessionId: context.providerSession?.sessionId,
       threadId: context.providerSession?.threadId,
       cliVersion,
-      toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+      toolNamespace: context.toolNamespace ?? 'mcp__crew__',
       toolSchemaHash: context.toolSchemaHash ?? '',
       startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
       lastTurnAt: new Date().toISOString(),
@@ -759,7 +759,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private buildPerRunConfigFlags(): string[] {
-    const configPath = process.env.ORCHESTRATOR_CODEX_CONFIG?.trim();
+    const configPath = process.env.CREW_CODEX_CONFIG?.trim();
     if (!configPath) return [];
     return ['--config', configPath];
   }

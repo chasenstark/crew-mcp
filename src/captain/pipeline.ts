@@ -14,16 +14,16 @@ import {
   type DecomposeOutput,
   type IngestOutput,
 } from './steps/index.js';
-import type { OrchestrationRunner, ResumeParams } from './runner.js';
+import type { CrewRunner, ResumeParams } from './runner.js';
 import { RunnerBase } from './runner-base.js';
 import {
   buildFallbackReport as buildWorkflowFallbackReport,
   createRunId as createWorkflowRunId,
   getMaxPasses,
-  resolveOrchestratorModel,
+  resolveCaptainModel,
   resolveTaskModel,
   resolveTaskWorkingDirectory,
-  type OrchestratorStage,
+  type CaptainStage,
 } from './task-execution-core.js';
 
 // ---------------------------------------------------------------------------
@@ -54,33 +54,33 @@ export interface AgentRegistry {
 // Pipeline
 // ---------------------------------------------------------------------------
 
-export class Pipeline extends RunnerBase implements OrchestrationRunner {
-  private orchestrator: AgentAdapter;
+export class Pipeline extends RunnerBase implements CrewRunner {
+  private captain: AgentAdapter;
   private registry: AgentRegistry;
   private workflow: WorkflowConfig;
   private state: StateStore;
   private worktreeManager: WorktreeManager;
-  private orchestratorModel?: string;
+  private captainModel?: string;
   private agentModels: Record<string, string | undefined>;
   private globalPassCounter = 0;
   constructor(
-    orchestratorAdapter: AgentAdapter,
+    captainAdapter: AgentAdapter,
     registry: AgentRegistry,
     workflow: WorkflowConfig,
     state: StateStore,
     worktreeManager: WorktreeManager,
     options?: {
-      orchestratorModel?: string;
+      captainModel?: string;
       agentModels?: Record<string, string | undefined>;
     },
   ) {
     super(state);
-    this.orchestrator = orchestratorAdapter;
+    this.captain = captainAdapter;
     this.registry = registry;
     this.workflow = workflow;
     this.state = state;
     this.worktreeManager = worktreeManager;
-    this.orchestratorModel = options?.orchestratorModel;
+    this.captainModel = options?.captainModel;
     this.agentModels = options?.agentModels ?? {};
   }
 
@@ -88,12 +88,12 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
     return resolveTaskModel(this.workflow, this.agentModels, task);
   }
 
-  private resolveOrchestratorModel(stage: OrchestratorStage): string | undefined {
-    return resolveOrchestratorModel(this.workflow, this.orchestratorModel, stage);
+  private resolveCaptainModel(stage: CaptainStage): string | undefined {
+    return resolveCaptainModel(this.workflow, this.captainModel, stage);
   }
 
   /**
-   * Execute the full orchestration pipeline for a user request.
+   * Execute the full captain pipeline for a user request.
    *
    * Flow: DECOMPOSE -> for each task (DISPATCH -> agent -> INGEST -> SUMMARIZE -> JUDGE) -> REPORT
    */
@@ -111,11 +111,11 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
     let decomposition: DecomposeOutput;
     try {
       decomposition = await decompose(
-        this.orchestrator,
+        this.captain,
         userRequest,
         agents,
         this.workflow,
-        this.resolveOrchestratorModel('decompose'),
+        this.resolveCaptainModel('decompose'),
       );
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -324,10 +324,10 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
       let finalReport: string;
       try {
         finalReport = await report(
-          this.orchestrator,
+          this.captain,
           summaries,
           userRequest,
-          this.resolveOrchestratorModel('report'),
+          this.resolveCaptainModel('report'),
         );
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -391,11 +391,11 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
       this.emit('step:start', 'dispatch', { taskId: task.id, taskDescription: task.description, pass: currentPass });
 
       const dispatchResult = await dispatch(
-        this.orchestrator,
+        this.captain,
         { description: task.description, role: task.role },
         localSummaries,
         currentPass,
-        this.resolveOrchestratorModel('dispatch'),
+        this.resolveCaptainModel('dispatch'),
       );
 
       this.emit('step:complete', 'dispatch', { taskId: task.id, taskDescription: task.description, pass: currentPass });
@@ -453,10 +453,10 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
       this.emit('step:start', 'ingest', { taskId: task.id, taskDescription: task.description });
 
       latestIngest = await ingest(
-        this.orchestrator,
+        this.captain,
         task.description,
         agentResult,
-        this.resolveOrchestratorModel('ingest'),
+        this.resolveCaptainModel('ingest'),
       );
 
       this.emit('step:complete', 'ingest', {
@@ -493,10 +493,10 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
       this.emit('step:start', 'summarize', { taskId: task.id, taskDescription: task.description });
 
       latestSummary = await summarize(
-        this.orchestrator,
+        this.captain,
         latestIngest,
         globalPass,
-        this.resolveOrchestratorModel('summarize'),
+        this.resolveCaptainModel('summarize'),
       );
 
       this.emit('step:complete', 'summarize', {
@@ -512,12 +512,12 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
       this.emit('step:start', 'judge', { taskId: task.id, taskDescription: task.description });
 
       const judgment = await judge(
-        this.orchestrator,
+        this.captain,
         latestIngest,
         localSummaries,
         currentPass,
         maxPasses,
-        this.resolveOrchestratorModel('judge'),
+        this.resolveCaptainModel('judge'),
       );
 
       this.emit('step:complete', 'judge', {
@@ -543,7 +543,7 @@ export class Pipeline extends RunnerBase implements OrchestrationRunner {
 
       if (judgment.decision === 'ask_user') {
         const userResponse = await this.requestUserInput(
-          judgment.questionForUser ?? 'The orchestrator needs your input.',
+          judgment.questionForUser ?? 'The captain needs your input.',
         );
         // Feed user response into the next dispatch as additional context
         localSummaries.push({

@@ -47,9 +47,9 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
       completion: override.workflow.completion ?? base.workflow.completion,
     },
     agents: mergedAgents,
-    orchestrator: {
-      cli: override.orchestrator?.cli ?? base.orchestrator.cli,
-      model: override.orchestrator?.model ?? base.orchestrator.model,
+    captain: {
+      cli: override.captain?.cli ?? base.captain.cli,
+      model: override.captain?.model ?? base.captain.model,
     },
     errorHandling: {
       default: {
@@ -130,7 +130,7 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     return acc;
   }, {});
 
-  const rawOrchestrator = asObject(parsed.orchestrator);
+  const rawCaptain = asObject(parsed.captain);
 
   const toWorkflowStep = (rawStep: unknown): WorkflowConfig['steps'][number] => {
     const step = asObject(rawStep);
@@ -165,12 +165,12 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
       },
     },
     agents: parsedAgents,
-    orchestrator: {
-      cli: typeof rawOrchestrator.cli === 'string'
-        ? resolveAgentAlias(rawOrchestrator.cli)
+    captain: {
+      cli: typeof rawCaptain.cli === 'string'
+        ? resolveAgentAlias(rawCaptain.cli)
         : AgentId.CLAUDE_CODE,
-      model: typeof rawOrchestrator.model === 'string'
-        ? resolveModelAliasOrThrow(rawOrchestrator.model, 'orchestrator.model')
+      model: typeof rawCaptain.model === 'string'
+        ? resolveModelAliasOrThrow(rawCaptain.model, 'captain.model')
         : undefined,
     },
     errorHandling: {
@@ -226,9 +226,9 @@ export function serializeWorkflowYaml(config: FullConfig): string {
         }),
       ]),
     ),
-    orchestrator: omitUndefined({
-      cli: config.orchestrator.cli,
-      model: config.orchestrator.model,
+    captain: omitUndefined({
+      cli: config.captain.cli,
+      model: config.captain.model,
     }),
     error_handling: {
       default: {

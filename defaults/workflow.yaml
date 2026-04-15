@@ -1,5 +1,5 @@
-# Default workflow configuration for the orchestrator.
-# Copy to .orchestra/workflow.yaml and customize.
+# Default workflow configuration for the captain.
+# Copy to .crew/workflow.yaml and customize.
 
 workflow:
   name: default
@@ -16,7 +16,7 @@ workflow:
       max_passes: 3
 
     - role: judge
-      agent: ORCHESTRATOR
+      agent: CAPTAIN
       action: evaluate_review
       criteria:
         - "Are the review findings actionable?"
@@ -55,7 +55,7 @@ agents:
       - React
       - security
 
-orchestrator:
+captain:
   cli: CLAUDE_CODE
   model: CLAUDE_SONNET
 

@@ -7,8 +7,8 @@ import { registerConfigCommand } from './cli/commands/config.js';
 import { setLogLevel } from './utils/logger.js';
 
 program
-  .name('orchestrator')
-  .description('Provider-agnostic agent orchestration through conversation')
+  .name('crew')
+  .description('Provider-agnostic multi-agent coding crew through conversation')
   .version('0.1.0')
   .option('--debug', 'Enable debug logging');
 
@@ -26,8 +26,8 @@ program
 
 program
   .command('init')
-  .description('Initialize orchestrator config (global by default)')
-  .option('--project', 'Write config to .orchestra/ in the current project instead of globally')
+  .description('Initialize crew config (global by default)')
+  .option('--project', 'Write config to .crew/ in the current project instead of globally')
   .action(async (opts: { project?: boolean }) => {
     if (program.opts<{ debug?: boolean }>().debug) {
       setLogLevel('debug');

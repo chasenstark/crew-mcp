@@ -37,10 +37,10 @@ describe('Workflow Loader', () => {
     expect(config.workflow.steps[1].maxPasses).toBe(3);
     expect(config.agents['claude-code']).toBeDefined();
     expect(config.agents['codex']).toBeDefined();
-    expect(config.orchestrator.cli).toBe('claude-code');
+    expect(config.captain.cli).toBe('claude-code');
   });
 
-  it('parses optional model fields for agents and orchestrator', () => {
+  it('parses optional model fields for agents and captain', () => {
     const yaml = `
 workflow:
   name: model-config
@@ -48,13 +48,13 @@ workflow:
 agents:
   claude-code:
     model: ${ModelId.CLAUDE_SONNET}
-orchestrator:
+captain:
   cli: claude-code
   model: ${ModelId.CLAUDE_OPUS}
 `;
     const config = parseWorkflowYaml(yaml);
     expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
-    expect(config.orchestrator.model).toBe(ModelId.CLAUDE_OPUS);
+    expect(config.captain.model).toBe(ModelId.CLAUDE_OPUS);
     expect(config.workflow.execution?.mode).toBe('linear');
   });
 
@@ -69,14 +69,14 @@ workflow:
 agents:
   claude-code:
     model: CLAUDE_SONNET
-orchestrator:
+captain:
   cli: claude-code
   model: "\${GPT_CODEX}"
 `;
 
     const config = parseWorkflowYaml(yaml);
     expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
-    expect(config.orchestrator.model).toBe(ModelId.GPT_CODEX);
+    expect(config.captain.model).toBe(ModelId.GPT_CODEX);
     expect(config.workflow.roleModels).toEqual({
       reviewer: ModelId.GPT,
       fix_review_issues: ModelId.CLAUDE_OPUS,
@@ -114,7 +114,7 @@ agents:
   local:
     adapter: "\${GENERIC}"
     command: ollama
-orchestrator:
+captain:
   cli: "\${CLAUDE_CODE}"
 `;
 
@@ -123,7 +123,7 @@ orchestrator:
     expect(config.agents[AgentId.CLAUDE_CODE]?.adapter).toBe(AdapterId.CLAUDE_CODE);
     expect(config.agents[AgentId.CODEX]?.adapter).toBe(AdapterId.CODEX);
     expect(config.agents.local?.adapter).toBe(AdapterId.GENERIC);
-    expect(config.orchestrator.cli).toBe(AgentId.CLAUDE_CODE);
+    expect(config.captain.cli).toBe(AgentId.CLAUDE_CODE);
   });
 
   it('throws for unknown adapter aliases in YAML', () => {
@@ -146,7 +146,7 @@ workflow:
   execution:
     mode: judgment
   steps: []
-orchestrator:
+captain:
   cli: claude-code
 `;
     const config = parseWorkflowYaml(yaml);
@@ -161,7 +161,7 @@ workflow:
     reviewer: ${ModelId.GPT}
     fix_review_issues: ${ModelId.CLAUDE_OPUS}
   steps: []
-orchestrator:
+captain:
   cli: claude-code
 `;
     const config = parseWorkflowYaml(yaml);
@@ -182,7 +182,7 @@ agents:
     command: my-tool
     args: ["--prompt", "{{prompt}}"]
     capabilities: [analyze, review]
-orchestrator:
+captain:
   cli: claude-code
 `;
     const config = parseWorkflowYaml(yaml);
@@ -263,18 +263,18 @@ describe('mergeConfigs', () => {
     expect(merged.agents['claude-code'].strengths).toEqual(baseConfig.agents['claude-code'].strengths);
   });
 
-  it('override orchestrator can set model while preserving cli', () => {
+  it('override captain can set model while preserving cli', () => {
     const override = parseWorkflowYaml(`
 workflow:
   name: override
   steps: []
-orchestrator:
+captain:
   model: ${ModelId.CLAUDE_SONNET}
 `);
 
     const merged = mergeConfigs(baseConfig, override);
-    expect(merged.orchestrator.model).toBe(ModelId.CLAUDE_SONNET);
-    expect(merged.orchestrator.cli).toBe(baseConfig.orchestrator.cli);
+    expect(merged.captain.model).toBe(ModelId.CLAUDE_SONNET);
+    expect(merged.captain.cli).toBe(baseConfig.captain.cli);
   });
 
   it('merges workflow role models with override priority', () => {
@@ -361,7 +361,7 @@ orchestrator:
 describe('getGlobalConfigPath', () => {
   it('returns path under home directory', () => {
     const path = getGlobalConfigPath();
-    expect(path).toContain('.orchestra');
+    expect(path).toContain('.crew');
     expect(path).toMatch(/workflow\.yaml$/);
   });
 });
@@ -371,9 +371,9 @@ describe('loadWorkflowConfig', () => {
   const mockedHomedir = vi.mocked(homedir);
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `orchestrator-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpDir = join(tmpdir(), `captain-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpDir, { recursive: true });
-    // Point homedir to a clean temp dir so real ~/.orchestra doesn't interfere
+    // Point homedir to a clean temp dir so real ~/.crew doesn't interfere
     mockedHomedir.mockReturnValue(join(tmpDir, 'fake-home'));
   });
 
@@ -384,7 +384,7 @@ describe('loadWorkflowConfig', () => {
 
   it('uses project config when present', () => {
     const projectDir = join(tmpDir, 'project');
-    const orchestraDir = join(projectDir, '.orchestra');
+    const orchestraDir = join(projectDir, '.crew');
     mkdirSync(orchestraDir, { recursive: true });
     writeFileSync(join(orchestraDir, 'workflow.yaml'), `
 workflow:
@@ -401,7 +401,7 @@ workflow:
 
   it('uses global config when no project config exists', () => {
     const fakeHome = join(tmpDir, 'fake-home');
-    const globalDir = join(fakeHome, '.orchestra');
+    const globalDir = join(fakeHome, '.crew');
     mkdirSync(globalDir, { recursive: true });
     writeFileSync(join(globalDir, 'workflow.yaml'), `
 workflow:
@@ -422,7 +422,7 @@ workflow:
   it('merges project config over global config', () => {
     // Set up global config with agents
     const fakeHome = join(tmpDir, 'fake-home');
-    const globalDir = join(fakeHome, '.orchestra');
+    const globalDir = join(fakeHome, '.crew');
     mkdirSync(globalDir, { recursive: true });
     writeFileSync(join(globalDir, 'workflow.yaml'), `
 workflow:
@@ -446,7 +446,7 @@ agents:
 
     // Set up project config that overrides workflow but not agents
     const projectDir = join(tmpDir, 'merge-project');
-    const projectOrchDir = join(projectDir, '.orchestra');
+    const projectOrchDir = join(projectDir, '.crew');
     mkdirSync(projectOrchDir, { recursive: true });
     writeFileSync(join(projectOrchDir, 'workflow.yaml'), `
 workflow:
@@ -478,7 +478,7 @@ workflow:
 
   it('throws with path context on YAML parse error', () => {
     const projectDir = join(tmpDir, 'bad-yaml');
-    const orchestraDir = join(projectDir, '.orchestra');
+    const orchestraDir = join(projectDir, '.crew');
     mkdirSync(orchestraDir, { recursive: true });
     writeFileSync(join(orchestraDir, 'workflow.yaml'), `
 workflow:
@@ -486,7 +486,7 @@ workflow:
 `, 'utf-8');
 
     expect(() => loadWorkflowConfig(projectDir)).toThrow(
-      /Failed to parse.*\.orchestra\/workflow\.yaml/,
+      /Failed to parse.*\.crew\/workflow\.yaml/,
     );
   });
 });

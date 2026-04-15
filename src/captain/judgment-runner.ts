@@ -19,7 +19,7 @@ import { StateStore } from '../state/store.js';
 import { WorktreeManager } from '../git/worktree.js';
 import { logger } from '../utils/logger.js';
 import { executeWithValidation } from '../utils/validate.js';
-import { OrchestratorActionServer } from './action-server.js';
+import { CaptainActionServer } from './action-server.js';
 import type { ProviderSession } from '../provider-session.js';
 import { isCliVersionCompatible } from '../provider-session.js';
 import { AdapterId } from '../workflow/agents.js';
@@ -37,16 +37,16 @@ import type { DispatchOutput } from './steps/dispatch.js';
 import type { SummarizeOutput } from './steps/summarize.js';
 import type { JudgeOutput } from './steps/judge.js';
 import type { AgentRegistry, PipelineEvents } from './pipeline.js';
-import type { OrchestrationRunner, ResumeParams } from './runner.js';
+import type { CrewRunner, ResumeParams } from './runner.js';
 import { RunnerBase } from './runner-base.js';
 import {
   buildFallbackReport as buildWorkflowFallbackReport,
   createRunId as createWorkflowRunId,
   getMaxPasses,
-  resolveOrchestratorModel,
+  resolveCaptainModel,
   resolveTaskModel,
   resolveTaskWorkingDirectory,
-  type OrchestratorStage,
+  type CaptainStage,
 } from './task-execution-core.js';
 
 const ControllerActionNameSchema = z.enum([
@@ -158,37 +158,37 @@ const DEFAULT_GUARDRAILS: Guardrails = {
   maxDeterministicFallbacks: 6,
 };
 
-export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
-  private orchestrator: AgentAdapter;
+export class JudgmentRunner extends RunnerBase implements CrewRunner {
+  private captain: AgentAdapter;
   private registry: AgentRegistry;
   private workflow: WorkflowConfig;
   private state: StateStore;
   private worktreeManager: WorktreeManager;
-  private orchestratorModel?: string;
+  private captainModel?: string;
   private agentModels: Record<string, string | undefined>;
   private actions: ActionDefinitions;
-  private actionServer: OrchestratorActionServer;
+  private actionServer: CaptainActionServer;
   private guardrails: Guardrails;
 
   constructor(
-    orchestratorAdapter: AgentAdapter,
+    captainAdapter: AgentAdapter,
     registry: AgentRegistry,
     workflow: WorkflowConfig,
     state: StateStore,
     worktreeManager: WorktreeManager,
     options?: {
-      orchestratorModel?: string;
+      captainModel?: string;
       agentModels?: Record<string, string | undefined>;
       guardrails?: Partial<Guardrails>;
     },
   ) {
     super(state);
-    this.orchestrator = orchestratorAdapter;
+    this.captain = captainAdapter;
     this.registry = registry;
     this.workflow = workflow;
     this.state = state;
     this.worktreeManager = worktreeManager;
-    this.orchestratorModel = options?.orchestratorModel;
+    this.captainModel = options?.captainModel;
     this.agentModels = options?.agentModels ?? {};
     this.guardrails = {
       ...DEFAULT_GUARDRAILS,
@@ -255,8 +255,8 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
 
     try {
       const supportsAdapterToolLoop = Boolean(
-        this.orchestrator.orchestratorCapabilities?.supportsToolLoop
-        && this.orchestrator.executeWithTools
+        this.captain.captainCapabilities?.supportsToolLoop
+        && this.captain.executeWithTools
       );
 
       let interrupted = false;
@@ -380,11 +380,11 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
   }
 
   private async executeNativeToolLoop(runtime: RuntimeState): Promise<boolean> {
-    if (!this.orchestrator.executeWithTools) {
+    if (!this.captain.executeWithTools) {
       throw new Error('Adapter does not implement executeWithTools.');
     }
     const supportsPauseForUserInput = Boolean(
-      this.orchestrator.orchestratorCapabilities?.supportsPauseForUserInput,
+      this.captain.captainCapabilities?.supportsPauseForUserInput,
     );
 
     const tools = this.actionServer.listTools();
@@ -392,7 +392,7 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
       ? runtime.toolCallTranscript.map((message) => ({ ...message }))
       : this.buildNativeStartMessages(runtime);
 
-    const result = await this.orchestrator.executeWithTools(
+    const result = await this.captain.executeWithTools(
       tools,
       startMessages,
       async (call) => {
@@ -499,10 +499,10 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
   ): Promise<ProviderSession | undefined> {
     if (!savedSession) return undefined;
 
-    const expectedProvider = this.resolveProviderNameForAdapter(this.orchestrator.name);
+    const expectedProvider = this.resolveProviderNameForAdapter(this.captain.name);
     if (savedSession.provider !== expectedProvider) {
       logger.warn(
-        `Dropping provider session from ${savedSession.provider}; active adapter is ${this.orchestrator.name}.`,
+        `Dropping provider session from ${savedSession.provider}; active adapter is ${this.captain.name}.`,
       );
       return undefined;
     }
@@ -516,14 +516,14 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
       return undefined;
     }
 
-    if (!this.orchestrator.getCliVersionTag) {
+    if (!this.captain.getCliVersionTag) {
       logger.warn('Dropping provider session because adapter cannot validate CLI compatibility.');
       return undefined;
     }
 
     let detectedCliVersion: string | undefined;
     try {
-      detectedCliVersion = await this.orchestrator.getCliVersionTag();
+      detectedCliVersion = await this.captain.getCliVersionTag();
     } catch (error: unknown) {
       logger.warn('Dropping provider session because CLI version detection failed.', {
         error: error instanceof Error ? error.message : String(error),
@@ -635,8 +635,8 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
     return resolveTaskModel(this.workflow, this.agentModels, task);
   }
 
-  private resolveOrchestratorModel(stage: OrchestratorStage): string | undefined {
-    return resolveOrchestratorModel(this.workflow, this.orchestratorModel, stage);
+  private resolveCaptainModel(stage: CaptainStage): string | undefined {
+    return resolveCaptainModel(this.workflow, this.captainModel, stage);
   }
 
   private buildActionRegistry(): ActionDefinitions {
@@ -648,11 +648,11 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
         handler: async (_input, runtime) => {
           this.emit('step:start', 'decompose', { userRequest: runtime.userRequest });
           const decomposition = await decompose(
-            this.orchestrator,
+            this.captain,
             runtime.userRequest,
             this.registry.list(),
             this.workflow,
-            this.resolveOrchestratorModel('decompose'),
+            this.resolveCaptainModel('decompose'),
           );
           this.applyDecomposition(runtime, decomposition, false);
           this.emit('step:complete', 'decompose', {
@@ -689,11 +689,11 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
             pass,
           });
           const dispatchResult = await dispatch(
-            this.orchestrator,
+            this.captain,
             { description: task.description, role: task.role },
             runtime.summaries,
             pass,
-            this.resolveOrchestratorModel('dispatch'),
+            this.resolveCaptainModel('dispatch'),
           );
           this.ensureTaskArtifacts(runtime, task.id).dispatch = dispatchResult;
           this.emit('step:complete', 'dispatch', {
@@ -791,10 +791,10 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
             taskDescription: task.description,
           });
           const ingestResult = await ingest(
-            this.orchestrator,
+            this.captain,
             task.description,
             artifacts.agentResult,
-            this.resolveOrchestratorModel('ingest'),
+            this.resolveCaptainModel('ingest'),
           );
           runtime.globalPassCounter++;
           runtime.taskPassNumbers[task.id] = runtime.globalPassCounter;
@@ -830,10 +830,10 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
             taskDescription: task.description,
           });
           const summary = await summarize(
-            this.orchestrator,
+            this.captain,
             ingestResult,
             passNumber,
-            this.resolveOrchestratorModel('summarize'),
+            this.resolveCaptainModel('summarize'),
           );
           artifacts.summary = summary;
           runtime.summaries.push(summary);
@@ -875,12 +875,12 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
             taskDescription: task.description,
           });
           const judgment = await judge(
-            this.orchestrator,
+            this.captain,
             ingestResult,
             runtime.summaries,
             currentPass,
             maxPasses,
-            this.resolveOrchestratorModel('judge'),
+            this.resolveCaptainModel('judge'),
           );
           artifacts.judge = judgment;
           if (judgment.decision === 'done') {
@@ -945,11 +945,11 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
             this.renderReplanContext(runtime, input.reason),
           ].join('\n');
           const decomposition = await decompose(
-            this.orchestrator,
+            this.captain,
             replanPrompt,
             this.registry.list(),
             this.workflow,
-            this.resolveOrchestratorModel('decompose'),
+            this.resolveCaptainModel('decompose'),
           );
           this.applyDecomposition(runtime, decomposition, true);
           return decomposition;
@@ -964,10 +964,10 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
           let finalReport: string;
           try {
             finalReport = await report(
-              this.orchestrator,
+              this.captain,
               runtime.summaries,
               runtime.userRequest,
-              this.resolveOrchestratorModel('report'),
+              this.resolveCaptainModel('report'),
             );
           } catch (error: unknown) {
             runtime.hadErrors = true;
@@ -986,8 +986,8 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
     };
   }
 
-  private buildActionServer(): OrchestratorActionServer {
-    return new OrchestratorActionServer(
+  private buildActionServer(): CaptainActionServer {
+    return new CaptainActionServer(
       Object.values(this.actions).map((action) => ({
         name: action.name,
         description: action.description,
@@ -1016,7 +1016,7 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
       {
         role: 'system',
         content: [
-          'You are the judgment-mode orchestration controller.',
+          'You are the judgment-mode captain.',
           'Call tools one at a time to progress workflow execution.',
           'Do not finish until finalize_report has succeeded.',
           'Available tools:',
@@ -1129,10 +1129,10 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
     const prompt = this.buildControllerPrompt(runtime);
     try {
       return await executeWithValidation(
-        this.orchestrator,
+        this.captain,
         prompt,
         ControllerDecisionSchema,
-        { model: this.orchestratorModel },
+        { model: this.captainModel },
       );
     } catch (error: unknown) {
       runtime.hadErrors = true;
@@ -1188,7 +1188,7 @@ export class JudgmentRunner extends RunnerBase implements OrchestrationRunner {
       ? runtime.pendingQueue.join(', ')
       : '(empty)';
 
-    return `You are the orchestrator controller for a coding workflow.
+    return `You are the captain controller for a coding workflow.
 
 You must choose exactly one next action for this turn.
 

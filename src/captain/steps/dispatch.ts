@@ -20,14 +20,14 @@ export const dispatchStepDefinition = {
 };
 
 export async function dispatch(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   task: { description: string; role: string },
   previousSummaries: PassSummary[],
   passNumber: number,
   model?: string,
 ): Promise<DispatchOutput> {
   return runStructuredStep(
-    orchestrator,
+    captain,
     dispatchStepDefinition,
     {
       taskDescription: task.description,

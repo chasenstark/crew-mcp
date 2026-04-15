@@ -21,7 +21,7 @@ export async function runCommand(
     const onAskUser = normalizeAskUserPolicy(options.onAskUser, 'fail');
     let sawPipelineError = false;
 
-    console.log(chalk.blue('\n  orchestrator') + chalk.dim(' — starting workflow\n'));
+    console.log(chalk.blue('\n  captain') + chalk.dim(' — starting workflow\n'));
     console.log(chalk.dim(`  log: ${logFile}\n`));
 
     attachRunnerEvents(

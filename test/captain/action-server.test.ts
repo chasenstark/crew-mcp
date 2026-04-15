@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { OrchestratorActionServer } from '../../src/orchestrator/action-server.js';
+import { CaptainActionServer } from '../../src/captain/action-server.js';
 
-describe('OrchestratorActionServer', () => {
+describe('CaptainActionServer', () => {
   it('namespaces tools and resolves namespaced calls', () => {
-    const server = new OrchestratorActionServer([
+    const server = new CaptainActionServer([
       {
         name: 'run_decompose',
         description: 'Decompose request',
@@ -14,7 +14,7 @@ describe('OrchestratorActionServer', () => {
 
     const tools = server.listTools();
     expect(tools).toHaveLength(1);
-    expect(tools[0].name).toBe('mcp__orchestrator__run_decompose');
+    expect(tools[0].name).toBe('mcp__crew__run_decompose');
 
     const resolved = server.resolveToolCall({
       name: tools[0].name,
@@ -24,7 +24,7 @@ describe('OrchestratorActionServer', () => {
   });
 
   it('produces stable schema hashes for equivalent tool catalogs', () => {
-    const first = new OrchestratorActionServer([
+    const first = new CaptainActionServer([
       {
         name: 'run_dispatch',
         description: 'Dispatch task',
@@ -34,7 +34,7 @@ describe('OrchestratorActionServer', () => {
       },
     ]);
 
-    const second = new OrchestratorActionServer([
+    const second = new CaptainActionServer([
       {
         name: 'run_dispatch',
         description: 'Dispatch task',

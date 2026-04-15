@@ -21,31 +21,31 @@ export interface ConfigPaths {
 }
 
 export function getProjectConfigPath(cwd: string): string {
-  return join(cwd, '.orchestra', 'workflow.yaml');
+  return join(cwd, '.crew', 'workflow.yaml');
 }
 
 export function getGlobalConfigPath(): string {
-  return join(homedir(), '.orchestra', 'workflow.yaml');
+  return join(homedir(), '.crew', 'workflow.yaml');
 }
 
 export function getProjectProfileConfigPath(cwd: string, profile: string): string {
   const normalized = normalizeProfileName(profile);
   if (normalized === DEFAULT_CONFIG_PROFILE) return getProjectConfigPath(cwd);
-  return join(cwd, '.orchestra', 'profiles', normalized, 'workflow.yaml');
+  return join(cwd, '.crew', 'profiles', normalized, 'workflow.yaml');
 }
 
 export function getGlobalProfileConfigPath(profile: string): string {
   const normalized = normalizeProfileName(profile);
   if (normalized === DEFAULT_CONFIG_PROFILE) return getGlobalConfigPath();
-  return join(homedir(), '.orchestra', 'profiles', normalized, 'workflow.yaml');
+  return join(homedir(), '.crew', 'profiles', normalized, 'workflow.yaml');
 }
 
 export function getScopePreferencePath(cwd: string): string {
-  return join(cwd, '.orchestra', 'config-scope');
+  return join(cwd, '.crew', 'config-scope');
 }
 
 export function getProfilePreferencePath(cwd: string): string {
-  return join(cwd, '.orchestra', 'config-profile');
+  return join(cwd, '.crew', 'config-profile');
 }
 
 export function getConfigPaths(cwd: string, options: { profile?: string } = {}): ConfigPaths {

@@ -8,8 +8,8 @@ import {
 describe('config path registry', () => {
   it('exposes the supported set paths list', () => {
     expect(SUPPORTED_CONFIG_SET_PATHS).toEqual([
-      'orchestrator.cli',
-      'orchestrator.model',
+      'captain.cli',
+      'captain.model',
       'workflow.execution.mode',
       'workflow.roleModels.<role>',
       'agents.<name>.adapter',

@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { enableFileLogging, logger, setLogLevel } from '../../src/utils/logger.js';
 
 describe('logger file logging', () => {
-  it('writes log lines to .orchestra/logs run file', () => {
+  it('writes log lines to .crew/logs run file', () => {
     const projectRoot = mkdtempSync(join(tmpdir(), 'orchestra-logger-test-'));
 
     try {
@@ -14,7 +14,7 @@ describe('logger file logging', () => {
       logger.info('logger integration test message', { key: 'value' });
 
       const contents = readFileSync(logFile, 'utf-8');
-      expect(logFile).toContain('.orchestra/logs/run-');
+      expect(logFile).toContain('.crew/logs/run-');
       expect(contents).toContain('INFO');
       expect(contents).toContain('logger integration test message');
       expect(contents).toContain('"key": "value"');

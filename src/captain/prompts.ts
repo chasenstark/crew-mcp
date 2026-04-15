@@ -26,7 +26,7 @@ export function buildDecomposePrompt(
   agents: { name: string; capabilities: string[] }[],
   workflow: WorkflowConfig,
 ): string {
-  return `You are a task decomposition engine for a multi-agent orchestration system.
+  return `You are a task decomposition engine for a multi-agent coding crew.
 
 Your job is to break down a user's request into discrete, well-scoped tasks that can be assigned to individual agents.
 
@@ -230,7 +230,7 @@ export function buildReportPrompt(
 ): string {
   const context = formatSummaries(summaries);
 
-  return `You are a report generator. Your job is to produce a clear, human-readable summary of everything that happened during the orchestration workflow.
+  return `You are a report generator. Your job is to produce a clear, human-readable summary of everything that happened during the workflow.
 
 ## Original User Request
 ${userRequest}

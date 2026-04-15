@@ -14,7 +14,7 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 const MAX_LOG_ARG_LENGTH = 4_000;
 
 function resolveInitialLogLevel(): LogLevel {
-  const envLevel = process.env.ORCHESTRATOR_LOG_LEVEL?.toLowerCase();
+  const envLevel = process.env.CREW_LOG_LEVEL?.toLowerCase();
   if (envLevel === 'debug' || envLevel === 'info' || envLevel === 'warn' || envLevel === 'error') {
     return envLevel;
   }
@@ -109,7 +109,7 @@ function log(level: LogLevel, colorizedLevel: string, message: string, args: unk
 }
 
 export function enableFileLogging(projectRoot: string): string {
-  const logsDir = join(projectRoot, '.orchestra', 'logs');
+  const logsDir = join(projectRoot, '.crew', 'logs');
   mkdirSync(logsDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(logsDir, `run-${timestamp}.log`);

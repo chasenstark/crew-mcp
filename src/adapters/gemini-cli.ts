@@ -75,7 +75,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     'analyze',
   ];
   readonly supportsJsonSchema = true;
-  readonly orchestratorCapabilities = {
+  readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
@@ -162,7 +162,7 @@ export class GeminiCliAdapter implements AgentAdapter {
         provider: 'gemini',
         transport: 'adapter',
         cliVersion: await this.getCliVersionTag(),
-        toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+        toolNamespace: context.toolNamespace ?? 'mcp__crew__',
         toolSchemaHash: context.toolSchemaHash ?? '',
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
@@ -215,7 +215,7 @@ export class GeminiCliAdapter implements AgentAdapter {
       transport: 'stateful-resume' as const,
       sessionId: context.providerSession?.sessionId,
       cliVersion,
-      toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+      toolNamespace: context.toolNamespace ?? 'mcp__crew__',
       toolSchemaHash: context.toolSchemaHash ?? '',
       startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
       lastTurnAt: new Date().toISOString(),

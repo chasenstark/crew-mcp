@@ -8,13 +8,13 @@ export interface StructuredStepDefinition<TInput, TOutputSchema extends z.ZodTyp
 }
 
 export async function runStructuredStep<TInput, TOutputSchema extends z.ZodType>(
-  orchestrator: AgentAdapter,
+  captain: AgentAdapter,
   definition: StructuredStepDefinition<TInput, TOutputSchema>,
   input: TInput,
   model?: string,
 ): Promise<z.infer<TOutputSchema>> {
   return executeWithValidation(
-    orchestrator,
+    captain,
     definition.buildPrompt(input),
     definition.schema,
     { model },

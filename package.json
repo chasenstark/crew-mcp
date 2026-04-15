@@ -1,10 +1,10 @@
 {
-  "name": "orchestrator",
+  "name": "crew",
   "version": "0.1.0",
-  "description": "Provider-agnostic agent orchestration through conversation",
+  "description": "Provider-agnostic multi-agent coding crew through conversation",
   "type": "module",
   "bin": {
-    "orchestrator": "./dist/index.js"
+    "crew": "./dist/index.js"
   },
   "scripts": {
     "build": "tsup",
@@ -24,7 +24,7 @@
   "keywords": [
     "ai",
     "agent",
-    "orchestrator",
+    "crew",
     "claude",
     "codex",
     "multi-agent",

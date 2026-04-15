@@ -1,16 +1,16 @@
-# orchestrator
+# crew
 
-A CLI tool that lets you talk to one AI agent that manages others. You describe what you want built — the orchestrator decomposes the work, dispatches it to coding agents (Claude Code, Codex, or any CLI-based agent), reviews the output, iterates, and reports back.
+A CLI tool that lets you talk to one AI agent that manages others. You describe what you want built — the captain decomposes the work, dispatches it to coding agents (Claude Code, Codex, or any CLI-based agent), reviews the output, iterates, and reports back.
 
 No API keys required. Uses CLI subscription auth for everything.
 
 ```
 User: "Build a DatePicker component. Claude builds, Codex reviews."
 
-  → Orchestrator decomposes into tasks
+  → Captain decomposes into tasks
   → Claude Code implements the component (in an isolated git worktree)
   → Codex reviews the code
-  → Orchestrator evaluates findings
+  → Captain evaluates findings
   → Claude Code fixes issues
   → Codex re-reviews → clean
   → "Done. 2 passes, all issues resolved. Want a PR?"
@@ -18,7 +18,7 @@ User: "Build a DatePicker component. Claude builds, Codex reviews."
 
 ## How It Works
 
-The orchestrator runs a **6-step pipeline** for each workflow cycle:
+The captain runs a **6-step pipeline** for each workflow cycle:
 
 | Step | Purpose |
 |------|---------|
@@ -29,7 +29,7 @@ The orchestrator runs a **6-step pipeline** for each workflow cycle:
 | **Judge** | Decide: done, iterate, or ask the user |
 | **Report** | Summarize results in natural language |
 
-Each agent works in its own **git worktree** — full repo access, zero interference. The orchestrator uses **Zod schemas** with native JSON schema enforcement for structured LLM output at every step.
+Each agent works in its own **git worktree** — full repo access, zero interference. The captain uses **Zod schemas** with native JSON schema enforcement for structured LLM output at every step.
 
 ## Architecture Notes
 
@@ -50,7 +50,7 @@ Each agent works in its own **git worktree** — full repo access, zero interfer
 
 ```bash
 # Clone and install
-git clone <repo-url> && cd orchestrator
+git clone <repo-url> && cd crew
 npm install
 
 # Build
@@ -64,57 +64,57 @@ npm link
 
 ```bash
 # 1. Check which agents are available
-orchestrator status
+crew status
 
 # 2. Select project-local config scope (recommended)
 cd /path/to/your/project
-orchestrator config scope project
+crew config scope project
 
 # 3. (Optional) choose a named profile
-orchestrator config profile claude-orchestrator
+crew config profile claude-captain
 
 # 4. Configure via interactive wizard (or use config set commands)
-orchestrator config
+crew config
 
 # 4. Run a workflow
-orchestrator run "Build a DatePicker component with tests"
+crew run "Build a DatePicker component with tests"
 
 # Or enter interactive mode
-orchestrator run
+crew run
 ```
 
 ## Commands
 
-### `orchestrator run [prompt]`
+### `crew run [prompt]`
 
 Start a workflow. With a prompt, runs non-interactively and prints progress to the terminal. Without a prompt, opens an interactive conversation UI.
 
 ```bash
 # Non-interactive
-orchestrator run "Add email validation to the signup form"
+crew run "Add email validation to the signup form"
 
 # Interactive mode
-orchestrator run
+crew run
 
 # Non-interactive input policy when the workflow needs clarification
-orchestrator run "Add email validation to the signup form" --on-ask-user prompt
+crew run "Add email validation to the signup form" --on-ask-user prompt
 
 # Verbose debugging logs
-orchestrator --debug run "Add email validation to the signup form"
+crew --debug run "Add email validation to the signup form"
 ```
 
-Each run writes a log file to `.orchestra/logs/run-<timestamp>.log`.
-Use `--debug` (or `ORCHESTRATOR_LOG_LEVEL=debug`) to include detailed adapter/process diagnostics.
+Each run writes a log file to `.crew/logs/run-<timestamp>.log`.
+Use `--debug` (or `CREW_LOG_LEVEL=debug`) to include detailed adapter/process diagnostics.
 
-### `orchestrator init [--project]`
+### `crew init [--project]`
 
 Creates `workflow.yaml` with the default workflow configuration.
 
-- Default: global config at `~/.orchestra/workflow.yaml`
-- With `--project`: project config at `./.orchestra/workflow.yaml`
-- Compatibility command. Preferred setup/edit flow is `orchestrator config`.
+- Default: global config at `~/.crew/workflow.yaml`
+- With `--project`: project config at `./.crew/workflow.yaml`
+- Compatibility command. Preferred setup/edit flow is `crew config`.
 
-### `orchestrator config`
+### `crew config`
 
 Interactive and command-based configuration management.
 The wizard is keyboard-driven: use `↑` / `↓` to highlight options and press `Enter` to select.
@@ -123,47 +123,47 @@ If your workflow has no review step, reviewer-pass settings are skipped automati
 
 ```bash
 # Interactive wizard
-orchestrator config
+crew config
 
 # Show effective config + active scope
-orchestrator config show
+crew config show
 
 # Set values
-orchestrator config set orchestrator.cli codex
-orchestrator config set orchestrator.model claude-sonnet-4-6
-orchestrator config set orchestrator.model next
-orchestrator config set workflow.execution.mode judgment
-orchestrator config set workflow.roleModels.reviewer gpt-5.4
-orchestrator config set workflow.roleModels.fix_review_issues claude-opus-4-6
-orchestrator config set workflow.roleModels.reviewer next
-orchestrator config set agents.codex.adapter codex
-orchestrator config set agents.codex.model gpt-5.4
-orchestrator config set agents.codex.model prev
-orchestrator config set agents.local-gemma.command ollama
-orchestrator config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
-orchestrator config set agents.local-gemma.capabilities implement,review
-orchestrator config set workflow.reviewer.maxPasses 3
-orchestrator config set errorHandling.default.retry 1
+crew config set captain.cli codex
+crew config set captain.model claude-sonnet-4-6
+crew config set captain.model next
+crew config set workflow.execution.mode judgment
+crew config set workflow.roleModels.reviewer gpt-5.4
+crew config set workflow.roleModels.fix_review_issues claude-opus-4-6
+crew config set workflow.roleModels.reviewer next
+crew config set agents.codex.adapter codex
+crew config set agents.codex.model gpt-5.4
+crew config set agents.codex.model prev
+crew config set agents.local-gemma.command ollama
+crew config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
+crew config set agents.local-gemma.capabilities implement,review
+crew config set workflow.reviewer.maxPasses 3
+crew config set errorHandling.default.retry 1
 
 # Add/remove agents
-orchestrator config add-agent local-gemma --adapter generic --command ollama --args run,gemma4:latest,{{prompt}} --capabilities implement,review
-orchestrator config remove-agent local-gemma
+crew config add-agent local-gemma --adapter generic --command ollama --args run,gemma4:latest,{{prompt}} --capabilities implement,review
+crew config remove-agent local-gemma
 
 # Scope management
-orchestrator config scope
-orchestrator config scope project
-orchestrator config scope global
+crew config scope
+crew config scope project
+crew config scope global
 
 # Profile management
-orchestrator config profile
-orchestrator config profile claude-orchestrator
-orchestrator config profile codex-orchestrator
+crew config profile
+crew config profile claude-captain
+crew config profile codex-captain
 
 # Reset a scope to defaults
-orchestrator config reset --scope project
+crew config reset --scope project
 ```
 
-In interactive `orchestrator run` mode, `/config` slash commands are also available:
+In interactive `crew run` mode, `/config` slash commands are also available:
 
 ```text
 /config
@@ -171,18 +171,18 @@ In interactive `orchestrator run` mode, `/config` slash commands are also availa
 /config scope
 /config scope project
 /config profile
-/config profile codex-orchestrator
+/config profile codex-captain
 /config add-agent local-gemma generic ollama
 /config set agents.local-gemma.args run,gemma4:latest,{{prompt}}
 /config set agents.local-gemma.capabilities implement,review
-/config set orchestrator.cli codex
+/config set captain.cli codex
 /config set workflow.execution.mode judgment
 /config set workflow.roleModels.reviewer gpt-5.4
 /config remove-agent local-gemma
 /config reset
 ```
 
-### `orchestrator status`
+### `crew status`
 
 Health-checks all registered agents and shows which are installed and authenticated.
 
@@ -191,29 +191,29 @@ Health-checks all registered agents and shows which are installed and authentica
   ✗ codex: not installed
 ```
 
-### `orchestrator resume`
+### `crew resume`
 
-Resumes an interrupted workflow from `.orchestra/state.json`.
+Resumes an interrupted workflow from `.crew/state.json`.
 
 ```bash
 # Resume and fail if user input is required
-orchestrator resume
+crew resume
 
 # Resume and prompt in terminal if user input is required
-orchestrator resume --on-ask-user prompt
+crew resume --on-ask-user prompt
 ```
 
 ## Configuration
 
-Primary path: use `orchestrator config` and `/config` commands.
+Primary path: use `crew config` and `/config` commands.
 
-Profiles let you keep separate config variants (for example, `claude-orchestrator` and `codex-orchestrator`) and switch between them quickly.
+Profiles let you keep separate config variants (for example, `claude-captain` and `codex-captain`) and switch between them quickly.
 Profile files are stored under:
-- Project scope: `.orchestra/profiles/<profile>/workflow.yaml`
-- Global scope: `~/.orchestra/profiles/<profile>/workflow.yaml`
-- Default profile (when no named profile is set) continues using `.orchestra/workflow.yaml` and `~/.orchestra/workflow.yaml`.
+- Project scope: `.crew/profiles/<profile>/workflow.yaml`
+- Global scope: `~/.crew/profiles/<profile>/workflow.yaml`
+- Default profile (when no named profile is set) continues using `.crew/workflow.yaml` and `~/.crew/workflow.yaml`.
 
-Advanced/legacy path: edit `.orchestra/workflow.yaml` manually if needed:
+Advanced/legacy path: edit `.crew/workflow.yaml` manually if needed:
 
 ```yaml
 workflow:
@@ -248,7 +248,7 @@ agents:
     model: gpt-5.3-codex
     strengths: [implementation, review, testing, Python, TypeScript, React, security]
 
-orchestrator:
+captain:
   cli: claude-code
   model: claude-sonnet-4-6
 
@@ -262,7 +262,7 @@ Model selection precedence:
 1. `workflow.role_models.<task role>`.
 2. If a task role matches a workflow step `action`, then `workflow.role_models.<step role>`.
 3. `agents.<agent>.model`.
-4. For orchestrator judge decisions, `workflow.role_models.judge` overrides `orchestrator.model`.
+4. For captain judge decisions, `workflow.role_models.judge` overrides `captain.model`.
 
 ### Custom Agents
 
@@ -280,19 +280,19 @@ agents:
 Example for a local Gemma model via `ollama`:
 
 ```bash
-orchestrator config add-agent local-gemma --adapter generic --command ollama --args run,gemma4:latest,{{prompt}} --capabilities implement,review
-orchestrator config set orchestrator.cli local-gemma
+crew config add-agent local-gemma --adapter generic --command ollama --args run,gemma4:latest,{{prompt}} --capabilities implement,review
+crew config set captain.cli local-gemma
 ```
 
 **Structured output caveat.** The `generic` adapter does not natively enforce
 JSON schemas (generic CLIs have no universal mechanism for this). When an
-orchestrator step requires structured output, the framework falls back to
+captain step requires structured output, the framework falls back to
 prompted JSON: the schema is appended to the prompt, stdout is parsed, and
 validated with Zod — retrying once with validation errors if the first
 attempt is malformed. Reliability depends on the underlying tool's ability
 to follow JSON instructions precisely; tools that wrap output in markdown
 fences, prepend prose, or truncate will retry until the retry budget is
-exhausted. For the orchestrator role itself, prefer `codex` or
+exhausted. For the captain role itself, prefer `codex` or
 `claude-code`, which support native JSON-schema enforcement.
 
 ## Project Structure
@@ -300,13 +300,13 @@ exhausted. For the orchestrator role itself, prefer `codex` or
 ```
 src/
 ├── adapters/          # CLI agent adapters (Claude, Codex, generic)
-├── orchestrator/      # 6-step pipeline, schemas, prompts
+├── captain/      # 6-step pipeline, schemas, prompts
 │   └── steps/         # Individual pipeline steps
 ├── cli/
 │   ├── commands/      # run, init, resume, status
 │   └── ui/            # Ink/React terminal components
 ├── git/               # Worktree isolation and merge
-├── state/             # File-based persistence (.orchestra/)
+├── state/             # File-based persistence (.crew/)
 ├── workflow/          # YAML config loading
 └── utils/             # JSON parsing, validation, logging
 ```
@@ -334,8 +334,8 @@ npm run build
 
 - **Adapters** wrap CLI tools behind a common `AgentAdapter` interface — `execute()`, `executeWithSchema()`, `healthCheck()`
 - **Pipeline** orchestrates the 6-step cycle with an `EventEmitter` for UI updates
-- **Worktrees** give each agent an isolated git branch/directory under `.orchestra/worktrees/`
-- **State** persists to `.orchestra/` as JSON files — active workflow state in `state.json` and run-scoped artifacts under `.orchestra/runs/<runId>/`
+- **Worktrees** give each agent an isolated git branch/directory under `.crew/worktrees/`
+- **State** persists to `.crew/` as JSON files — active workflow state in `state.json` and run-scoped artifacts under `.crew/runs/<runId>/`
 - **Context management** is tiered: full output for the current pass, structured summaries for previous passes, compressed one-liners for older passes
 
 ## License

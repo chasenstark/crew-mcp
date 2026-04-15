@@ -73,10 +73,10 @@ describe('CodexAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
-    it('advertises native tool-loop support for orchestrator mode', () => {
-      expect(adapter.orchestratorCapabilities?.supportsToolLoop).toBe(true);
-      expect(adapter.orchestratorCapabilities?.supportsStructuredDecisions).toBe(true);
-      expect(adapter.orchestratorCapabilities?.supportsPauseForUserInput).toBe(true);
+    it('advertises native tool-loop support for captain mode', () => {
+      expect(adapter.captainCapabilities?.supportsToolLoop).toBe(true);
+      expect(adapter.captainCapabilities?.supportsStructuredDecisions).toBe(true);
+      expect(adapter.captainCapabilities?.supportsPauseForUserInput).toBe(true);
     });
 
     it('has expected capabilities', () => {
@@ -201,7 +201,7 @@ describe('CodexAdapter', () => {
         vi.fn(async () => ({ output: { ok: true } })),
         {
           signal: controller.signal,
-          toolNamespace: 'mcp__orchestrator__',
+          toolNamespace: 'mcp__crew__',
           toolSchemaHash: 'abc',
         },
       );

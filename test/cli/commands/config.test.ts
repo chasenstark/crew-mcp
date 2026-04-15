@@ -29,7 +29,7 @@ describe('config command handlers', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    tmpRoot = join(tmpdir(), `orchestrator-config-command-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    tmpRoot = join(tmpdir(), `captain-config-command-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     cwd = join(tmpRoot, 'project');
     mkdirSync(cwd, { recursive: true });
     mockedHomedir.mockReturnValue(join(tmpRoot, 'home'));
@@ -58,9 +58,9 @@ describe('config command handlers', () => {
   });
 
   it('supports next/prev cycling via set command', async () => {
-    await configSetCommand('orchestrator.model', 'next', { cwd });
+    await configSetCommand('captain.model', 'next', { cwd });
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.orchestrator.model).toBe(ModelId.CLAUDE_OPUS);
+    expect(projectConfig?.captain.model).toBe(ModelId.CLAUDE_OPUS);
   });
 
   it('sets active profile', async () => {
@@ -70,9 +70,9 @@ describe('config command handlers', () => {
   });
 
   it('writes config to selected profile', async () => {
-    await configSetCommand('orchestrator.cli', 'codex', { cwd, profile: 'codex-first' });
+    await configSetCommand('captain.cli', 'codex', { cwd, profile: 'codex-first' });
     const profileConfig = loadConfigByScope('project', cwd, { profile: 'codex-first' });
-    expect(profileConfig?.orchestrator.cli).toBe('codex');
+    expect(profileConfig?.captain.cli).toBe('codex');
   });
 
   it('sets role model overrides via set command', async () => {
@@ -97,7 +97,7 @@ describe('config command handlers', () => {
   });
 
   it('throws for invalid scope option', async () => {
-    await expect(configSetCommand('orchestrator.cli', 'codex', { cwd, scope: 'invalid' }))
+    await expect(configSetCommand('captain.cli', 'codex', { cwd, scope: 'invalid' }))
       .rejects
       .toThrow(/Invalid scope/);
   });

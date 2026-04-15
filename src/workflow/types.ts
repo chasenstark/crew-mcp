@@ -37,7 +37,7 @@ export interface WorkflowConfig {
 export interface FullConfig {
   workflow: WorkflowConfig;
   agents: Record<string, AgentConfig>;
-  orchestrator: {
+  captain: {
     cli: string;
     model?: string;
   };

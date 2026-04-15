@@ -3,11 +3,11 @@
 ## Project Structure & Module Organization
 - `src/` contains production TypeScript code.
 - `src/cli/` holds terminal entrypoints and Ink UI (`commands/` and `ui/`).
-- `src/orchestrator/` contains pipeline logic and step implementations (`steps/`).
+- `src/captain/` contains pipeline logic and step implementations (`steps/`).
 - `src/adapters/` contains agent integrations (Claude Code, Codex, generic).
 - `src/workflow/` handles config types/loading/defaults.
 - `src/state/` stores workflow persistence logic; `src/git/` manages worktrees.
-- `test/` mirrors runtime modules (`test/workflow`, `test/cli`, `test/orchestrator`, etc.).
+- `test/` mirrors runtime modules (`test/workflow`, `test/cli`, `test/captain`, etc.).
 - `defaults/workflow.yaml` is the default config template used at init.
 
 ## Build, Test, and Development Commands
@@ -16,8 +16,8 @@
 - `npm test` — run Vitest in watch mode.
 - `npm run test:run` — one-shot test run (CI-style).
 - `npm run lint` — TypeScript strict check (`tsc --noEmit`).
-- `orchestrator run` — start interactive mode.
-- `orchestrator run "<prompt>"` — non-interactive workflow execution.
+- `crew run` — start interactive mode.
+- `crew run "<prompt>"` — non-interactive workflow execution.
 
 ## Coding Style & Naming Conventions
 - Language: TypeScript (ESM), strict mode enabled in `tsconfig.json`.
@@ -45,7 +45,7 @@
   - Terminal screenshots or output snippets for CLI/UI behavior changes.
 
 ## Configuration & Safety Notes
-- Config/state lives under `.orchestra/` (project-local) and `~/.orchestra/` (global).
+- Config/state lives under `.crew/` (project-local) and `~/.crew/` (global).
 - Do not commit local runtime artifacts or machine-specific state.
 - This project uses CLI-based auth for providers; avoid introducing API-key-only workflows unless discussed first.
 
