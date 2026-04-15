@@ -1,10 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { ToolCall, ToolDefinition, ToolResult } from '../adapters/types.js';
-import {
-  startOrchestratorMcpStdioServer,
-  type OrchestratorMcpServer,
-} from './mcp-stdio-server.js';
+import type { ToolCall, ToolDefinition } from '../adapters/types.js';
 
 export const DEFAULT_TOOL_NAMESPACE = 'mcp__orchestrator__';
 
@@ -35,12 +31,6 @@ export class OrchestratorActionServer {
   getToolSchemaHash(): string {
     const serialized = stableStringify(this.listTools());
     return createHash('sha256').update(serialized).digest('hex');
-  }
-
-  async asStdioServer(
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-  ): Promise<OrchestratorMcpServer> {
-    return startOrchestratorMcpStdioServer(this, onToolCall);
   }
 
   resolveToolCall(call: ToolCall): ToolCall {
