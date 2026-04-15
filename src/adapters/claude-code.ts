@@ -10,12 +10,14 @@ import type {
   Task,
   TaskResult,
   ToolCall,
+  ToolLoopContext,
   ToolDefinition,
   ToolLoopMessage,
   ToolLoopResult,
   ToolResult,
 } from './types.js';
 import { logger } from '../utils/logger.js';
+import { buildCliVersionTag } from '../provider-session.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -54,6 +56,47 @@ function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') return {};
+  return value as Record<string, unknown>;
+}
+
+function getNumericField(
+  value: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function mergeUsage(
+  current: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  },
+  next: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  },
+): {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+} {
+  return {
+    inputTokens: next.inputTokens ?? current.inputTokens,
+    outputTokens: next.outputTokens ?? current.outputTokens,
+    cachedInputTokens: next.cachedInputTokens ?? current.cachedInputTokens,
+  };
 }
 
 /**
@@ -177,6 +220,19 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
+
+  async getCliVersionTag(): Promise<string | undefined> {
+    const result = await execa('claude', ['--version'], {
+      timeout: 10_000,
+      reject: false,
+    });
+    if (result.exitCode !== 0) return undefined;
+
+    const text = `${result.stdout ?? ''} ${result.stderr ?? ''}`.trim();
+    const match = text.match(/(\\d+\\.\\d+\\.\\d+)/);
+    if (!match) return undefined;
+    return buildCliVersionTag('claude-code', match[1]);
+  }
 
   async execute(task: Task): Promise<TaskResult> {
     const streaming = Boolean(task.onOutput);
@@ -460,6 +516,39 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     tools: ToolDefinition[],
     messages: ToolLoopMessage[],
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context?: ToolLoopContext,
+  ): Promise<ToolLoopResult> {
+    if (!context) {
+      return this.executeWithPromptLoop(tools, messages, onToolCall);
+    }
+
+    try {
+      return await this.executeWithStreamSession(tools, messages, onToolCall, context);
+    } catch (error: unknown) {
+      logger.warn('[adapter:claude-code] stateful stream path failed; falling back to adapter loop', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      context.onProviderSession?.({
+        provider: 'claude',
+        transport: 'adapter',
+        cliVersion: await this.getCliVersionTag(),
+        toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+        toolSchemaHash: context.toolSchemaHash ?? '',
+        startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
+        lastTurnAt: new Date().toISOString(),
+      });
+      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall);
+      return {
+        ...fallbackResult,
+        pathTaken: 'adapter',
+      };
+    }
+  }
+
+  private async executeWithPromptLoop(
+    tools: ToolDefinition[],
+    messages: ToolLoopMessage[],
+    onToolCall: (call: ToolCall) => Promise<ToolResult>,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
 
@@ -600,7 +689,303 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       status: 'failed',
       transcript,
       error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
+      pathTaken: 'adapter',
     };
+  }
+
+  private async executeWithStreamSession(
+    tools: ToolDefinition[],
+    messages: ToolLoopMessage[],
+    onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context: ToolLoopContext,
+  ): Promise<ToolLoopResult> {
+    const transcript: ToolLoopMessage[] = [...messages];
+    const cliVersion = await this.getCliVersionTag();
+    const resumedSessionId = context.providerSession?.sessionId;
+
+    const args = [
+      '-p',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--dangerously-skip-permissions',
+    ];
+    if (resumedSessionId) {
+      args.push('--resume', resumedSessionId);
+    }
+
+    const subprocess = execa('claude', args, {
+      cwd: context.workingDirectory,
+      cancelSignal: context.signal,
+      reject: false,
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    if (!subprocess.stdout || !subprocess.stdin) {
+      throw new Error('Claude stream session missing stdio pipes.');
+    }
+
+    const providerSession = {
+      provider: 'claude' as const,
+      transport: resumedSessionId ? 'stateful-resume' as const : 'native' as const,
+      sessionId: resumedSessionId,
+      cliVersion,
+      toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+      toolSchemaHash: context.toolSchemaHash ?? '',
+      startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
+      lastTurnAt: new Date().toISOString(),
+    };
+    context.onProviderSession?.(providerSession);
+
+    const iterator = this.streamJsonLines(subprocess.stdout)[Symbol.asyncIterator]();
+    const renderToolCatalog = (): string => tools
+      .map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${JSON.stringify(tool.inputSchema)}`)
+      .join('\n');
+    const renderTranscript = (): string => {
+      if (messages.length === 0) return '(empty)';
+      return messages
+        .map((message, index) => {
+          const role = message.name ? `${message.role}(${message.name})` : message.role;
+          return `${index + 1}. ${role}: ${message.content}`;
+        })
+        .join('\n');
+    };
+
+    const bootstrapPrompt = [
+      'You are a workflow controller using external tools.',
+      'Decide exactly one next step per turn.',
+      '',
+      'Available tools:',
+      renderToolCatalog(),
+      '',
+      'Conversation transcript:',
+      renderTranscript(),
+      '',
+      'Respond with one JSON object matching the schema.',
+      '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
+      '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
+      '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
+      'Rules:',
+      '- Never emit multiple tool calls in one turn.',
+      '- tool must match exactly one available tool name.',
+    ].join('\n');
+
+    let pendingPrompt = bootstrapPrompt;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCachedInputTokens = 0;
+    let turnCount = 0;
+
+    try {
+      for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
+        const userMessage = {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: pendingPrompt,
+          },
+        };
+        subprocess.stdin.write(`${JSON.stringify(userMessage)}\n`);
+
+        const turnData = await this.readStreamTurn(iterator);
+        turnCount = turn;
+        totalInputTokens += turnData.usage.inputTokens ?? 0;
+        totalOutputTokens += turnData.usage.outputTokens ?? 0;
+        totalCachedInputTokens += turnData.usage.cachedInputTokens ?? 0;
+
+        if (turnData.sessionId && turnData.sessionId !== providerSession.sessionId) {
+          providerSession.sessionId = turnData.sessionId;
+          providerSession.lastTurnAt = new Date().toISOString();
+          context.onProviderSession?.(providerSession);
+        }
+
+        const parsedDecision = this.parseToolDecisionFromAssistant(turnData.assistantText);
+        if (parsedDecision.reasoning) {
+          transcript.push({
+            role: 'assistant',
+            content: parsedDecision.reasoning,
+          });
+        }
+
+        if (parsedDecision.type === 'finish') {
+          subprocess.stdin.end();
+          return {
+            status: 'completed',
+            transcript,
+            output: parsedDecision.output ?? parsedDecision.reasoning ?? '',
+            pathTaken: providerSession.transport,
+            providerSession,
+            telemetry: {
+              inputTokens: totalInputTokens,
+              outputTokens: totalOutputTokens,
+              cachedInputTokens: totalCachedInputTokens,
+              totalTurns: turnCount,
+            },
+          };
+        }
+
+        if (parsedDecision.type === 'fail') {
+          subprocess.stdin.end();
+          return {
+            status: 'failed',
+            transcript,
+            error: parsedDecision.error ?? parsedDecision.reasoning ?? 'Controller requested fail',
+            pathTaken: providerSession.transport,
+            providerSession,
+            telemetry: {
+              inputTokens: totalInputTokens,
+              outputTokens: totalOutputTokens,
+              cachedInputTokens: totalCachedInputTokens,
+              totalTurns: turnCount,
+            },
+          };
+        }
+
+        const toolName = parsedDecision.tool?.trim();
+        if (!toolName) {
+          throw new Error('Tool call missing tool name.');
+        }
+
+        const knownTool = tools.find((tool) => tool.name === toolName);
+        if (!knownTool) {
+          throw new Error(`Unknown tool "${toolName}".`);
+        }
+
+        const toolInput = parsedDecision.input ?? {};
+        transcript.push({
+          role: 'assistant',
+          content: JSON.stringify({
+            type: 'tool_call',
+            tool: toolName,
+            input: toolInput,
+          }),
+        });
+
+        const toolResult = await onToolCall({ name: toolName, input: toolInput });
+        transcript.push({
+          role: 'tool',
+          name: toolName,
+          content: JSON.stringify(toolResult.output),
+        });
+
+        pendingPrompt = [
+          `Tool ${toolName} returned:`,
+          JSON.stringify(toolResult.output),
+          'Choose the next action as a JSON object.',
+        ].join('\n');
+      }
+    } finally {
+      subprocess.stdin.end();
+      try {
+        await subprocess;
+      } catch {
+        // execa reject is disabled, but keep this as a final safety net.
+      }
+    }
+
+    return {
+      status: 'failed',
+      transcript,
+      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
+      pathTaken: providerSession.transport,
+      providerSession,
+      telemetry: {
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        cachedInputTokens: totalCachedInputTokens,
+        totalTurns: turnCount,
+      },
+    };
+  }
+
+  private parseToolDecisionFromAssistant(text: string): ToolLoopDecision {
+    const payload = extractJson(text);
+    return ToolLoopDecisionSchema.parse(payload);
+  }
+
+  private async readStreamTurn(
+    iterator: AsyncIterator<string>,
+  ): Promise<{
+    assistantText: string;
+    sessionId?: string;
+    usage: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+    };
+  }> {
+    let assistantText = '';
+    let sessionId: string | undefined;
+    let usage: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cachedInputTokens?: number;
+    } = {};
+
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) {
+        throw new Error('Claude stream ended before result event.');
+      }
+
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(next.value) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const lineText = extractAssistantTextFromStreamLine(next.value);
+      if (lineText) assistantText += lineText;
+
+      if (typeof event.session_id === 'string') {
+        sessionId = event.session_id;
+      }
+
+      usage = mergeUsage(usage, this.extractUsageFromEvent(event));
+      if (event.type === 'result') {
+        return { assistantText, sessionId, usage };
+      }
+    }
+  }
+
+  private extractUsageFromEvent(event: Record<string, unknown>): {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  } {
+    const directUsage = asObject(event.usage);
+    const messageUsage = asObject(asObject(event.message).usage);
+    const usage = Object.keys(directUsage).length > 0 ? directUsage : messageUsage;
+
+    return {
+      inputTokens: getNumericField(usage, ['input_tokens']),
+      outputTokens: getNumericField(usage, ['output_tokens']),
+      cachedInputTokens: getNumericField(usage, ['cache_read_input_tokens', 'cached_input_tokens']),
+    };
+  }
+
+  private async *streamJsonLines(stream: NodeJS.ReadableStream): AsyncGenerator<string> {
+    let buffer = '';
+    for await (const chunk of stream) {
+      buffer += chunk.toString('utf-8');
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) yield line;
+        newlineIndex = buffer.indexOf('\n');
+      }
+    }
+
+    const trailing = buffer.trim();
+    if (trailing) {
+      yield trailing;
+    }
   }
 
   async healthCheck(): Promise<HealthCheckResult> {

@@ -10,6 +10,7 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { extractJson } from '../utils/json-parse.js';
 import type {
   AgentAdapter,
   AgentCapability,
@@ -18,12 +19,14 @@ import type {
   Task,
   TaskResult,
   ToolCall,
+  ToolLoopContext,
   ToolDefinition,
   ToolLoopMessage,
   ToolLoopResult,
   ToolResult,
 } from './types.js';
 import { logger } from '../utils/logger.js';
+import { buildCliVersionTag } from '../provider-session.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -69,6 +72,19 @@ function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
+function numberField(
+  value: Record<string, unknown>,
+  keys: string[],
+): number | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -189,6 +205,30 @@ export class CodexAdapter implements AgentAdapter {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
+
+  async getCliVersionTag(): Promise<string | undefined> {
+    const versionResult = await execa('codex', ['--version'], {
+      timeout: 10_000,
+      reject: false,
+    });
+    if (versionResult.exitCode === 0) {
+      const match = `${versionResult.stdout ?? ''} ${versionResult.stderr ?? ''}`
+        .match(/(\\d+\\.\\d+\\.\\d+)/);
+      if (match) {
+        return buildCliVersionTag('codex', match[1]);
+      }
+    }
+
+    const helpResult = await execa('codex', ['--help'], {
+      timeout: 10_000,
+      reject: false,
+    });
+    if (helpResult.exitCode !== 0) return undefined;
+    const fallbackMatch = `${helpResult.stdout ?? ''} ${helpResult.stderr ?? ''}`
+      .match(/(\\d+\\.\\d+\\.\\d+)/);
+    if (!fallbackMatch) return undefined;
+    return buildCliVersionTag('codex', fallbackMatch[1]);
+  }
 
   async execute(task: Task): Promise<TaskResult> {
     const tmpDir = mkdtempSync(join(tmpdir(), 'codex-'));
@@ -472,6 +512,39 @@ export class CodexAdapter implements AgentAdapter {
     tools: ToolDefinition[],
     messages: ToolLoopMessage[],
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context?: ToolLoopContext,
+  ): Promise<ToolLoopResult> {
+    if (!context) {
+      return this.executeWithPromptLoop(tools, messages, onToolCall);
+    }
+
+    try {
+      return await this.executeWithResumeSession(tools, messages, onToolCall, context);
+    } catch (error: unknown) {
+      logger.warn('[adapter:codex] stateful resume path failed; falling back to adapter loop', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      context.onProviderSession?.({
+        provider: 'codex',
+        transport: 'adapter',
+        cliVersion: await this.getCliVersionTag(),
+        toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+        toolSchemaHash: context.toolSchemaHash ?? '',
+        startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
+        lastTurnAt: new Date().toISOString(),
+      });
+      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall);
+      return {
+        ...fallbackResult,
+        pathTaken: 'adapter',
+      };
+    }
+  }
+
+  private async executeWithPromptLoop(
+    tools: ToolDefinition[],
+    messages: ToolLoopMessage[],
+    onToolCall: (call: ToolCall) => Promise<ToolResult>,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
 
@@ -612,7 +685,272 @@ export class CodexAdapter implements AgentAdapter {
       status: 'failed',
       transcript,
       error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
+      pathTaken: 'adapter',
     };
+  }
+
+  private async executeWithResumeSession(
+    tools: ToolDefinition[],
+    messages: ToolLoopMessage[],
+    onToolCall: (call: ToolCall) => Promise<ToolResult>,
+    context: ToolLoopContext,
+  ): Promise<ToolLoopResult> {
+    const transcript: ToolLoopMessage[] = [...messages];
+    const cliVersion = await this.getCliVersionTag();
+    const configFlags = this.buildPerRunConfigFlags();
+
+    let providerSession = {
+      provider: 'codex' as const,
+      transport: 'stateful-resume' as const,
+      sessionId: context.providerSession?.sessionId,
+      threadId: context.providerSession?.threadId,
+      cliVersion,
+      toolNamespace: context.toolNamespace ?? 'mcp__orchestrator__',
+      toolSchemaHash: context.toolSchemaHash ?? '',
+      startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
+      lastTurnAt: new Date().toISOString(),
+    };
+    context.onProviderSession?.(providerSession);
+
+    const renderToolCatalog = (): string => tools
+      .map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${JSON.stringify(tool.inputSchema)}`)
+      .join('\n');
+    const renderTranscript = (): string => {
+      if (messages.length === 0) return '(empty)';
+      return messages
+        .map((message, index) => {
+          const role = message.name ? `${message.role}(${message.name})` : message.role;
+          return `${index + 1}. ${role}: ${message.content}`;
+        })
+        .join('\n');
+    };
+
+    let pendingPrompt = [
+      'You are a workflow controller using external tools.',
+      'Decide exactly one next step per turn.',
+      '',
+      'Available tools:',
+      renderToolCatalog(),
+      '',
+      'Conversation transcript:',
+      renderTranscript(),
+      '',
+      'Respond with one JSON object matching the schema.',
+      '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
+      '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
+      '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
+      'Rules:',
+      '- Never emit multiple tool calls in one turn.',
+      '- tool must match exactly one available tool name.',
+    ].join('\n');
+
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCachedInputTokens = 0;
+    let turnCount = 0;
+
+    for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
+      const args = this.buildResumeArgs(providerSession, pendingPrompt, configFlags);
+      const result = await execa('codex', args, {
+        cwd: context.workingDirectory,
+        cancelSignal: context.signal,
+        reject: false,
+      });
+
+      if (result.exitCode !== 0 && !result.stdout) {
+        throw new Error(result.stderr || `codex exited with code ${result.exitCode}`);
+      }
+
+      const { events, droppedLines } = parseJsonl(result.stdout ?? '');
+      const errorMessage = findError(events);
+      if (errorMessage) {
+        throw new Error(errorMessage);
+      }
+      if (events.length === 0) {
+        throw new Error('Codex returned no JSONL events.');
+      }
+
+      turnCount = turn;
+      const usage = this.extractResumeUsage(events);
+      totalInputTokens += usage.inputTokens ?? 0;
+      totalOutputTokens += usage.outputTokens ?? 0;
+      totalCachedInputTokens += usage.cachedInputTokens ?? 0;
+
+      const threadId = this.extractThreadId(events);
+      if (threadId && threadId !== providerSession.threadId) {
+        providerSession = {
+          ...providerSession,
+          sessionId: threadId,
+          threadId,
+          lastTurnAt: new Date().toISOString(),
+        };
+        context.onProviderSession?.(providerSession);
+      }
+
+      const assistantMessage = getLastAgentMessage(events);
+      if (!assistantMessage) {
+        throw new Error('Codex did not emit an agent message for controller decision.');
+      }
+
+      const parsedDecision = this.parseToolDecisionFromAssistant(assistantMessage);
+      if (parsedDecision.reasoning) {
+        transcript.push({
+          role: 'assistant',
+          content: parsedDecision.reasoning,
+        });
+      }
+
+      if (parsedDecision.type === 'finish') {
+        return {
+          status: 'completed',
+          transcript,
+          output: parsedDecision.output ?? parsedDecision.reasoning ?? '',
+          pathTaken: 'stateful-resume',
+          providerSession,
+          telemetry: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cachedInputTokens: totalCachedInputTokens,
+            totalTurns: turnCount,
+          },
+        };
+      }
+
+      if (parsedDecision.type === 'fail') {
+        return {
+          status: 'failed',
+          transcript,
+          error: parsedDecision.error ?? parsedDecision.reasoning ?? 'Controller requested fail',
+          pathTaken: 'stateful-resume',
+          providerSession,
+          telemetry: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cachedInputTokens: totalCachedInputTokens,
+            totalTurns: turnCount,
+          },
+        };
+      }
+
+      const toolName = parsedDecision.tool?.trim();
+      if (!toolName) {
+        throw new Error('Tool call missing tool name.');
+      }
+
+      const knownTool = tools.find((tool) => tool.name === toolName);
+      if (!knownTool) {
+        throw new Error(`Unknown tool "${toolName}".`);
+      }
+
+      const toolInput = parsedDecision.input ?? {};
+      transcript.push({
+        role: 'assistant',
+        content: JSON.stringify({
+          type: 'tool_call',
+          tool: toolName,
+          input: toolInput,
+        }),
+      });
+
+      const toolResult = await onToolCall({ name: toolName, input: toolInput });
+      transcript.push({
+        role: 'tool',
+        name: toolName,
+        content: JSON.stringify(toolResult.output),
+      });
+
+      pendingPrompt = [
+        `Tool ${toolName} returned:`,
+        JSON.stringify(toolResult.output),
+        'Choose the next action as a JSON object.',
+      ].join('\n');
+
+      if (droppedLines > 0) {
+        logger.warn('[adapter:codex] dropped malformed JSONL lines while parsing stateful turn', {
+          droppedLines,
+        });
+      }
+    }
+
+    return {
+      status: 'failed',
+      transcript,
+      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
+      pathTaken: 'stateful-resume',
+      providerSession,
+      telemetry: {
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        cachedInputTokens: totalCachedInputTokens,
+        totalTurns: turnCount,
+      },
+    };
+  }
+
+  private buildPerRunConfigFlags(): string[] {
+    const configPath = process.env.ORCHESTRATOR_CODEX_CONFIG?.trim();
+    if (!configPath) return [];
+    return ['--config', configPath];
+  }
+
+  private buildResumeArgs(
+    session: { sessionId?: string; threadId?: string },
+    prompt: string,
+    configFlags: string[],
+  ): string[] {
+    const sessionId = session.sessionId ?? session.threadId;
+    if (!sessionId) {
+      return ['exec', prompt, '--json', ...configFlags];
+    }
+
+    return ['exec', 'resume', sessionId, '--json', prompt, ...configFlags];
+  }
+
+  private extractThreadId(events: CodexEvent[]): string | undefined {
+    for (const event of events) {
+      if (typeof event.thread_id === 'string' && event.thread_id.length > 0) {
+        return event.thread_id;
+      }
+    }
+    return undefined;
+  }
+
+  private parseToolDecisionFromAssistant(text: string): ToolLoopDecision {
+    return ToolLoopDecisionSchema.parse(extractJson(text));
+  }
+
+  private extractResumeUsage(events: CodexEvent[]): {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  } {
+    const usage = this.findUsagePayload(events);
+    if (!usage) return {};
+    return {
+      inputTokens: numberField(usage, ['input_tokens']),
+      outputTokens: numberField(usage, ['output_tokens']),
+      cachedInputTokens: numberField(usage, ['cached_input_tokens', 'cache_read_input_tokens']),
+    };
+  }
+
+  private findUsagePayload(events: CodexEvent[]): Record<string, unknown> | undefined {
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index] as Record<string, unknown>;
+      const usage = event.usage;
+      if (usage && typeof usage === 'object') {
+        return usage as Record<string, unknown>;
+      }
+
+      const eventPayload = event.event;
+      if (eventPayload && typeof eventPayload === 'object') {
+        const nestedUsage = (eventPayload as Record<string, unknown>).usage;
+        if (nestedUsage && typeof nestedUsage === 'object') {
+          return nestedUsage as Record<string, unknown>;
+        }
+      }
+    }
+
+    return undefined;
   }
 
   async healthCheck(): Promise<HealthCheckResult> {
