@@ -25,6 +25,7 @@ import {
   type ToolLoopDecision,
 } from './tool-loop/decision.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
+import { buildDecisionPrompt } from './tool-loop/transcript.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -208,8 +209,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   ];
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {
-    // claude -p answers prompt-described tool catalogs in prose, not JSON.
-    supportsToolLoop: false,
+    supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
@@ -282,20 +282,32 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
       result = await subprocess;
     } catch (error: unknown) {
-      // Timeout or other process-level errors
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';
+      const partialStdout = typeof (error as { stdout?: unknown })?.stdout === 'string'
+        ? (error as { stdout: string }).stdout
+        : '';
+      const partialStderr = typeof (error as { stderr?: unknown })?.stderr === 'string'
+        ? (error as { stderr: string }).stderr
+        : '';
+      const partialEnvelope = streaming ? extractStreamEnvelope(partialStdout) : undefined;
+      const partialOutput = partialEnvelope?.result ?? partialStdout;
       logger.error('[adapter:claude-code] process execution threw', {
         cwd: task.context.workingDirectory,
         timeoutMs: timeout,
         error: message,
       });
       return {
-        output: '',
+        output: partialOutput || partialStderr || message,
         filesModified: [],
         status: 'error',
+        sessionId: partialEnvelope?.session_id,
         metadata: {
-          rawEvents: [{ error: message }],
+          rawEvents: [{
+            error: message,
+            rawStdout: partialStdout,
+            rawStderr: partialStderr,
+          }],
         },
       };
     }
@@ -517,13 +529,22 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       return this.executeWithPromptLoop(tools, messages, onToolCall);
     }
 
+    let latestTranscript = messages.map((message) => ({ ...message }));
+    const wrappedContext: ToolLoopContext = {
+      ...context,
+      onTranscriptUpdate: (transcript) => {
+        latestTranscript = transcript.map((message) => ({ ...message }));
+        context.onTranscriptUpdate?.(latestTranscript);
+      },
+    };
+
     try {
-      return await this.executeWithStreamSession(tools, messages, onToolCall, context);
+      return await this.executeWithStreamSession(tools, messages, onToolCall, wrappedContext);
     } catch (error: unknown) {
       if (context.signal?.aborted) {
         return {
           status: 'interrupted',
-          transcript: [...messages],
+          transcript: latestTranscript,
           pathTaken: 'fallback',
           error: String(context.signal.reason ?? 'Cancelled'),
         };
@@ -540,7 +561,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
       });
-      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall, context);
+      const fallbackResult = await this.executeWithPromptLoop(
+        tools,
+        latestTranscript,
+        onToolCall,
+        wrappedContext,
+      );
       return {
         ...fallbackResult,
         pathTaken: 'adapter',
@@ -563,7 +589,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           signal: context?.signal,
           workingDirectory: context?.workingDirectory,
         }),
-      { pathTaken: 'adapter' },
+      {
+        pathTaken: 'adapter',
+        signal: context?.signal,
+        onTranscriptUpdate: context?.onTranscriptUpdate,
+      },
     );
   }
 
@@ -574,6 +604,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     context: ToolLoopContext,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
+    const publishTranscript = () => {
+      context.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
+    };
     const cliVersion = await this.getCliVersionTag();
     const resumedSessionId = context.providerSession?.sessionId;
 
@@ -632,37 +665,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     context.onProviderSession?.(providerSession);
 
     const iterator = this.streamJsonLines(subprocess.stdout)[Symbol.asyncIterator]();
-    const renderToolCatalog = (): string => tools
-      .map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${JSON.stringify(tool.inputSchema)}`)
-      .join('\n');
-    const renderTranscript = (): string => {
-      if (messages.length === 0) return '(empty)';
-      return messages
-        .map((message, index) => {
-          const role = message.name ? `${message.role}(${message.name})` : message.role;
-          return `${index + 1}. ${role}: ${message.content}`;
-        })
-        .join('\n');
-    };
 
-    const bootstrapPrompt = [
-      'You are a workflow controller using external tools.',
-      'Decide exactly one next step per turn.',
-      '',
-      'Available tools:',
-      renderToolCatalog(),
-      '',
-      'Conversation transcript:',
-      renderTranscript(),
-      '',
-      'Respond with one JSON object matching the schema.',
-      '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
-      '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
-      '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
-      'Rules:',
-      '- Never emit multiple tool calls in one turn.',
-      '- tool must match exactly one available tool name.',
-    ].join('\n');
+    const bootstrapPrompt = buildDecisionPrompt(
+      tools,
+      transcript,
+      { continueFromSession: Boolean(resumedSessionId) },
+    );
 
     let pendingPrompt = bootstrapPrompt;
     let totalInputTokens = 0;
@@ -708,6 +716,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             role: 'assistant',
             content: parsedDecision.reasoning,
           });
+          publishTranscript();
         }
 
         if (parsedDecision.type === 'finish') {
@@ -763,6 +772,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             input: toolInput,
           }),
         });
+        publishTranscript();
 
         const toolResult = await onToolCall({ name: toolName, input: toolInput });
         transcript.push({
@@ -770,6 +780,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           name: toolName,
           content: JSON.stringify(toolResult.output),
         });
+        publishTranscript();
 
         pendingPrompt = [
           `Tool ${toolName} returned:`,

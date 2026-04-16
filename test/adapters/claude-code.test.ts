@@ -49,8 +49,8 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
-    it('exposes captain capabilities (structured decisions, no native tool loop)', () => {
-      expect(adapter.captainCapabilities?.supportsToolLoop).toBe(false);
+    it('exposes captain capabilities (structured decisions and native tool-loop support)', () => {
+      expect(adapter.captainCapabilities?.supportsToolLoop).toBe(true);
       expect(adapter.captainCapabilities?.supportsStructuredDecisions).toBe(true);
       expect(adapter.captainCapabilities?.supportsPauseForUserInput).toBe(true);
     });
@@ -154,6 +154,32 @@ describe('ClaudeCodeAdapter', () => {
 
       expect(result.status).toBe('error');
       expect(result.metadata.rawEvents).toBeDefined();
+    });
+
+    it('preserves partial streaming output when the process throws after emitting stdout', async () => {
+      const streamingError = Object.assign(new Error('Timed out'), {
+        stdout: JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'Partial assistant output' }],
+          },
+        }),
+        stderr: 'deadline exceeded',
+      });
+      mockExeca.mockRejectedValueOnce(streamingError);
+
+      const result = await adapter.execute({
+        prompt: 'Long running task',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('Partial assistant output');
+      expect(result.metadata.rawEvents?.[0]).toMatchObject({
+        error: 'Timed out',
+        rawStderr: 'deadline exceeded',
+      });
     });
 
     it('does not crash when execa returns undefined stdout (cancellation edge case)', async () => {
@@ -434,6 +460,60 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   describe('executeWithTools', () => {
+    it('falls back from the latest transcript after stream-session failure', async () => {
+      const executeWithSchemaSpy = vi
+        .spyOn(adapter, 'executeWithSchema')
+        .mockResolvedValueOnce({
+          type: 'finish',
+          output: 'done',
+          reasoning: 'workflow complete',
+        } as any);
+
+      vi.spyOn(adapter as any, 'executeWithStreamSession').mockImplementationOnce(
+        async (_tools: any, messages: any, _onToolCall: any, context: any) => {
+          context.onTranscriptUpdate?.([
+            ...messages,
+            {
+              role: 'assistant',
+              content: JSON.stringify({
+                type: 'tool_call',
+                tool: 'run_decompose',
+                input: {},
+              }),
+            },
+            {
+              role: 'tool',
+              name: 'run_decompose',
+              content: JSON.stringify({ ok: true }),
+            },
+          ]);
+          throw new Error('stream path failed');
+        },
+      );
+
+      const result = await adapter.executeWithTools(
+        [
+          {
+            name: 'run_decompose',
+            description: 'decompose request',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        [{ role: 'system', content: 'start' }],
+        vi.fn(async () => ({ output: { ok: true } })),
+        {
+          toolNamespace: 'mcp__crew__',
+          toolSchemaHash: 'abc',
+        },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(executeWithSchemaSpy).toHaveBeenCalledTimes(1);
+      const fallbackPrompt = executeWithSchemaSpy.mock.calls[0][0];
+      expect(fallbackPrompt).toContain('"tool":"run_decompose"');
+      expect(fallbackPrompt).toContain('"ok":true');
+    });
+
     it('returns interrupted and skips prompt-loop fallback when signal is already aborted', async () => {
       const executeWithSchemaSpy = vi.spyOn(adapter, 'executeWithSchema');
       vi.spyOn(adapter as any, 'executeWithStreamSession').mockRejectedValueOnce(
