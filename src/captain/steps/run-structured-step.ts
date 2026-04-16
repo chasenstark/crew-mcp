@@ -7,16 +7,30 @@ export interface StructuredStepDefinition<TInput, TOutputSchema extends z.ZodTyp
   buildPrompt: (input: TInput) => string;
 }
 
+export interface StructuredStepExecutionOptions {
+  model?: string;
+  signal?: AbortSignal;
+  timeout?: number;
+  workingDirectory?: string;
+  maxRetries?: number;
+}
+
 export async function runStructuredStep<TInput, TOutputSchema extends z.ZodType>(
   captain: AgentAdapter,
   definition: StructuredStepDefinition<TInput, TOutputSchema>,
   input: TInput,
-  model?: string,
+  options?: StructuredStepExecutionOptions,
 ): Promise<z.infer<TOutputSchema>> {
   return executeWithValidation(
     captain,
     definition.buildPrompt(input),
     definition.schema,
-    { model },
+    {
+      model: options?.model,
+      signal: options?.signal,
+      timeout: options?.timeout,
+      workingDirectory: options?.workingDirectory,
+      maxRetries: options?.maxRetries,
+    },
   );
 }

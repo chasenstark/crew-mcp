@@ -241,6 +241,60 @@ describe('JudgmentRunner', () => {
     expect(saved.actionHistory?.some((record) => record.action === 'finalize_report')).toBe(true);
   });
 
+  it('deterministically recovers when ask_user is returned without a question payload', async () => {
+    const { adapter } = createDecisionAdapter([
+      { reasoning: 'start', action: 'run_decompose', payload: {} },
+      { reasoning: 'pick task', action: 'select_task', payload: { taskId: 'task-1' } },
+      { reasoning: 'prep prompt', action: 'run_dispatch', payload: { taskId: 'task-1' } },
+      { reasoning: 'execute', action: 'run_execute', payload: { taskId: 'task-1' } },
+      { reasoning: 'ingest', action: 'run_ingest', payload: { taskId: 'task-1' } },
+      { reasoning: 'summarize', action: 'run_summarize', payload: { taskId: 'task-1' } },
+      { reasoning: 'judge', action: 'run_judge', payload: { taskId: 'task-1' } },
+      { reasoning: 'need user', action: 'ask_user', payload: {} },
+      { reasoning: 'report', action: 'finalize_report', payload: {} },
+      { reasoning: 'finish', action: 'finish' },
+    ]);
+
+    const agentExecute = vi.fn().mockResolvedValue({
+      output: 'done',
+      filesModified: ['src/a.ts'],
+      status: 'success',
+      metadata: {},
+    } satisfies TaskResult);
+
+    const registry = createAgentRegistry(agentExecute);
+    const worktreeManager = {
+      createWorktree: vi.fn(async () => '/tmp/worktrees/task-1'),
+      getModifiedFiles: vi.fn(async () => ['src/a.ts']),
+    };
+
+    const runner = new JudgmentRunner(
+      adapter,
+      registry,
+      {
+        name: 'judgment-test',
+        execution: { mode: 'judgment' },
+        steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
+        completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+      },
+      stateStore,
+      worktreeManager as never,
+    );
+
+    const askUserSpy = vi.fn();
+    runner.on('ask_user', askUserSpy);
+
+    const reportText = await runner.run('implement feature');
+    expect(reportText).toBe('final report');
+    expect(askUserSpy).not.toHaveBeenCalled();
+
+    const saved = stateStore.loadState() as WorkflowState;
+    expect(saved.actionHistory?.some((record) => record.action === 'finalize_report')).toBe(true);
+    expect(saved.actionHistory?.some(
+      (record) => record.reasoning.includes('ask_user requires a non-empty question'),
+    )).toBe(true);
+  });
+
   it('rehydrates action history on resume without re-running already executed agent calls', async () => {
     const { adapter } = createDecisionAdapter([
       { reasoning: 'ingest after resume', action: 'run_ingest', payload: { taskId: 'task-1' } },

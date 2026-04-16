@@ -6,16 +6,20 @@ import { enableFileLogging, logger } from '../../utils/logger.js';
 import { createRunner } from '../runtime/create-runner.js';
 import { attachAskUserHandler, normalizeAskUserPolicy } from '../runtime/ask-user.js';
 import { attachRunnerEvents } from '../runtime/attach-runner-events.js';
+import { assertRequiredAgentsReady } from '../runtime/preflight.js';
 
 export async function runCommand(
   prompt?: string,
-  options: { onAskUser?: string } = {},
+  options: { onAskUser?: string; skipPreflight?: boolean } = {},
 ): Promise<void> {
   const projectRoot = process.cwd();
   const logFile = enableFileLogging(projectRoot);
   logger.info(`Run log file: ${logFile}`);
 
-  const { runner, stateStore } = createRunner(projectRoot);
+  const { runner, stateStore, config, registry } = createRunner(projectRoot);
+  if (!options.skipPreflight) {
+    await assertRequiredAgentsReady(registry, config);
+  }
 
   if (prompt) {
     const onAskUser = normalizeAskUserPolicy(options.onAskUser, 'fail');

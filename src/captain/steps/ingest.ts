@@ -2,7 +2,10 @@ import type { AgentAdapter, TaskResult } from '../../adapters/types.js';
 import type { z } from 'zod';
 import { IngestOutputSchema } from '../schemas.js';
 import { buildIngestPrompt } from '../prompts.js';
-import { runStructuredStep } from './run-structured-step.js';
+import {
+  runStructuredStep,
+  type StructuredStepExecutionOptions,
+} from './run-structured-step.js';
 
 export type IngestOutput = z.infer<typeof IngestOutputSchema>;
 export interface IngestStepInput {
@@ -21,11 +24,15 @@ export async function ingest(
   taskDescription: string,
   agentResult: TaskResult,
   model?: string,
+  options?: Omit<StructuredStepExecutionOptions, 'model'>,
 ): Promise<IngestOutput> {
   return runStructuredStep(
     captain,
     ingestStepDefinition,
     { taskDescription, agentResult },
-    model,
+    {
+      ...options,
+      model,
+    },
   );
 }

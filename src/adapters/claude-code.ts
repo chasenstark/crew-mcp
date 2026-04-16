@@ -948,6 +948,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         {
           timeout: 30_000,
           reject: false,
+          stdin: 'ignore',
         },
       );
 
@@ -959,11 +960,28 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         };
       }
 
+      let authError: string | undefined;
+      if (authResult.stdout?.trim()) {
+        try {
+          const parsed = ClaudeResponseSchema.safeParse(JSON.parse(authResult.stdout));
+          if (parsed.success && typeof parsed.data.result === 'string' && parsed.data.result.trim()) {
+            authError = parsed.data.result.trim();
+          } else {
+            authError = authResult.stdout.trim();
+          }
+        } catch {
+          authError = authResult.stdout.trim();
+        }
+      }
+      if (!authError) {
+        authError = authResult.stderr?.trim();
+      }
+
       return {
         available: true,
         version,
         authenticated: false,
-        error: authResult.stderr || 'Authentication check failed',
+        error: authError || 'Authentication check failed',
       };
     } catch {
       return {

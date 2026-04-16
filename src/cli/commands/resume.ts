@@ -4,8 +4,11 @@ import { enableFileLogging, logger } from '../../utils/logger.js';
 import { createRunner } from '../runtime/create-runner.js';
 import { attachRunnerEvents } from '../runtime/attach-runner-events.js';
 import { attachAskUserHandler, normalizeAskUserPolicy } from '../runtime/ask-user.js';
+import { assertRequiredAgentsReady } from '../runtime/preflight.js';
 
-export async function resumeCommand(options: { onAskUser?: string } = {}): Promise<void> {
+export async function resumeCommand(
+  options: { onAskUser?: string; skipPreflight?: boolean } = {},
+): Promise<void> {
   const projectRoot = process.cwd();
   const stateStore = new StateStore(projectRoot);
   const onAskUser = normalizeAskUserPolicy(options.onAskUser, 'fail');
@@ -25,7 +28,10 @@ export async function resumeCommand(options: { onAskUser?: string } = {}): Promi
   logger.info(`Resume log file: ${logFile}`);
 
   const mode = workflowState.executionMode ?? 'linear';
-  const { runner } = createRunner(projectRoot, { stateStore, mode });
+  const { runner, config, registry } = createRunner(projectRoot, { stateStore, mode });
+  if (!options.skipPreflight) {
+    await assertRequiredAgentsReady(registry, config);
+  }
 
   let sawPipelineError = false;
 

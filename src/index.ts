@@ -17,11 +17,15 @@ program
   .description('Start a new workflow or enter conversation mode')
   .argument('[prompt]', 'Initial prompt (or enter interactive mode)')
   .option('--on-ask-user <policy>', 'Behavior when human input is required in non-interactive mode: fail or prompt')
-  .action(async (prompt: string | undefined, opts: { onAskUser?: string }) => {
+  .option('--skip-preflight', 'Skip adapter readiness/authentication checks before running')
+  .action(async (prompt: string | undefined, opts: { onAskUser?: string; skipPreflight?: boolean }) => {
     if (program.opts<{ debug?: boolean }>().debug) {
       setLogLevel('debug');
     }
-    await runCommand(prompt, { onAskUser: opts.onAskUser });
+    await runCommand(prompt, {
+      onAskUser: opts.onAskUser,
+      skipPreflight: opts.skipPreflight,
+    });
   });
 
 program
@@ -39,11 +43,15 @@ program
   .command('resume')
   .description('Resume an interrupted workflow')
   .option('--on-ask-user <policy>', 'Behavior when human input is required during resume: fail or prompt')
-  .action(async (opts: { onAskUser?: string }) => {
+  .option('--skip-preflight', 'Skip adapter readiness/authentication checks before resuming')
+  .action(async (opts: { onAskUser?: string; skipPreflight?: boolean }) => {
     if (program.opts<{ debug?: boolean }>().debug) {
       setLogLevel('debug');
     }
-    await resumeCommand({ onAskUser: opts.onAskUser });
+    await resumeCommand({
+      onAskUser: opts.onAskUser,
+      skipPreflight: opts.skipPreflight,
+    });
   });
 
 program

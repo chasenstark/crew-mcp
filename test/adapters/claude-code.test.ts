@@ -531,7 +531,7 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.error).toBe('Claude CLI not found');
     });
 
-    it('returns not authenticated when auth check fails', async () => {
+    it('returns not authenticated when auth check fails and prefers stdout error payload', async () => {
       // First call: --version succeeds
       mockExeca.mockResolvedValueOnce({
         stdout: 'claude 1.0.12',
@@ -539,10 +539,10 @@ describe('ClaudeCodeAdapter', () => {
         exitCode: 0,
       } as any);
 
-      // Second call: auth fails
+      // Second call: auth fails with warning in stderr and real error in JSON stdout
       mockExeca.mockResolvedValueOnce({
-        stdout: '',
-        stderr: 'Not authenticated',
+        stdout: '{"type":"result","subtype":"error","result":"Not logged in · Please run /login","is_error":true}',
+        stderr: 'Warning: no stdin data received in 3s',
         exitCode: 1,
       } as any);
 
@@ -551,7 +551,10 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.available).toBe(true);
       expect(result.version).toBe('claude 1.0.12');
       expect(result.authenticated).toBe(false);
-      expect(result.error).toContain('Not authenticated');
+      expect(result.error).toContain('Not logged in');
+
+      const authCheckCall = mockExeca.mock.calls[1];
+      expect(authCheckCall[2]).toEqual(expect.objectContaining({ stdin: 'ignore' }));
     });
   });
 });

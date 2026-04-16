@@ -675,6 +675,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             this.registry.list(),
             this.workflow,
             this.resolveCaptainModel('decompose'),
+            { signal: this.activeAbortController?.signal },
           );
           this.applyDecomposition(runtime, decomposition, false);
           this.emit('step:complete', 'decompose', {
@@ -716,6 +717,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             runtime.summaries,
             pass,
             this.resolveCaptainModel('dispatch'),
+            { signal: this.activeAbortController?.signal },
           );
           this.ensureTaskArtifacts(runtime, task.id).dispatch = dispatchResult;
           this.emit('step:complete', 'dispatch', {
@@ -817,6 +819,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             task.description,
             artifacts.agentResult,
             this.resolveCaptainModel('ingest'),
+            { signal: this.activeAbortController?.signal },
           );
           runtime.globalPassCounter++;
           runtime.taskPassNumbers[task.id] = runtime.globalPassCounter;
@@ -856,6 +859,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             ingestResult,
             passNumber,
             this.resolveCaptainModel('summarize'),
+            { signal: this.activeAbortController?.signal },
           );
           artifacts.summary = summary;
           runtime.summaries.push(summary);
@@ -903,6 +907,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             currentPass,
             maxPasses,
             this.resolveCaptainModel('judge'),
+            { signal: this.activeAbortController?.signal },
           );
           artifacts.judge = judgment;
           if (judgment.decision === 'done') {
@@ -972,6 +977,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             this.registry.list(),
             this.workflow,
             this.resolveCaptainModel('decompose'),
+            { signal: this.activeAbortController?.signal },
           );
           this.applyDecomposition(runtime, decomposition, true);
           return decomposition;
@@ -990,6 +996,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
               runtime.summaries,
               runtime.userRequest,
               this.resolveCaptainModel('report'),
+              { signal: this.activeAbortController?.signal },
             );
           } catch (error: unknown) {
             runtime.hadErrors = true;
@@ -1154,7 +1161,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         this.captain,
         prompt,
         ControllerDecisionSchema,
-        { model: this.captainModel },
+        {
+          model: this.captainModel,
+          signal: this.activeAbortController?.signal,
+        },
       );
     } catch (error: unknown) {
       runtime.hadErrors = true;
@@ -1263,7 +1273,17 @@ Return valid JSON matching the schema.`;
       return { ok: true };
     }
 
-    if (action === 'fail' || action === 'ask_user') {
+    if (action === 'fail') {
+      return { ok: true };
+    }
+
+    if (action === 'ask_user') {
+      const question = typeof decision.payload?.question === 'string'
+        ? decision.payload.question.trim()
+        : '';
+      if (!question) {
+        return { ok: false, reason: 'ask_user requires a non-empty question' };
+      }
       return { ok: true };
     }
 

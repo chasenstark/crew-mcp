@@ -328,6 +328,7 @@ export class Pipeline extends RunnerBase implements CrewRunner {
           summaries,
           userRequest,
           this.resolveCaptainModel('report'),
+          { signal: this.activeAbortController?.signal },
         );
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -396,6 +397,7 @@ export class Pipeline extends RunnerBase implements CrewRunner {
         localSummaries,
         currentPass,
         this.resolveCaptainModel('dispatch'),
+        { signal: this.activeAbortController?.signal },
       );
 
       this.emit('step:complete', 'dispatch', { taskId: task.id, taskDescription: task.description, pass: currentPass });
@@ -457,6 +459,7 @@ export class Pipeline extends RunnerBase implements CrewRunner {
         task.description,
         agentResult,
         this.resolveCaptainModel('ingest'),
+        { signal: this.activeAbortController?.signal },
       );
 
       this.emit('step:complete', 'ingest', {
@@ -497,6 +500,7 @@ export class Pipeline extends RunnerBase implements CrewRunner {
         latestIngest,
         globalPass,
         this.resolveCaptainModel('summarize'),
+        { signal: this.activeAbortController?.signal },
       );
 
       this.emit('step:complete', 'summarize', {
@@ -518,6 +522,7 @@ export class Pipeline extends RunnerBase implements CrewRunner {
         currentPass,
         maxPasses,
         this.resolveCaptainModel('judge'),
+        { signal: this.activeAbortController?.signal },
       );
 
       this.emit('step:complete', 'judge', {
