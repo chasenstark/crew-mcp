@@ -34,7 +34,21 @@ export function renderTranscript(transcript: ToolLoopMessage[]): string {
 export function buildDecisionPrompt(
   tools: ToolDefinition[],
   transcript: ToolLoopMessage[],
+  options: {
+    continueFromSession?: boolean;
+  } = {},
 ): string {
+  const conversationSection = options.continueFromSession
+    ? [
+        'Conversation transcript:',
+        '(omitted because the provider resume session already contains prior turns)',
+        'Continue from the existing provider session state. Do not replay or restate earlier transcript.',
+      ]
+    : [
+        'Conversation transcript:',
+        renderTranscript(transcript),
+      ];
+
   return [
     'You are a workflow controller using external tools.',
     'Decide exactly one next step per turn.',
@@ -42,8 +56,7 @@ export function buildDecisionPrompt(
     'Available tools:',
     renderToolCatalog(tools),
     '',
-    'Conversation transcript:',
-    renderTranscript(transcript),
+    ...conversationSection,
     '',
     'Respond with one JSON object matching the schema.',
     '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',

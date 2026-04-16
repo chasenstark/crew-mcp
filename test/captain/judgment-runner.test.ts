@@ -511,4 +511,208 @@ describe('JudgmentRunner', () => {
     expect(saved.actionHistory?.at(-1)?.pathTaken).toBe('fallback');
     expect(saved.nativeToolCalls).toBe(7);
   });
+
+  it('persists transcript and provider session updates during native tool-loop progress', async () => {
+    const executeWithTools = vi.fn(async (_tools, messages, onToolCall, context) => {
+      const transcript = [...messages];
+      const providerSession = {
+        provider: 'claude' as const,
+        transport: 'native' as const,
+        sessionId: 'session-1',
+        cliVersion: 'claude-code@1.2.3',
+        toolNamespace: context?.toolNamespace ?? 'mcp__crew__',
+        toolSchemaHash: context?.toolSchemaHash ?? '',
+        startedAt: new Date().toISOString(),
+        lastTurnAt: new Date().toISOString(),
+      };
+
+      context?.onProviderSession?.(providerSession);
+      transcript.push({
+        role: 'assistant',
+        content: JSON.stringify({ type: 'tool_call', tool: 'run_decompose', input: {} }),
+      });
+      context?.onTranscriptUpdate?.(transcript);
+
+      await onToolCall({ name: 'run_decompose', input: {} });
+
+      transcript.push({
+        role: 'tool',
+        name: 'run_decompose',
+        content: JSON.stringify({ ok: true }),
+      });
+      context?.onTranscriptUpdate?.(transcript);
+
+      return {
+        status: 'interrupted' as const,
+        transcript,
+        pathTaken: 'native' as const,
+        providerSession,
+      };
+    });
+
+    const adapter: AgentAdapter = {
+      name: 'captain',
+      capabilities: ['analyze'],
+      supportsJsonSchema: true,
+      captainCapabilities: {
+        supportsToolLoop: true,
+        supportsStructuredDecisions: true,
+        supportsPauseForUserInput: true,
+      },
+      execute: vi.fn(),
+      executeWithSchema: vi.fn(),
+      executeWithTools,
+      healthCheck: vi.fn(),
+    };
+
+    const registry = createAgentRegistry(vi.fn());
+    const worktreeManager = {
+      createWorktree: vi.fn(),
+      getModifiedFiles: vi.fn(),
+    };
+
+    const runner = new JudgmentRunner(
+      adapter,
+      registry,
+      {
+        name: 'judgment-test',
+        execution: { mode: 'judgment' },
+        steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
+        completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+      },
+      stateStore,
+      worktreeManager as never,
+    );
+
+    const result = await runner.run('implement feature');
+    expect(result).toBe('Workflow interrupted.');
+    expect(executeWithTools).toHaveBeenCalledTimes(1);
+
+    const saved = stateStore.loadState() as WorkflowState;
+    expect(saved.status).toBe('interrupted');
+    expect(saved.providerSession?.sessionId).toBe('session-1');
+    expect(saved.actionHistory?.some((record) => record.action === 'run_decompose')).toBe(true);
+    expect(saved.toolCallTranscript?.some((message) => message.role === 'tool' && message.name === 'run_decompose')).toBe(true);
+  });
+
+  it('does not over-count failed historical run_execute attempts when resuming', async () => {
+    const { adapter } = createDecisionAdapter([
+      { reasoning: 'retry execute', action: 'run_execute', payload: { taskId: 'task-1' } },
+      { reasoning: 'ingest', action: 'run_ingest', payload: { taskId: 'task-1' } },
+      { reasoning: 'summarize', action: 'run_summarize', payload: { taskId: 'task-1' } },
+      { reasoning: 'judge', action: 'run_judge', payload: { taskId: 'task-1' } },
+      { reasoning: 'report', action: 'finalize_report', payload: {} },
+      { reasoning: 'finish', action: 'finish' },
+    ]);
+
+    const agentExecute = vi.fn().mockResolvedValue({
+      output: 'done',
+      filesModified: ['src/a.ts'],
+      status: 'success',
+      metadata: {},
+    } satisfies TaskResult);
+
+    const registry = createAgentRegistry(agentExecute);
+    const worktreeManager = {
+      createWorktree: vi.fn(async () => '/tmp/worktrees/task-1'),
+      getModifiedFiles: vi.fn(async () => ['src/a.ts']),
+    };
+
+    const runner = new JudgmentRunner(
+      adapter,
+      registry,
+      {
+        name: 'judgment-test',
+        execution: { mode: 'judgment' },
+        steps: [{ role: 'implement', agent: 'agent-a', action: 'implement', maxPasses: 3 }],
+        completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+      },
+      stateStore,
+      worktreeManager as never,
+      {
+        guardrails: { maxAgentExecutionsPerTask: 1 },
+      },
+    );
+
+    const now = new Date().toISOString();
+    const savedState: WorkflowState = {
+      schemaVersion: 3,
+      executionMode: 'judgment',
+      status: 'running',
+      userRequest: 'implement feature',
+      decomposition: singleTaskDecomposition(),
+      currentTaskIndex: 0,
+      passes: [],
+      actionHistory: [
+        {
+          sequence: 1,
+          action: 'run_decompose',
+          payload: {},
+          result: {
+            status: 'success',
+            data: singleTaskDecomposition(),
+          },
+          startedAt: now,
+          completedAt: now,
+          pathTaken: 'fallback',
+        },
+        {
+          sequence: 2,
+          action: 'select_task',
+          payload: { taskId: 'task-1' },
+          target: { taskId: 'task-1' },
+          result: {
+            status: 'success',
+            data: { taskId: 'task-1' },
+          },
+          startedAt: now,
+          completedAt: now,
+          pathTaken: 'fallback',
+        },
+        {
+          sequence: 3,
+          action: 'run_dispatch',
+          payload: { taskId: 'task-1' },
+          target: { taskId: 'task-1' },
+          result: {
+            status: 'success',
+            data: {
+              taskId: 'task-1',
+              dispatch: {
+                agentPrompt: 'do task',
+                workingDirectory: '/tmp/workdir',
+                expectedOutputs: ['src/a.ts'],
+                successCriteria: 'tests pass',
+              },
+            },
+          },
+          startedAt: now,
+          completedAt: now,
+          pathTaken: 'fallback',
+        },
+        {
+          sequence: 4,
+          action: 'run_execute',
+          payload: { taskId: 'task-1' },
+          target: { taskId: 'task-1' },
+          result: {
+            status: 'error',
+            error: 'agent crashed',
+          },
+          startedAt: now,
+          completedAt: now,
+          pathTaken: 'fallback',
+        },
+      ],
+      startedAt: now,
+    };
+
+    const result = await runner.resume({
+      workflowState: savedState,
+      previousSummaries: [],
+    });
+
+    expect(result).toBe('final report');
+    expect(agentExecute).toHaveBeenCalledTimes(1);
+  });
 });

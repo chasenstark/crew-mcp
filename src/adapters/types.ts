@@ -50,6 +50,7 @@ export interface ToolLoopContext {
   toolNamespace?: string;
   toolSchemaHash?: string;
   onProviderSession?: (session: ProviderSession | undefined) => void;
+  onTranscriptUpdate?: (transcript: ToolLoopMessage[]) => void;
 }
 
 export interface AgentAdapter {

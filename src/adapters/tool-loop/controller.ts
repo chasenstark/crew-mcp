@@ -9,6 +9,28 @@ import { TOOL_LOOP_MAX_TURNS } from './constants.js';
 import type { ToolLoopDecision } from './decision.js';
 import { buildDecisionPrompt } from './transcript.js';
 
+function cloneTranscript(transcript: ToolLoopMessage[]): ToolLoopMessage[] {
+  return transcript.map((message) => ({ ...message }));
+}
+
+function isInterrupted(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function resolveInterruptMessage(error: unknown, signal?: AbortSignal): string {
+  if (signal?.reason !== undefined) {
+    return String(signal.reason);
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error.length > 0) {
+    return error;
+  }
+  return 'Interrupted';
+}
+
 export async function executePromptToolLoop(
   tools: ToolDefinition[],
   messages: ToolLoopMessage[],
@@ -16,15 +38,37 @@ export async function executePromptToolLoop(
   decide: (prompt: string) => Promise<ToolLoopDecision>,
   options: {
     pathTaken?: ToolLoopResult['pathTaken'];
+    signal?: AbortSignal;
+    onTranscriptUpdate?: (transcript: ToolLoopMessage[]) => void;
   } = {},
 ): Promise<ToolLoopResult> {
   const transcript: ToolLoopMessage[] = [...messages];
+  const publishTranscript = () => {
+    options.onTranscriptUpdate?.(cloneTranscript(transcript));
+  };
 
   for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
+    if (options.signal?.aborted) {
+      return {
+        status: 'interrupted',
+        transcript,
+        error: resolveInterruptMessage(options.signal.reason, options.signal),
+        pathTaken: options.pathTaken,
+      };
+    }
+
     let decision: ToolLoopDecision;
     try {
       decision = await decide(buildDecisionPrompt(tools, transcript));
     } catch (error: unknown) {
+      if (isInterrupted(error, options.signal)) {
+        return {
+          status: 'interrupted',
+          transcript,
+          error: resolveInterruptMessage(error, options.signal),
+          pathTaken: options.pathTaken,
+        };
+      }
       return {
         status: 'failed',
         transcript,
@@ -38,6 +82,7 @@ export async function executePromptToolLoop(
         role: 'assistant',
         content: decision.reasoning,
       });
+      publishTranscript();
     }
 
     if (decision.type === 'finish') {
@@ -88,11 +133,20 @@ export async function executePromptToolLoop(
         input: toolInput,
       }),
     });
+    publishTranscript();
 
     let toolResult: ToolResult;
     try {
       toolResult = await onToolCall({ name: toolName, input: toolInput });
     } catch (error: unknown) {
+      if (isInterrupted(error, options.signal)) {
+        return {
+          status: 'interrupted',
+          transcript,
+          error: resolveInterruptMessage(error, options.signal),
+          pathTaken: options.pathTaken,
+        };
+      }
       return {
         status: 'failed',
         transcript,
@@ -106,6 +160,7 @@ export async function executePromptToolLoop(
       name: toolName,
       content: JSON.stringify(toolResult.output),
     });
+    publishTranscript();
   }
 
   return {

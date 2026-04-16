@@ -440,7 +440,6 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           );
         }
         await this.executeActionDecision(decision, runtime, pathTaken);
-        this.persistRuntimeState(runtime, 'running');
         return {
           output: {
             ok: true,
@@ -457,12 +456,15 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         toolNamespace: this.actionServer.toolNamespace,
         toolSchemaHash: this.actionServer.getToolSchemaHash(),
         onProviderSession: (session) => {
-          runtime.providerSession = session;
+          this.persistNativeLoopProgress(runtime, { providerSession: session });
+        },
+        onTranscriptUpdate: (transcript) => {
+          this.persistNativeLoopProgress(runtime, { toolCallTranscript: transcript });
         },
       },
     );
 
-    runtime.toolCallTranscript = result.transcript;
+    runtime.toolCallTranscript = this.cloneToolLoopMessages(result.transcript);
     if (result.providerSession) {
       runtime.providerSession = result.providerSession;
     } else if (result.pathTaken === 'adapter' || result.pathTaken === 'fallback') {
@@ -583,7 +585,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       runtime.actionHistory.push(record);
       runtime.controllerCursor = Math.max(runtime.controllerCursor, record.sequence);
       this.applyActionResult(runtime, record.action, record.result.data);
-      if (record.action === 'run_execute') {
+      if (record.action === 'run_execute' && record.result.status === 'success') {
         const taskId = record.target?.taskId;
         if (taskId) {
           runtime.taskExecutionCounts[taskId] = (runtime.taskExecutionCounts[taskId] ?? 0) + 1;
@@ -627,6 +629,28 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       providerSession: runtime.providerSession,
       startedAt: runtime.startedAt,
     };
+  }
+
+  private cloneToolLoopMessages(
+    transcript: ToolLoopMessage[] | undefined,
+  ): WorkflowState['toolCallTranscript'] {
+    return transcript?.map((message) => ({ ...message }));
+  }
+
+  private persistNativeLoopProgress(
+    runtime: RuntimeState,
+    updates: {
+      providerSession?: ProviderSession;
+      toolCallTranscript?: ToolLoopMessage[];
+    },
+  ): void {
+    if ('providerSession' in updates) {
+      runtime.providerSession = updates.providerSession;
+    }
+    if ('toolCallTranscript' in updates) {
+      runtime.toolCallTranscript = this.cloneToolLoopMessages(updates.toolCallTranscript);
+    }
+    this.persistRuntimeState(runtime, 'running');
   }
 
   private persistRuntimeState(runtime: RuntimeState, status: WorkflowState['status']): void {
