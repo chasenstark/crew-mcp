@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRegistryFromConfig } from '../../src/adapters/registry.js';
+import { createBuiltinRegistry, createRegistryFromConfig } from '../../src/adapters/registry.js';
 import { ModelId } from '../../src/workflow/models.js';
 
 describe('createRegistryFromConfig', () => {
@@ -24,6 +24,21 @@ describe('createRegistryFromConfig', () => {
     expect(custom?.name).toBe('custom');
     expect(custom?.capabilities).toContain('analyze');
     expect(custom?.capabilities).toContain('review');
+  });
+
+  it('omits built-in adapters that are not in the user config', () => {
+    const registry = createRegistryFromConfig({
+      'claude-code': { adapter: 'claude-code' },
+      codex: { adapter: 'codex' },
+    });
+
+    expect(registry.get('claude-code')).toBeDefined();
+    expect(registry.get('codex')).toBeDefined();
+    expect(registry.get('gemini-cli')).toBeUndefined();
+    expect(registry.listAvailable().map((a) => a.name).sort()).toEqual([
+      'claude-code',
+      'codex',
+    ]);
   });
 
   it('registers openai-compatible adapters under arbitrary keys', () => {
@@ -54,5 +69,14 @@ describe('createRegistryFromConfig', () => {
         'codex-reviewer': { adapter: 'codex' },
       }),
     ).toThrow(/must be configured under key "codex"/i);
+  });
+});
+
+describe('createBuiltinRegistry', () => {
+  it('pre-registers all built-in adapters for diagnostic use', () => {
+    const registry = createBuiltinRegistry();
+    expect(registry.get('claude-code')).toBeDefined();
+    expect(registry.get('codex')).toBeDefined();
+    expect(registry.get('gemini-cli')).toBeDefined();
   });
 });

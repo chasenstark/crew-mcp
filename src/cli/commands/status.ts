@@ -1,10 +1,11 @@
 import chalk from 'chalk';
-import { defaultRegistry } from '../../adapters/registry.js';
+import { createBuiltinRegistry } from '../../adapters/registry.js';
 
 export async function statusCommand(): Promise<void> {
   console.log(chalk.bold('\nAgent Status\n'));
 
-  const adapters = defaultRegistry.listAvailable();
+  const registry = createBuiltinRegistry();
+  const adapters = registry.listAvailable();
   if (adapters.length === 0) {
     console.log(chalk.yellow('No adapters registered.'));
     return;
@@ -12,10 +13,10 @@ export async function statusCommand(): Promise<void> {
 
   console.log(chalk.dim(`Checking ${adapters.length} adapter(s)...\n`));
 
-  const report = await defaultRegistry.healthCheckAll();
+  const report = await registry.healthCheckAll();
 
   for (const [name, result] of Object.entries(report)) {
-    const adapter = defaultRegistry.get(name);
+    const adapter = registry.get(name);
     const statusIcon = result.available
       ? result.authenticated
         ? chalk.green('\u2713')

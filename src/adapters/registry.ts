@@ -14,13 +14,6 @@ export interface RegistryHealthReport {
 export class AdapterRegistry {
   private adapters = new Map<string, AgentAdapter>();
 
-  constructor() {
-    // Pre-register built-in adapters
-    this.register(new ClaudeCodeAdapter());
-    this.register(new CodexAdapter());
-    this.register(new GeminiCliAdapter());
-  }
-
   register(adapter: AgentAdapter): void {
     this.adapters.set(adapter.name, adapter);
   }
@@ -143,6 +136,7 @@ export function createRegistryFromConfig(
           `Built-in adapter "${adapterType}" must be configured under key "${adapterType}" (received "${name}").`,
         );
       }
+      registry.register(createBuiltinAdapter(adapterType));
       continue;
     }
 
@@ -154,7 +148,23 @@ export function createRegistryFromConfig(
   return registry;
 }
 
-/**
- * Default global registry instance.
- */
-export const defaultRegistry = new AdapterRegistry();
+function createBuiltinAdapter(adapterType: AdapterId): AgentAdapter {
+  switch (adapterType) {
+    case AdapterId.CLAUDE_CODE:
+      return new ClaudeCodeAdapter();
+    case AdapterId.CODEX:
+      return new CodexAdapter();
+    case AdapterId.GEMINI_CLI:
+      return new GeminiCliAdapter();
+    default:
+      throw new Error(`"${adapterType}" is not a built-in adapter.`);
+  }
+}
+
+export function createBuiltinRegistry(): AdapterRegistry {
+  const registry = new AdapterRegistry();
+  registry.register(new ClaudeCodeAdapter());
+  registry.register(new CodexAdapter());
+  registry.register(new GeminiCliAdapter());
+  return registry;
+}
