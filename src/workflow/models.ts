@@ -1,8 +1,8 @@
 import { toAliasToken } from './alias-token.js';
 
 export enum ModelId {
-  CLAUDE_SONNET = 'claude-sonnet-4-6',
-  CLAUDE_OPUS = 'claude-opus-4-6',
+  CLAUDE_SONNET = 'claude-sonnet-4-7',
+  CLAUDE_OPUS = 'claude-opus-4-7',
   GPT = 'gpt-5.4',
   GPT_CODEX = 'gpt-5.3-codex',
   GPT_MINI = 'gpt-5.4-mini',
