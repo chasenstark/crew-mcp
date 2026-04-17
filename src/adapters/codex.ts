@@ -34,6 +34,7 @@ import {
   type ToolLoopDecision,
 } from './tool-loop/decision.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
+import { buildDecisionPrompt } from './tool-loop/transcript.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -58,6 +59,18 @@ interface CodexEvent {
 interface ParseJsonlResult {
   events: CodexEvent[];
   droppedLines: number;
+}
+
+function parseJsonlEvent(line: string): CodexEvent | undefined {
+  const parsed = JSON.parse(line);
+  if (
+    typeof parsed !== 'object'
+    || parsed === null
+    || Array.isArray(parsed)
+  ) {
+    return undefined;
+  }
+  return parsed as CodexEvent;
 }
 
 function preview(text: string | undefined, max = 600): string {
@@ -94,7 +107,13 @@ function parseJsonl(text: string): ParseJsonlResult {
     if (!trimmed) continue;
     nonEmptyLineCount++;
     try {
-      events.push(JSON.parse(trimmed) as CodexEvent);
+      const event = parseJsonlEvent(trimmed);
+      if (!event) {
+        droppedLines++;
+        logger.warn(`Codex JSONL: dropped non-object line: ${trimmed}`);
+        continue;
+      }
+      events.push(event);
     } catch {
       droppedLines++;
       logger.warn(`Codex JSONL: dropped malformed line: ${trimmed}`);
@@ -193,8 +212,7 @@ export class CodexAdapter implements AgentAdapter {
   ];
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {
-    // codex CLI answers prompt-described tool catalogs in prose, not JSON.
-    supportsToolLoop: false,
+    supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
@@ -243,6 +261,7 @@ export class CodexAdapter implements AgentAdapter {
       });
 
       let result;
+      let flushBufferedLine: (() => void) | undefined;
       try {
         const subprocess = execa(AgentId.CODEX, args, {
           cwd: task.context.workingDirectory,
@@ -253,25 +272,41 @@ export class CodexAdapter implements AgentAdapter {
 
         if (task.onOutput && subprocess.stdout) {
           let buffer = '';
+          const emitBufferedLine = (line: string) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            try {
+              const event = parseJsonlEvent(trimmed);
+              if (!event) return;
+              const chunk = formatEventForStream(event);
+              if (chunk) task.onOutput!(chunk);
+            } catch {
+              // Malformed or non-object line — already accounted for by the final parseJsonl pass.
+            }
+          };
+          flushBufferedLine = () => {
+            if (!buffer.trim()) {
+              buffer = '';
+              return;
+            }
+            emitBufferedLine(buffer);
+            buffer = '';
+          };
+
           subprocess.stdout.on('data', (buf: Buffer) => {
             buffer += buf.toString('utf-8');
             let newlineIdx: number;
             while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-              const line = buffer.slice(0, newlineIdx).trim();
+              const line = buffer.slice(0, newlineIdx);
               buffer = buffer.slice(newlineIdx + 1);
-              if (!line) continue;
-              try {
-                const event = JSON.parse(line) as CodexEvent;
-                const chunk = formatEventForStream(event);
-                if (chunk) task.onOutput!(chunk);
-              } catch {
-                // Malformed line — already logged by the final parseJsonl pass.
-              }
+              emitBufferedLine(line);
             }
           });
+          subprocess.stdout.on('end', flushBufferedLine);
         }
 
         result = await subprocess;
+        flushBufferedLine?.();
       } catch (error: unknown) {
         const message =
           error instanceof Error ? error.message : 'Unknown execution error';
@@ -375,6 +410,27 @@ export class CodexAdapter implements AgentAdapter {
       }
       if (!output) {
         output = getLastAgentMessage(events);
+      }
+
+      if (result.exitCode !== 0) {
+        logger.error('[adapter:codex] command failed after producing JSONL output', {
+          exitCode: result.exitCode,
+          stderrPreview: preview(result.stderr),
+          outputPreview: preview(output),
+          droppedLines,
+        });
+        return {
+          output:
+            result.stderr
+            || output
+            || `Codex command failed with exit code ${result.exitCode}`,
+          filesModified,
+          status: 'error',
+          metadata: {
+            rawEvents: events,
+            droppedLines,
+          },
+        };
       }
 
       const hasFailedTurn = events.some((e) => e.type === 'turn.failed');
@@ -511,13 +567,22 @@ export class CodexAdapter implements AgentAdapter {
       return this.executeWithPromptLoop(tools, messages, onToolCall);
     }
 
+    let latestTranscript = messages.map((message) => ({ ...message }));
+    const wrappedContext: ToolLoopContext = {
+      ...context,
+      onTranscriptUpdate: (transcript) => {
+        latestTranscript = transcript.map((message) => ({ ...message }));
+        context.onTranscriptUpdate?.(latestTranscript);
+      },
+    };
+
     try {
-      return await this.executeWithResumeSession(tools, messages, onToolCall, context);
+      return await this.executeWithResumeSession(tools, messages, onToolCall, wrappedContext);
     } catch (error: unknown) {
       if (context.signal?.aborted) {
         return {
           status: 'interrupted',
-          transcript: [...messages],
+          transcript: latestTranscript,
           pathTaken: 'fallback',
           error: String(context.signal.reason ?? 'Cancelled'),
         };
@@ -534,7 +599,12 @@ export class CodexAdapter implements AgentAdapter {
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
       });
-      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall, context);
+      const fallbackResult = await this.executeWithPromptLoop(
+        tools,
+        latestTranscript,
+        onToolCall,
+        wrappedContext,
+      );
       return {
         ...fallbackResult,
         pathTaken: 'adapter',
@@ -557,7 +627,11 @@ export class CodexAdapter implements AgentAdapter {
           signal: context?.signal,
           workingDirectory: context?.workingDirectory,
         }),
-      { pathTaken: 'adapter' },
+      {
+        pathTaken: 'adapter',
+        signal: context?.signal,
+        onTranscriptUpdate: context?.onTranscriptUpdate,
+      },
     );
   }
 
@@ -568,6 +642,9 @@ export class CodexAdapter implements AgentAdapter {
     context: ToolLoopContext,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
+    const publishTranscript = () => {
+      context.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
+    };
     const cliVersion = await this.getCliVersionTag();
     const configFlags = this.buildPerRunConfigFlags();
 
@@ -583,38 +660,7 @@ export class CodexAdapter implements AgentAdapter {
       lastTurnAt: new Date().toISOString(),
     };
     context.onProviderSession?.(providerSession);
-
-    const renderToolCatalog = (): string => tools
-      .map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${JSON.stringify(tool.inputSchema)}`)
-      .join('\n');
-    const renderTranscript = (): string => {
-      if (messages.length === 0) return '(empty)';
-      return messages
-        .map((message, index) => {
-          const role = message.name ? `${message.role}(${message.name})` : message.role;
-          return `${index + 1}. ${role}: ${message.content}`;
-        })
-        .join('\n');
-    };
-
-    let pendingPrompt = [
-      'You are a workflow controller using external tools.',
-      'Decide exactly one next step per turn.',
-      '',
-      'Available tools:',
-      renderToolCatalog(),
-      '',
-      'Conversation transcript:',
-      renderTranscript(),
-      '',
-      'Respond with one JSON object matching the schema.',
-      '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
-      '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
-      '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
-      'Rules:',
-      '- Never emit multiple tool calls in one turn.',
-      '- tool must match exactly one available tool name.',
-    ].join('\n');
+    let pendingPrompt = buildDecisionPrompt(tools, transcript);
 
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
@@ -670,6 +716,7 @@ export class CodexAdapter implements AgentAdapter {
           role: 'assistant',
           content: parsedDecision.reasoning,
         });
+        publishTranscript();
       }
 
       if (parsedDecision.type === 'finish') {
@@ -723,6 +770,7 @@ export class CodexAdapter implements AgentAdapter {
           input: toolInput,
         }),
       });
+      publishTranscript();
 
       const toolResult = await onToolCall({ name: toolName, input: toolInput });
       transcript.push({
@@ -730,6 +778,7 @@ export class CodexAdapter implements AgentAdapter {
         name: toolName,
         content: JSON.stringify(toolResult.output),
       });
+      publishTranscript();
 
       pendingPrompt = [
         `Tool ${toolName} returned:`,
