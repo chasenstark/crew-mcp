@@ -136,6 +136,8 @@ describe('config-service', () => {
   it('resolves agent and adapter aliases when setting config paths', () => {
     const cliResult = setConfigValue(cwd, 'captain.cli', '${CODEX}');
     expect(cliResult.nextValue).toBe(AgentId.CODEX);
+    const captainModelResult = setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);
+    expect(captainModelResult.nextValue).toBe(ModelId.GPT_CODEX);
 
     addAgent(cwd, 'local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
     const adapterResult = setConfigValue(cwd, 'agents.local-gemma.adapter', 'OPENAI_COMPATIBLE');
@@ -200,10 +202,38 @@ describe('config-service', () => {
     expect(options).toContain('codex');
   });
 
+  it('returns captain model options constrained to the captain adapter', () => {
+    const options = getConfigValueOptions(getDefaultConfig(), 'captain.model');
+    expect(options).toContain(ModelId.CLAUDE_SONNET);
+    expect(options).toContain(ModelId.CLAUDE_OPUS);
+    expect(options).not.toContain(ModelId.GPT);
+    expect(options).not.toContain(ModelId.GPT_CODEX);
+  });
+
+  it('does not rewrite arbitrary openai-compatible models during unrelated edits', () => {
+    addAgent(cwd, 'local-llama', {
+      adapter: AdapterId.OPENAI_COMPATIBLE,
+      model: 'llama3.2',
+      apiBase: 'http://127.0.0.1:11434/v1',
+    });
+
+    setConfigValue(cwd, 'errorHandling.default.retry', '2');
+
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.agents['local-llama'].model).toBe('llama3.2');
+  });
+
   it('returns role-model options for a role key and action key', () => {
     const reviewerOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.reviewer');
     expect(reviewerOptions).toContain(ModelId.CLAUDE_SONNET);
     expect(reviewerOptions).toContain(ModelId.CLAUDE_OPUS);
+    expect(reviewerOptions).not.toContain(ModelId.GPT_CODEX);
+
+    const judgeOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.judge');
+    expect(judgeOptions).toContain(ModelId.CLAUDE_SONNET);
+    expect(judgeOptions).toContain(ModelId.CLAUDE_OPUS);
+    expect(judgeOptions).not.toContain(ModelId.GPT);
+    expect(judgeOptions).not.toContain(ModelId.GPT_CODEX);
 
     const fixOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.fix_review_issues');
     expect(fixOptions).toContain(ModelId.GPT);
@@ -282,6 +312,7 @@ describe('config-service', () => {
 
   it('shows effective config and paths', () => {
     setConfigValue(cwd, 'captain.cli', 'codex');
+    setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);
     const shown = showConfig(cwd);
     expect(shown.activeScope).toBe('project');
     expect(shown.activeProfile).toBe('default');
@@ -292,9 +323,11 @@ describe('config-service', () => {
   it('writes to explicit profile when provided', () => {
     const result = setConfigValue(cwd, 'captain.cli', 'codex', { profile: 'codex-first' });
     expect(result.profile).toBe('codex-first');
+    setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX, { profile: 'codex-first' });
 
     const profileConfig = loadConfigByScope('project', cwd, { profile: 'codex-first' });
     expect(profileConfig?.captain.cli).toBe('codex');
+    expect(profileConfig?.captain.model).toBe(ModelId.GPT_CODEX);
 
     const defaultConfig = loadConfigByScope('project', cwd);
     expect(defaultConfig).toBeNull();
@@ -304,8 +337,10 @@ describe('config-service', () => {
     setConfigProfile(cwd, 'claude-first');
     const result = setConfigValue(cwd, 'captain.cli', 'codex');
     expect(result.profile).toBe('claude-first');
+    setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);
 
     const activeProfileConfig = loadConfigByScope('project', cwd, { profile: 'claude-first' });
     expect(activeProfileConfig?.captain.cli).toBe('codex');
+    expect(activeProfileConfig?.captain.model).toBe(ModelId.GPT_CODEX);
   });
 });

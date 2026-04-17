@@ -11,7 +11,7 @@ import {
   CODEX_MODEL_PRESETS,
   ModelId,
   OPENAI_COMPATIBLE_MODEL_PRESETS,
-  CAPTAIN_MODEL_PRESETS,
+  modelPresetsForAdapter,
   resolveModelAliasOrThrow,
 } from './models.js';
 import type { FullConfig } from './types.js';
@@ -138,18 +138,23 @@ function parseDelimitedStringList(path: string, raw: unknown, example: string): 
   return uniqueOrdered(values);
 }
 
-function modelPresetsForAdapterType(adapterType: string): readonly string[] {
-  if (adapterType === AdapterId.CLAUDE_CODE) return CLAUDE_MODEL_PRESETS;
-  if (adapterType === AdapterId.CODEX) return CODEX_MODEL_PRESETS;
-  if (adapterType === AdapterId.OPENAI_COMPATIBLE) return [...OPENAI_COMPATIBLE_MODEL_PRESETS];
-  return [];
+function resolveCaptainAdapterType(config: FullConfig): string | undefined {
+  const captainAgent = config.agents[config.captain.cli];
+  return captainAgent?.adapter ?? config.captain.cli;
 }
 
 function modelPresetsForAgent(config: FullConfig, agentName: string): string[] {
   const agent = config.agents[agentName];
   if (!agent) return [];
   const adapterType = agent.adapter ?? agentName;
-  return withCurrentOption(modelPresetsForAdapterType(adapterType), agent.model);
+  return withCurrentOption(modelPresetsForAdapter(adapterType), agent.model);
+}
+
+function modelPresetsForCaptain(config: FullConfig): string[] {
+  return withCurrentOption(
+    modelPresetsForAdapter(resolveCaptainAdapterType(config)),
+    config.captain.model,
+  );
 }
 
 function modelPresetsForRole(config: FullConfig, role: string): string[] {
@@ -157,7 +162,7 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
   for (const step of config.workflow.steps) {
     if (step.role !== role && step.action !== role) continue;
     if (step.agent === AgentId.CAPTAIN) {
-      candidates.push(...CAPTAIN_MODEL_PRESETS);
+      candidates.push(...modelPresetsForCaptain(config));
       continue;
     }
     candidates.push(...modelPresetsForAgent(config, step.agent));
@@ -165,7 +170,7 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
 
   if (candidates.length === 0) {
     if (role === 'judge') {
-      candidates.push(...CAPTAIN_MODEL_PRESETS);
+      candidates.push(...modelPresetsForCaptain(config));
     } else {
       candidates.push(...CLAUDE_MODEL_PRESETS, ...CODEX_MODEL_PRESETS);
     }
@@ -220,7 +225,7 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     write: (config, _params, value) => {
       config.captain.model = String(value);
     },
-    options: (config) => withCurrentOption(CAPTAIN_MODEL_PRESETS, config.captain.model),
+    options: (config) => modelPresetsForCaptain(config),
   },
   {
     path: 'workflow.execution.mode',

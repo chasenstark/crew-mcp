@@ -1,5 +1,5 @@
 import type { FullConfig } from './types.js';
-import { ModelId } from './models.js';
+import { ModelId, isModelCompatibleWithAdapter, modelPresetsForAdapter } from './models.js';
 import { ADAPTER_PRESETS, AdapterId, AgentId, BUILTIN_WORKER_AGENTS } from './agents.js';
 import { findReviewStep } from './review-step.js';
 
@@ -20,6 +20,24 @@ const SUPPORTED_CAPABILITIES = new Set([
   'document',
   'analyze',
 ]);
+
+function resolveCaptainAdapterType(config: FullConfig): string | undefined {
+  const captainAgent = config.agents[config.captain.cli];
+  return captainAgent?.adapter ?? config.captain.cli;
+}
+
+function roleTargetsCaptain(config: FullConfig, role: string): boolean {
+  if (role === 'judge') {
+    return true;
+  }
+  return config.workflow.steps.some(
+    (step) => (step.role === role || step.action === role) && step.agent === AgentId.CAPTAIN,
+  );
+}
+
+function compatibleModelExample(adapterType: string | undefined, fallback: ModelId): string {
+  return modelPresetsForAdapter(adapterType)[0] ?? fallback;
+}
 
 function createDiagnostic(
   path: string,
@@ -58,6 +76,18 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
         `a known agent key or built-in adapter key (${BUILTIN_WORKER_AGENTS.join('|')})`,
         config.captain.cli,
         `/config set captain.cli ${AgentId.CODEX}`,
+      ),
+    );
+  }
+
+  if (!isModelCompatibleWithAdapter(resolveCaptainAdapterType(config), config.captain.model)) {
+    const captainAdapterType = resolveCaptainAdapterType(config);
+    diagnostics.push(
+      createDiagnostic(
+        'captain.model',
+        `a model supported by captain adapter "${captainAdapterType}"`,
+        config.captain.model,
+        `/config set captain.model ${compatibleModelExample(captainAdapterType, ModelId.CLAUDE_SONNET)}`,
       ),
     );
   }
@@ -139,6 +169,17 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
       );
     }
 
+    if (!isModelCompatibleWithAdapter(adapterType, agent.model)) {
+      diagnostics.push(
+        createDiagnostic(
+          `agents.${name}.model`,
+          `a model supported by adapter "${adapterType}"`,
+          agent.model,
+          `/config set agents.${name}.model ${compatibleModelExample(adapterType, ModelId.GPT_CODEX)}`,
+        ),
+      );
+    }
+
     if (adapterType === AdapterId.GENERIC && (!agent.command || agent.command.trim().length === 0)) {
       diagnostics.push(
         createDiagnostic(
@@ -194,6 +235,18 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
           'non-empty string',
           model,
           `/config set workflow.roleModels.reviewer ${ModelId.GPT}`,
+        ),
+      );
+    }
+
+    if (roleTargetsCaptain(config, role) && !isModelCompatibleWithAdapter(resolveCaptainAdapterType(config), model)) {
+      const captainAdapterType = resolveCaptainAdapterType(config);
+      diagnostics.push(
+        createDiagnostic(
+          `workflow.roleModels.${role}`,
+          `a model supported by captain adapter "${captainAdapterType}"`,
+          model,
+          `/config set workflow.roleModels.${role} ${compatibleModelExample(captainAdapterType, ModelId.CLAUDE_SONNET)}`,
         ),
       );
     }

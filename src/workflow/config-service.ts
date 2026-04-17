@@ -19,6 +19,7 @@ import {
 import { validateConfig } from './config-validation.js';
 import { AdapterId, AgentId, resolveAdapterAlias } from './agents.js';
 import { normalizeProfileName, parseConfigScope } from './config-normalization.js';
+import { isModelCompatibleWithAdapter, modelPresetsForAdapter } from './models.js';
 
 export interface ConfigPatch {
   path: string;
@@ -128,6 +129,47 @@ function readConfigValue(config: FullConfig, path: string): unknown {
   return resolved.descriptor.read(config, resolved.params);
 }
 
+function resolveCaptainAdapterType(config: FullConfig): string | undefined {
+  const captainAgent = config.agents[config.captain.cli];
+  return captainAgent?.adapter ?? config.captain.cli;
+}
+
+function firstCompatibleModel(adapterType: string | undefined): string | undefined {
+  return modelPresetsForAdapter(adapterType)[0];
+}
+
+function roleTargetsCaptain(config: FullConfig, role: string): boolean {
+  if (role === 'judge') {
+    return true;
+  }
+  return config.workflow.steps.some(
+    (step) => (step.role === role || step.action === role) && step.agent === AgentId.CAPTAIN,
+  );
+}
+
+function normalizeIncompatibleModels(config: FullConfig): void {
+  const captainAdapterType = resolveCaptainAdapterType(config);
+  if (!isModelCompatibleWithAdapter(captainAdapterType, config.captain.model)) {
+    config.captain.model = firstCompatibleModel(captainAdapterType);
+  }
+
+  for (const [role, model] of Object.entries(config.workflow.roleModels ?? {})) {
+    if (!roleTargetsCaptain(config, role)) {
+      continue;
+    }
+    if (!isModelCompatibleWithAdapter(captainAdapterType, model)) {
+      config.workflow.roleModels![role] = config.captain.model ?? firstCompatibleModel(captainAdapterType) ?? model;
+    }
+  }
+
+  for (const [name, agent] of Object.entries(config.agents)) {
+    const adapterType = agent.adapter ?? name;
+    if (!isModelCompatibleWithAdapter(adapterType, agent.model)) {
+      agent.model = firstCompatibleModel(adapterType);
+    }
+  }
+}
+
 export function getConfigValueOptions(config: FullConfig, path: string): string[] {
   const resolved = resolveConfigPath(path);
   if (!resolved) return [];
@@ -169,6 +211,7 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
   const resolvedValue = resolveConfigInput(next, path, patch.value);
   const parsedValue = resolved.descriptor.parse(resolvedValue, next, resolved.params, path);
   resolved.descriptor.write(next, resolved.params, parsedValue, path);
+  normalizeIncompatibleModels(next);
   return next;
 }
 

@@ -81,6 +81,51 @@ describe('config-validation', () => {
     expect(diagnostics.some((d) => d.path === 'workflow.roleModels.reviewer')).toBe(true);
   });
 
+  it('rejects captain models that are incompatible with the configured captain adapter', () => {
+    const config = getDefaultConfig();
+    config.captain.model = ModelId.GPT_CODEX;
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'captain.model')).toBe(true);
+  });
+
+  it('rejects agent models that are incompatible with the agent adapter', () => {
+    const config = getDefaultConfig();
+    config.agents['claude-code'].model = ModelId.GPT_CODEX;
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'agents.claude-code.model')).toBe(true);
+  });
+
+  it('rejects captain-owned role models that are incompatible with the captain adapter', () => {
+    const config = getDefaultConfig();
+    config.workflow.roleModels = { judge: ModelId.GPT_CODEX };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.judge')).toBe(true);
+  });
+
+  it('rejects incompatible judge role models even without an explicit judge step', () => {
+    const config = getDefaultConfig();
+    config.workflow.steps = config.workflow.steps.filter((step) => step.role !== 'judge');
+    config.workflow.roleModels = { judge: ModelId.GPT_CODEX };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.judge')).toBe(true);
+  });
+
+  it('allows arbitrary model names for openai-compatible adapters', () => {
+    const config = getDefaultConfig();
+    config.agents.local = {
+      adapter: 'openai-compatible',
+      model: 'llama3.2',
+      apiBase: 'http://127.0.0.1:11434/v1',
+    };
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'agents.local.model')).toBe(false);
+  });
+
   it('rejects unsupported workflow execution mode', () => {
     const config = getDefaultConfig();
     config.workflow.execution = { mode: 'linear' };

@@ -1,4 +1,5 @@
 import { toAliasToken } from './alias-token.js';
+import { AdapterId } from './agents.js';
 
 export enum ModelId {
   CLAUDE_SONNET = 'claude-sonnet-4-7',
@@ -63,3 +64,22 @@ export const CAPTAIN_MODEL_PRESETS: readonly ModelId[] = [
   ModelId.GPT_CODEX,
   ModelId.QWEN,
 ];
+
+export function modelPresetsForAdapter(adapterType?: string): readonly string[] {
+  if (adapterType === AdapterId.CLAUDE_CODE) return CLAUDE_MODEL_PRESETS;
+  if (adapterType === AdapterId.CODEX) return CODEX_MODEL_PRESETS;
+  if (adapterType === AdapterId.OPENAI_COMPATIBLE) return OPENAI_COMPATIBLE_MODEL_PRESETS;
+  return [];
+}
+
+export function isModelCompatibleWithAdapter(adapterType: string | undefined, model: string | undefined): boolean {
+  const normalized = model?.trim();
+  if (!normalized) return true;
+  if (adapterType === AdapterId.CLAUDE_CODE) {
+    return CLAUDE_MODEL_PRESETS.includes(normalized as ModelId);
+  }
+  if (adapterType === AdapterId.CODEX) {
+    return CODEX_MODEL_PRESETS.includes(normalized as ModelId);
+  }
+  return true;
+}
