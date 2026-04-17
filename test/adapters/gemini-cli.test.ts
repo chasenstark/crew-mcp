@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 vi.mock('execa', () => ({
   execa: vi.fn(),
@@ -15,6 +16,10 @@ describe('GeminiCliAdapter', () => {
   beforeEach(() => {
     adapter = new GeminiCliAdapter();
     vi.clearAllMocks();
+  });
+
+  it('advertises native tool-loop support', () => {
+    expect(adapter.captainCapabilities.supportsToolLoop).toBe(true);
   });
 
   it('extracts semantic version tag', async () => {
@@ -41,6 +46,73 @@ describe('GeminiCliAdapter', () => {
     });
 
     expect(result.status).toBe('error');
+  });
+
+  it('passes --model when specified in execute constraints', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    await adapter.execute({
+      prompt: 'test',
+      context: { workingDirectory: '/tmp/project' },
+      constraints: { model: 'gemini-2.5-pro' },
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'gemini',
+      ['--output-format', 'json', '--model', 'gemini-2.5-pro', 'test'],
+      expect.objectContaining({
+        cwd: '/tmp/project',
+        reject: false,
+      }),
+    );
+  });
+
+  it('passes --model through executeWithSchema', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: `${JSON.stringify({ content: '{"ok":true}' })}\n`,
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    const result = await adapter.executeWithSchema(
+      'return json',
+      z.object({ ok: z.boolean() }),
+      {
+        workingDirectory: '/tmp/project',
+        model: 'gemini-2.5-flash',
+      },
+    );
+
+    expect(result).toEqual({ ok: true });
+    const callArgs = mockExeca.mock.calls[0];
+    expect(callArgs?.[1]).toEqual([
+      '--output-format',
+      'json',
+      '--model',
+      'gemini-2.5-flash',
+      expect.stringContaining('return json'),
+    ]);
+  });
+
+  it('returns structured error results when the gemini process rejects', async () => {
+    mockExeca.mockRejectedValueOnce(new Error('spawn failed'));
+
+    const result = await adapter.execute({
+      prompt: 'test',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('spawn failed');
+    expect(result.metadata.rawEvents).toEqual([
+      expect.objectContaining({
+        error: 'spawn failed',
+      }),
+    ]);
   });
 
   it('returns interrupted and skips fallback prompt loop when signal is already aborted', async () => {

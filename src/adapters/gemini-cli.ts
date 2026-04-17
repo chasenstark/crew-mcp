@@ -64,6 +64,12 @@ function extractLastText(events: GeminiEvent[]): string {
   return '';
 }
 
+function renderProcessFailureOutput(stdout: string, stderr: string, message: string): string {
+  if (stderr) return stderr;
+  if (stdout) return stdout;
+  return message;
+}
+
 export class GeminiCliAdapter implements AgentAdapter {
   readonly name = AgentId.GEMINI_CLI;
   readonly capabilities: AgentCapability[] = [
@@ -76,8 +82,7 @@ export class GeminiCliAdapter implements AgentAdapter {
   ];
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {
-    // gemini CLI answers prompt-described tool catalogs in prose, not JSON.
-    supportsToolLoop: false,
+    supportsToolLoop: true,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
@@ -94,23 +99,62 @@ export class GeminiCliAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
-    const result = await execa(
-      'gemini',
-      ['--output-format', 'json', task.prompt],
-      {
+    const args = ['--output-format', 'json'];
+    if (task.constraints?.model) {
+      args.push('--model', task.constraints.model);
+    }
+    args.push(task.prompt);
+
+    const timeout = task.constraints?.timeout ?? 300_000;
+
+    let result;
+    try {
+      result = await execa('gemini', args, {
         cwd: task.context.workingDirectory,
-        timeout: task.constraints?.timeout ?? 300_000,
+        timeout,
         cancelSignal: task.constraints?.signal,
         reject: false,
-      },
-    );
-    const events = parseJsonl(result.stdout ?? '');
+      });
+    } catch (error: unknown) {
+      const stdoutText = typeof error === 'object' && error && 'stdout' in error
+        ? String((error as { stdout?: string }).stdout ?? '')
+        : '';
+      const stderrText = typeof error === 'object' && error && 'stderr' in error
+        ? String((error as { stderr?: string }).stderr ?? '')
+        : '';
+      const message =
+        error instanceof Error ? error.message : 'Unknown execution error';
+      logger.error('[adapter:gemini-cli] process execution threw', {
+        cwd: task.context.workingDirectory,
+        timeoutMs: timeout,
+        model: task.constraints?.model,
+        error: message,
+      });
+      return {
+        output: renderProcessFailureOutput(stdoutText, stderrText, message),
+        filesModified: [],
+        status: 'error',
+        metadata: {
+          rawEvents: [
+            {
+              error: message,
+              stdout: stdoutText,
+              stderr: stderrText,
+            },
+          ],
+        },
+      };
+    }
+
+    const stdoutText = result.stdout ?? '';
+    const stderrText = result.stderr ?? '';
+    const events = parseJsonl(stdoutText);
     const output = extractLastText(events);
     if (task.onOutput && output) {
       task.onOutput(output);
     }
     return {
-      output,
+      output: output || stderrText,
       filesModified: [],
       status: result.exitCode === 0 ? 'success' : 'error',
       metadata: {
@@ -129,9 +173,13 @@ export class GeminiCliAdapter implements AgentAdapter {
       context: { workingDirectory: options?.workingDirectory ?? process.cwd() },
       constraints: {
         timeout: options?.timeout,
+        model: options?.model,
         signal: options?.signal,
       },
     });
+    if (result.status === 'error') {
+      throw new Error(result.output || 'Gemini CLI execution failed.');
+    }
     return schema.parse(extractJson(result.output)) as z.infer<T>;
   }
 
@@ -145,13 +193,22 @@ export class GeminiCliAdapter implements AgentAdapter {
       return this.executeWithPromptLoop(tools, messages, onToolCall);
     }
 
+    let latestTranscript = messages.map((message) => ({ ...message }));
+    const wrappedContext: ToolLoopContext = {
+      ...context,
+      onTranscriptUpdate: (transcript) => {
+        latestTranscript = transcript.map((message) => ({ ...message }));
+        context.onTranscriptUpdate?.(latestTranscript);
+      },
+    };
+
     try {
-      return await this.executeWithResumeSession(tools, messages, onToolCall, context);
+      return await this.executeWithResumeSession(tools, messages, onToolCall, wrappedContext);
     } catch (error: unknown) {
       if (context.signal?.aborted) {
         return {
           status: 'interrupted',
-          transcript: [...messages],
+          transcript: latestTranscript,
           pathTaken: 'fallback',
           error: String(context.signal.reason ?? 'Cancelled'),
         };
@@ -168,7 +225,12 @@ export class GeminiCliAdapter implements AgentAdapter {
         startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
         lastTurnAt: new Date().toISOString(),
       });
-      const fallbackResult = await this.executeWithPromptLoop(tools, messages, onToolCall, context);
+      const fallbackResult = await this.executeWithPromptLoop(
+        tools,
+        latestTranscript,
+        onToolCall,
+        wrappedContext,
+      );
       return {
         ...fallbackResult,
         pathTaken: 'adapter',
@@ -210,6 +272,9 @@ export class GeminiCliAdapter implements AgentAdapter {
     context: ToolLoopContext,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
+    const publishTranscript = () => {
+      context.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
+    };
     const cliVersion = await this.getCliVersionTag();
     let providerSession = {
       provider: 'gemini' as const,
@@ -289,6 +354,7 @@ export class GeminiCliAdapter implements AgentAdapter {
 
       if (decision.reasoning) {
         transcript.push({ role: 'assistant', content: decision.reasoning });
+        publishTranscript();
       }
 
       if (decision.type === 'finish') {
@@ -317,12 +383,14 @@ export class GeminiCliAdapter implements AgentAdapter {
         role: 'assistant',
         content: JSON.stringify({ type: 'tool_call', tool: toolName, input: toolInput }),
       });
+      publishTranscript();
       const toolResult = await onToolCall({ name: toolName, input: toolInput });
       transcript.push({
         role: 'tool',
         name: toolName,
         content: JSON.stringify(toolResult.output),
       });
+      publishTranscript();
       prompt = [
         `Tool ${toolName} returned:`,
         JSON.stringify(toolResult.output),
@@ -354,7 +422,11 @@ export class GeminiCliAdapter implements AgentAdapter {
           signal: context?.signal,
           workingDirectory: context?.workingDirectory,
         }),
-      { pathTaken: 'adapter' },
+      {
+        pathTaken: 'adapter',
+        signal: context?.signal,
+        onTranscriptUpdate: context?.onTranscriptUpdate,
+      },
     );
   }
 }
