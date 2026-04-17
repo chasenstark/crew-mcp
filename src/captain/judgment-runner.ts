@@ -413,6 +413,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     const startMessages = runtime.toolCallTranscript && runtime.toolCallTranscript.length > 0
       ? runtime.toolCallTranscript.map((message) => ({ ...message }))
       : this.buildNativeStartMessages(runtime);
+    let latestTranscript = this.cloneToolLoopMessages(startMessages) ?? [];
 
     const result = await this.captain.executeWithTools(
       tools,
@@ -440,13 +441,23 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           );
         }
         await this.executeActionDecision(decision, runtime, pathTaken);
-        return {
-          output: {
-            ok: true,
-            action: decision.action,
-            taskId: decision.target?.taskId,
-            sequence: runtime.actionHistory.length,
+        const toolOutput = {
+          ok: true,
+          action: decision.action,
+          taskId: decision.target?.taskId,
+          sequence: runtime.actionHistory.length,
+        };
+        latestTranscript = [
+          ...latestTranscript,
+          {
+            role: 'tool',
+            name: call.name,
+            content: JSON.stringify(toolOutput),
           },
+        ];
+        this.persistNativeLoopProgress(runtime, { toolCallTranscript: latestTranscript });
+        return {
+          output: toolOutput,
         };
       },
       {
@@ -459,12 +470,16 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           this.persistNativeLoopProgress(runtime, { providerSession: session });
         },
         onTranscriptUpdate: (transcript) => {
+          latestTranscript = this.cloneToolLoopMessages(transcript) ?? [];
           this.persistNativeLoopProgress(runtime, { toolCallTranscript: transcript });
         },
       },
     );
 
-    runtime.toolCallTranscript = this.cloneToolLoopMessages(result.transcript);
+    runtime.toolCallTranscript = this.selectMostAdvancedTranscript(
+      runtime.toolCallTranscript,
+      result.transcript,
+    );
     if (result.providerSession) {
       runtime.providerSession = result.providerSession;
     } else if (result.pathTaken === 'adapter' || result.pathTaken === 'fallback') {
@@ -651,6 +666,23 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       runtime.toolCallTranscript = this.cloneToolLoopMessages(updates.toolCallTranscript);
     }
     this.persistRuntimeState(runtime, 'running');
+  }
+
+  private selectMostAdvancedTranscript(
+    current: WorkflowState['toolCallTranscript'],
+    candidate: ToolLoopMessage[] | undefined,
+  ): WorkflowState['toolCallTranscript'] {
+    const currentTranscript = this.cloneToolLoopMessages(current);
+    const candidateTranscript = this.cloneToolLoopMessages(candidate);
+    if (!currentTranscript || currentTranscript.length === 0) {
+      return candidateTranscript;
+    }
+    if (!candidateTranscript || candidateTranscript.length === 0) {
+      return currentTranscript;
+    }
+    return candidateTranscript.length >= currentTranscript.length
+      ? candidateTranscript
+      : currentTranscript;
   }
 
   private persistRuntimeState(runtime: RuntimeState, status: WorkflowState['status']): void {

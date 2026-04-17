@@ -512,7 +512,7 @@ describe('JudgmentRunner', () => {
     expect(saved.nativeToolCalls).toBe(7);
   });
 
-  it('persists transcript and provider session updates during native tool-loop progress', async () => {
+  it('preserves completed native tool results when the adapter returns a stale transcript', async () => {
     const executeWithTools = vi.fn(async (_tools, messages, onToolCall, context) => {
       const transcript = [...messages];
       const providerSession = {
@@ -534,13 +534,6 @@ describe('JudgmentRunner', () => {
       context?.onTranscriptUpdate?.(transcript);
 
       await onToolCall({ name: 'run_decompose', input: {} });
-
-      transcript.push({
-        role: 'tool',
-        name: 'run_decompose',
-        content: JSON.stringify({ ok: true }),
-      });
-      context?.onTranscriptUpdate?.(transcript);
 
       return {
         status: 'interrupted' as const,
