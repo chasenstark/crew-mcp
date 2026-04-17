@@ -1,5 +1,8 @@
 # Repository Guidelines
 
+## General Practices
+There are no production users, so we do not have to worry about being backward compatible.
+
 ## Project Structure & Module Organization
 - `src/` contains production TypeScript code.
 - `src/cli/` holds terminal entrypoints and Ink UI (`commands/` and `ui/`).
