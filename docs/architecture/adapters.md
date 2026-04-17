@@ -1,7 +1,7 @@
 # Adapter Tool-Loop Architecture
 
 ## Overview
-Provider adapters now share a common prompt-loop implementation.
+Provider adapters now share a common tool-loop contract.
 
 Shared modules:
 
@@ -14,7 +14,13 @@ Shared modules:
 - `src/adapters/tool-loop/controller.ts`
   - Generic prompt-loop controller used by adapters
 
-Adapters (`claude-code`, `codex`, `gemini-cli`) delegate fallback prompt-loop execution to this shared controller while preserving provider-specific stateful/resume transports.
+`supportsToolLoop` means the runner may call `executeWithTools()` in production.
+
+Built-in adapters (`claude-code`, `codex`, `gemini-cli`) expose `executeWithTools()` to the runner and can:
+
+- use a provider-specific native/stateful resume transport when available,
+- fall back to the shared adapter prompt-loop controller when that transport fails,
+- and persist the same tool transcript/session contract across both paths.
 
 ## Extension Points
 
