@@ -1,38 +1,82 @@
 import simpleGit, { type SimpleGit } from 'simple-git';
-import { existsSync, mkdirSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../utils/logger.js';
 
+interface WorktreeRecord {
+  taskId: string;
+  branchName: string;
+  worktreePath: string;
+  createdAt: string;
+}
+
+interface TaskLockRecord {
+  ownerId: string;
+  pid: number;
+  acquiredAt: string;
+}
+
 export class WorktreeManager {
+  private static readonly LOCK_TIMEOUT_MS = 20_000;
+  private static readonly LOCK_STALE_MS = 15_000;
+
   private git: SimpleGit;
   private basePath: string;
+  private metadataPath: string;
+  private lockPath: string;
 
   constructor(projectRoot: string) {
     this.git = simpleGit(projectRoot);
     this.basePath = join(projectRoot, '.crew', 'worktrees');
     mkdirSync(this.basePath, { recursive: true });
+    this.metadataPath = join(this.basePath, '.meta');
+    mkdirSync(this.metadataPath, { recursive: true });
+    this.lockPath = join(this.basePath, '.locks');
+    mkdirSync(this.lockPath, { recursive: true });
   }
 
   async createWorktree(taskId: string): Promise<string> {
-    const branchName = `crew/${taskId}`;
-    const worktreePath = join(this.basePath, taskId);
-    if (existsSync(worktreePath)) {
-      // Validate the worktree is healthy
-      try {
-        const wGit = simpleGit(worktreePath);
-        await wGit.status(); // Throws if not a valid git repo
-        return worktreePath;
-      } catch {
-        // Stale or broken worktree — remove and recreate
-        await this.cleanupWorktree(taskId);
+    return this.withTaskLock(taskId, async () => {
+      await this.git.raw(['worktree', 'prune']);
+
+      const existing = await this.resolveExistingWorktree(taskId);
+      if (existing) {
+        return existing.worktreePath;
       }
-    }
-    await this.git.raw(['worktree', 'add', '-b', branchName, worktreePath]);
-    return worktreePath;
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const record = this.buildWorktreeRecord(taskId);
+        try {
+          await this.git.raw(['worktree', 'add', '-b', record.branchName, record.worktreePath]);
+          try {
+            this.writeWorktreeRecord(record);
+          } catch (err) {
+            const cleanup = await this.cleanupRecordedWorktree(record);
+            const message = err instanceof Error ? err.message : String(err);
+            if (!cleanup.success) {
+              throw new Error(
+                `Failed to persist worktree metadata for ${taskId}: ${message}; rollback failed: ${cleanup.errors.join('; ')}`,
+              );
+            }
+            throw err;
+          }
+          return record.worktreePath;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!this.isRecoverableCreateCollision(message)) {
+            throw err;
+          }
+          logger.warn(`Worktree name collision for ${taskId}; retrying with a new suffix.`);
+        }
+      }
+
+      throw new Error(`Failed to create a unique worktree for ${taskId} after multiple attempts.`);
+    });
   }
 
   getWorktreePath(taskId: string): string {
-    return join(this.basePath, taskId);
+    return this.requireWorktreeRecord(taskId).worktreePath;
   }
 
   async getModifiedFiles(taskId: string): Promise<string[]> {
@@ -48,12 +92,12 @@ export class WorktreeManager {
   }
 
   async mergeWorktree(taskId: string, targetBranch?: string): Promise<void> {
-    const branchName = `crew/${taskId}`;
+    const record = this.requireWorktreeRecord(taskId);
+    const branchName = record.branchName;
     const target = await this.resolveMergeTargetBranch(targetBranch);
 
     // First, commit any uncommitted changes in the worktree
-    const worktreePath = this.getWorktreePath(taskId);
-    const worktreeGit = simpleGit(worktreePath);
+    const worktreeGit = simpleGit(record.worktreePath);
     const worktreeStatus = await worktreeGit.status();
     if (worktreeStatus.modified.length > 0 || worktreeStatus.created.length > 0 || worktreeStatus.not_added.length > 0) {
       await worktreeGit.add('.');
@@ -106,23 +150,26 @@ export class WorktreeManager {
   }
 
   async cleanupWorktree(taskId: string): Promise<void> {
-    const worktreePath = this.getWorktreePath(taskId);
-    const branchName = `crew/${taskId}`;
-    try {
-      await this.git.raw(['worktree', 'remove', worktreePath, '--force']);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to remove worktree ${worktreePath}: ${msg}`);
-    }
-    try {
-      await this.git.deleteLocalBranch(branchName, true);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to delete branch ${branchName}: ${msg}`);
-    }
+    await this.withTaskLock(taskId, async () => {
+      const record = this.readWorktreeRecord(taskId);
+      if (!record) {
+        return;
+      }
+
+      const cleanup = await this.cleanupRecordedWorktree(record);
+      if (cleanup.success) {
+        this.deleteWorktreeRecord(taskId);
+      }
+    });
   }
 
   async cleanupAll(): Promise<void> {
+    await this.git.raw(['worktree', 'prune']);
+
+    for (const taskId of this.listRecordedTaskIds()) {
+      await this.cleanupWorktree(taskId);
+    }
+
     const raw = await this.git.raw(['worktree', 'list', '--porcelain']);
     const worktreeBlocks = raw.split('\n\n')
       .filter(block => block.includes('.crew/worktrees/'));
@@ -147,6 +194,260 @@ export class WorktreeManager {
           logger.warn(`Failed to delete branch ${branch}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+    }
+  }
+
+  private async resolveExistingWorktree(taskId: string): Promise<WorktreeRecord | undefined> {
+    const record = this.readWorktreeRecord(taskId);
+    if (!record) {
+      return undefined;
+    }
+
+    try {
+      const wGit = simpleGit(record.worktreePath);
+      await wGit.status();
+      return record;
+    } catch {
+      const cleanup = await this.cleanupRecordedWorktree(record);
+      if (!cleanup.success) {
+        throw new Error(
+          `Failed to repair stale worktree for ${taskId}: ${cleanup.errors.join('; ')}`,
+        );
+      }
+      this.deleteWorktreeRecord(taskId);
+      return undefined;
+    }
+  }
+
+  private async cleanupRecordedWorktree(
+    record: WorktreeRecord,
+  ): Promise<{ success: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    try {
+      await this.git.raw(['worktree', 'remove', record.worktreePath, '--force']);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!this.isMissingWorktreeError(msg)) {
+        logger.warn(`Failed to remove worktree ${record.worktreePath}: ${msg}`);
+        errors.push(`remove worktree: ${msg}`);
+      }
+    }
+    try {
+      await this.git.deleteLocalBranch(record.branchName, true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!this.isMissingBranchError(msg)) {
+        logger.warn(`Failed to delete branch ${record.branchName}: ${msg}`);
+        errors.push(`delete branch: ${msg}`);
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      errors,
+    };
+  }
+
+  private buildWorktreeRecord(taskId: string): WorktreeRecord {
+    const token = this.toTaskToken(taskId);
+    const suffix = randomUUID().split('-')[0];
+    return {
+      taskId,
+      branchName: `crew/${token}-${suffix}`,
+      worktreePath: join(this.basePath, `${token}-${suffix}`),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private metadataFilePath(taskId: string): string {
+    return join(this.metadataPath, `${encodeURIComponent(taskId)}.json`);
+  }
+
+  private readWorktreeRecord(taskId: string): WorktreeRecord | undefined {
+    const metadataPath = this.metadataFilePath(taskId);
+    if (!existsSync(metadataPath)) {
+      return undefined;
+    }
+
+    try {
+      return JSON.parse(readFileSync(metadataPath, 'utf-8')) as WorktreeRecord;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Invalid worktree metadata for ${taskId}: ${message}`);
+    }
+  }
+
+  private writeWorktreeRecord(record: WorktreeRecord): void {
+    const targetPath = this.metadataFilePath(record.taskId);
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(
+      tempPath,
+      JSON.stringify(record, null, 2),
+      'utf-8',
+    );
+    renameSync(tempPath, targetPath);
+  }
+
+  private deleteWorktreeRecord(taskId: string): void {
+    try {
+      rmSync(this.metadataFilePath(taskId), { force: true });
+    } catch {
+      // ignore metadata cleanup errors
+    }
+  }
+
+  private requireWorktreeRecord(taskId: string): WorktreeRecord {
+    const record = this.readWorktreeRecord(taskId);
+    if (!record) {
+      throw new Error(`No recorded worktree exists for ${taskId}.`);
+    }
+    return record;
+  }
+
+  private toTaskToken(taskId: string): string {
+    const normalized = taskId
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return normalized || 'task';
+  }
+
+  private isRecoverableCreateCollision(message: string): boolean {
+    return (
+      message.includes('already exists')
+      || message.includes('already checked out')
+      || message.includes('is a missing but already registered worktree')
+    );
+  }
+
+  private listRecordedTaskIds(): string[] {
+    return readdirSync(this.metadataPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => decodeURIComponent(entry.name.replace(/\.json$/, '')));
+  }
+
+  private async withTaskLock<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+    const lockDir = join(this.lockPath, encodeURIComponent(taskId));
+    const ownerId = randomUUID();
+    const lockRecord: TaskLockRecord = {
+      ownerId,
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+    };
+    const timeoutAt = Date.now() + WorktreeManager.LOCK_TIMEOUT_MS;
+
+    while (true) {
+      try {
+        mkdirSync(lockDir);
+        try {
+          this.writeTaskLockRecord(lockDir, lockRecord);
+        } catch (err) {
+          rmSync(lockDir, { recursive: true, force: true });
+          throw err;
+        }
+        break;
+      } catch (err) {
+        if (!this.isLockAlreadyHeldError(err)) {
+          throw err;
+        }
+        if (this.canReclaimTaskLock(lockDir)) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        if (Date.now() >= timeoutAt) {
+          throw new Error(`Timed out waiting for worktree lock on ${taskId}.`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    try {
+      return await operation();
+    } finally {
+      this.releaseTaskLock(lockDir, ownerId);
+    }
+  }
+
+  private isMissingWorktreeError(message: string): boolean {
+    return (
+      message.includes('is not a working tree')
+      || message.includes('No such file or directory')
+      || message.includes('does not exist')
+      || message.includes('not found')
+    );
+  }
+
+  private isMissingBranchError(message: string): boolean {
+    return message.includes('not found') || message.includes('No branch');
+  }
+
+  private isLockAlreadyHeldError(error: unknown): boolean {
+    return (
+      typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && (error as { code?: string }).code === 'EEXIST'
+    );
+  }
+
+  private writeTaskLockRecord(lockDir: string, record: TaskLockRecord): void {
+    const targetPath = join(lockDir, 'owner.json');
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tempPath, targetPath);
+  }
+
+  private readTaskLockRecord(lockDir: string): TaskLockRecord | undefined {
+    const ownerPath = join(lockDir, 'owner.json');
+    if (!existsSync(ownerPath)) {
+      return undefined;
+    }
+
+    try {
+      return JSON.parse(readFileSync(ownerPath, 'utf-8')) as TaskLockRecord;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private canReclaimTaskLock(lockDir: string): boolean {
+    const record = this.readTaskLockRecord(lockDir);
+    if (record?.pid && this.isProcessAlive(record.pid)) {
+      return false;
+    }
+    return this.isStaleLock(lockDir);
+  }
+
+  private releaseTaskLock(lockDir: string, ownerId: string): void {
+    const record = this.readTaskLockRecord(lockDir);
+    if (record?.ownerId !== ownerId) {
+      return;
+    }
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+
+  private isStaleLock(lockDir: string): boolean {
+    try {
+      const stats = statSync(lockDir);
+      return (Date.now() - stats.mtimeMs) >= WorktreeManager.LOCK_STALE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  private isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (
+        typeof err === 'object'
+        && err !== null
+        && 'code' in err
+        && (err as { code?: string }).code === 'EPERM'
+      );
     }
   }
 }
