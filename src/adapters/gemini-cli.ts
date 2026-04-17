@@ -9,6 +9,7 @@ import {
   ToolLoopDecisionSchema,
 } from './tool-loop/decision.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
+import { buildDecisionPrompt } from './tool-loop/transcript.js';
 import type {
   AgentAdapter,
   AgentCapability,
@@ -287,38 +288,11 @@ export class GeminiCliAdapter implements AgentAdapter {
       lastTurnAt: new Date().toISOString(),
     };
     context.onProviderSession?.(providerSession);
-
-    const renderToolCatalog = (): string => tools
-      .map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${JSON.stringify(tool.inputSchema)}`)
-      .join('\n');
-    const renderTranscript = (): string => {
-      if (messages.length === 0) return '(empty)';
-      return messages
-        .map((message, index) => {
-          const role = message.name ? `${message.role}(${message.name})` : message.role;
-          return `${index + 1}. ${role}: ${message.content}`;
-        })
-        .join('\n');
-    };
-
-    let prompt = [
-      'You are a workflow controller using external tools.',
-      'Decide exactly one next step per turn.',
-      '',
-      'Available tools:',
-      renderToolCatalog(),
-      '',
-      'Conversation transcript:',
-      renderTranscript(),
-      '',
-      'Respond with one JSON object matching the schema.',
-      '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
-      '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
-      '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
-      'Rules:',
-      '- Never emit multiple tool calls in one turn.',
-      '- tool must match exactly one available tool name.',
-    ].join('\n');
+    let prompt = buildDecisionPrompt(
+      tools,
+      transcript,
+      { continueFromSession: Boolean(providerSession.sessionId) },
+    );
 
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
       const args = providerSession.sessionId

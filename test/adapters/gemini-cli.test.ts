@@ -98,6 +98,59 @@ describe('GeminiCliAdapter', () => {
     ]);
   });
 
+  it('does not replay the full transcript inline when resuming a provider session', async () => {
+    mockExeca
+      .mockResolvedValueOnce({
+        stdout: 'gemini-cli 1.2.3',
+        stderr: '',
+        exitCode: 0,
+      } as any)
+      .mockResolvedValueOnce({
+        stdout: `${JSON.stringify({
+          session_id: 'session-2',
+          content: JSON.stringify({
+            type: 'finish',
+            output: 'done',
+            reasoning: 'workflow complete',
+          }),
+        })}\n`,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+    const result = await adapter.executeWithTools(
+      [
+        {
+          name: 'run_decompose',
+          description: 'decompose request',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      [{ role: 'assistant', content: 'prior transcript should not be replayed inline' }],
+      vi.fn(async () => ({ output: { ok: true } })),
+      {
+        workingDirectory: '/tmp/project',
+        providerSession: {
+          provider: 'gemini',
+          transport: 'stateful-resume',
+          sessionId: 'session-1',
+          toolNamespace: 'mcp__crew__',
+          toolSchemaHash: 'abc',
+          startedAt: new Date().toISOString(),
+        },
+        toolNamespace: 'mcp__crew__',
+        toolSchemaHash: 'abc',
+      },
+    );
+
+    expect(result.status).toBe('completed');
+    const args = mockExeca.mock.calls[1]?.[1] as string[];
+    expect(args).toContain('--resume');
+    const prompt = args.at(-1) ?? '';
+    expect(prompt).toContain('provider resume session already contains prior turns');
+    expect(prompt).not.toContain('prior transcript should not be replayed inline');
+  });
+
   it('returns structured error results when the gemini process rejects', async () => {
     mockExeca.mockRejectedValueOnce(new Error('spawn failed'));
 
