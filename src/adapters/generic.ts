@@ -14,6 +14,20 @@ function preview(text: string | undefined, max = 600): string {
   return `${text.slice(0, max - 1).trimEnd()}...`;
 }
 
+function renderFailureOutput(
+  command: string,
+  exitCode: number | undefined,
+  stdout: string,
+  stderr: string,
+): string {
+  if (stderr && stdout) {
+    return `${stderr}\n\n${stdout}`;
+  }
+  if (stderr) return stderr;
+  if (stdout) return stdout;
+  return `${command} exited with code ${exitCode ?? 'unknown'}`;
+}
+
 export interface GenericAdapterOptions {
   name: string;
   command: string;
@@ -123,28 +137,37 @@ export class GenericAdapter implements AgentAdapter {
       };
     }
 
+    const stdoutText = result.stdout ?? '';
+    const stderrText = result.stderr ?? '';
     logger.debug(`[adapter:${this.name}] execute finished`, {
       exitCode: result.exitCode,
-      stdoutChars: result.stdout?.length ?? 0,
-      stderrChars: result.stderr?.length ?? 0,
+      stdoutChars: stdoutText.length,
+      stderrChars: stderrText.length,
     });
 
-    if (result.exitCode !== 0 && !result.stdout) {
-      logger.error(`[adapter:${this.name}] command failed with no stdout`, {
+    if (result.exitCode !== 0) {
+      logger.error(`[adapter:${this.name}] command failed`, {
         command: this.command,
         args,
         exitCode: result.exitCode,
-        stderrPreview: preview(result.stderr),
+        stdoutPreview: preview(stdoutText),
+        stderrPreview: preview(stderrText),
       });
       return {
-        output: result.stderr || `${this.command} exited with code ${result.exitCode}`,
+        output: renderFailureOutput(
+          this.command,
+          result.exitCode,
+          stdoutText,
+          stderrText,
+        ),
         filesModified: [],
         status: 'error',
         metadata: {
           rawEvents: [
             {
               exitCode: result.exitCode,
-              stderr: result.stderr,
+              stdout: stdoutText,
+              stderr: stderrText,
             },
           ],
         },
@@ -152,9 +175,9 @@ export class GenericAdapter implements AgentAdapter {
     }
 
     return {
-      output: result.stdout || '',
+      output: stdoutText,
       filesModified: [],
-      status: result.exitCode === 0 ? 'success' : 'partial',
+      status: 'success',
       metadata: {},
     };
   }
