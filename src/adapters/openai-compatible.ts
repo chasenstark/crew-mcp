@@ -132,6 +132,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     context?: ToolLoopContext,
   ): Promise<ToolLoopResult> {
     const transcript: ToolLoopMessage[] = [...messages];
+    const publishTranscript = () => {
+      context?.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
+    };
     const history: ChatMessage[] = messages.map((message) => ({
       role: message.role,
       content: message.content,
@@ -176,9 +179,8 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
         };
       }
 
-      history.push(assistant);
-
       if (Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0) {
+        history.push(assistant);
         for (const toolCall of assistant.tool_calls) {
           const parsedArgs = this.parseFunctionArguments(toolCall.function.arguments);
           transcript.push({
@@ -189,6 +191,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
               input: parsedArgs,
             }),
           });
+          publishTranscript();
 
           const toolResult = await onToolCall({
             name: toolCall.function.name,
@@ -206,6 +209,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
             name: toolCall.function.name,
             content: toolContent,
           });
+          publishTranscript();
         }
 
         providerSession.lastTurnAt = new Date().toISOString();
@@ -232,7 +236,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
       }
 
       if (!parsedDecision) {
+        history.push(assistant);
         transcript.push({ role: 'assistant', content });
+        publishTranscript();
         return {
           status: 'completed',
           transcript,
@@ -244,6 +250,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
 
       if (parsedDecision.reasoning) {
         transcript.push({ role: 'assistant', content: parsedDecision.reasoning });
+        publishTranscript();
       }
 
       if (parsedDecision.type === 'finish') {
@@ -278,22 +285,39 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
       }
 
       const toolInput = parsedDecision.input ?? {};
+      const toolCallId = `synthetic-${turn}`;
+      history.push({
+        role: 'assistant',
+        content: parsedDecision.reasoning ?? undefined,
+        tool_calls: [
+          {
+            id: toolCallId,
+            type: 'function',
+            function: {
+              name: toolName,
+              arguments: JSON.stringify(toolInput),
+            },
+          },
+        ],
+      });
       const toolResult = await onToolCall({ name: toolName, input: toolInput });
       const toolContent = JSON.stringify(toolResult.output);
       history.push({
         role: 'tool',
-        tool_call_id: `synthetic-${turn}`,
+        tool_call_id: toolCallId,
         content: toolContent,
       });
       transcript.push({
         role: 'assistant',
         content: JSON.stringify({ type: 'tool_call', tool: toolName, input: toolInput }),
       });
+      publishTranscript();
       transcript.push({
         role: 'tool',
         name: toolName,
         content: toolContent,
       });
+      publishTranscript();
       providerSession.lastTurnAt = new Date().toISOString();
       context?.onProviderSession?.(providerSession);
     }
@@ -362,6 +386,10 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     timeoutMs?: number;
     signal?: AbortSignal;
   }): Promise<any> {
+    if (params.signal?.aborted) {
+      throw params.signal.reason ?? new Error('OpenAI-compatible request aborted');
+    }
+
     const controller = params.timeoutMs ? new AbortController() : undefined;
     let timeoutHandle: NodeJS.Timeout | undefined;
     if (controller && params.signal) {
