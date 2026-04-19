@@ -9,10 +9,11 @@
  * providerSessionRef; only changes to the tool names/schemas do, via
  * ToolCatalog.getToolSchemaHash()).
  *
- * The tool list is hand-rolled here so M3-3 can land before M3-4's
- * ToolCatalog. M3-4 re-threads this file through the catalog so the source
- * of truth for what the captain can see lives in exactly one place. Both
- * variants list the same 8 tools and produce the same prompt body.
+ * Callers MUST supply `tools` — the per-tool `<NAME>_DESCRIPTION` exports
+ * flow through `ToolCatalog.toActionCatalog()` into the live MCP surface
+ * AND this prompt, so prefix text (e.g. `**Primary**`, `**Optional**`)
+ * lives in exactly one place. There is no fallback default: keeping a
+ * hand-rolled duplicate here was a drift hazard.
  */
 
 import type { WorkflowConfig, PresetConfig } from '../../workflow/types.js';
@@ -28,12 +29,19 @@ export interface BuildCaptainSystemPromptArgs {
   readonly agents: readonly CaptainPromptAgentEntry[];
   readonly preset?: PresetConfig;
   /**
-   * Tool descriptors to render in the "## Tools" section. When absent, the
-   * module falls back to its own hand-rolled list — same 8 names, same
-   * short descriptions. M3-4's ToolCatalog passes its own list through so
-   * the prompt and the CaptainActionServer agree on the surface.
+   * Tool descriptors to render in the "## Tools" section. Required —
+   * `ToolCatalog.toActionCatalog()` is the single source of truth; callers
+   * pass the catalog's live list so the prompt and the CaptainActionServer
+   * agree on the surface (Finding 1 — M3 schema-drift risk).
    */
-  readonly tools?: readonly CaptainPromptToolEntry[];
+  readonly tools: readonly CaptainPromptToolEntry[];
+  /**
+   * Optional one-line advisory appended to the guardrails section when the
+   * session-loop wants to nudge the captain (e.g., M4-2's compression
+   * threshold). Stays out of the tool catalog hash so firing the advisory
+   * cannot invalidate `providerSessionRef`.
+   */
+  readonly advisory?: string;
 }
 
 export interface CaptainPromptToolEntry {
@@ -42,65 +50,17 @@ export interface CaptainPromptToolEntry {
 }
 
 /**
- * The 8 tools the M3 captain sees. Names are un-prefixed here; the prompt
- * renders them as the captain will call them (`mcp__crew__<name>`).
- */
-export const DEFAULT_CAPTAIN_TOOL_ENTRIES: readonly CaptainPromptToolEntry[] = [
-  {
-    name: 'run_agent',
-    description:
-      'Delegate a bounded task to a named subagent. Pick agent_id from the inventory; the prompt you pass is what the agent sees verbatim.',
-  },
-  {
-    name: 'list_agents',
-    description:
-      'Return the current agent inventory (names, capabilities, health). Use when the inventory may have shifted or when you want up-to-date quota hints.',
-  },
-  {
-    name: 'ask_user',
-    description:
-      'Block and wait for a user response. Reach for this only when genuinely blocked; small clarifications should be answered inline.',
-  },
-  {
-    name: 'message_user',
-    description:
-      'Write a message to the user without ending the turn. Use for status updates, partial reports, or narration the user should see.',
-  },
-  {
-    name: 'plan_tasks',
-    description:
-      'Decompose the user request into structured tasks. Useful for multi-step work; optional for trivial asks.',
-  },
-  {
-    name: 'analyze_output',
-    description:
-      'Summarize an agent result into a structured assessment (decisions, concerns, review findings). Optional wrapper.',
-  },
-  {
-    name: 'compress_context',
-    description:
-      'Condense a long analyzed output into a terse summary for the next pass. Optional wrapper.',
-  },
-  {
-    name: 'finish',
-    description:
-      'Emit the final report and terminate the session. Call this when the user request is addressed — do not wait for external confirmation.',
-  },
-];
-
-/**
  * Render the captain-system prompt. Pure function: same inputs → same output.
  * Used by both test snapshots and the live runner.
  */
 export function buildCaptainSystemPrompt(args: BuildCaptainSystemPromptArgs): string {
-  const tools = args.tools ?? DEFAULT_CAPTAIN_TOOL_ENTRIES;
   const sections: string[] = [];
 
   sections.push(renderRole(args.workflow));
-  sections.push(renderTools(tools));
+  sections.push(renderTools(args.tools));
   sections.push(renderAgents(args.agents));
   sections.push(renderPreset(args.preset));
-  sections.push(renderGuardrails());
+  sections.push(renderGuardrails(args.advisory));
 
   return sections
     .map((section) => section.trim())
@@ -148,11 +108,18 @@ function renderPreset(preset: PresetConfig | undefined): string {
   return `${header}\n${hint}`;
 }
 
-function renderGuardrails(): string {
-  return [
+function renderGuardrails(advisory?: string): string {
+  const lines = [
     '## Operating guardrails',
     '- Call `finish` when the user\'s request is addressed.',
     '- If you are uncertain or genuinely blocked, call `ask_user`.',
     '- Budgets apply — exceeded budgets arrive as `warning` on tool results; you may continue or stop.',
-  ].join('\n');
+    '- Prefer inline reasoning over wrapper tools. `analyze_output` and `compress_context` exist for long-context or structured-extraction cases; skip them when you can reason about the tool_result directly.',
+    '- Call `run_agent` with a prompt you wrote — the agent sees the prompt verbatim. Don\'t route through `plan_tasks` for single-task work.',
+  ];
+  const trimmed = advisory?.trim();
+  if (trimmed) {
+    lines.push(`- ${trimmed}`);
+  }
+  return lines.join('\n');
 }
