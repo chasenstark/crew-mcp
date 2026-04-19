@@ -4,6 +4,7 @@ import { AdapterRegistry, createRegistryFromConfig } from '../../adapters/regist
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
+import { resolveCaptainModel } from '../../workflow/config-codec.js';
 import type { CrewRunner } from '../../captain/runner.js';
 
 export function toAgentRegistry(registry: AdapterRegistry): AgentRegistry {
@@ -46,7 +47,7 @@ export function createRunner(
       stateStore,
       worktreeManager,
       {
-        captainModel: config.captain.model,
+        captainModel: resolveCaptainModel(config.captain),
         agentModels: Object.fromEntries(
           Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
         ),
@@ -59,7 +60,7 @@ export function createRunner(
       stateStore,
       worktreeManager,
       {
-        captainModel: config.captain.model,
+        captainModel: resolveCaptainModel(config.captain),
         agentModels: Object.fromEntries(
           Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
         ),

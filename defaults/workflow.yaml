@@ -57,7 +57,13 @@ agents:
 
 captain:
   cli: CLAUDE_CODE
-  model: CLAUDE_SONNET
+  # Per-CLI captain-model map. Legacy scalar form (`model: CLAUDE_SONNET`) is
+  # still accepted; this shape lets the user switch captain.cli without
+  # re-editing the model.
+  model:
+    claude-code: CLAUDE_SONNET
+    codex: GPT
+    gemini-cli: QWEN
 
 error_handling:
   default:

@@ -2,6 +2,7 @@ import type { FullConfig } from './types.js';
 import { ModelId, isModelCompatibleWithAdapter, modelPresetsForAdapter } from './models.js';
 import { ADAPTER_PRESETS, AdapterId, AgentId, BUILTIN_WORKER_AGENTS } from './agents.js';
 import { findReviewStep } from './review-step.js';
+import { resolveCaptainModel } from './config-codec.js';
 
 export interface ConfigDiagnostic {
   path: string;
@@ -80,13 +81,14 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
     );
   }
 
-  if (!isModelCompatibleWithAdapter(resolveCaptainAdapterType(config), config.captain.model)) {
+  const resolvedCaptainModel = resolveCaptainModel(config.captain);
+  if (!isModelCompatibleWithAdapter(resolveCaptainAdapterType(config), resolvedCaptainModel)) {
     const captainAdapterType = resolveCaptainAdapterType(config);
     diagnostics.push(
       createDiagnostic(
         'captain.model',
         `a model supported by captain adapter "${captainAdapterType}"`,
-        config.captain.model,
+        resolvedCaptainModel,
         `/config set captain.model ${compatibleModelExample(captainAdapterType, ModelId.CLAUDE_SONNET)}`,
       ),
     );

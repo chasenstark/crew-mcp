@@ -34,12 +34,21 @@ export interface WorkflowConfig {
   };
 }
 
+/**
+ * Captain-model specification. Either a single model name (applied to every
+ * captain CLI) or a per-CLI map that lets the user keep models pinned across
+ * `captain.cli` swaps without editing two places.
+ */
+export type CaptainModelMap = Partial<Record<'claude-code' | 'codex' | 'gemini-cli', string>>;
+
+export type CaptainModelSpec = string | CaptainModelMap;
+
 export interface FullConfig {
   workflow: WorkflowConfig;
   agents: Record<string, AgentConfig>;
   captain: {
     cli: string;
-    model?: string;
+    model?: CaptainModelSpec;
   };
   errorHandling: {
     default: {

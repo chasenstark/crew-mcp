@@ -7,8 +7,68 @@ import {
   resolveAdapterAliasOrThrow,
   resolveAgentAlias,
 } from './agents.js';
-import type { AgentConfig, FullConfig, WorkflowConfig } from './types.js';
+import type { AgentConfig, CaptainModelMap, CaptainModelSpec, FullConfig, WorkflowConfig } from './types.js';
 import { resolveModelAliasOrThrow } from './models.js';
+
+const CAPTAIN_CLI_KEYS: readonly ('claude-code' | 'codex' | 'gemini-cli')[] = [
+  'claude-code',
+  'codex',
+  'gemini-cli',
+];
+
+/**
+ * Resolves the captain model spec to the single model string that should be
+ * used for the currently-configured captain CLI. Returns `undefined` when no
+ * model is specified for that CLI; callers let the captain's default kick in.
+ */
+export function resolveCaptainModel(captain: FullConfig['captain']): string | undefined {
+  const spec = captain.model;
+  if (spec === undefined) return undefined;
+  if (typeof spec === 'string') return spec;
+  const key = captain.cli as keyof CaptainModelMap;
+  return spec[key];
+}
+
+function parseCaptainModelSpec(raw: unknown): CaptainModelSpec | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') {
+    return resolveModelAliasOrThrow(raw, 'captain.model');
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('captain.model must be a string or a per-CLI object map');
+  }
+
+  const map: CaptainModelMap = {};
+  const input = raw as Record<string, unknown>;
+  for (const rawKey of Object.keys(input)) {
+    const aliasKey = resolveAgentAlias(rawKey);
+    if (!CAPTAIN_CLI_KEYS.includes(aliasKey as typeof CAPTAIN_CLI_KEYS[number])) {
+      throw new Error(
+        `Unknown captain.model key "${rawKey}". Supported keys: ${CAPTAIN_CLI_KEYS.join(', ')}`,
+      );
+    }
+    const value = input[rawKey];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') {
+      throw new Error(`captain.model.${rawKey} must be a string`);
+    }
+    map[aliasKey as keyof CaptainModelMap] = resolveModelAliasOrThrow(value, `captain.model.${rawKey}`);
+  }
+  return map;
+}
+
+function serializeCaptainModelSpec(spec: CaptainModelSpec | undefined): unknown {
+  if (spec === undefined) return undefined;
+  if (typeof spec === 'string') return spec;
+  const keys = Object.keys(spec).filter((key) => spec[key as keyof CaptainModelMap] !== undefined);
+  if (keys.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const value = spec[key as keyof CaptainModelMap];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object'
@@ -169,9 +229,7 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
       cli: typeof rawCaptain.cli === 'string'
         ? resolveAgentAlias(rawCaptain.cli)
         : AgentId.CLAUDE_CODE,
-      model: typeof rawCaptain.model === 'string'
-        ? resolveModelAliasOrThrow(rawCaptain.model, 'captain.model')
-        : undefined,
+      model: parseCaptainModelSpec(rawCaptain.model),
     },
     errorHandling: {
       default: {
@@ -228,7 +286,7 @@ export function serializeWorkflowYaml(config: FullConfig): string {
     ),
     captain: omitUndefined({
       cli: config.captain.cli,
-      model: config.captain.model,
+      model: serializeCaptainModelSpec(config.captain.model),
     }),
     error_handling: {
       default: {

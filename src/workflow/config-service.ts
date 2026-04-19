@@ -1,4 +1,4 @@
-import { getDefaultConfig } from './config-codec.js';
+import { getDefaultConfig, resolveCaptainModel } from './config-codec.js';
 import type { AgentConfig, FullConfig } from './types.js';
 import type { ConfigScope } from './config-repository.js';
 import {
@@ -149,16 +149,19 @@ function roleTargetsCaptain(config: FullConfig, role: string): boolean {
 
 function normalizeIncompatibleModels(config: FullConfig): void {
   const captainAdapterType = resolveCaptainAdapterType(config);
-  if (!isModelCompatibleWithAdapter(captainAdapterType, config.captain.model)) {
+  const resolvedCaptainModel = resolveCaptainModel(config.captain);
+  if (!isModelCompatibleWithAdapter(captainAdapterType, resolvedCaptainModel)) {
     config.captain.model = firstCompatibleModel(captainAdapterType);
   }
 
+  const normalizedCaptainModel = resolveCaptainModel(config.captain);
   for (const [role, model] of Object.entries(config.workflow.roleModels ?? {})) {
     if (!roleTargetsCaptain(config, role)) {
       continue;
     }
     if (!isModelCompatibleWithAdapter(captainAdapterType, model)) {
-      config.workflow.roleModels![role] = config.captain.model ?? firstCompatibleModel(captainAdapterType) ?? model;
+      config.workflow.roleModels![role] =
+        normalizedCaptainModel ?? firstCompatibleModel(captainAdapterType) ?? model;
     }
   }
 

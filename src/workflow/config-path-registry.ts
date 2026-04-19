@@ -16,6 +16,7 @@ import {
 } from './models.js';
 import type { FullConfig } from './types.js';
 import { findReviewStepIndex } from './review-step.js';
+import { resolveCaptainModel } from './config-codec.js';
 
 export interface ConfigPathDescriptor {
   path: string;
@@ -153,7 +154,7 @@ function modelPresetsForAgent(config: FullConfig, agentName: string): string[] {
 function modelPresetsForCaptain(config: FullConfig): string[] {
   return withCurrentOption(
     modelPresetsForAdapter(resolveCaptainAdapterType(config)),
-    config.captain.model,
+    resolveCaptainModel(config.captain),
   );
 }
 
@@ -217,7 +218,7 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     path: 'captain.model',
     examples: [`/config set captain.model ${ModelId.CLAUDE_SONNET}`],
     match: exactPath('captain.model'),
-    read: (config) => config.captain.model,
+    read: (config) => resolveCaptainModel(config.captain),
     parse: (raw, _config, _params, path) => resolveModelAliasOrThrow(
       parseNonEmptyString(path, raw, `/config set captain.model ${ModelId.CLAUDE_SONNET}`),
       path,
