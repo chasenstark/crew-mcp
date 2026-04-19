@@ -164,6 +164,12 @@ export class SessionLoop {
 
     try {
       await this.exitPromise;
+      // On clean exit (done=true), drain in-flight dispatcher tasks so their
+      // terminal events can still reach our listeners — otherwise their
+      // tool_results would be dropped when teardown() disposes the listeners.
+      // On cancel, we've already called cancelAll; still drain briefly so
+      // cancellation tool_results are captured.
+      await this.drainInFlight(this.cancelled ? 500 : 2000);
     } finally {
       subscription.dispose();
       options?.externalSignal?.removeEventListener('abort', externalAbortHandler);
@@ -172,6 +178,13 @@ export class SessionLoop {
 
     if (this.turnError) throw this.turnError;
     return { finalReport: this.finalReport };
+  }
+
+  private async drainInFlight(timeoutMs: number): Promise<void> {
+    const start = Date.now();
+    while (this.dispatcher.inFlightCount() > 0 && Date.now() - start < timeoutMs) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
 
   cancel(reason = 'session-loop cancelled'): void {

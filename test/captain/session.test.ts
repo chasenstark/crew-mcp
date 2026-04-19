@@ -84,6 +84,24 @@ describe('CaptainSession', () => {
     expect(second.value?.kind).toBe('tool_completed');
   });
 
+  it('events() buffers events fired between await-points (regression for B4)', async () => {
+    const s = CaptainSession.create({ projectRoot: root });
+    const iter = s.events()[Symbol.asyncIterator]();
+
+    // Subscribe by starting the generator (it registers a waiting slot).
+    const firstP = iter.next();
+    // Fire TWO events in the same microtask window. The first resolves the
+    // waiting slot; the second must land in the per-iterator queue instead
+    // of being dropped.
+    s.appendUserMessage('one', '2026-04-19T00:00:00.000Z');
+    s.appendUserMessage('two', '2026-04-19T00:00:01.000Z');
+
+    const first = await firstP;
+    const second = await iter.next();
+    expect(first.value?.kind === 'user_message' && first.value.text).toBe('one');
+    expect(second.value?.kind === 'user_message' && second.value.text).toBe('two');
+  });
+
   it('events() does NOT replay events that were appended before subscribe()', async () => {
     const s = CaptainSession.create({ projectRoot: root });
     s.appendUserMessage('pre', '2026-04-19T00:00:00.000Z');

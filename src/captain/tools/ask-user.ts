@@ -105,6 +105,20 @@ function coordinatorFor(session: CaptainSession): AskUserCoordinator {
   return c;
 }
 
+/**
+ * Block until the NEXT user_message event on the session, or reject if the
+ * signal aborts. Used by the judgment-runner scheduler for ask_user without
+ * double-wrapping a second dispatcher task on top of the one the scheduler
+ * already returned. Callers that want both (a) session tool_call appending
+ * and (b) dispatcher scheduling should use dispatchAskUser.
+ */
+export async function waitForUserResponse(
+  session: CaptainSession,
+  signal: AbortSignal,
+): Promise<string> {
+  return coordinatorFor(session).subscribe(signal);
+}
+
 export async function dispatchAskUser(args: DispatchAskUserArgs): Promise<AskUserResult> {
   const toolCallId = args.toolCallId ?? randomUUID();
   args.session.appendToolCall({
@@ -113,44 +127,66 @@ export async function dispatchAskUser(args: DispatchAskUserArgs): Promise<AskUse
     input: { question: args.question },
   });
 
-  return new Promise<AskUserResult>((resolve, reject) => {
-    const finalize = (status: 'success' | 'error' | 'cancelled', output: unknown): void => {
-      args.session.appendToolResult({
-        toolCallId,
-        output,
-        status,
-      });
-      if (status === 'success') {
-        resolve({ toolCallId, response: String(output) });
-      } else if (status === 'cancelled') {
-        reject(new AskUserAbortError(String(output)));
-      } else {
-        reject(new Error(String(output)));
-      }
-    };
+  // NOTE: this helper does NOT append a tool_result to the session. The
+  // dispatcher's terminal events (run:complete/failed/cancelled) are the
+  // authority for tool_result writes; SessionLoop.wireDispatcherEvents
+  // already handles that path. Writing here too would produce duplicate
+  // tool_result messages under production (B2 in the M1.5 review).
+  //
+  // In tests or ad-hoc callers that use dispatchAskUser without a
+  // SessionLoop around it, the tool_result simply won't be written to the
+  // session — which is correct: a dispatcher without a subscriber has no
+  // durable side effect beyond the promise resolution below.
 
+  // Propagate externalSignal aborts through the dispatcher so the dispatcher
+  // emits run:cancelled (not run:failed) when the external signal fires.
+  let externalAbortHandler: (() => void) | null = null;
+  if (args.externalSignal) {
+    const dispatcher = args.dispatcher;
+    if (args.externalSignal.aborted) {
+      // Pre-aborted — cancel the dispatcher call once it's registered.
+      setImmediate(() => {
+        dispatcher.cancel(toolCallId, readAbortReason(args.externalSignal?.reason));
+      });
+    } else {
+      externalAbortHandler = () => {
+        dispatcher.cancel(toolCallId, readAbortReason(args.externalSignal?.reason));
+      };
+      args.externalSignal.addEventListener('abort', externalAbortHandler, { once: true });
+    }
+  }
+
+  return new Promise<AskUserResult>((resolve, reject) => {
     args.dispatcher.start({
       toolCallId,
       toolName: 'ask_user',
       input: { question: args.question },
       run: async (ctx) => {
-        const mergedSignal = mergeSignals(ctx.signal, args.externalSignal);
         try {
-          const response = await coordinatorFor(args.session).subscribe(mergedSignal);
-          finalize('success', response);
+          const response = await coordinatorFor(args.session).subscribe(ctx.signal);
+          resolve({ toolCallId, response });
           return response;
         } catch (err: unknown) {
           if (err instanceof AskUserAbortError) {
-            finalize('cancelled', err.message || 'cancelled');
-            throw err;
+            reject(err);
+          } else {
+            reject(err instanceof Error ? err : new Error(String(err)));
           }
-          const message = err instanceof Error ? err.message : String(err);
-          finalize('error', message);
           throw err;
+        } finally {
+          if (externalAbortHandler && args.externalSignal) {
+            args.externalSignal.removeEventListener('abort', externalAbortHandler);
+          }
         }
       },
     });
   });
+}
+
+function readAbortReason(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === 'string') return reason;
+  return 'cancelled';
 }
 
 class AskUserAbortError extends Error {
@@ -158,22 +194,6 @@ class AskUserAbortError extends Error {
   constructor(reason: unknown) {
     super(typeof reason === 'string' ? reason : reason instanceof Error ? reason.message : 'cancelled');
   }
-}
-
-function mergeSignals(primary: AbortSignal, external: AbortSignal | undefined): AbortSignal {
-  if (!external) return primary;
-  if (primary.aborted || external.aborted) {
-    const c = new AbortController();
-    c.abort(primary.aborted ? primary.reason : external.reason);
-    return c.signal;
-  }
-  const merged = new AbortController();
-  const onAbort = (signal: AbortSignal) => () => {
-    if (!merged.signal.aborted) merged.abort(signal.reason);
-  };
-  primary.addEventListener('abort', onAbort(primary));
-  external.addEventListener('abort', onAbort(external));
-  return merged.signal;
 }
 
 export { AskUserAbortError };

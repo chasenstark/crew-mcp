@@ -41,7 +41,7 @@ import type { CrewRunner, ResumeParams } from './runner.js';
 import { RunnerBase } from './runner-base.js';
 import { CaptainSession } from './session.js';
 import { ToolDispatcher } from './tool-dispatcher.js';
-import { dispatchAskUser } from './tools/ask-user.js';
+import { dispatchAskUser, waitForUserResponse } from './tools/ask-user.js';
 import {
   SessionLoop,
   type SessionLoopTurn,
@@ -510,40 +510,31 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         }
 
         if (call.toolName === 'ask_user') {
-          // Dispatch through the ask-user helper which uses the shared
-          // dispatcher under the hood. Runs concurrently with other tool calls.
+          // Single dispatcher task per ask_user. The task awaits the next
+          // user_message via the shared coordinator (waitForUserResponse);
+          // when it resolves, the dispatcher emits run:complete and the
+          // SessionLoop's listener writes the single tool_result for this
+          // toolCallId. No double-dispatch (B2 fix).
+          const question =
+            typeof (decision.payload as { question?: string } | undefined)?.question === 'string'
+              ? (decision.payload as { question: string }).question
+              : 'Captain needs your input.';
           return {
             kind: 'dispatched',
             task: {
               toolCallId: call.toolCallId,
               toolName: 'ask_user',
               run: async (askCtx) => {
-                // Inline the ask_user logic: the decision's question, wait
-                // for the next user_message, append synthetic summary.
-                const question =
-                  typeof (decision.payload as { question?: string } | undefined)?.question === 'string'
-                    ? (decision.payload as { question: string }).question
-                    : 'Captain needs your input.';
-                // Emit the ask_user action result when answered via
-                // session.appendUserMessage → session_loop triggers next turn.
-                // We use dispatchAskUser via runtime signal.
-                const { dispatchAskUser } = await import('./tools/ask-user.js');
-                const result = await dispatchAskUser({
-                  session: this.session!,
-                  dispatcher: this.dispatcher!,
-                  question,
-                  toolCallId: `ask-${call.toolCallId}`,
-                  externalSignal: askCtx.signal,
-                });
+                const response = await waitForUserResponse(this.session!, askCtx.signal);
                 const syntheticSummary: PassSummary = {
                   passNumber: runtime.globalPassCounter + 1,
-                  summary: `User input: ${result.response}`,
+                  summary: `User input: ${response}`,
                   unresolvedIssues: [],
-                  contextForNextPass: result.response,
+                  contextForNextPass: response,
                   filesInScope: [],
                 };
                 runtime.summaries.push(syntheticSummary);
-                return { ok: true, question, response: result.response };
+                return { ok: true, question, response };
               },
             },
           };

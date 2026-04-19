@@ -27,6 +27,11 @@ export interface CaptainSessionInit {
   toolSchemaHash?: string;
 }
 
+interface EventSubscription {
+  queue: SessionEvent[];
+  waiting: ((event: SessionEvent) => void) | null;
+}
+
 export class CaptainSession {
   private readonly store: SessionStore;
   private readonly projectRoot: string;
@@ -36,7 +41,12 @@ export class CaptainSession {
   private _toolSchemaHash: string | undefined;
   private startedAt: string;
   private lastTurnAt: string | undefined;
-  private pendingEvents: Array<(event: SessionEvent) => void> = [];
+  // Per-iterator subscription. Each active events() iterator owns a queue +
+  // a single 'waiting' resolver slot. When an event arrives, we resolve the
+  // waiting slot if present; otherwise we push the event into the queue so a
+  // subsequent next() can drain it. This prevents the B4 drop-window bug
+  // where two events fired between await-points would orphan the second one.
+  private eventSubscriptions = new Set<EventSubscription>();
   private liveEventListeners: Set<(event: SessionEvent) => void> = new Set();
 
   private constructor(init: {
@@ -274,13 +284,27 @@ export class CaptainSession {
    * This intentional asymmetry keeps the session loop from re-running a
    * turn for every disk-persisted event on cold start: the message log
    * already reflects them.
+   *
+   * Per-iterator buffering: each active iterator has its own queue + waiting
+   * slot. Events fired while the consumer is between next() calls are queued
+   * rather than dropped. See B4 in the M1.5 review.
    */
   async *events(): AsyncIterable<SessionEvent> {
-    while (true) {
-      const next = await new Promise<SessionEvent>((resolve) => {
-        this.pendingEvents.push(resolve);
-      });
-      yield next;
+    const sub: EventSubscription = { queue: [], waiting: null };
+    this.eventSubscriptions.add(sub);
+    try {
+      while (true) {
+        if (sub.queue.length > 0) {
+          yield sub.queue.shift() as SessionEvent;
+          continue;
+        }
+        const next = await new Promise<SessionEvent>((resolve) => {
+          sub.waiting = resolve;
+        });
+        yield next;
+      }
+    } finally {
+      this.eventSubscriptions.delete(sub);
     }
   }
 
@@ -347,10 +371,14 @@ export class CaptainSession {
   }
 
   private deliverToPending(event: SessionEvent): void {
-    const resolvers = this.pendingEvents;
-    this.pendingEvents = [];
-    for (const resolver of resolvers) {
-      resolver(event);
+    for (const sub of this.eventSubscriptions) {
+      if (sub.waiting) {
+        const resolve = sub.waiting;
+        sub.waiting = null;
+        resolve(event);
+      } else {
+        sub.queue.push(event);
+      }
     }
     for (const listener of this.liveEventListeners) {
       try {
