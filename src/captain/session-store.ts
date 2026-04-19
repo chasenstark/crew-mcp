@@ -204,9 +204,30 @@ export class SessionStore {
       this.hasLock = true;
       return;
     } catch (err: unknown) {
-      // Lock held — check if by another live process. Warn once and proceed.
+      // Lock held. First check if the holder is still alive; if not, the
+      // lock is stale (crashed writer), reclaim it silently (S6).
+      const holder = this.readHolderPid();
+      if (holder !== null && !isProcessAlive(holder)) {
+        try {
+          unlinkSync(this.lockPath);
+        } catch {
+          // Someone else may have reclaimed it; retry the acquire either way.
+        }
+        // Retry once after stale reclaim.
+        try {
+          const fd = openSync(this.lockPath, 'wx');
+          writeSync(fd, String(process.pid));
+          closeSync(fd);
+          this.hasLock = true;
+          return;
+        } catch {
+          // fall through to warn path
+        }
+      }
+
+      // Genuinely held by a live process — warn once and proceed with
+      // last-write-wins on session.json (events.log appends are OS-atomic).
       if (!this.lockWarnedOnce) {
-        const holder = this.readHolderPid();
         logger.warn(
           `[session-store] session lock held by another process (pid ${holder ?? 'unknown'}); proceeding with last-write-wins semantics on session.json`,
           { error: err instanceof Error ? err.message : String(err) },
@@ -224,6 +245,19 @@ export class SessionStore {
     } catch {
       return null;
     }
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    // ESRCH = no such process (dead). EPERM = exists but no signal permission
+    // (still alive). Treat everything else as "alive" to avoid false reclaim.
+    const code = (err as { code?: string } | null)?.code;
+    if (code === 'ESRCH') return false;
+    return true;
   }
 }
 

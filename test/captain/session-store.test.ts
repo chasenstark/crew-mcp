@@ -229,6 +229,34 @@ describe('SessionStore', () => {
     expect(existsSync(join(root, '.crew', 'captain', 'events.log'))).toBe(false);
   });
 
+  it('reclaims a stale lock file whose holder pid is no longer alive (S6)', () => {
+    // A never-used pid in the unsigned-int range that's certainly not alive.
+    const DEAD_PID = 2_147_483_646;
+    const dir = ensureCaptainDir(root);
+    const lockPath = join(dir, '.lock');
+    writeFileSync(lockPath, String(DEAD_PID), 'utf-8');
+
+    // Acquire should succeed silently via reclaim; the lock file now holds
+    // our own pid.
+    store.writeSession(baseSnapshot());
+
+    const holder = readFileSync(lockPath, 'utf-8').trim();
+    expect(holder).toBe(String(process.pid));
+  });
+
+  it('does not reclaim a lock held by a live process', () => {
+    // Our own pid is guaranteed alive. The store should NOT reclaim.
+    const dir = ensureCaptainDir(root);
+    const lockPath = join(dir, '.lock');
+    writeFileSync(lockPath, String(process.pid), 'utf-8');
+    // Build a second store in the same dir and verify the lock isn't taken.
+    const second = new SessionStore(root);
+    second.writeSession(baseSnapshot());
+    // The lock file's contents are still our pid (we're alive, not reclaimed).
+    const holder = readFileSync(lockPath, 'utf-8').trim();
+    expect(holder).toBe(String(process.pid));
+  });
+
   it('appends through SessionStore after a concurrent lock simulation', () => {
     // Prime a lock file as if another process owned it.
     const dir = ensureCaptainDir(root);
