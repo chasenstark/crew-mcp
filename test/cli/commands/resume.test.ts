@@ -54,8 +54,6 @@ function createMockRunner(): CrewRunner {
   return {
     run: vi.fn(async () => 'ok'),
     resume: vi.fn(async () => 'ok'),
-    requestUserInput: vi.fn(async () => 'input'),
-    provideUserInput: vi.fn(),
     cancel: vi.fn(),
     markInterrupted: vi.fn(),
     on: vi.fn(() => undefined as unknown as CrewRunner),

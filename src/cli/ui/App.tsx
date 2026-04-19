@@ -243,12 +243,10 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
       }
 
       if (legacyMode) {
-        if (legacyWaitingForInput) {
-          addMessage('user', input);
-          setLegacyWaitingForInput(false);
-          pipeline.provideUserInput(input);
-          return;
-        }
+        // Linear mode (Pipeline without session/dispatcher) is M3-scope.
+        // Post-M1.5-11 we still compile App without session for tests, but
+        // run behavior is simple: submit starts pipeline.run once, further
+        // submits are ignored with a note.
         if (legacyIsRunning) {
           if (input === '/cancel') {
             pipeline.cancel('Cancelled by user from interactive session');
@@ -259,7 +257,6 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
             addMessage('system', 'Cancelled. Workflow state saved as interrupted — rerun to resume.');
             return;
           }
-          // In legacy mode (no session), we can't emit a user_message event, so just record it
           addMessage('system', 'Input received but linear-mode pipeline cannot queue messages.');
           return;
         }

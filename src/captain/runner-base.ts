@@ -2,39 +2,23 @@ import { EventEmitter } from 'eventemitter3';
 import type { PipelineEvents } from './pipeline.js';
 import { StateStore } from '../state/store.js';
 
+/**
+ * RunnerBase is the shared lifecycle for Pipeline (linear, deprecated) and
+ * JudgmentRunner (M1.5-era). Post-M1.5 it owns:
+ *
+ *  - activeAbortController — cooperative cancellation signal for the
+ *    current run; subclasses wire subagent dispatchers through this.
+ *  - cancel() / markInterrupted() — surface + persistence integration.
+ *
+ * The slot-based requestUserInput / provideUserInput pair lived here
+ * pre-M1.5. As of M1.5-11 ask_user is a dispatcher-backed tool; the
+ * shim is deleted.
+ */
 export abstract class RunnerBase extends EventEmitter<PipelineEvents> {
   protected activeAbortController: AbortController | null = null;
-  private userInputResolver: ((input: string) => void) | null = null;
-  private userInputRejecter: ((error: Error) => void) | null = null;
 
   constructor(private readonly stateStore: StateStore) {
     super();
-  }
-
-  requestUserInput(question: string): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      this.userInputResolver = resolve;
-      this.userInputRejecter = reject;
-      this.emit('ask_user', question);
-    });
-  }
-
-  provideUserInput(input: string): void {
-    if (this.userInputResolver) {
-      const resolve = this.userInputResolver;
-      this.userInputResolver = null;
-      this.userInputRejecter = null;
-      resolve(input);
-    }
-  }
-
-  private rejectPendingUserInput(reason: string): void {
-    if (this.userInputRejecter) {
-      const reject = this.userInputRejecter;
-      this.userInputResolver = null;
-      this.userInputRejecter = null;
-      reject(new Error(reason));
-    }
   }
 
   markInterrupted(reason = 'Interrupted by user'): void {
@@ -55,6 +39,5 @@ export abstract class RunnerBase extends EventEmitter<PipelineEvents> {
     if (this.activeAbortController && !this.activeAbortController.signal.aborted) {
       this.activeAbortController.abort(reason);
     }
-    this.rejectPendingUserInput(reason);
   }
 }

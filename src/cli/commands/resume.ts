@@ -41,7 +41,7 @@ export async function resumeCommand(
   logger.info(`Resume log file: ${logFile}`);
 
   const mode = workflowState.executionMode ?? 'linear';
-  const { runner, config, registry } = createRunner(projectRoot, { stateStore, mode });
+  const { runner, config, registry, session, dispatcher } = createRunner(projectRoot, { stateStore, mode });
   if (!options.skipPreflight) {
     await assertRequiredAgentsReady(registry, config);
   }
@@ -66,7 +66,10 @@ export async function resumeCommand(
     },
   );
 
-  attachAskUserHandler(runner, {
+  attachAskUserHandler({
+    runner,
+    session,
+    dispatcher,
     policy: onAskUser,
     failPrefix: 'Human input required during resume',
   });

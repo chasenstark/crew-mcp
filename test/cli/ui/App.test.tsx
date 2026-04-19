@@ -51,8 +51,6 @@ function createFakeRunner() {
     removeAllListeners: emitter.removeAllListeners.bind(emitter),
     run: vi.fn((_input: string) => new Promise<string>(() => { /* pending */ })),
     resume: vi.fn(() => new Promise<string>(() => { /* pending */ })),
-    provideUserInput: vi.fn(),
-    requestUserInput: vi.fn(async () => ''),
     cancel: vi.fn(),
     markInterrupted: vi.fn(),
   };
@@ -260,20 +258,7 @@ describe('App (M1.5 post-rewrite)', () => {
     expect(lastFrame()).toContain('config show output');
   });
 
-  it('legacy mode (no session/dispatcher) preserves old slot-based UI for linear mode', async () => {
-    const { runner, fake, emitter } = createFakeRunner();
-    const { lastFrame } = renderApp(<App pipeline={runner} />);
-    await flush();
-    submit('start');
-    await flush();
-    expect(fake.run).toHaveBeenCalledWith('start');
-
-    emitter.emit('ask_user', 'What next?');
-    await flush();
-    expect(lastFrame()).toContain('What next?');
-
-    submit('my answer');
-    await flush();
-    expect(fake.provideUserInput).toHaveBeenCalledWith('my answer');
-  });
+  // Deleted in M1.5-11: slot-based provideUserInput / ask_user runner event
+  // are retired. Legacy mode (Pipeline without session) now just runs once;
+  // no queueing, no ask_user pause. Linear mode dies with pipeline.ts in M3.
 });

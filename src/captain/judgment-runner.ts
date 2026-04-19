@@ -1051,21 +1051,22 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   private async dispatchAskUser(question: string): Promise<string> {
-    // Prefer the dispatcher-backed path when a session + dispatcher are
-    // injected (M1.5-10 wires them for real use). Fall back to the slot-based
-    // shim (emits 'ask_user' and awaits provideUserInput) so existing tests
-    // without session/dispatcher keep passing; the shim disappears entirely
-    // in M1.5-11.
-    if (this.session && this.dispatcher) {
-      const result = await dispatchAskUser({
-        session: this.session,
-        dispatcher: this.dispatcher,
-        question,
-        externalSignal: this.activeAbortController?.signal,
-      });
-      return result.response;
+    // M1.5-11: ask_user is strictly dispatcher-backed. If a session+dispatcher
+    // aren't injected (legacy tests), the call fails loudly so the missing
+    // wiring is obvious.
+    if (!this.session || !this.dispatcher) {
+      throw new Error(
+        'ask_user requires a CaptainSession + ToolDispatcher on the JudgmentRunner. '
+        + 'M1.5-10 wires both via create-runner; pre-M1.5 slot fallback has been retired.',
+      );
     }
-    return this.requestUserInput(question);
+    const result = await dispatchAskUser({
+      session: this.session,
+      dispatcher: this.dispatcher,
+      question,
+      externalSignal: this.activeAbortController?.signal,
+    });
+    return result.response;
   }
 
   private resolveTaskModel(task: { role: string; agent: string }): string | undefined {

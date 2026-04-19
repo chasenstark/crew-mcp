@@ -477,17 +477,11 @@ export class Pipeline extends RunnerBase implements CrewRunner {
         logger.warn(
           `Task ${task.id} needs human attention: ${latestIngest.humanAttentionReason}`,
         );
-        const userResponse = await this.requestUserInput(
-          latestIngest.humanAttentionReason ?? 'Agent requires human input',
-        );
-        // Feed user response into the next dispatch as additional context
-        localSummaries.push({
-          passNumber: currentPass,
-          summary: `User provided input: ${userResponse}`,
-          unresolvedIssues: [],
-          contextForNextPass: userResponse,
-          filesInScope: [],
-        });
+        // M1.5-11: ask_user is unsupported in linear mode. Linear mode is
+        // dormant (no default callers after M0's judgment-mode flip) and
+        // slated for removal in M3; the durable captain-session-driven
+        // ask_user flow only runs through JudgmentRunner.
+        throw new Error('ask_user is unsupported in linear mode; use judgment mode');
       }
 
       // -------------------------------------------------------------------
@@ -547,19 +541,8 @@ export class Pipeline extends RunnerBase implements CrewRunner {
       }
 
       if (judgment.decision === 'ask_user') {
-        const userResponse = await this.requestUserInput(
-          judgment.questionForUser ?? 'The captain needs your input.',
-        );
-        // Feed user response into the next dispatch as additional context
-        localSummaries.push({
-          passNumber: currentPass,
-          summary: `User provided input: ${userResponse}`,
-          unresolvedIssues: [],
-          contextForNextPass: userResponse,
-          filesInScope: [],
-        });
-        currentPass++;
-        continue;
+        // M1.5-11: linear mode no longer supports ask_user (see above).
+        throw new Error('ask_user is unsupported in linear mode; use judgment mode');
       }
 
       if (judgment.isLooping) {

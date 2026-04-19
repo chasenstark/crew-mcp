@@ -372,34 +372,11 @@ describe('Pipeline', () => {
     expect(judgeModelArg).toBe(ModelId.GPT);
   });
 
-  it('requests user input when judge asks user and resumes with response', async () => {
-    const { pipeline } = createHarness();
-    const questions: string[] = [];
-
-    pipeline.on('ask_user', (question) => {
-      questions.push(question);
-      pipeline.provideUserInput('Use stricter validation');
-    });
-
-    mockJudge
-      .mockResolvedValueOnce({
-        decision: 'ask_user',
-        reasoning: 'Need requirement clarification',
-        questionForUser: 'Should we fail closed?',
-        isLooping: false,
-      })
-      .mockResolvedValueOnce({
-        decision: 'done',
-        reasoning: 'clarified',
-        isLooping: false,
-      });
-
-    await pipeline.run('Build thing');
-
-    expect(questions).toEqual(['Should we fail closed?']);
-    const secondDispatchSummaries = mockDispatch.mock.calls[1]?.[2] as PassSummary[];
-    expect(secondDispatchSummaries.some((s) => s.contextForNextPass === 'Use stricter validation')).toBe(true);
-  });
+  // Deleted in M1.5-11: linear-mode ask_user is no longer supported.
+  // pipeline.ts throws on ask_user; the test asserted the slot-based flow,
+  // which is retired. ask_user tests now live on the session-loop integration
+  // (test/captain/judgment-runner.session-loop.test.ts + test/captain/tools/
+  // ask-user.test.ts).
 
   it('skips dependent tasks when dependency fails', async () => {
     const { pipeline, state } = createHarness();
@@ -533,27 +510,7 @@ describe('Pipeline', () => {
     );
   });
 
-  it('exits gracefully as interrupted when cancelled while waiting for user input', async () => {
-    const { pipeline, state } = createHarness();
-
-    mockJudge.mockResolvedValueOnce({
-      decision: 'ask_user',
-      reasoning: 'Need clarification',
-      questionForUser: 'Choose one?',
-      isLooping: false,
-    });
-
-    pipeline.on('ask_user', () => {
-      pipeline.cancel('Cancelled during question');
-    });
-
-    const result = await pipeline.run('Build thing');
-
-    expect(result).toBe('Workflow interrupted.');
-    expect(mockReport).not.toHaveBeenCalled();
-
-    const finalState = state.loadState() as WorkflowState;
-    expect(finalState.status).toBe('interrupted');
-    expect(finalState.lastError).toBe('Cancelled during question');
-  });
+  // Deleted in M1.5-11: linear-mode ask_user is no longer supported.
+  // The cancel-during-ask-user scenario is now covered by the session-loop
+  // tests; pipeline.ts throws on ask_user rather than pausing.
 });

@@ -40,7 +40,10 @@ export async function runCommand(
         sawPipelineError = true;
       },
     );
-    attachAskUserHandler(runner, {
+    attachAskUserHandler({
+      runner,
+      session,
+      dispatcher,
       policy: onAskUser,
       failPrefix: 'Human input required in non-interactive mode',
     });
