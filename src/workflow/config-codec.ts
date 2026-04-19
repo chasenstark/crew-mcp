@@ -142,7 +142,9 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
 export function parseWorkflowYaml(yamlContent: string): FullConfig {
   const parsed = asObject(YAML.parse(yamlContent));
   const parsedWorkflow = asObject(parsed.workflow);
-  const parsedExecution = asObject(parsedWorkflow.execution);
+  // M4-4: parsedWorkflow.execution is no longer read — judgment is the
+  // only supported mode and the result is hard-coded below. Legacy YAML
+  // with `execution: { mode: linear }` is accepted and silently coerced.
   const parsedCompletion = asObject(parsedWorkflow.completion);
   const parsedRoleModels = asObject(parsedWorkflow.role_models);
   const parsedErrorHandling = asObject(parsed.error_handling);
@@ -249,7 +251,11 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
     workflow: {
       name: typeof parsedWorkflow.name === 'string' ? parsedWorkflow.name : 'default',
       execution: {
-        mode: parsedExecution.mode === 'judgment' ? 'judgment' : 'linear',
+        // M4-4: judgment is the only supported mode; legacy 'linear' YAML
+        // values are coerced to 'judgment' so old workflow.yaml files keep
+        // loading without error. The v4→v5 state-file reader remains the
+        // hard gate for the executionMode: 'linear' state-file case.
+        mode: 'judgment',
       },
       steps: Array.isArray(parsedWorkflow.steps)
         ? parsedWorkflow.steps.map(toWorkflowStep)

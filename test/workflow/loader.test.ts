@@ -55,7 +55,8 @@ captain:
     const config = parseWorkflowYaml(yaml);
     expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
     expect(config.captain.model).toBe(ModelId.CLAUDE_OPUS);
-    expect(config.workflow.execution?.mode).toBe('linear');
+    // M4-4: execution.mode is hard-coded to 'judgment' regardless of YAML input.
+    expect(config.workflow.execution?.mode).toBe('judgment');
   });
 
   it('resolves model aliases in YAML', () => {

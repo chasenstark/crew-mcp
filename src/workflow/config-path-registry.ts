@@ -245,14 +245,18 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     path: 'workflow.execution.mode',
     examples: ['/config set workflow.execution.mode judgment'],
     match: exactPath('workflow.execution.mode'),
-    read: (config) => config.workflow.execution?.mode ?? 'linear',
+    read: (config) => config.workflow.execution?.mode ?? 'judgment',
     parse: (raw, _config, _params, path) => {
       const mode = parseNonEmptyString(path, raw, '/config set workflow.execution.mode judgment').toLowerCase();
-      if (mode !== 'linear' && mode !== 'judgment') {
+      if (mode !== 'judgment') {
+        // M4-4: linear mode is retired. The v4→v5 migration reader
+        // already rejects state files with executionMode: 'linear'; this
+        // closes the last door where a user could re-introduce the value
+        // through the config surface.
         throw new Error(
           invalidValueMessage(
             path,
-            'one of: linear, judgment',
+            "'judgment' (linear mode was retired in M4)",
             raw,
             '/config set workflow.execution.mode judgment',
           ),
@@ -263,7 +267,7 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     write: (config, _params, value) => {
       config.workflow.execution = { mode: value as 'linear' | 'judgment' };
     },
-    options: (config) => withCurrentOption(['linear', 'judgment'], config.workflow.execution?.mode ?? 'linear'),
+    options: (config) => withCurrentOption(['judgment'], config.workflow.execution?.mode ?? 'judgment'),
   },
   {
     path: 'workflow.roleModels.<role>',

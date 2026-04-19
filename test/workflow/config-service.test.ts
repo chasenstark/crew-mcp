@@ -191,9 +191,9 @@ describe('config-service', () => {
     expect(options).toEqual(['1', '2', '3', '4', '5']);
   });
 
-  it('returns preset options for workflow execution mode', () => {
+  it('returns preset options for workflow execution mode (post-M4: judgment-only)', () => {
     const options = getConfigValueOptions(getDefaultConfig(), 'workflow.execution.mode');
-    expect(options).toEqual(['linear', 'judgment']);
+    expect(options).toEqual(['judgment']);
   });
 
   it('returns adapter options for agent adapter path', () => {
@@ -255,10 +255,14 @@ describe('config-service', () => {
     ).toThrow(/expected integer >= 1/);
   });
 
-  it('rejects invalid execution mode values', () => {
+  it('rejects invalid execution mode values (post-M4: only judgment)', () => {
     expect(() =>
       setConfigValue(cwd, 'workflow.execution.mode', 'nonexistent'),
-    ).toThrow(/one of: linear, judgment/);
+    ).toThrow(/'judgment' \(linear mode was retired/);
+    // Legacy callers trying to re-introduce linear mode hit the same error.
+    expect(() =>
+      setConfigValue(cwd, 'workflow.execution.mode', 'linear'),
+    ).toThrow(/'judgment' \(linear mode was retired/);
   });
 
   it('rejects unknown agent model path', () => {

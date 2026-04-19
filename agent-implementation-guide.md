@@ -1,5 +1,16 @@
 # Agent Implementation Guide: Provider-Agnostic Multi-Agent Crew CLI
 
+> **Historical document.** This is the original MVP implementation spec from
+> the project's inception. The "6-step pipeline" architecture it describes
+> (decompose → dispatch → ingest → summarize → judge → report) was retired
+> across milestones M3 and M4: the captain now drives the crew through an
+> 8-tool MCP surface (run_agent, list_agents, ask_user, message_user,
+> plan_tasks, analyze_output, compress_context, finish) over a session
+> loop, reasoning inline about tool results rather than running a fixed
+> step cycle. For the current architecture see `docs/architecture/tools.md`,
+> `docs/architecture/session.md`, and `docs/architecture/captain-portability.md`.
+> The content below is preserved for history + onboarding context only.
+
 > **This document is a complete implementation specification.** It contains everything
 > needed to build the MVP from scratch. Follow the phases in order — each phase builds
 > on the previous one. Do not skip ahead.

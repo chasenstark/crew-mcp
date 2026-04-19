@@ -497,19 +497,11 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     changes.push({ path: 'captain.model', before, after: draft.captain.model });
   }
 
-  const executionModeValue = await askFieldValue({
-    label: 'workflow.execution.mode',
-    currentValue: draft.workflow.execution?.mode ?? 'linear',
-    defaultValue: defaults.workflow.execution?.mode ?? 'linear',
-    description: 'Execution path: deterministic linear pipeline or judgment controller.',
-    options: getConfigValueOptions(draft, 'workflow.execution.mode'),
-  });
-  if (executionModeValue) {
-    const before = draft.workflow.execution?.mode ?? 'linear';
-    draft = applyConfigPatch(draft, { path: 'workflow.execution.mode', value: executionModeValue });
-    const after = draft.workflow.execution?.mode ?? 'linear';
-    changes.push({ path: 'workflow.execution.mode', before, after });
-  }
+  // M4-4 retired `workflow.execution.mode: 'linear'` — `'judgment'` is the
+  // only supported path, and the v4→v5 migration reader rejects legacy
+  // state files. Skip the interactive prompt entirely; advanced users can
+  // still set the field via `/config set workflow.execution.mode judgment`
+  // if they need to pin it explicitly.
 
   for (const role of workflowRoles(draft)) {
     const rolePath = `workflow.roleModels.${role}`;
