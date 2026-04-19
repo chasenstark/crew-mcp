@@ -225,10 +225,9 @@ export class WorktreeManager {
   // therefore independent worktrees; task.id is still the semantic identifier
   // in session history.
   //
-  // The task-keyed API above is preserved for judgment-mode's fallback loop
-  // (executeFallbackLoop, slated for deletion in M4-5) and for `git/merge.ts`
-  // post-run merges. Once executeFallbackLoop goes away, the task-keyed API
-  // can be narrowed or removed.
+  // The task-keyed API above is preserved for `git/merge.ts` post-run merges
+  // (and legacy callers outside the M3 captain loop). Safe to narrow further
+  // if/when merge.ts migrates to the run-scoped API.
   // -------------------------------------------------------------------------
 
   async createRunWorktree(runId: string): Promise<string> {

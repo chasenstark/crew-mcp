@@ -1,5 +1,5 @@
 // SessionLoop is the event-driven driver that replaces the tool-loop-inside-
-// adapter shape of executeNativeToolLoop. It consumes events from a
+// adapter shape of the pre-M1.5 native loop. It consumes events from a
 // CaptainSession, serializes captain turns (at most one in flight), and
 // schedules dispatched tool calls via a shared ToolDispatcher. Subagent runs
 // scheduled on the dispatcher proceed concurrently with captain turns —
@@ -14,8 +14,8 @@
 //      full session.toToolLoopMessages() plus providerSessionRef for resume.
 //   4. Captain emits assistantText + toolCalls. Assistant text lands as a
 //      SessionMessage. Each toolCall is either resolved synchronously by
-//      the scheduler (for local actions like finalize_report) or started
-//      on the dispatcher (for long-running actions like run_agent). In the
+//      the scheduler (for local actions like message_user) or started on
+//      the dispatcher (for long-running actions like run_agent). In the
 //      dispatched case, the captain turn ENDS with a pending placeholder;
 //      the real tool_result arrives later as a tool_completed event.
 //   5. On turn exit, loop re-checks pendingTurn and loops if needed.
@@ -82,7 +82,10 @@ export interface SessionLoopTurnResult {
   providerSessionRejected?: boolean;
   /**
    * Set true when the captain reports it has finalized and the loop should
-   * stop (e.g., finalize_report succeeded). Terminates the loop cleanly.
+   * stop. Terminates the loop cleanly. The M3 captain-turn never sets this;
+   * `requestExit()` (called from the finish tool handler) is the canonical
+   * exit path. This field is retained for future non-dispatch turn
+   * implementations that want a single-shot done signal.
    */
   done?: boolean;
   /**
@@ -333,10 +336,9 @@ export class SessionLoop {
 
     // M3 captain-turn never sets `result.done` — it calls `requestExit`
     // from inside the finish tool handler, which mutates `this.done` +
-    // `this.finalReport` directly. This branch services the legacy
-    // toolSurface path (buildSessionLoopCaptain, which returns
-    // `{done: true, finalReport}` when the 11-verb controller issues
-    // `finish`) and any future non-dispatch-based turn implementation.
+    // `this.finalReport` directly. This branch is kept for any future
+    // non-dispatch-based turn implementation that wants a single-shot
+    // done signal.
     if (result.done) {
       this.done = true;
       if (result.finalReport) this.finalReport = result.finalReport;

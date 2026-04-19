@@ -1,8 +1,9 @@
 /**
- * M3-10a: dual-mode scaffold test. Exercises the `toolSurface: 'm3-tools'`
- * constructor option — the M3 pair (captain-turn + scheduler) routes over
- * the 8 M3 tools with mcp__crew__ prefixes. The legacy default path is
- * untouched; existing tests under judgment-runner.test.ts remain green.
+ * M3 tool-surface integration tests. Exercises the captain-turn +
+ * scheduler pair (buildM3SessionLoopPair) routing the 8 mcp__crew__
+ * tools. Post-M4-5 this is the authoritative coverage for
+ * JudgmentRunner's production path — the legacy 11-verb surface and
+ * its migration-coverage tests are gone.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -49,7 +50,7 @@ function makeCaptain(
       status: 'success',
       metadata: {},
     }),
-    executeWithSchema: async <T extends z.ZodType>(_prompt: string, schema: T) => {
+    executeWithSchema: async <T extends z.ZodType>(_prompt: string, _schema: T) => {
       throw new Error('not used');
     },
     executeWithTools: async (tools, messages, onToolCall) => handler(tools, messages, onToolCall),
@@ -84,7 +85,7 @@ function makeSubagent(name: string): AgentAdapter {
   };
 }
 
-describe('JudgmentRunner toolSurface option (M3-10a)', () => {
+describe('JudgmentRunner M3 tool surface', () => {
   let projectRoot: string;
   let stateStore: StateStore;
   let worktreeManager: WorktreeManager;
@@ -103,7 +104,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it("defaults to toolSurface: 'legacy' (no change in existing behavior)", () => {
+  it('constructs with session + dispatcher injected and exposes them via getters', () => {
     const captain = makeCaptain(async () => ({ status: 'completed', transcript: [] }));
     const session = CaptainSession.create({ projectRoot });
     const dispatcher = new ToolDispatcher();
@@ -115,30 +116,11 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       worktreeManager,
       { session, dispatcher },
     );
-    // Legacy surface is exposed via the (private) actionServer in the
-    // existing shape; we assert that toolSurface can be *specified* and
-    // doesn't crash the constructor.
     expect(runner.getSession()).toBe(session);
+    expect(runner.getDispatcher()).toBe(dispatcher);
   });
 
-  it("toolSurface: 'm3-tools' constructs without crashing and hydrates a runner", () => {
-    const captain = makeCaptain(async () => ({ status: 'completed', transcript: [] }));
-    const session = CaptainSession.create({ projectRoot });
-    const dispatcher = new ToolDispatcher();
-    const runner = new JudgmentRunner(
-      captain,
-      makeRegistry([captain]),
-      workflow,
-      stateStore,
-      worktreeManager,
-      { session, dispatcher, toolSurface: 'm3-tools' },
-    );
-    // Invoking getSession is the only external way to inspect state
-    // without running the loop; the loop itself is exercised in other tests.
-    expect(runner.getSession()).toBe(session);
-  });
-
-  it("'m3-tools' captain turn receives exactly 8 mcp__crew__ tools", async () => {
+  it('captain turn receives exactly 8 mcp__crew__ tools', async () => {
     let toolsSeen: ToolDefinition[] | undefined;
     const captain = makeCaptain(async (tools, _msgs, onToolCall) => {
       toolsSeen = tools;
@@ -158,7 +140,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher, toolSurface: 'm3-tools' },
+      { session, dispatcher },
     );
     await runner.run('hello');
     expect(toolsSeen).toBeDefined();
@@ -176,7 +158,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     ]);
   });
 
-  it("'m3-tools' routes a run_agent tool call through the dispatcher", async () => {
+  it('routes a run_agent tool call through the dispatcher', async () => {
     let toolOutput: unknown;
     let turn = 0;
     const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
@@ -206,7 +188,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher, toolSurface: 'm3-tools' },
+      { session, dispatcher },
     );
     const report = await runner.run('fix');
     expect(report).toBe('fix complete');
@@ -224,7 +206,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     expect(toolResult).toBeDefined();
   });
 
-  it("'m3-tools' finish tool ends the loop with the summary as finalReport", async () => {
+  it('finish tool ends the loop with the summary as finalReport', async () => {
     const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
       await onToolCall({
         name: 'mcp__crew__message_user',
@@ -245,7 +227,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher, toolSurface: 'm3-tools' },
+      { session, dispatcher },
     );
     const report = await runner.run('what is this?');
     expect(report).toBe('done!');
@@ -261,17 +243,13 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     ).toBe(true);
   });
 
-  it("'m3-tools' does not invoke validateDecision / computeDeterministicFallback (M3-10c)", async () => {
-    // This is a behavioral invariant: the M3 path goes directly through
+  it('routes multiple run_agent calls without gating via legacy budgets', async () => {
+    // Post-M4-5 behavioral invariant: the M3 path goes directly through
     // handleM3ToolCallFromAdapter. Legacy 11-verb budgets
-    // (maxDeterministicFallbacks, etc.) are dead on this path — each
-    // tool's zod schema is the only gate.
-    let validateDecisionCalls = 0;
+    // (maxDeterministicFallbacks, etc.) are gone — each tool's zod schema
+    // is the only gate.
     const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
-      // Call run_agent multiple times in a single adapter turn. In the old
-      // flow, the controller's validateDecision + deterministic-fallback
-      // logic would have gated these; on the M3 path they pass straight
-      // through to the scheduler.
+      // Call run_agent multiple times in a single adapter turn.
       for (let i = 0; i < 3; i++) {
         await onToolCall({
           name: 'mcp__crew__run_agent',
@@ -294,11 +272,10 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher, toolSurface: 'm3-tools' },
+      { session, dispatcher },
     );
     const report = await runner.run('triple');
     expect(report).toBe('all queued');
-    expect(validateDecisionCalls).toBe(0);
     // Three run_agent tool_calls were recorded, all dispatched.
     const runAgentCalls = session.getMessages().filter(
       (m) => m.role === 'tool_call' && m.toolName === 'run_agent',
@@ -306,7 +283,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     expect(runAgentCalls).toHaveLength(3);
   });
 
-  it("'m3-tools' flags providerSessionRejected when the adapter returns a session-id error (M3-10a regex plumbing)", async () => {
+  it('flags providerSessionRejected when the adapter returns a session-id error (M3-10a regex plumbing)', async () => {
     // Regression for review Finding 7: the regex /session id|invalid session|rejected/i
     // in the M3 captain-turn converts a failed executeWithTools result into
     // providerSessionRejected=true, which drives the one-shot replay (N9).
@@ -338,7 +315,7 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
         workflow,
         stateStore,
         worktreeManager,
-        { session, dispatcher, toolSurface: 'm3-tools' },
+        { session, dispatcher },
       );
       // Because the adapter ALWAYS returns session-rejected, the replay
       // also fails; the loop throws per N9 (two consecutive rejections).
@@ -351,45 +328,4 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     }
   });
 
-  it("getToolSchemaHash is stable for two identical 'm3-tools' constructions", () => {
-    const captain = makeCaptain(async () => ({ status: 'completed', transcript: [] }));
-    const session = CaptainSession.create({ projectRoot });
-    const dispatcher = new ToolDispatcher();
-    const runner1 = new JudgmentRunner(
-      captain,
-      makeRegistry([captain]),
-      workflow,
-      stateStore,
-      worktreeManager,
-      { session, dispatcher, toolSurface: 'm3-tools' },
-    );
-    const projectRoot2 = mkdtempSync(join(tmpdir(), 'crew-m3-scaffold-b-'));
-    execSync('git init -q', { cwd: projectRoot2 });
-    execSync('git config user.email a@b.c', { cwd: projectRoot2 });
-    execSync('git config user.name a', { cwd: projectRoot2 });
-    execSync('git commit -q --allow-empty -m init', { cwd: projectRoot2 });
-    try {
-      const session2 = CaptainSession.create({ projectRoot: projectRoot2 });
-      const dispatcher2 = new ToolDispatcher();
-      const runner2 = new JudgmentRunner(
-        captain,
-        makeRegistry([captain]),
-        workflow,
-        new StateStore(projectRoot2),
-        new WorktreeManager(projectRoot2),
-        { session: session2, dispatcher: dispatcher2, toolSurface: 'm3-tools' },
-      );
-      // Probe via the private helper indirection: the catalog + its server
-      // are constructed lazily on first turn. Force construction by
-      // calling a method that exercises it — we use a short no-op turn.
-      void runner1;
-      void runner2;
-      // With the same registry + workflow + preset shape, the catalogs
-      // produce the same hash. (Directly verified in the ToolCatalog unit
-      // tests; here we rely on the unit tests to lock the behavior.)
-      expect(true).toBe(true);
-    } finally {
-      rmSync(projectRoot2, { recursive: true, force: true });
-    }
-  });
 });

@@ -425,27 +425,7 @@ describe('SessionLoop (M1.5-6a scaffold)', () => {
   });
 });
 
-describe('JudgmentRunner.executeSessionLoop (M1.5-6a scaffold)', () => {
-  it('throws helpfully when session/dispatcher not injected', async () => {
-    // imported lazily to avoid heavy setup; this is just a scaffold-smoke test
-    const { JudgmentRunner } = await import('../../src/captain/judgment-runner.js');
-    const { StateStore } = await import('../../src/state/store.js');
-    const { WorktreeManager } = await import('../../src/git/worktree.js');
-
-    // Minimal fakes
-    const captain = { name: 'fake', capabilities: [], supportsJsonSchema: false, execute: async () => ({ output: '', filesModified: [], status: 'success', metadata: {} } as any), healthCheck: async () => ({ available: true, authenticated: true }) };
-    const registry = { get: () => captain as any, list: () => [] };
-    const workflow = { steps: [] } as any;
-    const tmp = mkdtempSync(join(tmpdir(), 'crew-jr-scaffold-'));
-    try {
-      const state = new StateStore(tmp);
-      const worktree = new WorktreeManager(tmp);
-      const runner = new JudgmentRunner(captain as any, registry as any, workflow, state, worktree);
-      await expect(
-        runner.executeSessionLoop({} as any),
-      ).rejects.toThrow(/executeSessionLoop requires session/);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-});
+// M4-5: the "throws helpfully when session/dispatcher not injected" scaffold
+// test was deleted — session + dispatcher are compile-time required on
+// JudgmentRunner's constructor. The m3-tool-surface.test.ts integration
+// suite is the authoritative post-M4 coverage for session-loop wiring.
