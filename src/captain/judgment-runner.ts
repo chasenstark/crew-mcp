@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type {
   AgentAdapter,
@@ -382,6 +383,19 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         // runtime state — the runtime is the source of truth for task
         // planning, and messages are just the captain's conversation history
         // for stateful-resume adapters.
+        //
+        // Concurrency note (S3): a dispatched run_execute task runs
+        // concurrently with this captain turn. The dispatched task calls
+        // executeActionDecision which appends to runtime.actionHistory,
+        // taskStates, etc. JavaScript's single-threaded model means no
+        // torn writes, but this turn may read a snapshot that's a few
+        // operations behind the "live" state. That's acceptable: each
+        // decision is evaluated against the state-at-decision-time and
+        // validated against the then-current runtime; stale reads
+        // produce a slightly older decision, not a corrupted one.
+        //
+        // The one collision risk — toolCallId generation colliding between
+        // concurrent turns — is eliminated by using randomUUID below.
         if (runtime.actionHistory.length >= this.guardrails.maxTotalActions) {
           throw new Error(
             `Judgment action budget exceeded (${this.guardrails.maxTotalActions}).`,
@@ -429,7 +443,12 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           throw new Error(`Controller aborted run: ${decision.reasoning}`);
         }
 
-        const toolCallId = `ctl-${runtime.actionHistory.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
+        // S3: use randomUUID to keep toolCallIds collision-free under
+        // concurrent execution. The prior `ctl-${actionHistory.length}-...`
+        // scheme could collide between a captain turn and a concurrent
+        // dispatcher task both reading the same length. randomUUID is
+        // cheap and decouples id generation from runtime state.
+        const toolCallId = `ctl-${randomUUID()}`;
 
         if (decision.action === 'run_execute') {
           return {
