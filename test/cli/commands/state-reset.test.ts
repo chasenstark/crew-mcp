@@ -30,6 +30,16 @@ function seedCrewDir(root: string): string {
   mkdirSync(join(crewDir, 'profiles'), { recursive: true });
   writeFileSync(join(crewDir, 'profiles', 'default.yaml'), 'default', 'utf-8');
 
+  // M3-9: `.crew/config.lock.json` caches the catalog-hash for Gemini
+  // settings regen. It MUST NOT be wiped by `crew state reset` — users
+  // who routinely reset would otherwise force a settings.json rewrite
+  // on every next captain invocation.
+  writeFileSync(
+    join(crewDir, 'config.lock.json'),
+    JSON.stringify({ schemaVersion: 1, catalogHash: 'deadbeef', updatedAt: '2026-04-19T00:00:00Z' }),
+    'utf-8',
+  );
+
   return crewDir;
 }
 
@@ -75,6 +85,9 @@ describe('stateResetCommand', () => {
     expect(existsSync(join(crewDir, 'workflow.yaml'))).toBe(true);
     expect(existsSync(join(crewDir, 'logs'))).toBe(true);
     expect(existsSync(join(crewDir, 'profiles'))).toBe(true);
+    // M3-9 exit gate: config.lock.json survives the reset.
+    expect(existsSync(join(crewDir, 'config.lock.json'))).toBe(true);
+    expect(result.removed).not.toContain('config.lock.json');
   });
 
   it('bypasses confirmation when --yes is supplied', async () => {

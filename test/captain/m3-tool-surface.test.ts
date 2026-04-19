@@ -306,6 +306,44 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     expect(runAgentCalls).toHaveLength(3);
   });
 
+  it("'m3-tools' flags providerSessionRejected when the adapter returns a session-id error (M3-10a regex plumbing)", async () => {
+    // Regression for review Finding 7: the regex /session id|invalid session|rejected/i
+    // in the M3 captain-turn converts a failed executeWithTools result into
+    // providerSessionRejected=true, which drives the one-shot replay (N9).
+    // Any tightening of that regex must fail this test.
+    const captainSessionErrorVariants = [
+      'The session id was not recognized by the CLI',
+      'invalid session identifier; please resubmit',
+      'session rejected upstream',
+    ];
+    for (const errorText of captainSessionErrorVariants) {
+      const captain = makeCaptain(async () => ({
+        status: 'failed',
+        transcript: [],
+        error: errorText,
+      }));
+      const session = CaptainSession.create({ projectRoot });
+      session.appendUserMessage(`trigger: ${errorText}`);
+      const dispatcher = new ToolDispatcher();
+      const runner = new JudgmentRunner(
+        captain,
+        makeRegistry([captain]),
+        workflow,
+        stateStore,
+        worktreeManager,
+        { session, dispatcher, toolSurface: 'm3-tools' },
+      );
+      // Because the adapter ALWAYS returns session-rejected, the replay
+      // also fails; the loop throws per N9 (two consecutive rejections).
+      // We catch that to isolate the assertion on replay-detection plumbing.
+      await runner.run(`trigger: ${errorText}`).catch(() => undefined);
+      // If the regex correctly detected session-rejection on at least the
+      // first turn, the session log should NOT carry a providerSessionRef
+      // any longer (dropped during replay detection).
+      expect(session.providerSessionRef).toBeUndefined();
+    }
+  });
+
   it("getToolSchemaHash is stable for two identical 'm3-tools' constructions", () => {
     const captain = makeCaptain(async () => ({ status: 'completed', transcript: [] }));
     const session = CaptainSession.create({ projectRoot });
