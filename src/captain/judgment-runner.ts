@@ -45,6 +45,7 @@ import { dispatchAskUser } from './tools/ask-user.js';
 import {
   SessionLoop,
   type SessionLoopTurn,
+  type SessionLoopTurnResult,
   type ToolCallScheduler,
 } from './session-loop.js';
 import {
@@ -318,9 +319,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   /**
-   * M1.5-6a scaffold. Constructs a SessionLoop wired to this runner's
-   * captain + dispatcher, and delegates driving to it. Not called by
-   * `execute()` yet — M1.5-6b flips the switch.
+   * M1.5-6b entry point. Drives the captain via SessionLoop: each turn pulls
+   * one structured decision, executes synchronous actions inline, dispatches
+   * run_execute and ask_user via ToolDispatcher so subagent runs proceed
+   * concurrently with user input.
    */
   async executeSessionLoop(runtime: RuntimeState): Promise<string> {
     if (!this.session || !this.dispatcher) {
@@ -329,14 +331,37 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       );
     }
     this.activeAbortController = new AbortController();
+
+    // Seed the session with the initial user message so the loop has work.
+    if (this.session.getMessages().length === 0) {
+      this.session.appendUserMessage(runtime.userRequest);
+    }
+
     const captainTurn = this.buildSessionLoopCaptain(runtime);
     const scheduler = this.buildSessionLoopScheduler(runtime);
+
+    // Wire dispatcher cleanup: terminal dispatcher events with a runId should
+    // release the per-run worktree (M1.5-14 integration).
+    const cleanupListeners = [
+      this.dispatcher.onEvent('run:complete', (info) => {
+        if (info.runId) void this.worktreeManager.cleanupByRunId(info.runId);
+      }),
+      this.dispatcher.onEvent('run:failed', (info) => {
+        if (info.runId) void this.worktreeManager.cleanupByRunId(info.runId);
+      }),
+      this.dispatcher.onEvent('run:cancelled', (info) => {
+        if (info.runId) void this.worktreeManager.cleanupByRunId(info.runId);
+      }),
+    ];
+
     const loop = new SessionLoop({
       session: this.session,
       dispatcher: this.dispatcher,
       captain: captainTurn,
       scheduler,
+      maxTurns: this.guardrails.maxTotalActions,
     });
+
     try {
       const { finalReport } = await loop.run({
         externalSignal: this.activeAbortController.signal,
@@ -344,29 +369,247 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       if (finalReport) runtime.finalReport = finalReport;
       return runtime.finalReport ?? this.buildFallbackReport(runtime.summaries, runtime.userRequest);
     } finally {
+      for (const l of cleanupListeners) l.dispose();
       this.activeAbortController = null;
     }
   }
 
-  private buildSessionLoopCaptain(_runtime: RuntimeState): SessionLoopTurn {
-    // Placeholder scaffold for M1.5-6a. M1.5-6b wires the real captain
-    // adapter through executeWithTools / executeWithResumeSession.
+  private buildSessionLoopCaptain(runtime: RuntimeState): SessionLoopTurn {
     return {
-      execute: async () => {
-        throw new Error('SessionLoopCaptain scaffold — real integration lands in M1.5-6b.');
+      execute: async (args) => {
+        // One structured decision per turn. Captain sees the current message
+        // log (via args.messages) but we build the controller prompt from
+        // runtime state — the runtime is the source of truth for task
+        // planning, and messages are just the captain's conversation history
+        // for stateful-resume adapters.
+        if (runtime.actionHistory.length >= this.guardrails.maxTotalActions) {
+          throw new Error(
+            `Judgment action budget exceeded (${this.guardrails.maxTotalActions}).`,
+          );
+        }
+
+        const decided = await this.decideNextAction(runtime);
+        const validated = this.validateDecision(decided, runtime);
+        let decision = decided;
+
+        if (!validated.ok) {
+          runtime.hadErrors = true;
+          runtime.deterministicFallbackCount++;
+          if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+            throw new Error(
+              `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+            );
+          }
+          decision = {
+            reasoning: `Deterministic fallback: ${validated.reason}`,
+            ...this.computeDeterministicFallback(runtime),
+          };
+        }
+
+        if (decision.action === 'finish') {
+          if (!runtime.reportFinalized) {
+            runtime.hadErrors = true;
+            runtime.deterministicFallbackCount++;
+            if (runtime.deterministicFallbackCount > this.guardrails.maxDeterministicFallbacks) {
+              throw new Error(
+                `Controller exceeded deterministic fallback budget (${this.guardrails.maxDeterministicFallbacks}).`,
+              );
+            }
+            decision = {
+              reasoning: 'finish requires finalize_report first; applying deterministic fallback',
+              action: 'finalize_report',
+              payload: {},
+            };
+          } else {
+            return { done: true, finalReport: runtime.finalReport };
+          }
+        }
+
+        if (decision.action === 'fail') {
+          throw new Error(`Controller aborted run: ${decision.reasoning}`);
+        }
+
+        const toolCallId = `ctl-${runtime.actionHistory.length + 1}-${Math.random().toString(36).slice(2, 8)}`;
+
+        if (decision.action === 'run_execute') {
+          return {
+            toolCalls: [
+              {
+                toolCallId,
+                toolName: 'run_execute',
+                input: { decision: decision as unknown as Record<string, unknown> },
+              },
+            ],
+          };
+        }
+        if (decision.action === 'ask_user') {
+          return {
+            toolCalls: [
+              {
+                toolCallId,
+                toolName: 'ask_user',
+                input: { decision: decision as unknown as Record<string, unknown> },
+              },
+            ],
+          };
+        }
+
+        // Synchronous action: execute inline, record the action result, and
+        // emit a synthetic tool_call+tool_result pair so the session log
+        // stays faithful.
+        return {
+          toolCalls: [
+            {
+              toolCallId,
+              toolName: decision.action,
+              input: { decision: decision as unknown as Record<string, unknown> },
+            },
+          ],
+          _syncDecision: decision,
+        } as SessionLoopTurnResult & { _syncDecision?: ControllerDecision };
       },
     };
   }
 
-  private buildSessionLoopScheduler(_runtime: RuntimeState): ToolCallScheduler {
+  private buildSessionLoopScheduler(runtime: RuntimeState): ToolCallScheduler {
     return {
-      schedule: async () => {
-        throw new Error('SessionLoop scheduler scaffold — real integration lands in M1.5-6b.');
+      schedule: async (call, _ctx) => {
+        const decision = (call.input as { decision?: ControllerDecision }).decision;
+        if (!decision) {
+          return { kind: 'synchronous', result: { ok: false, error: 'missing decision' }, status: 'error' };
+        }
+
+        if (call.toolName === 'run_execute') {
+          // Long-running subagent. Dispatch via ToolDispatcher; the tool_result
+          // will arrive on run:complete and trigger the next captain turn.
+          return {
+            kind: 'dispatched',
+            task: {
+              toolCallId: call.toolCallId,
+              toolName: 'run_execute',
+              runId: runtime.runId,
+              run: async (taskCtx) => {
+                const previousController = this.activeAbortController;
+                this.activeAbortController = new AbortController();
+                const mergedSignal = taskCtx.signal;
+                try {
+                  await this.executeActionDecision(decision, runtime, 'adapter');
+                  return {
+                    ok: true,
+                    action: 'run_execute',
+                    taskId: decision.target?.taskId,
+                    sequence: runtime.actionHistory.length,
+                  };
+                } finally {
+                  this.activeAbortController = previousController;
+                  void mergedSignal;
+                }
+              },
+            },
+          };
+        }
+
+        if (call.toolName === 'ask_user') {
+          // Dispatch through the ask-user helper which uses the shared
+          // dispatcher under the hood. Runs concurrently with other tool calls.
+          return {
+            kind: 'dispatched',
+            task: {
+              toolCallId: call.toolCallId,
+              toolName: 'ask_user',
+              run: async (askCtx) => {
+                // Inline the ask_user logic: the decision's question, wait
+                // for the next user_message, append synthetic summary.
+                const question =
+                  typeof (decision.payload as { question?: string } | undefined)?.question === 'string'
+                    ? (decision.payload as { question: string }).question
+                    : 'Captain needs your input.';
+                // Emit the ask_user action result when answered via
+                // session.appendUserMessage → session_loop triggers next turn.
+                // We use dispatchAskUser via runtime signal.
+                const { dispatchAskUser } = await import('./tools/ask-user.js');
+                const result = await dispatchAskUser({
+                  session: this.session!,
+                  dispatcher: this.dispatcher!,
+                  question,
+                  toolCallId: `ask-${call.toolCallId}`,
+                  externalSignal: askCtx.signal,
+                });
+                const syntheticSummary: PassSummary = {
+                  passNumber: runtime.globalPassCounter + 1,
+                  summary: `User input: ${result.response}`,
+                  unresolvedIssues: [],
+                  contextForNextPass: result.response,
+                  filesInScope: [],
+                };
+                runtime.summaries.push(syntheticSummary);
+                return { ok: true, question, response: result.response };
+              },
+            },
+          };
+        }
+
+        // Synchronous: execute inline, return the output.
+        try {
+          await this.executeActionDecision(decision, runtime, 'adapter');
+          this.persistRuntimeState(runtime, 'running');
+          return {
+            kind: 'synchronous',
+            result: {
+              ok: true,
+              action: decision.action,
+              taskId: decision.target?.taskId,
+              sequence: runtime.actionHistory.length,
+            },
+            status: 'success',
+          };
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            kind: 'synchronous',
+            result: { ok: false, action: decision.action, error: message },
+            status: 'error',
+          };
+        }
       },
     };
   }
 
   private async execute(runtime: RuntimeState): Promise<string> {
+    // Session-loop path (M1.5-6b) — used whenever session + dispatcher are
+    // injected (create-runner wires them in production via M1.5-10).
+    if (this.session && this.dispatcher) {
+      try {
+        const finalReport = await this.executeSessionLoop(runtime);
+        runtime.finalReport = finalReport;
+        this.state.saveState({
+          ...this.toWorkflowState(runtime),
+          status: runtime.hadErrors ? 'failed' : 'completed',
+          completedAt: new Date().toISOString(),
+          lastError: runtime.hadErrors
+            ? 'Judgment workflow completed with recoverable errors.'
+            : undefined,
+        });
+        if (finalReport && !runtime.reportFinalized) {
+          this.emit('report', finalReport);
+        }
+        return finalReport;
+      } catch (err: unknown) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.state.saveState({
+          ...this.toWorkflowState(runtime),
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          lastError: error.message,
+        });
+        this.emit('error', error, { step: 'judgment' });
+        throw error;
+      }
+    }
+
+    // Legacy path: no session / dispatcher provided (older tests,
+    // pipeline-linear callers). Preserved as a fallback; M3 will delete
+    // once all test fixtures are migrated.
     this.activeAbortController = new AbortController();
 
     try {
