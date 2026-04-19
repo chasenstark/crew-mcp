@@ -295,6 +295,12 @@ export class SessionLoop {
       await this.applyToolCalls(result.toolCalls);
     }
 
+    // M3 captain-turn never sets `result.done` — it calls `requestExit`
+    // from inside the finish tool handler, which mutates `this.done` +
+    // `this.finalReport` directly. This branch services the legacy
+    // toolSurface path (buildSessionLoopCaptain, which returns
+    // `{done: true, finalReport}` when the 11-verb controller issues
+    // `finish`) and any future non-dispatch-based turn implementation.
     if (result.done) {
       this.done = true;
       if (result.finalReport) this.finalReport = result.finalReport;
