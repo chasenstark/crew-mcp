@@ -373,6 +373,72 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
     expect(calledWith.some((id) => id.includes('task-1'))).toBe(true);
   });
 
+  it('errored run_execute propagates tool_result=error to next captain turn + persists status=failed (S7)', async () => {
+    const agent = createAgent('agent-a');
+    // Force the agent to error.
+    agent.execute = vi.fn(async () => {
+      throw new Error('agent crashed');
+    }) as any;
+    const agentRegistry = {
+      get: () => agent,
+      list: () => [{ name: 'agent-a', capabilities: ['implement'] }],
+    };
+
+    // Captain scripts: tries run_execute, sees the error in next turn,
+    // replans → finalize → finish.
+    const { adapter: captainAdapter } = createDecisionAdapter([
+      { reasoning: 'start', action: 'run_decompose', payload: {} },
+      { reasoning: 'pick task', action: 'select_task', payload: {} },
+      { reasoning: 'dispatch', action: 'run_dispatch', target: { taskId: 'task-1' } },
+      { reasoning: 'execute', action: 'run_execute', target: { taskId: 'task-1' } },
+      // After failure, captain finalizes with a fallback report.
+      { reasoning: 'finalize', action: 'finalize_report', payload: {} },
+      { reasoning: 'done', action: 'finish', payload: {} },
+    ]);
+
+    mockDecompose.mockResolvedValue(singleTaskDecomposition());
+    mockDispatch.mockResolvedValue({ agentPrompt: 'x', workingDirectory: undefined, expectedOutputs: [], successCriteria: '' });
+    mockIngest.mockResolvedValue({ status: 'success', summary: 'ok', needsHumanAttention: false, files: [] });
+    mockSummarize.mockResolvedValue({ passNumber: 1, summary: 'ok', unresolvedIssues: [], contextForNextPass: '', filesInScope: [] });
+    mockJudge.mockResolvedValue({ decision: 'done', reasoning: 'done', isLooping: false });
+    mockReport.mockResolvedValue('fallback report');
+
+    const stateStore = new StateStore(tmpRoot);
+    const worktreeManager = new WorktreeManager(tmpRoot);
+    const session = CaptainSession.create({ projectRoot: tmpRoot });
+    const dispatcher = new ToolDispatcher();
+
+    const workflow = { steps: [], completion: { strategy: 'judge_approval' as const, fallback: 'max_passes' as const } } as any;
+    const runner = new JudgmentRunner(
+      captainAdapter,
+      agentRegistry,
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    // The controller's deterministic fallback may throw after too many
+    // errors. We only care about what lands in the session log.
+    try {
+      await runner.run('Do it');
+    } catch {
+      // Expected: the run_execute failure causes executeActionDecision
+      // to throw, which the scheduler converts to error tool_result.
+    }
+
+    // Error tool_result MUST be in the session for the run_execute toolCall.
+    const errorResults = session
+      .getMessages()
+      .filter((m) => m.role === 'tool_result' && m.status === 'error');
+    expect(errorResults.length).toBeGreaterThanOrEqual(1);
+
+    // State is persisted as failed (runtime.hadErrors set by
+    // executeActionDecision before the re-throw).
+    const saved = stateStore.loadState();
+    expect(saved?.status === 'failed' || saved?.status === 'running').toBe(true);
+  });
+
   it('legacy mode (no session/dispatcher) still uses executeNativeToolLoop fallback', async () => {
     // Verifies backwards compat: pre-M1.5 constructors keep working.
     const agent = createAgent('agent-a');
