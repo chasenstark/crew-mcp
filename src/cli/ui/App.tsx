@@ -5,6 +5,8 @@ import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
 import { handleConfigSlashCommand } from './config/command-handler.js';
 import type { CrewRunner } from '../../captain/runner.js';
+import type { CaptainSession } from '../../captain/session.js';
+import type { ToolDispatcher } from '../../captain/tool-dispatcher.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
 function summarizeTask(description: string, taskId: string, maxLen = 60): string {
@@ -15,30 +17,47 @@ function summarizeTask(description: string, taskId: string, maxLen = 60): string
   return firstLine.slice(0, maxLen - 1).trimEnd() + '\u2026';
 }
 
+interface InFlightToolCall {
+  toolCallId: string;
+  toolName: string;
+  startedAt: number;
+  latestChunk?: string;
+}
+
 interface Props {
   pipeline: CrewRunner;
+  session?: CaptainSession;
+  dispatcher?: ToolDispatcher;
   initialPrompt?: string;
 }
 
-export function App({ pipeline, initialPrompt }: Props) {
+export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
   useApp();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
-  const [waitingForInput, setWaitingForInput] = useState(false);
-  const [queueCount, setQueueCount] = useState(0);
-  const inputQueueRef = useRef<string[]>([]);
+
+  // Post-M1.5 state: inFlightToolCalls replaces isRunning/waitingForInput/queue.
+  // Session is always available; the captain turn accepts user_message events
+  // at any time, so the PromptInput is never disabled.
+  const [inFlightToolCalls, setInFlightToolCalls] = useState<Map<string, InFlightToolCall>>(new Map());
+
+  // Legacy fallback: when session+dispatcher aren't provided (e.g., linear Pipeline
+  // tests), preserve the slot-based behavior via emitter events so the old test
+  // suite keeps compiling until pipeline.ts dies in M3.
+  const legacyMode = !session || !dispatcher;
+  const [legacyIsRunning, setLegacyIsRunning] = useState(false);
+  const [legacyWaitingForInput, setLegacyWaitingForInput] = useState(false);
 
   const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
-    setMessages(prev => [...prev, { role, content }]);
+    setMessages((prev) => [...prev, { role, content }]);
   }, []);
 
   const streamKeyRef = useRef<string | null>(null);
 
   const appendStreamChunk = useCallback((agentName: string, taskId: string, chunk: string) => {
     const key = `${agentName}:${taskId}`;
-    setMessages(prev => {
+    setMessages((prev) => {
       if (streamKeyRef.current === key && prev.length > 0 && prev[prev.length - 1].role === 'stream') {
         const updated = [...prev];
         updated[updated.length - 1] = {
@@ -70,8 +89,8 @@ export function App({ pipeline, initialPrompt }: Props) {
 
     pipeline.on('agent:start', (name, taskId, description) => {
       const label = summarizeTask(description, taskId);
-      setAgents(prev => [
-        ...prev.filter(a => a.name !== name),
+      setAgents((prev) => [
+        ...prev.filter((a) => a.name !== name),
         { name, status: 'running', task: label, startedAt: Date.now() },
       ]);
     });
@@ -82,10 +101,11 @@ export function App({ pipeline, initialPrompt }: Props) {
 
     pipeline.on('agent:complete', (name, _taskId, result) => {
       finalizeStream();
-      setAgents(prev =>
-        prev.map(a => a.name === name
-          ? { ...a, status: result.status === 'success' ? 'done' : 'error' }
-          : a
+      setAgents((prev) =>
+        prev.map((a) =>
+          a.name === name
+            ? { ...a, status: result.status === 'success' ? 'done' : 'error' }
+            : a,
         ),
       );
     });
@@ -93,120 +113,209 @@ export function App({ pipeline, initialPrompt }: Props) {
     pipeline.on('report', (message) => {
       addMessage('assistant', message);
       setCurrentStep(null);
-      setIsRunning(false);
-      setWaitingForInput(false);
-      inputQueueRef.current = [];
-      setQueueCount(0);
-    });
-
-    pipeline.on('ask_user', (question) => {
-      addMessage('assistant', question);
-      setCurrentStep(null);
-
-      // Check for queued input
-      const queued = inputQueueRef.current.shift();
-      setQueueCount(inputQueueRef.current.length);
-      if (queued) {
-        addMessage('user', `(queued) ${queued}`);
-        pipeline.provideUserInput(queued);
-      } else {
-        setWaitingForInput(true);
+      if (legacyMode) {
+        setLegacyIsRunning(false);
+        setLegacyWaitingForInput(false);
       }
     });
+
+    if (legacyMode) {
+      pipeline.on('ask_user', (question) => {
+        addMessage('assistant', question);
+        setCurrentStep(null);
+        setLegacyWaitingForInput(true);
+      });
+    }
 
     pipeline.on('error', (error) => {
       addMessage('system', `Error: ${error.message}`);
       setCurrentStep(null);
-      setIsRunning(false);
-      setWaitingForInput(false);
-      inputQueueRef.current = [];
-      setQueueCount(0);
+      if (legacyMode) {
+        setLegacyIsRunning(false);
+        setLegacyWaitingForInput(false);
+      }
     });
 
     return () => {
       pipeline.removeAllListeners();
     };
-  }, [pipeline, addMessage, appendStreamChunk, finalizeStream]);
+  }, [pipeline, addMessage, appendStreamChunk, finalizeStream, legacyMode]);
 
-  const handleSubmit = useCallback((input: string) => {
-    if (input.startsWith('/config')) {
-      try {
-        const response = handleConfigSlashCommand(input, {
-          cwd: process.cwd(),
-          isRunning,
+  // Wire dispatcher events to inFlightToolCalls state.
+  useEffect(() => {
+    if (!dispatcher) return;
+    const handles = [
+      dispatcher.onEvent('run:start', (info) => {
+        setInFlightToolCalls((prev) => {
+          const next = new Map(prev);
+          next.set(info.toolCallId, {
+            toolCallId: info.toolCallId,
+            toolName: info.toolName,
+            startedAt: Date.now(),
+          });
+          return next;
         });
-        if (response) {
-          addMessage('system', response);
+      }),
+      dispatcher.onEvent('run:stream', (info) => {
+        setInFlightToolCalls((prev) => {
+          const existing = prev.get(info.toolCallId);
+          if (!existing) return prev;
+          const next = new Map(prev);
+          next.set(info.toolCallId, { ...existing, latestChunk: info.chunk });
+          return next;
+        });
+      }),
+      dispatcher.onEvent('run:complete', (info) => {
+        setInFlightToolCalls((prev) => {
+          if (!prev.has(info.toolCallId)) return prev;
+          const next = new Map(prev);
+          next.delete(info.toolCallId);
+          return next;
+        });
+      }),
+      dispatcher.onEvent('run:failed', (info) => {
+        setInFlightToolCalls((prev) => {
+          if (!prev.has(info.toolCallId)) return prev;
+          const next = new Map(prev);
+          next.delete(info.toolCallId);
+          return next;
+        });
+      }),
+      dispatcher.onEvent('run:cancelled', (info) => {
+        setInFlightToolCalls((prev) => {
+          if (!prev.has(info.toolCallId)) return prev;
+          const next = new Map(prev);
+          next.delete(info.toolCallId);
+          return next;
+        });
+      }),
+    ];
+    return () => {
+      for (const h of handles) h.dispose();
+    };
+  }, [dispatcher]);
+
+  const sessionBusy = inFlightToolCalls.size > 0;
+
+  const handleSubmit = useCallback(
+    (input: string) => {
+      if (input.startsWith('/config')) {
+        try {
+          const response = handleConfigSlashCommand(input, {
+            cwd: process.cwd(),
+            sessionBusy,
+          });
+          if (response) {
+            addMessage('system', response);
+            return;
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          addMessage('system', `Config error: ${message}`);
           return;
         }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        addMessage('system', `Config error: ${message}`);
-        return;
       }
-    }
 
-    if (waitingForInput) {
-      // Pipeline is paused waiting for input — send it
-      addMessage('user', input);
-      setWaitingForInput(false);
-      pipeline.provideUserInput(input);
-    } else if (isRunning) {
-      if (input === '/clear' || input === '/clear-queue') {
-        const cleared = inputQueueRef.current.length;
-        inputQueueRef.current = [];
-        setQueueCount(0);
-        addMessage('system', `Cleared ${cleared} queued message${cleared === 1 ? '' : 's'}.`);
+      // Slash commands for cancellation (session-loop era).
+      if (!legacyMode && input.startsWith('/cancel')) {
+        const rest = input.slice('/cancel'.length).trim();
+        if (rest === '-all' || rest === 'all') {
+          const n = dispatcher!.cancelAll('user /cancel-all');
+          addMessage('system', `Cancelled ${n} in-flight tool call${n === 1 ? '' : 's'}.`);
+          return;
+        }
+        if (!rest || rest === '') {
+          pipeline.cancel('Cancelled by user from interactive session');
+          finalizeStream();
+          setCurrentStep(null);
+          addMessage('system', 'Cancelled. Session terminated; workflow state saved as interrupted.');
+          return;
+        }
+        // /cancel <id>
+        const cancelled = dispatcher!.cancel(rest, 'user /cancel');
+        addMessage(
+          'system',
+          cancelled
+            ? `Cancelled tool call ${rest}.`
+            : `No in-flight tool call with id ${rest}.`,
+        );
         return;
       }
-      if (input === '/cancel') {
-        pipeline.cancel('Cancelled by user from interactive session');
-        inputQueueRef.current = [];
-        setQueueCount(0);
-        finalizeStream();
-        setIsRunning(false);
-        setWaitingForInput(false);
-        setCurrentStep(null);
-        addMessage('system', 'Cancelled. Workflow state saved as interrupted — rerun to resume.');
-        return;
-      }
-      // Pipeline is running — queue the input
-      inputQueueRef.current.push(input);
-      setQueueCount(inputQueueRef.current.length);
-      addMessage('user', `(queued) ${input}`);
-    } else {
-      // Pipeline is idle — start a new run
-      addMessage('user', input);
-      setIsRunning(true);
-      setAgents([]);
-      inputQueueRef.current = [];
-      setQueueCount(0);
 
-      pipeline.run(input).catch((err) => {
-        addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
-        setIsRunning(false);
-        setCurrentStep(null);
-        setWaitingForInput(false);
-        setQueueCount(0);
-      });
-    }
-  }, [pipeline, addMessage, isRunning, waitingForInput, finalizeStream]);
+      if (legacyMode) {
+        if (legacyWaitingForInput) {
+          addMessage('user', input);
+          setLegacyWaitingForInput(false);
+          pipeline.provideUserInput(input);
+          return;
+        }
+        if (legacyIsRunning) {
+          if (input === '/cancel') {
+            pipeline.cancel('Cancelled by user from interactive session');
+            finalizeStream();
+            setLegacyIsRunning(false);
+            setLegacyWaitingForInput(false);
+            setCurrentStep(null);
+            addMessage('system', 'Cancelled. Workflow state saved as interrupted — rerun to resume.');
+            return;
+          }
+          // In legacy mode (no session), we can't emit a user_message event, so just record it
+          addMessage('system', 'Input received but linear-mode pipeline cannot queue messages.');
+          return;
+        }
+        addMessage('user', input);
+        setLegacyIsRunning(true);
+        setAgents([]);
+        pipeline.run(input).catch((err) => {
+          addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
+          setLegacyIsRunning(false);
+          setCurrentStep(null);
+          setLegacyWaitingForInput(false);
+        });
+        return;
+      }
+
+      // M1.5 path: emit a user_message session event. If the session is idle
+      // (no captain turn running and no pending work), the runner's internal
+      // loop will react — but the first-run case also needs an explicit
+      // pipeline.run() kick-off since the session-loop isn't running yet
+      // until the runner has started.
+      addMessage('user', input);
+      const hasActiveMessages = session!.getMessages().length > 0;
+      if (!hasActiveMessages) {
+        // Cold-start: kick off the runner. The initial user_message is the
+        // appended-first event; the session-loop picks it up.
+        session!.appendUserMessage(input);
+        pipeline.run(input).catch((err) => {
+          addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      } else {
+        // Session is already active; just append. The running session-loop
+        // will see the event and schedule a fresh captain turn.
+        session!.appendUserMessage(input);
+      }
+    },
+    [pipeline, session, dispatcher, addMessage, finalizeStream, legacyMode, legacyIsRunning, legacyWaitingForInput, sessionBusy],
+  );
 
   useEffect(() => {
     if (initialPrompt) {
       handleSubmit(initialPrompt);
     }
-  }, [initialPrompt, handleSubmit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPrompt]);
 
-  const statusText = waitingForInput
-    ? queueCount > 0
-      ? `Waiting for your input... (${queueCount} queued)`
-      : 'Waiting for your input...'
-    : isRunning
-      ? queueCount > 0
-        ? `${currentStep ?? 'Running...'} (${queueCount} queued — /clear-queue or /cancel)`
-        : `${currentStep ?? 'Running...'} (type /cancel to stop)`
-      : undefined;
+  const statusText = legacyMode
+    ? legacyWaitingForInput
+      ? 'Waiting for your input...'
+      : legacyIsRunning
+        ? `${currentStep ?? 'Running...'} (type /cancel to stop)`
+        : undefined
+    : sessionBusy
+      ? `${inFlightToolCalls.size} tool${inFlightToolCalls.size === 1 ? '' : 's'} in flight  —  type to send, /cancel-all to abort`
+      : currentStep
+        ? currentStep
+        : undefined;
 
   return (
     <Box flexDirection="column" minHeight={10}>
@@ -217,7 +326,21 @@ export function App({ pipeline, initialPrompt }: Props) {
 
       <ConversationView messages={messages} />
 
-      {agents.length > 0 && (
+      {!legacyMode && inFlightToolCalls.size > 0 && (
+        <Box flexDirection="column" marginY={1}>
+          {Array.from(inFlightToolCalls.values()).map((call) => (
+            <Box key={call.toolCallId}>
+              <Text color="yellow">{'\u25CF '}</Text>
+              <Text dimColor>
+                {call.toolName} ({call.toolCallId}
+                {call.latestChunk ? `): ${call.latestChunk.slice(0, 60)}` : ')'}
+              </Text>
+            </Box>
+          ))}
+        </Box>
+      )}
+
+      {legacyMode && agents.length > 0 && (
         <Box marginY={1}>
           <AgentStatus agents={agents} />
         </Box>
@@ -226,7 +349,7 @@ export function App({ pipeline, initialPrompt }: Props) {
       <Box marginTop={1}>
         <PromptInput
           onSubmit={handleSubmit}
-          disabled={isRunning && !waitingForInput}
+          disabled={false}
           statusText={statusText}
         />
       </Box>

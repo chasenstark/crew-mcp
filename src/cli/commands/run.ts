@@ -16,7 +16,7 @@ export async function runCommand(
   const logFile = enableFileLogging(projectRoot);
   logger.info(`Run log file: ${logFile}`);
 
-  const { runner, stateStore, config, registry } = createRunner(projectRoot);
+  const { runner, stateStore, config, registry, session, dispatcher } = createRunner(projectRoot);
   if (!options.skipPreflight) {
     await assertRequiredAgentsReady(registry, config);
   }
@@ -68,7 +68,7 @@ export async function runCommand(
   normalizeAskUserPolicy(options.onAskUser, 'prompt');
 
   const { waitUntilExit } = render(
-    React.createElement(App, { pipeline: runner }),
+    React.createElement(App, { pipeline: runner, session, dispatcher }),
   );
   await waitUntilExit();
 }

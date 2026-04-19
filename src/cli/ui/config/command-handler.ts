@@ -13,9 +13,12 @@ import { configPathHelpLines } from '../../../workflow/config-path-registry.js';
 import { formatChangedValue, formatShowOutput } from '../../commands/config.js';
 import { parseConfigSlashCommand } from './command-parser.js';
 
+// Post-M1.5, the captain is always available — "is the session running?" is
+// no longer a single boolean. `sessionBusy` means subagent tool calls are in
+// flight, which is the condition under which we block config mutations.
 interface HandleConfigCommandOptions {
   cwd: string;
-  isRunning: boolean;
+  sessionBusy: boolean;
 }
 
 function helpText(): string {
@@ -38,8 +41,8 @@ function helpText(): string {
   ].join('\n');
 }
 
-function runningMutationBlocked(): string {
-  return 'Cannot mutate config while a workflow is running. Wait for completion or use /cancel first.';
+function sessionBusyMutationBlocked(): string {
+  return 'Cannot mutate config while subagent tool calls are in flight. Wait for completion or use /cancel-all first.';
 }
 
 export function handleConfigSlashCommand(
@@ -62,8 +65,8 @@ export function handleConfigSlashCommand(
     return `${parsed.reason}\nTry /config help`;
   }
 
-  if (options.isRunning) {
-    return runningMutationBlocked();
+  if (options.sessionBusy) {
+    return sessionBusyMutationBlocked();
   }
 
   if (parsed.kind === 'edit') {

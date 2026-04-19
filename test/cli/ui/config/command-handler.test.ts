@@ -33,7 +33,7 @@ describe('handleConfigSlashCommand', () => {
   });
 
   it('returns help text', () => {
-    const response = handleConfigSlashCommand('/config', { cwd, isRunning: false });
+    const response = handleConfigSlashCommand('/config', { cwd, sessionBusy: false });
     expect(response).toContain('/config help');
     expect(response).toContain('/config set captain.cli codex');
     expect(response).toContain('/config set workflow.roleModels.reviewer gpt-5.4');
@@ -42,35 +42,35 @@ describe('handleConfigSlashCommand', () => {
   });
 
   it('gets and sets active profile', () => {
-    const getInitial = handleConfigSlashCommand('/config profile', { cwd, isRunning: false });
+    const getInitial = handleConfigSlashCommand('/config profile', { cwd, sessionBusy: false });
     expect(getInitial).toContain('Active profile: default');
 
-    const setResponse = handleConfigSlashCommand('/config profile codex-first', { cwd, isRunning: false });
+    const setResponse = handleConfigSlashCommand('/config profile codex-first', { cwd, sessionBusy: false });
     expect(setResponse).toContain('Active profile set to codex-first');
 
-    const getAfter = handleConfigSlashCommand('/config profile', { cwd, isRunning: false });
+    const getAfter = handleConfigSlashCommand('/config profile', { cwd, sessionBusy: false });
     expect(getAfter).toContain('Active profile: codex-first');
   });
 
-  it('allows show while running', () => {
-    const response = handleConfigSlashCommand('/config show', { cwd, isRunning: true });
+  it('allows show while session is busy', () => {
+    const response = handleConfigSlashCommand('/config show', { cwd, sessionBusy: true });
     expect(response).toContain('Effective Config');
   });
 
-  it('blocks mutating commands while running', () => {
-    const response = handleConfigSlashCommand('/config set captain.cli codex', { cwd, isRunning: true });
-    expect(response).toContain('Cannot mutate config while a workflow is running');
+  it('blocks mutating commands while session is busy', () => {
+    const response = handleConfigSlashCommand('/config set captain.cli codex', { cwd, sessionBusy: true });
+    expect(response).toContain('Cannot mutate config while subagent tool calls are in flight');
   });
 
   it('applies set command while idle', () => {
-    const response = handleConfigSlashCommand('/config set captain.cli codex', { cwd, isRunning: false });
+    const response = handleConfigSlashCommand('/config set captain.cli codex', { cwd, sessionBusy: false });
     expect(response).toContain('Configuration updated');
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.captain.cli).toBe('codex');
   });
 
   it('supports next/prev cycling tokens in set command', () => {
-    const response = handleConfigSlashCommand('/config set captain.model next', { cwd, isRunning: false });
+    const response = handleConfigSlashCommand('/config set captain.model next', { cwd, sessionBusy: false });
     expect(response).toContain('Configuration updated');
     const projectConfig = loadConfigByScope('project', cwd);
     expect(resolveCaptainModel(projectConfig!.captain)).toBe(ModelId.CLAUDE_OPUS);
@@ -79,7 +79,7 @@ describe('handleConfigSlashCommand', () => {
   it('updates role model override with slash set command', () => {
     const response = handleConfigSlashCommand(
       `/config set workflow.roleModels.reviewer ${ModelId.GPT}`,
-      { cwd, isRunning: false },
+      { cwd, sessionBusy: false },
     );
     expect(response).toContain('Configuration updated');
     const projectConfig = loadConfigByScope('project', cwd);
@@ -87,7 +87,7 @@ describe('handleConfigSlashCommand', () => {
   });
 
   it('sets active scope', () => {
-    const response = handleConfigSlashCommand('/config scope global', { cwd, isRunning: false });
+    const response = handleConfigSlashCommand('/config scope global', { cwd, sessionBusy: false });
     expect(response).toContain('Active write scope set to global');
     expect(readActiveScopePreference(cwd)).toBe('global');
   });
@@ -95,7 +95,7 @@ describe('handleConfigSlashCommand', () => {
   it('adds and removes agent via slash commands', () => {
     const addResponse = handleConfigSlashCommand(
       '/config add-agent local-gemma generic ollama',
-      { cwd, isRunning: false },
+      { cwd, sessionBusy: false },
     );
     expect(addResponse).toContain('Agent added');
     let projectConfig = loadConfigByScope('project', cwd);
@@ -104,14 +104,14 @@ describe('handleConfigSlashCommand', () => {
 
     handleConfigSlashCommand(
       '/config set agents.local-gemma.capabilities implement,review',
-      { cwd, isRunning: false },
+      { cwd, sessionBusy: false },
     );
     projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.agents['local-gemma']?.capabilities).toEqual(['implement', 'review']);
 
     const removeResponse = handleConfigSlashCommand('/config remove-agent local-gemma', {
       cwd,
-      isRunning: false,
+      sessionBusy: false,
     });
     expect(removeResponse).toContain('Agent removed');
     projectConfig = loadConfigByScope('project', cwd);

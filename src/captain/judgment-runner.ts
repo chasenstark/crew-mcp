@@ -252,6 +252,19 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     return this.dispatcher;
   }
 
+  /**
+   * Override RunnerBase.cancel() so session-kill also aborts any in-flight
+   * dispatcher tasks (M1.5-9 requirement). The order matters: cancel
+   * dispatcher tasks FIRST so their worktrees can clean up before the
+   * runner's own AbortController fires and yanks the process.
+   */
+  override cancel(reason = 'Cancelled by user'): void {
+    if (this.dispatcher) {
+      this.dispatcher.cancelAll(reason);
+    }
+    super.cancel(reason);
+  }
+
   async run(userRequest: string): Promise<string> {
     const startedAt = new Date().toISOString();
     const runId = this.createRunId(startedAt);
