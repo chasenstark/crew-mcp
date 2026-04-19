@@ -39,6 +39,9 @@ import type { JudgeOutput } from './steps/judge.js';
 import type { AgentRegistry, PipelineEvents } from './pipeline.js';
 import type { CrewRunner, ResumeParams } from './runner.js';
 import { RunnerBase } from './runner-base.js';
+import { CaptainSession } from './session.js';
+import { ToolDispatcher } from './tool-dispatcher.js';
+import { dispatchAskUser } from './tools/ask-user.js';
 import {
   buildFallbackReport as buildWorkflowFallbackReport,
   createRunId as createWorkflowRunId,
@@ -191,6 +194,8 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   private actions: ActionDefinitions;
   private actionServer: CaptainActionServer;
   private guardrails: Guardrails;
+  private session: CaptainSession | undefined;
+  private dispatcher: ToolDispatcher | undefined;
 
   constructor(
     captainAdapter: AgentAdapter,
@@ -202,6 +207,18 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       captainModel?: string;
       agentModels?: Record<string, string | undefined>;
       guardrails?: Partial<Guardrails>;
+      /**
+       * Persistent captain session. When present, ask_user action handlers
+       * dispatch through the ToolDispatcher rather than the slot-based shim.
+       * M1.5-10 wires this from create-runner.
+       */
+      session?: CaptainSession;
+      /**
+       * Shared ToolDispatcher for in-flight tool calls. When present, the
+       * ask_user action dispatches directly; subagent runs in M3 will use the
+       * same dispatcher.
+       */
+      dispatcher?: ToolDispatcher;
     },
   ) {
     super(state);
@@ -216,8 +233,18 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       ...DEFAULT_GUARDRAILS,
       ...(options?.guardrails ?? {}),
     };
+    this.session = options?.session;
+    this.dispatcher = options?.dispatcher;
     this.actions = this.buildActionRegistry();
     this.actionServer = this.buildActionServer();
+  }
+
+  getSession(): CaptainSession | undefined {
+    return this.session;
+  }
+
+  getDispatcher(): ToolDispatcher | undefined {
+    return this.dispatcher;
   }
 
   async run(userRequest: string): Promise<string> {
@@ -709,6 +736,24 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     return order.length;
   }
 
+  private async dispatchAskUser(question: string): Promise<string> {
+    // Prefer the dispatcher-backed path when a session + dispatcher are
+    // injected (M1.5-10 wires them for real use). Fall back to the slot-based
+    // shim (emits 'ask_user' and awaits provideUserInput) so existing tests
+    // without session/dispatcher keep passing; the shim disappears entirely
+    // in M1.5-11.
+    if (this.session && this.dispatcher) {
+      const result = await dispatchAskUser({
+        session: this.session,
+        dispatcher: this.dispatcher,
+        question,
+        externalSignal: this.activeAbortController?.signal,
+      });
+      return result.response;
+    }
+    return this.requestUserInput(question);
+  }
+
   private resolveTaskModel(task: { role: string; agent: string }): string | undefined {
     return resolveTaskModel(this.workflow, this.agentModels, task);
   }
@@ -996,7 +1041,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         inputSchema: AskUserInputSchema,
         handler: async (rawInput, runtime) => {
           const input = AskUserInputSchema.parse(rawInput);
-          const response = await this.requestUserInput(input.question);
+          const response = await this.dispatchAskUser(input.question);
           const syntheticSummary: PassSummary = {
             passNumber: runtime.globalPassCounter + 1,
             summary: `User input: ${response}`,

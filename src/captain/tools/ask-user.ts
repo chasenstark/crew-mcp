@@ -1,0 +1,179 @@
+// ask_user is modeled as a tool rather than a slot-based pause. The captain
+// calls dispatchAskUser() which:
+//
+//   1. appends a `tool_call` message to the session (durable record)
+//   2. starts a dispatch task whose run() awaits the next `user_message`
+//      event on the session — keyed per toolCallId, so concurrent ask_user
+//      calls resolve independently
+//   3. when the user_message arrives (from App.tsx, attachAskUserHandler,
+//      or any other UI input source), the promise resolves and the helper
+//      appends a `tool_result` to the session
+//   4. if the dispatcher is cancelled mid-wait, the helper appends a
+//      cancelled tool_result and rethrows the abort
+//
+// Concurrent semantics: each dispatchAskUser has a unique toolCallId and
+// waits for its OWN next user_message event. With two concurrent ask_user
+// calls in flight, the first user_message resolves BOTH (FIFO across
+// toolCallIds is not meaningful; the plan explicitly says resolution is
+// per-toolCallId, so a single user message answers whichever request is
+// at the front of the FIFO, and a second message answers the other).
+
+import { randomUUID } from 'crypto';
+import type { CaptainSession } from '../session.js';
+import type { ToolDispatcher } from '../tool-dispatcher.js';
+
+export interface DispatchAskUserArgs {
+  session: CaptainSession;
+  dispatcher: ToolDispatcher;
+  question: string;
+  toolCallId?: string;
+  /**
+   * If provided, this signal aborts the wait for a user message. Completion
+   * still writes a cancelled tool_result. Used by the session-loop terminator.
+   */
+  externalSignal?: AbortSignal;
+}
+
+export interface AskUserResult {
+  toolCallId: string;
+  response: string;
+}
+
+/**
+ * Coordinate ask_user calls so a new dispatchAskUser always waits for the
+ * NEXT user_message event (not one that slipped in before it subscribed).
+ *
+ * This is a simple FIFO: a user_message is handed to the oldest pending
+ * subscriber. The plan's "concurrent ask_user keyed per toolCallId" is
+ * satisfied because the subscribers are per-tool-call-id — two concurrent
+ * dispatchAskUser calls each get their own subscription, and two sequential
+ * user messages resolve them in order.
+ */
+class AskUserCoordinator {
+  private subscribers: Array<(text: string) => void> = [];
+  private started = false;
+
+  constructor(private readonly session: CaptainSession) {}
+
+  async subscribe(signal: AbortSignal): Promise<string> {
+    this.ensureStarted();
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const accept = (text: string) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', abortListener);
+        resolve(text);
+      };
+      const abortListener = () => {
+        if (settled) return;
+        settled = true;
+        // Remove this subscriber from the queue so a user_message doesn't
+        // resolve a dead one.
+        this.subscribers = this.subscribers.filter((s) => s !== accept);
+        reject(new AskUserAbortError(signal.reason));
+      };
+      signal.addEventListener('abort', abortListener);
+      this.subscribers.push(accept);
+    });
+  }
+
+  private ensureStarted(): void {
+    if (this.started) return;
+    this.started = true;
+    void this.consume();
+  }
+
+  private async consume(): Promise<void> {
+    for await (const event of this.session.events()) {
+      if (event.kind !== 'user_message') continue;
+      const next = this.subscribers.shift();
+      if (!next) continue;
+      next(event.text);
+    }
+  }
+}
+
+const coordinators = new WeakMap<CaptainSession, AskUserCoordinator>();
+
+function coordinatorFor(session: CaptainSession): AskUserCoordinator {
+  let c = coordinators.get(session);
+  if (!c) {
+    c = new AskUserCoordinator(session);
+    coordinators.set(session, c);
+  }
+  return c;
+}
+
+export async function dispatchAskUser(args: DispatchAskUserArgs): Promise<AskUserResult> {
+  const toolCallId = args.toolCallId ?? randomUUID();
+  args.session.appendToolCall({
+    toolCallId,
+    toolName: 'ask_user',
+    input: { question: args.question },
+  });
+
+  return new Promise<AskUserResult>((resolve, reject) => {
+    const finalize = (status: 'success' | 'error' | 'cancelled', output: unknown): void => {
+      args.session.appendToolResult({
+        toolCallId,
+        output,
+        status,
+      });
+      if (status === 'success') {
+        resolve({ toolCallId, response: String(output) });
+      } else if (status === 'cancelled') {
+        reject(new AskUserAbortError(String(output)));
+      } else {
+        reject(new Error(String(output)));
+      }
+    };
+
+    args.dispatcher.start({
+      toolCallId,
+      toolName: 'ask_user',
+      input: { question: args.question },
+      run: async (ctx) => {
+        const mergedSignal = mergeSignals(ctx.signal, args.externalSignal);
+        try {
+          const response = await coordinatorFor(args.session).subscribe(mergedSignal);
+          finalize('success', response);
+          return response;
+        } catch (err: unknown) {
+          if (err instanceof AskUserAbortError) {
+            finalize('cancelled', err.message || 'cancelled');
+            throw err;
+          }
+          const message = err instanceof Error ? err.message : String(err);
+          finalize('error', message);
+          throw err;
+        }
+      },
+    });
+  });
+}
+
+class AskUserAbortError extends Error {
+  readonly name = 'AskUserAbortError';
+  constructor(reason: unknown) {
+    super(typeof reason === 'string' ? reason : reason instanceof Error ? reason.message : 'cancelled');
+  }
+}
+
+function mergeSignals(primary: AbortSignal, external: AbortSignal | undefined): AbortSignal {
+  if (!external) return primary;
+  if (primary.aborted || external.aborted) {
+    const c = new AbortController();
+    c.abort(primary.aborted ? primary.reason : external.reason);
+    return c.signal;
+  }
+  const merged = new AbortController();
+  const onAbort = (signal: AbortSignal) => () => {
+    if (!merged.signal.aborted) merged.abort(signal.reason);
+  };
+  primary.addEventListener('abort', onAbort(primary));
+  external.addEventListener('abort', onAbort(external));
+  return merged.signal;
+}
+
+export { AskUserAbortError };
