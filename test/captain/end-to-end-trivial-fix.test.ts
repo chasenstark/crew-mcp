@@ -1,15 +1,16 @@
 /**
- * M3-13 / M4-7: end-to-end code-review — plumbing contract.
+ * M4-7: end-to-end trivial-fix — plumbing contract.
  *
- * Scripted-fake-captain test: captain emits run_agent(codex, 'fix typo') →
- * waits → run_agent(claude-code, 'review') → waits → finish. Two distinct
- * runIds, two worktrees, cleaned up via the dispatcher's terminal-event
- * listener.
+ * Scripted-fake-captain test: the "fix the typo" scenario from the M4
+ * exit gate. Captain emits one run_agent(codex, 'fix typo') → receives
+ * the dispatcher result → emits finish. Exactly two captain turns,
+ * exactly one run_agent dispatch, zero wrapper tools.
  *
- * Framing (M4-7): this is a plumbing contract — the session-loop doesn't
- * auto-invoke wrappers around the captain's run_agent + finish flow. It
- * does NOT validate that real LLMs produce this sequence; M4-8's smoke
- * matrix is the quality gate.
+ * Framing: this is a plumbing contract. The session-loop routes a
+ * dispatched run_agent → tool_result → next captain turn without
+ * inserting any auto-calls. Real-captain quality (whether a real LLM
+ * actually chooses this shape on the typo-fix scenario) is M4-8's
+ * smoke-matrix concern.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -61,11 +62,11 @@ function makeRegistry(adapters: AgentAdapter[]): AgentRegistry {
   };
 }
 
-describe('E2E code-review (M3-13)', () => {
+describe('E2E trivial-fix (M4-7)', () => {
   let projectRoot: string;
 
   beforeEach(() => {
-    projectRoot = mkdtempSync(join(tmpdir(), 'crew-e2e-review-'));
+    projectRoot = mkdtempSync(join(tmpdir(), 'crew-e2e-trivial-fix-'));
     execSync('git init -q', { cwd: projectRoot });
     execSync('git config user.email t@t', { cwd: projectRoot });
     execSync('git config user.name t', { cwd: projectRoot });
@@ -76,73 +77,54 @@ describe('E2E code-review (M3-13)', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('dispatches fix + review via two distinct runIds and worktrees, then finishes', async () => {
+  it('dispatches one run_agent and finishes in 2 captain turns', async () => {
     const { adapter, probe } = createFakeCaptain({
       turns: [
         [
           {
             name: 'mcp__crew__run_agent',
-            input: { agent_id: 'codex', prompt: 'fix typo on README line 10' },
-          },
-        ],
-        [
-          {
-            name: 'mcp__crew__run_agent',
-            input: { agent_id: 'claude-code', prompt: 'review the fix' },
+            input: {
+              agent_id: 'codex',
+              prompt: 'fix the comment in README line 10',
+            },
           },
         ],
         [
           {
             name: 'mcp__crew__finish',
-            input: { summary: 'Fix applied and reviewed.' },
+            input: { summary: 'Typo fixed.' },
           },
         ],
       ],
     });
-
-    const codex = makeAdapter('codex', 'typo fixed');
-    const claude = makeAdapter('claude-code', 'LGTM');
+    const codex = makeAdapter('codex', 'comment fixed');
     const stateStore = new StateStore(projectRoot);
     const worktreeManager = new WorktreeManager(projectRoot);
     const session = CaptainSession.create({ projectRoot });
     const dispatcher = new ToolDispatcher();
-
     const runner = new JudgmentRunner(
       adapter,
-      makeRegistry([adapter, codex, claude]),
+      makeRegistry([adapter, codex]),
       workflow,
       stateStore,
       worktreeManager,
       { session, dispatcher },
     );
 
-    const report = await runner.run('fix + review README typo');
-    expect(report).toBe('Fix applied and reviewed.');
-    // Captain emitted 3 turns: two run_agents (each its own turn after
-    // dispatched result arrives) and a finish turn.
-    expect(probe.turnCount).toBe(3);
+    const report = await runner.run('fix the comment in README line 10');
+    expect(report).toBe('Typo fixed.');
+    expect(probe.turnCount).toBe(2);
 
-    const runAgentCalls = session
-      .getMessages()
-      .filter((m) => m.role === 'tool_call' && m.toolName === 'run_agent');
-    expect(runAgentCalls).toHaveLength(2);
-    const runAgentIds = new Set(runAgentCalls.map((m) => m.toolCallId));
-    expect(runAgentIds.size).toBe(2); // distinct toolCallIds
+    const messages = session.getMessages();
 
-    // Each run_agent produced a tool_result (from dispatcher's run:complete).
-    const runAgentResults = session
-      .getMessages()
-      .filter(
-        (m) =>
-          m.role === 'tool_result' &&
-          runAgentCalls.some((c) => c.toolCallId === m.toolCallId),
-      );
-    expect(runAgentResults).toHaveLength(2);
+    const runAgentCalls = messages.filter(
+      (m) => m.role === 'tool_call' && m.toolName === 'run_agent',
+    );
+    expect(runAgentCalls).toHaveLength(1);
 
-    // Plumbing contract (M4-7): the captain did NOT emit any wrapper
-    // tools. Synchronous inline tools don't leave session.tool_call
-    // records; we check probe.toolCalls (every call emitted through
-    // onToolCall across all turns).
+    // Plumbing contract (M4-7): the captain did NOT emit wrappers around
+    // the single run_agent → finish flow. Synchronous inline tools don't
+    // leave session.tool_call records; we read from probe.toolCalls.
     const emittedByName = (name: string) =>
       probe.toolCalls.filter((c) => c.name === `mcp__crew__${name}`);
     expect(emittedByName('plan_tasks')).toHaveLength(0);

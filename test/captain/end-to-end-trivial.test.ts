@@ -1,9 +1,13 @@
 /**
- * M3-13: end-to-end trivial. User asks a question that requires no
- * subagent work. Captain emits message_user + finish on the same turn and
- * terminates. Assertion: exactly 1 captain adapter turn; 0 run_agent
- * dispatches; 0 worktree allocations; session log ends with the finish
- * summary as an assistant message.
+ * M3-13 / M4-7: end-to-end trivial — plumbing contract.
+ *
+ * Scripted-fake-captain test: replays a pre-authored turn sequence through
+ * the session-loop and asserts plumbing invariants (no extra calls snuck
+ * in, turn counts match the script). Does NOT validate that real LLMs
+ * produce that sequence — a scripted captain passing
+ * `expect(...wrapper calls...).toHaveLength(0)` is tautological until a
+ * real captain runs through the same scenario. Real-captain quality is
+ * the job of M4-8's smoke matrix.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -101,5 +105,16 @@ describe('E2E trivial (M3-13)', () => {
       (m) => m.role === 'tool_call' && m.toolName === 'run_agent',
     );
     expect(runAgentCalls).toHaveLength(0);
+
+    // Plumbing contract (M4-7): the captain did NOT emit plan_tasks /
+    // analyze_output / compress_context. Synchronous inline tools don't
+    // leave session.tool_call records, so we read the emitted-call
+    // history from probe.toolCalls (every call the fake captain sent to
+    // onToolCall across all turns).
+    const emittedByName = (name: string) =>
+      probe.toolCalls.filter((c) => c.name === `mcp__crew__${name}`);
+    expect(emittedByName('plan_tasks')).toHaveLength(0);
+    expect(emittedByName('analyze_output')).toHaveLength(0);
+    expect(emittedByName('compress_context')).toHaveLength(0);
   });
 });

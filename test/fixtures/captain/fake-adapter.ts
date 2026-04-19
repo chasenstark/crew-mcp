@@ -42,12 +42,21 @@ export interface FakeCaptainProbe {
   lastTools?: ToolDefinition[];
   lastMessages?: ToolLoopMessage[];
   lastMcpPayload?: ToolLoopContext['mcpRegistration'];
+  /**
+   * Every ToolCall the fake captain emitted through onToolCall, across all
+   * turns. Lets tests assert on synchronous tools (message_user, plan_tasks,
+   * analyze_output, compress_context, list_agents, finish) which don't leave
+   * records in the session log because they resolve inline during the
+   * adapter turn. Dispatched tools (run_agent, ask_user) show up BOTH here
+   * and in session.tool_call records.
+   */
+  toolCalls: ToolCall[];
 }
 
 export function createFakeCaptain(
   script: FakeCaptainScript,
 ): { adapter: AgentAdapter; probe: FakeCaptainProbe } {
-  const probe: FakeCaptainProbe = { turnCount: 0 };
+  const probe: FakeCaptainProbe = { turnCount: 0, toolCalls: [] };
   let turnIdx = 0;
 
   const adapter: AgentAdapter = {
@@ -81,7 +90,9 @@ export function createFakeCaptain(
       const turn = script.turns[turnIdx] ?? [];
       turnIdx++;
       for (const call of turn) {
-        await onToolCall({ name: call.name, input: call.input });
+        const emitted: ToolCall = { name: call.name, input: call.input };
+        probe.toolCalls.push(emitted);
+        await onToolCall(emitted);
       }
       const assistantText = script.assistantText?.[probe.turnCount - 1];
       return {
