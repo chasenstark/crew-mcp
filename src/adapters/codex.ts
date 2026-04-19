@@ -28,6 +28,7 @@ import type {
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
+import { toCodexConfigOverrides, type ToolCatalog } from '../captain/mcp-registration.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
 import {
   ToolLoopDecisionSchema,
@@ -853,11 +854,12 @@ export class CodexAdapter implements AgentAdapter {
    * readable here only so M0.5-8 preflight can surface a one-time deprecation
    * notice when it is set; it no longer contributes to argv.
    *
-   * M0.5-3 will inject MCP-server overrides (e.g., `-c mcp_servers.crew.command=…`)
-   * via a separate builder that feeds into `buildResumeArgs`.
+   * Per-session MCP-server overrides (`-c mcp_servers.<name>.*`) are projected
+   * via `toCodexConfigOverrides`. For M0.5 the catalog seam returns `[]` for
+   * an empty catalog; M3 will populate it with the captain's real tool set.
    */
-  private buildPerRunConfigFlags(): string[] {
-    return [];
+  private buildPerRunConfigFlags(catalog: ToolCatalog = {}): string[] {
+    return toCodexConfigOverrides(catalog);
   }
 
   private buildResumeArgs(
