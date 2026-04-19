@@ -201,13 +201,13 @@ const DEFAULT_GUARDRAILS: Guardrails = {
 };
 
 /**
- * Captain tool surface selector. `'legacy'` is the pre-M3 11-verb controller
- * surface (buildSessionLoopCaptain + buildSessionLoopScheduler paired with
- * buildActionRegistry). `'m3-tools'` is the 8-tool surface introduced in M3-4
- * (ToolCatalog) and scheduled via buildM3SessionLoopCaptain +
- * buildM3Scheduler. Default is `'legacy'` in M3-10a so existing tests keep
- * passing; M3-10b flips the default to `'m3-tools'` and deletes the legacy
- * branch entirely.
+ * Captain tool surface selector. `'m3-tools'` (default as of M3-10b) is the
+ * 8-tool surface introduced in M3-4 (ToolCatalog), scheduled via
+ * buildM3SessionLoopPair. `'legacy'` is the pre-M3 11-verb controller
+ * surface; kept alive for migration-coverage tests and deprecated. A
+ * follow-up milestone deletes the legacy path entirely (matches the
+ * architectural plan's "zero 11-verb hits in src/" exit gate; tests under
+ * test/captain/judgment-runner*.test.ts opt in explicitly until migrated).
  */
 export type CaptainToolSurface = 'legacy' | 'm3-tools';
 
@@ -253,9 +253,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
        */
       dispatcher?: ToolDispatcher;
       /**
-       * Which captain tool surface to present. Default `'legacy'` until
-       * M3-10b flips it. Opt-in via constructor option (NOT an env var) so
-       * tool-schema hashes stay stable across parallel CI workers.
+       * Which captain tool surface to present. Default `'m3-tools'` post-
+       * M3-10b; legacy tests opt in via `'legacy'`. Opt-in via constructor
+       * option (NOT an env var) so tool-schema hashes stay stable across
+       * parallel CI workers.
        */
       toolSurface?: CaptainToolSurface;
       /**
@@ -279,7 +280,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     };
     this.session = options?.session;
     this.dispatcher = options?.dispatcher;
-    this.toolSurface = options?.toolSurface ?? 'legacy';
+    this.toolSurface = options?.toolSurface ?? 'm3-tools';
     this.preset = options?.preset;
     this.actions = this.buildActionRegistry();
     this.actionServer = this.buildActionServer();
@@ -427,6 +428,14 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     }
   }
 
+  /**
+   * @deprecated M3-10b flipped the default to 'm3-tools'. This legacy pair
+   * survives only so opted-in migration-coverage tests
+   * (`toolSurface: 'legacy'`) can exercise the 11-verb controller flow
+   * while the test fixtures are rewritten. A follow-up milestone removes
+   * the legacy pair entirely — once the audit in the plan's exit gate
+   * ("grep -r run_execute src/" returns zero hits) can pass.
+   */
   private buildLegacySessionLoopPair(runtime: RuntimeState): {
     captainTurn: SessionLoopTurn;
     scheduler: ToolCallScheduler;

@@ -180,7 +180,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       workflow,
       stateStore,
       worktree,
-      { session, dispatcher },
+      { session, dispatcher, toolSurface: 'legacy' },
     );
 
     const finalReport = await runner.run('Do the thing');
@@ -240,7 +240,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       workflow,
       stateStore,
       worktree,
-      { session, dispatcher },
+      { session, dispatcher, toolSurface: 'legacy' },
     );
 
     await runner.run('Do it');
@@ -293,7 +293,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher },
+      { session, dispatcher, toolSurface: 'legacy' },
     );
 
     await runner.run('Do it');
@@ -361,7 +361,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher },
+      { session, dispatcher, toolSurface: 'legacy' },
     );
 
     await runner.run('Do it');
@@ -415,7 +415,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher },
+      { session, dispatcher, toolSurface: 'legacy' },
     );
 
     // The controller's deterministic fallback may throw after too many
@@ -468,7 +468,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       workflow,
       stateStore,
       worktreeManager,
-      { session, dispatcher },
+      { session, dispatcher, toolSurface: 'legacy' },
     );
 
     // Use the private buildSessionLoopCaptain indirectly: we know the
@@ -550,8 +550,9 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
         ? {
           session: CaptainSession.create({ projectRoot: tmpRoot }),
           dispatcher: new ToolDispatcher(),
+          toolSurface: 'legacy' as const,
         }
-        : {};
+        : { toolSurface: 'legacy' as const };
       const runner = new JudgmentRunner(
         captainAdapter,
         agentRegistry,
@@ -609,6 +610,7 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
       stateStore,
       worktree,
       // No session or dispatcher — legacy path.
+      { toolSurface: 'legacy' },
     );
 
     const final = await runner.run('Do it');
