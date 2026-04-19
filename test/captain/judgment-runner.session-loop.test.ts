@@ -439,6 +439,79 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
     expect(saved?.status === 'failed' || saved?.status === 'running').toBe(true);
   });
 
+  it('real JudgmentRunner exposes refreshCliVersionTag to the session loop (S2)', async () => {
+    // The captain turn must provide refreshCliVersionTag that calls the
+    // adapter's getCliVersionTag(). Verify by invoking the session loop's
+    // refresh path via a directly-probed captain turn.
+    const agent = createAgent('agent-a');
+    const agentRegistry = {
+      get: () => agent,
+      list: () => [{ name: 'agent-a', capabilities: ['implement'] }],
+    };
+
+    const { adapter: captainAdapter } = createDecisionAdapter([]);
+    const getCliVersionTagSpy = vi.fn(async () => 'claude-code@9.9.9');
+    captainAdapter.getCliVersionTag = getCliVersionTagSpy;
+
+    const stateStore = new StateStore(tmpRoot);
+    const worktreeManager = new WorktreeManager(tmpRoot);
+    const session = CaptainSession.create({
+      projectRoot: tmpRoot,
+      cliVersionTag: 'claude-code@1.0.0',
+    });
+    session.providerSessionRef = 'stale';
+    const dispatcher = new ToolDispatcher();
+    const workflow = { steps: [], completion: { strategy: 'judge_approval' as const, fallback: 'max_passes' as const } } as any;
+    const runner = new JudgmentRunner(
+      captainAdapter,
+      agentRegistry,
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    // Use the private buildSessionLoopCaptain indirectly: we know the
+    // session-loop calls refreshCliVersionTag on rejection. Exercise by
+    // calling the session's refresh directly with the adapter's fetcher —
+    // the same path the built captain turn uses.
+    const runtime = {
+      runId: 'r',
+      startedAt: '',
+      userRequest: '',
+      decomposition: { reasoning: '', tasks: [], suggestedOrder: [] },
+      passRecords: [],
+      summaries: [],
+      taskStates: {},
+      pendingQueue: [],
+      artifactsByTask: {},
+      actionHistory: [],
+      controllerCursor: 0,
+      toolCallTranscript: undefined,
+      globalPassCounter: 0,
+      taskJudgePassCount: {},
+      taskPassNumbers: {},
+      taskExecutionCounts: {},
+      taskWorktrees: {},
+      reportFinalized: false,
+      hadErrors: false,
+      deterministicFallbackCount: 0,
+      replanCount: 0,
+      nativeToolCalls: 0,
+    } as any;
+
+    const captainTurn = (runner as unknown as {
+      buildSessionLoopCaptain: (r: unknown) => { refreshCliVersionTag?: () => Promise<string | undefined> };
+    }).buildSessionLoopCaptain(runtime);
+
+    expect(captainTurn.refreshCliVersionTag).toBeDefined();
+    const fresh = await captainTurn.refreshCliVersionTag!();
+    expect(fresh).toBe('claude-code@9.9.9');
+    expect(getCliVersionTagSpy).toHaveBeenCalled();
+    // Session ref invalidated on the version drift.
+    expect(session.providerSessionRef).toBeUndefined();
+  });
+
   it('legacy mode (no session/dispatcher) still uses executeNativeToolLoop fallback', async () => {
     // Verifies backwards compat: pre-M1.5 constructors keep working.
     const agent = createAgent('agent-a');

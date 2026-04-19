@@ -46,7 +46,6 @@ import { dispatchAskUser, waitForUserResponse } from './tools/ask-user.js';
 import {
   SessionLoop,
   type SessionLoopTurn,
-  type SessionLoopTurnResult,
   type ToolCallScheduler,
 } from './session-loop.js';
 import {
@@ -484,8 +483,18 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
               input: { decision: decision as unknown as Record<string, unknown> },
             },
           ],
-          _syncDecision: decision,
-        } as SessionLoopTurnResult & { _syncDecision?: ControllerDecision };
+        };
+      },
+      // S2: wire the M1.5-8 self-heal. When the session-loop detects a
+      // provider-session rejection (providerSessionRejected in a prior
+      // turn's result), it calls this to re-probe the CLI version and
+      // update session.cliVersionTag. The captain adapter provides the
+      // actual detection function.
+      refreshCliVersionTag: async () => {
+        if (!this.captain.getCliVersionTag) return undefined;
+        return this.session?.refreshCliVersionTag(() =>
+          (this.captain.getCliVersionTag as () => Promise<string | undefined>)(),
+        );
       },
     };
   }
