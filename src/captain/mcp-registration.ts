@@ -15,17 +15,30 @@
  */
 
 /**
- * Placeholder for M3's tool catalog. Intentionally minimal at M0.5; M3 will
- * widen this to include tool schemas, MCP server entries, and so on.
+ * The per-session tool catalog. Converters (Codex argv, Claude inline JSON,
+ * Gemini settings) consume the `mcpServers` list; M3-7's parity tests lock
+ * the three projections together.
+ *
+ * `crewTools` documents the "source of truth" invariant — the tools the
+ * captain sees come from the same catalog as the MCP-server list. The
+ * converters themselves don't read `crewTools`, but keeping it on the
+ * catalog shape means adding a new captain tool is visible here too.
+ *
+ * The plain `ToolCatalog` interface is the narrow shape the converters
+ * consume; the richer `ToolCatalogClass` in `./tools/catalog.ts` implements
+ * it and also carries the ActionCatalogEntry projection.
  */
 export interface ToolCatalog {
-  readonly mcpServers?: ReadonlyArray<{
-    readonly name: string;
-    readonly command: string;
-    readonly args?: readonly string[];
-    readonly cwd?: string;
-    readonly env?: Readonly<Record<string, string>>;
-  }>;
+  readonly mcpServers?: ReadonlyArray<McpServerSpec>;
+  readonly crewTools?: ReadonlyArray<import('../adapters/types.js').ToolDefinition>;
+}
+
+export interface McpServerSpec {
+  readonly name: string;
+  readonly command: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**
