@@ -15,8 +15,6 @@ export type {
 } from './event-types.js';
 export {
   DecomposeOutputSchema,
-  DispatchOutputSchema,
   IngestOutputSchema,
   SummarizeOutputSchema,
-  JudgeOutputSchema,
 } from './schemas.js';

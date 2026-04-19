@@ -22,15 +22,10 @@ export const DecomposeOutputSchema = z.object({
   suggestedOrder: z.array(z.string()).describe('Task IDs in recommended execution order'),
 });
 
-// Step 2: DISPATCH
-export const DispatchOutputSchema = z.object({
-  agentPrompt: z.string().describe('The complete prompt to send to the agent'),
-  workingDirectory: z.string().optional().describe('Specific subdirectory to focus on'),
-  expectedOutputs: z.array(z.string()).describe('What files or artifacts the agent should produce'),
-  successCriteria: z.string().describe('How to determine if the agent completed successfully'),
-});
-
-// Step 3: INGEST
+// Step 2: INGEST
+// (decompose, ingest, summarize are the three step schemas that survive
+// post-M4-6. Dispatch + judge were retired when the captain moved to inline
+// reasoning via run_agent + finish.)
 export const IngestOutputSchema = z.object({
   status: z.enum(['success', 'partial', 'failure']),
   summary: z.string().describe('2-3 sentence summary of what the agent did'),
@@ -53,7 +48,7 @@ export const IngestOutputSchema = z.object({
   })).optional().describe('For review tasks: specific findings'),
 });
 
-// Step 4: SUMMARIZE
+// Step 3: SUMMARIZE
 export const SummarizeOutputSchema = z.object({
   passNumber: z.number(),
   summary: z.string().describe('3-8 sentence summary of what happened'),
@@ -62,17 +57,3 @@ export const SummarizeOutputSchema = z.object({
   filesInScope: z.array(z.string()).describe('Files that were touched'),
 });
 
-// Step 5: JUDGE
-export const JudgeOutputSchema = z.object({
-  decision: z.enum(['done', 'iterate', 'ask_user']),
-  reasoning: z.string().describe('Why this decision was made'),
-  issuesRequiringFixes: z.array(z.object({
-    description: z.string(),
-    severity: z.enum(['critical', 'major']),
-    originalFinding: z.string(),
-  })).optional().describe('Only for iterate'),
-  acceptedMinorIssues: z.array(z.string()).optional().describe('Only for done'),
-  questionForUser: z.string().optional().describe('Only for ask_user'),
-  isLooping: z.boolean().describe('Are the same issues repeating?'),
-  loopDescription: z.string().optional(),
-});

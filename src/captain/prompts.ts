@@ -60,47 +60,7 @@ Respond with valid JSON matching the required schema.`;
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: DISPATCH
-// ---------------------------------------------------------------------------
-
-export function buildDispatchPrompt(
-  taskDescription: string,
-  taskRole: string,
-  previousSummaries: PassSummary[],
-  passNumber: number,
-): string {
-  const context = formatSummaries(previousSummaries);
-
-  return `You are a prompt engineering system. Your job is to craft the perfect prompt for an agent that will execute a specific task.
-
-## Task
-Description: ${taskDescription}
-Role: ${taskRole}
-Pass number: ${passNumber}
-
-## Previous Context
-${context}
-
-## Instructions
-1. Write a comprehensive prompt that gives the agent everything it needs to complete the task.
-2. The prompt should be self-contained — the agent has no memory of previous interactions.
-3. Include specific file paths, function names, or patterns to look for when available from context.
-4. For review tasks: tell the agent exactly what to look for and how to report findings.
-5. For implementation tasks: be specific about what to create/modify and acceptance criteria.
-6. For fix/iterate tasks: include the specific issues found in previous passes that need resolution.
-
-## Rules
-- The agent prompt should be direct and actionable.
-- Include all relevant context from previous passes so the agent can continue without information loss.
-- Set clear success criteria so the output can be evaluated.
-- Specify expected output files or artifacts.
-- If this is a subsequent pass (passNumber > 1), focus the prompt on unresolved issues from prior passes.
-
-Respond with valid JSON matching the required schema.`;
-}
-
-// ---------------------------------------------------------------------------
-// Step 3: INGEST
+// Step 2: INGEST
 // ---------------------------------------------------------------------------
 
 export function buildIngestPrompt(
@@ -143,7 +103,7 @@ Respond with valid JSON matching the required schema.`;
 }
 
 // ---------------------------------------------------------------------------
-// Step 4: SUMMARIZE
+// Step 3: SUMMARIZE
 // ---------------------------------------------------------------------------
 
 export function buildSummarizePrompt(
@@ -176,79 +136,3 @@ ${ingestJson}
 Respond with valid JSON matching the required schema.`;
 }
 
-// ---------------------------------------------------------------------------
-// Step 5: JUDGE
-// ---------------------------------------------------------------------------
-
-export function buildJudgePrompt(
-  ingestOutput: unknown,
-  previousSummaries: PassSummary[],
-  currentPass: number,
-  maxPasses: number,
-): string {
-  const ingestJson = JSON.stringify(ingestOutput, null, 2);
-  const context = formatSummaries(previousSummaries);
-
-  return `You are a quality gate. Your job is to decide whether the current task is complete, needs another iteration, or requires human input.
-
-## Current Pass: ${currentPass} of ${maxPasses}
-
-## Ingest Output (Current Pass)
-${ingestJson}
-
-## Previous Pass Summaries
-${context}
-
-## Instructions
-1. Evaluate the quality and completeness of the current pass.
-2. Decide one of:
-   - "done": The task is satisfactorily complete. Minor issues can be accepted.
-   - "iterate": There are critical or major issues that need another pass to fix.
-   - "ask_user": There is genuine ambiguity or a decision that only a human can make.
-3. If iterating, list the specific issues that need fixes with severity ratings.
-4. If done, list any minor issues that are being accepted.
-5. Detect if the same issues are repeating across passes (looping).
-
-## Rules
-- Be pragmatic: perfection is not the goal. Accept "good enough" work.
-- Only choose "iterate" for critical or major issues. Minor style issues should be accepted.
-- If this is pass ${currentPass} of ${maxPasses} and issues are minor, prefer "done".
-- If the same issues appear in multiple passes, set isLooping to true and consider "done" or "ask_user".
-- "ask_user" is for genuine ambiguity, not for issues that can be resolved by another pass.
-- On the final pass (${maxPasses}), strongly prefer "done" unless there are critical errors.
-
-Respond with valid JSON matching the required schema.`;
-}
-
-// ---------------------------------------------------------------------------
-// Step 6: REPORT
-// ---------------------------------------------------------------------------
-
-export function buildReportPrompt(
-  summaries: PassSummary[],
-  userRequest: string,
-): string {
-  const context = formatSummaries(summaries);
-
-  return `You are a report generator. Your job is to produce a clear, human-readable summary of everything that happened during the workflow.
-
-## Original User Request
-${userRequest}
-
-## Pass Summaries
-${context}
-
-## Instructions
-Write a natural language report that:
-1. Starts with a one-sentence overview of what was accomplished.
-2. Lists the key changes made (files created, modified, decisions taken).
-3. Notes any unresolved issues or accepted compromises.
-4. Ends with suggested next steps if applicable.
-
-## Rules
-- Write in a clear, conversational tone.
-- Be concise but thorough — the user wants to understand what happened without reading logs.
-- Use bullet points for lists of changes.
-- If there were issues or concerns, be transparent about them.
-- Do NOT wrap the response in JSON. Respond with plain text/markdown.`;
-}

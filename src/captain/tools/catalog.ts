@@ -37,8 +37,8 @@ import { finishInputSchema, FINISH_DESCRIPTION } from './finish.js';
 
 /**
  * Minimal registry surface the catalog needs. Accepts either the full
- * AdapterRegistry or the legacy AgentRegistry that exposes only `list` +
- * `get`.
+ * AdapterRegistry or the minimal AgentRegistry (src/captain/events.ts)
+ * that exposes only `list` + `get`.
  */
 export interface RegistryForCatalog {
   listAvailable?(): AgentAdapter[];

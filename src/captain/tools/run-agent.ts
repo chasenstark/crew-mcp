@@ -28,7 +28,8 @@ import type { WorktreeManager } from '../../git/worktree.js';
 
 /**
  * Minimal registry surface for run_agent. Accepts either AdapterRegistry or
- * the legacy AgentRegistry shape that only exposes `get`.
+ * the minimal AgentRegistry shape (src/captain/events.ts) that exposes only
+ * `get` + `list`.
  */
 export interface RegistryForRunAgent {
   get(name: string): AgentAdapter | undefined;

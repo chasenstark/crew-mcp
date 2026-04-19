@@ -16,10 +16,10 @@ import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter } from '../../adapters/types.js';
 
 /**
- * Minimal registry surface list_agents needs. Both AdapterRegistry and the
- * legacy AgentRegistry can provide it — keeping the dependency narrow here
- * avoids pulling the full registry shape into tool handlers that don't
- * need it.
+ * Minimal registry surface list_agents needs. Both AdapterRegistry and
+ * the minimal AgentRegistry (see src/captain/events.ts) can provide it —
+ * keeping the dependency narrow here avoids pulling the full registry
+ * shape into tool handlers that don't need it.
  */
 export interface AgentListSource {
   listAvailable(): AgentAdapter[];
