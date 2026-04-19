@@ -624,7 +624,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           interrupted = await this.executeNativeToolLoop(runtime);
         } catch (error: unknown) {
           runtime.hadErrors = true;
-          runtime.providerSession = undefined;
+          // M1.5-7: do NOT clear providerSession on non-fatal errors.
+          // The session (durable message log + schema-validated ref) is the
+          // source of truth for continuity; a single failed tool-loop turn
+          // shouldn't nuke the ref and force a full replay.
           logger.warn('Native tool-loop failed, falling back to structured decision mode.', {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -642,7 +645,6 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         runtime.finalReport = this.buildFallbackReport(runtime.summaries, runtime.userRequest);
       }
 
-      runtime.providerSession = undefined;
       this.state.saveState({
         ...this.toWorkflowState(runtime),
         status: runtime.hadErrors ? 'failed' : 'completed',
@@ -657,7 +659,9 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       return runtime.finalReport;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
-      runtime.providerSession = undefined;
+      // M1.5-7: don't wipe providerSession on fatal errors either — the
+      // CaptainSession invalidates only on schema/cliVersion drift. Letting
+      // the ref survive means a retry can resume rather than replay.
       this.state.saveState({
         ...this.toWorkflowState(runtime),
         status: 'failed',
@@ -819,9 +823,9 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     );
     if (result.providerSession) {
       runtime.providerSession = result.providerSession;
-    } else if (result.pathTaken === 'adapter' || result.pathTaken === 'fallback') {
-      runtime.providerSession = undefined;
     }
+    // M1.5-7: no longer reset on adapter/fallback paths — the session's
+    // ref invalidation is handled by CaptainSession on schema/version drift.
     return this.handleNativeLoopResult(result, runtime);
   }
 

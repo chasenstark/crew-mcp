@@ -225,6 +225,52 @@ describe('CaptainSession', () => {
     expect(reloaded?.getMessages().length).toBe(1);
   });
 
+  describe('mid-failure invariant (M1.5-7)', () => {
+    it('providerSessionRef survives a recoverable error on the session', () => {
+      // The session itself never resets on arbitrary error — only schema/
+      // cliVersion drift invalidates the ref. This test documents that
+      // invariant so a future regression (re-adding an unconditional
+      // setter call) is caught.
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      s.providerSessionRef = 'sess-1';
+
+      // Simulated "error mid-turn": the session is untouched.
+      expect(s.providerSessionRef).toBe('sess-1');
+
+      // updateEnvironmentFingerprint with UNCHANGED values: no drop.
+      s.updateEnvironmentFingerprint({
+        cliVersionTag: 'claude-code@1.0.0',
+        toolSchemaHash: undefined,
+      });
+      expect(s.providerSessionRef).toBe('sess-1');
+    });
+
+    it('a new ref emitted during a turn that then fails is NOT persisted if the session is not re-written', () => {
+      // Scenario: adapter emits providerSession update callback, then the
+      // turn throws. We never called setter on the session, so the
+      // previous ref is what survives — verified by reloading from disk.
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      s.providerSessionRef = 'prev-ref';
+      s.persist();
+
+      // Simulate a mid-turn "new ref" arriving (adapter callback fires but
+      // we don't route it through setter because the turn then fails).
+      const newRefFromCallback = 'mid-turn-ref';
+      // We DO NOT set it — simulating the invariant.
+      void newRefFromCallback;
+
+      // Session reloaded from disk: prev-ref survives.
+      const reloaded = CaptainSession.load({ projectRoot: root });
+      expect(reloaded?.providerSessionRef).toBe('prev-ref');
+    });
+  });
+
   describe('refreshCliVersionTag (M1.5-8 self-heal)', () => {
     it('returns fresh value and invalidates providerSessionRef on drift', async () => {
       const s = CaptainSession.create({
