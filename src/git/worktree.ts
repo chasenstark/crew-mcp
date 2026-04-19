@@ -11,6 +11,13 @@ interface WorktreeRecord {
   createdAt: string;
 }
 
+interface RunWorktreeRecord {
+  runId: string;
+  branchName: string;
+  worktreePath: string;
+  createdAt: string;
+}
+
 interface TaskLockRecord {
   ownerId: string;
   pid: number;
@@ -25,6 +32,9 @@ export class WorktreeManager {
   private basePath: string;
   private metadataPath: string;
   private lockPath: string;
+  private runBasePath: string;
+  private runMetadataPath: string;
+  private runLockPath: string;
 
   constructor(projectRoot: string) {
     this.git = simpleGit(projectRoot);
@@ -34,6 +44,16 @@ export class WorktreeManager {
     mkdirSync(this.metadataPath, { recursive: true });
     this.lockPath = join(this.basePath, '.locks');
     mkdirSync(this.lockPath, { recursive: true });
+    // Run-scoped layout lives under .crew/runs/<runId>/worktree/ (M1.5-14).
+    // Metadata + locks sit alongside at .crew/runs/.meta and .crew/runs/.locks
+    // so a single run dir deletion cleans its worktree without needing the
+    // shared metadata store touched.
+    this.runBasePath = join(projectRoot, '.crew', 'runs');
+    mkdirSync(this.runBasePath, { recursive: true });
+    this.runMetadataPath = join(this.runBasePath, '.meta');
+    mkdirSync(this.runMetadataPath, { recursive: true });
+    this.runLockPath = join(this.runBasePath, '.locks');
+    mkdirSync(this.runLockPath, { recursive: true });
   }
 
   async createWorktree(taskId: string): Promise<string> {
@@ -195,6 +215,129 @@ export class WorktreeManager {
         }
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Run-scoped worktree API (M1.5-14)
+  //
+  // A "run" is a captain-invoked subagent execution keyed by a runId, not the
+  // logical task. Concurrent run_agent tool calls get independent runIds and
+  // therefore independent worktrees; task.id is still the semantic identifier
+  // in session history.
+  //
+  // The task-keyed API above is preserved for linear-mode callers (pipeline.ts)
+  // and for judgment-mode's own re-entry on interrupted states. M3 deletes the
+  // task-keyed API once linear mode is removed.
+  // -------------------------------------------------------------------------
+
+  async createRunWorktree(runId: string): Promise<string> {
+    return this.withRunLock(runId, async () => {
+      await this.git.raw(['worktree', 'prune']);
+
+      const existing = await this.resolveExistingRunWorktree(runId);
+      if (existing) {
+        return existing.worktreePath;
+      }
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const record = this.buildRunWorktreeRecord(runId);
+        try {
+          mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
+          await this.git.raw(['worktree', 'add', '-b', record.branchName, record.worktreePath]);
+          try {
+            this.writeRunWorktreeRecord(record);
+          } catch (err) {
+            const cleanup = await this.cleanupRunRecordedWorktree(record);
+            const message = err instanceof Error ? err.message : String(err);
+            if (!cleanup.success) {
+              throw new Error(
+                `Failed to persist run worktree metadata for ${runId}: ${message}; rollback failed: ${cleanup.errors.join('; ')}`,
+              );
+            }
+            throw err;
+          }
+          return record.worktreePath;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!this.isRecoverableCreateCollision(message)) {
+            throw err;
+          }
+          logger.warn(`Run worktree name collision for ${runId}; retrying with a new suffix.`);
+        }
+      }
+
+      throw new Error(`Failed to create a unique run worktree for ${runId} after multiple attempts.`);
+    });
+  }
+
+  getRunWorktreePath(runId: string): string {
+    return this.requireRunWorktreeRecord(runId).worktreePath;
+  }
+
+  async getModifiedFilesByRun(runId: string): Promise<string[]> {
+    const path = this.getRunWorktreePath(runId);
+    const wGit = simpleGit(path);
+    const status = await wGit.status();
+    return [
+      ...status.modified,
+      ...status.created,
+      ...status.not_added,
+      ...status.renamed.map((r) => r.to),
+    ];
+  }
+
+  async mergeRunWorktree(runId: string, targetBranch?: string): Promise<void> {
+    const record = this.requireRunWorktreeRecord(runId);
+    const target = await this.resolveMergeTargetBranch(targetBranch);
+
+    const wGit = simpleGit(record.worktreePath);
+    const worktreeStatus = await wGit.status();
+    if (
+      worktreeStatus.modified.length > 0
+      || worktreeStatus.created.length > 0
+      || worktreeStatus.not_added.length > 0
+    ) {
+      await wGit.add('.');
+      await wGit.commit('crew: auto-commit before merge');
+    }
+
+    const mainStatus = await this.git.status();
+    if (
+      mainStatus.modified.length > 0
+      || mainStatus.not_added.length > 0
+      || mainStatus.created.length > 0
+    ) {
+      throw new Error(
+        `Cannot merge run ${runId}: working directory has uncommitted changes. `
+        + 'Please commit or stash your changes first.',
+      );
+    }
+
+    const currentBranch = (await this.git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    if (currentBranch !== target) {
+      await this.git.checkout(target);
+    }
+    await this.git.merge([record.branchName, '--no-ff', '-m', `Merge crew run ${runId}`]);
+  }
+
+  async cleanupByRunId(runId: string): Promise<void> {
+    await this.withRunLock(runId, async () => {
+      const record = this.readRunWorktreeRecord(runId);
+      if (!record) return;
+      const cleanup = await this.cleanupRunRecordedWorktree(record);
+      if (cleanup.success) {
+        this.deleteRunWorktreeRecord(runId);
+        // Remove the run directory (if empty after worktree removal).
+        try {
+          const runDir = join(this.runBasePath, this.toRunToken(runId));
+          if (existsSync(runDir)) {
+            rmSync(runDir, { recursive: true, force: true });
+          }
+        } catch {
+          // best-effort
+        }
+      }
+    });
   }
 
   private async resolveExistingWorktree(taskId: string): Promise<WorktreeRecord | undefined> {
@@ -448,6 +591,159 @@ export class WorktreeManager {
         && 'code' in err
         && (err as { code?: string }).code === 'EPERM'
       );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Run-scoped worktree internals (M1.5-14)
+  // -------------------------------------------------------------------------
+
+  private async resolveExistingRunWorktree(runId: string): Promise<RunWorktreeRecord | undefined> {
+    const record = this.readRunWorktreeRecord(runId);
+    if (!record) return undefined;
+    try {
+      const wGit = simpleGit(record.worktreePath);
+      await wGit.status();
+      return record;
+    } catch {
+      const cleanup = await this.cleanupRunRecordedWorktree(record);
+      if (!cleanup.success) {
+        throw new Error(
+          `Failed to repair stale run worktree for ${runId}: ${cleanup.errors.join('; ')}`,
+        );
+      }
+      this.deleteRunWorktreeRecord(runId);
+      return undefined;
+    }
+  }
+
+  private async cleanupRunRecordedWorktree(
+    record: RunWorktreeRecord,
+  ): Promise<{ success: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    try {
+      await this.git.raw(['worktree', 'remove', record.worktreePath, '--force']);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!this.isMissingWorktreeError(msg)) {
+        logger.warn(`Failed to remove run worktree ${record.worktreePath}: ${msg}`);
+        errors.push(`remove worktree: ${msg}`);
+      }
+    }
+    try {
+      await this.git.deleteLocalBranch(record.branchName, true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!this.isMissingBranchError(msg)) {
+        logger.warn(`Failed to delete branch ${record.branchName}: ${msg}`);
+        errors.push(`delete branch: ${msg}`);
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      errors,
+    };
+  }
+
+  private buildRunWorktreeRecord(runId: string): RunWorktreeRecord {
+    const token = this.toRunToken(runId);
+    const suffix = randomUUID().split('-')[0];
+    return {
+      runId,
+      branchName: `crew-run/${token}-${suffix}`,
+      worktreePath: join(this.runBasePath, token, 'worktree'),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  private runMetadataFilePath(runId: string): string {
+    return join(this.runMetadataPath, `${encodeURIComponent(runId)}.json`);
+  }
+
+  private readRunWorktreeRecord(runId: string): RunWorktreeRecord | undefined {
+    const metadataPath = this.runMetadataFilePath(runId);
+    if (!existsSync(metadataPath)) return undefined;
+    try {
+      return JSON.parse(readFileSync(metadataPath, 'utf-8')) as RunWorktreeRecord;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Invalid run worktree metadata for ${runId}: ${message}`);
+    }
+  }
+
+  private writeRunWorktreeRecord(record: RunWorktreeRecord): void {
+    const targetPath = this.runMetadataFilePath(record.runId);
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
+    renameSync(tempPath, targetPath);
+  }
+
+  private deleteRunWorktreeRecord(runId: string): void {
+    try {
+      rmSync(this.runMetadataFilePath(runId), { force: true });
+    } catch {
+      // ignore
+    }
+  }
+
+  private requireRunWorktreeRecord(runId: string): RunWorktreeRecord {
+    const record = this.readRunWorktreeRecord(runId);
+    if (!record) {
+      throw new Error(`No recorded run worktree exists for ${runId}.`);
+    }
+    return record;
+  }
+
+  private toRunToken(runId: string): string {
+    const normalized = runId
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return normalized || 'run';
+  }
+
+  private async withRunLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    const lockDir = join(this.runLockPath, encodeURIComponent(runId));
+    const ownerId = randomUUID();
+    const lockRecord: TaskLockRecord = {
+      ownerId,
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+    };
+    const timeoutAt = Date.now() + WorktreeManager.LOCK_TIMEOUT_MS;
+
+    while (true) {
+      try {
+        mkdirSync(lockDir);
+        try {
+          this.writeTaskLockRecord(lockDir, lockRecord);
+        } catch (err) {
+          rmSync(lockDir, { recursive: true, force: true });
+          throw err;
+        }
+        break;
+      } catch (err) {
+        if (!this.isLockAlreadyHeldError(err)) {
+          throw err;
+        }
+        if (this.canReclaimTaskLock(lockDir)) {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        if (Date.now() >= timeoutAt) {
+          throw new Error(`Timed out waiting for run worktree lock on ${runId}.`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    try {
+      return await operation();
+    } finally {
+      this.releaseTaskLock(lockDir, ownerId);
     }
   }
 }

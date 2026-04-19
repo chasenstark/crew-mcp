@@ -306,4 +306,102 @@ describe('WorktreeManager', () => {
     expect(rootGit.deleteLocalBranch).toHaveBeenCalledWith('crew/task-1-aaaaaaaa', true);
     expect(existsSync(join(root, '.crew', 'worktrees', '.meta', 'task-1.json'))).toBe(false);
   });
+
+  describe('Run-scoped API (M1.5-14)', () => {
+    it('two concurrent createRunWorktree with distinct runIds produce distinct paths', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-run-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('owner-run-2')
+        .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
+
+      const { root, manager } = createManager();
+      const [a, b] = await Promise.all([
+        manager.createRunWorktree('run-1'),
+        manager.createRunWorktree('run-2'),
+      ]);
+      expect(a).toBe(join(root, '.crew', 'runs', 'run-1', 'worktree'));
+      expect(b).toBe(join(root, '.crew', 'runs', 'run-2', 'worktree'));
+    });
+
+    it('cleanupByRunId removes the worktree + run dir without touching siblings', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('owner-2')
+        .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff')
+        .mockReturnValueOnce('cleanup-owner-1');
+
+      const { root, manager } = createManager();
+      await manager.createRunWorktree('run-1');
+      await manager.createRunWorktree('run-2');
+      expect(existsSync(join(root, '.crew', 'runs', 'run-1'))).toBe(true);
+      expect(existsSync(join(root, '.crew', 'runs', 'run-2'))).toBe(true);
+
+      await manager.cleanupByRunId('run-1');
+
+      expect(existsSync(join(root, '.crew', 'runs', 'run-1'))).toBe(false);
+      expect(existsSync(join(root, '.crew', 'runs', 'run-2'))).toBe(true);
+    });
+
+    it('.meta/<runId>.json is written and removed in lockstep with the worktree', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('cleanup-owner-1');
+
+      const { root, manager } = createManager();
+      const metaPath = join(root, '.crew', 'runs', '.meta', 'run-1.json');
+
+      await manager.createRunWorktree('run-1');
+      expect(existsSync(metaPath)).toBe(true);
+      const metadata = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      expect(metadata).toMatchObject({
+        runId: 'run-1',
+        branchName: 'crew-run/run-1-aaaaaaaa',
+      });
+
+      await manager.cleanupByRunId('run-1');
+      expect(existsSync(metaPath)).toBe(false);
+    });
+
+    it('withRunLock does not block withTaskLock operations on the same id', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('run-owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('task-owner-1')
+        .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
+
+      const { manager } = createManager();
+      // Both operate concurrently on the same id but different lock spaces.
+      const [runPath, taskPath] = await Promise.all([
+        manager.createRunWorktree('shared'),
+        manager.createWorktree('shared'),
+      ]);
+      expect(runPath).not.toBe(taskPath);
+    });
+
+    it('existing task-keyed tests are unaffected: task-keyed API path lives at .crew/worktrees/', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-task')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { root, manager } = createManager();
+      const path = await manager.createWorktree('task-1');
+      expect(path).toBe(join(root, '.crew', 'worktrees', 'task-1-aaaaaaaa'));
+    });
+
+    it('getRunWorktreePath returns the recorded path', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager } = createManager();
+      const created = await manager.createRunWorktree('run-1');
+      expect(manager.getRunWorktreePath('run-1')).toBe(created);
+    });
+
+    it('getRunWorktreePath throws for unknown runId', () => {
+      const { manager } = createManager();
+      expect(() => manager.getRunWorktreePath('nope')).toThrow(/No recorded run worktree/);
+    });
+  });
 });
