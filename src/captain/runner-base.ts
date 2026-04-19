@@ -1,10 +1,9 @@
 import { EventEmitter } from 'eventemitter3';
-import type { PipelineEvents } from './pipeline.js';
+import type { PipelineEvents } from './events.js';
 import { StateStore } from '../state/store.js';
 
 /**
- * RunnerBase is the shared lifecycle for Pipeline (linear, deprecated) and
- * JudgmentRunner (M1.5-era). Post-M1.5 it owns:
+ * RunnerBase is the shared lifecycle for JudgmentRunner. It owns:
  *
  *  - activeAbortController — cooperative cancellation signal for the
  *    current run; subclasses wire subagent dispatchers through this.

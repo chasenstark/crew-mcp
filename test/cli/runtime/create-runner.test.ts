@@ -3,7 +3,6 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createRunner } from '../../../src/cli/runtime/create-runner.js';
-import { Pipeline } from '../../../src/captain/pipeline.js';
 import { JudgmentRunner } from '../../../src/captain/judgment-runner.js';
 import { CaptainSession } from '../../../src/captain/session.js';
 import { __resetPreflightWarningLatchForTest } from '../../../src/cli/runtime/preflight.js';
@@ -28,30 +27,19 @@ describe('createRunner', () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it('creates a linear Pipeline when mode is linear', () => {
-    const { runner } = createRunner(projectRoot, { mode: 'linear' });
-    expect(runner).toBeInstanceOf(Pipeline);
-  });
-
-  it('creates a JudgmentRunner when mode is judgment', () => {
-    const { runner } = createRunner(projectRoot, { mode: 'judgment' });
+  it('creates a JudgmentRunner', () => {
+    const { runner } = createRunner(projectRoot);
     expect(runner).toBeInstanceOf(JudgmentRunner);
   });
 
-  it('hydrates a CaptainSession + ToolDispatcher for judgment mode', () => {
-    const { session, dispatcher } = createRunner(projectRoot, { mode: 'judgment' });
+  it('always hydrates a CaptainSession + ToolDispatcher', () => {
+    const { session, dispatcher } = createRunner(projectRoot);
     expect(session).toBeDefined();
     expect(dispatcher).toBeDefined();
   });
 
-  it('does not hydrate session/dispatcher for linear mode', () => {
-    const { session, dispatcher } = createRunner(projectRoot, { mode: 'linear' });
-    expect(session).toBeUndefined();
-    expect(dispatcher).toBeUndefined();
-  });
-
   it('passes session + dispatcher into JudgmentRunner', () => {
-    const { runner, session, dispatcher } = createRunner(projectRoot, { mode: 'judgment' });
+    const { runner, session, dispatcher } = createRunner(projectRoot);
     expect(runner).toBeInstanceOf(JudgmentRunner);
     expect((runner as JudgmentRunner).getSession()).toBe(session);
     expect((runner as JudgmentRunner).getDispatcher()).toBe(dispatcher);
@@ -62,8 +50,8 @@ describe('createRunner', () => {
     const s = CaptainSession.create({ projectRoot });
     s.appendUserMessage('from prior run', '2026-04-19T00:00:00.000Z');
     s.persist();
-    const { session } = createRunner(projectRoot, { mode: 'judgment' });
-    expect(session?.getMessages().length).toBeGreaterThan(0);
+    const { session } = createRunner(projectRoot);
+    expect(session.getMessages().length).toBeGreaterThan(0);
   });
 
   it('clears an incompatible captain.model scalar before the runner captures it', () => {

@@ -36,7 +36,7 @@ import {
 import type { DispatchOutput } from './steps/dispatch.js';
 import type { SummarizeOutput } from './steps/summarize.js';
 import type { JudgeOutput } from './steps/judge.js';
-import type { AgentRegistry } from './pipeline.js';
+import type { AgentRegistry } from './events.js';
 import type { CrewRunner, ResumeParams } from './runner.js';
 import { RunnerBase } from './runner-base.js';
 import { CaptainSession } from './session.js';

@@ -6,7 +6,7 @@ import { EventEmitter } from 'eventemitter3';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { PipelineEvents } from '../../../src/captain/pipeline.js';
+import type { PipelineEvents } from '../../../src/captain/events.js';
 import type { CrewRunner } from '../../../src/captain/runner.js';
 import { CaptainSession } from '../../../src/captain/session.js';
 import { ToolDispatcher } from '../../../src/captain/tool-dispatcher.js';

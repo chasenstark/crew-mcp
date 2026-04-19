@@ -1,21 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useApp } from 'ink';
 import { ConversationView, type ChatMessage } from './ConversationView.js';
-import { AgentStatus, type AgentInfo } from './AgentStatus.js';
 import { PromptInput } from './PromptInput.js';
 import { handleConfigSlashCommand } from './config/command-handler.js';
 import type { CrewRunner } from '../../captain/runner.js';
 import type { CaptainSession } from '../../captain/session.js';
 import type { ToolDispatcher } from '../../captain/tool-dispatcher.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
-
-function summarizeTask(description: string, taskId: string, maxLen = 60): string {
-  const text = description?.trim();
-  if (!text) return taskId;
-  const firstLine = text.split('\n')[0].replace(/\s+/g, ' ').trim();
-  if (firstLine.length <= maxLen) return firstLine;
-  return firstLine.slice(0, maxLen - 1).trimEnd() + '\u2026';
-}
 
 interface InFlightToolCall {
   toolCallId: string;
@@ -26,20 +17,19 @@ interface InFlightToolCall {
 
 interface Props {
   pipeline: CrewRunner;
-  session?: CaptainSession;
-  dispatcher?: ToolDispatcher;
+  session: CaptainSession;
+  dispatcher: ToolDispatcher;
   initialPrompt?: string;
 }
 
 export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
   useApp();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
 
-  // Post-M1.5 state: inFlightToolCalls replaces isRunning/waitingForInput/queue.
-  // Session is always available; the captain turn accepts user_message events
-  // at any time, so the PromptInput is never disabled.
+  // inFlightToolCalls drives the session-busy indicator. The captain turn
+  // accepts user_message events at any time, so the PromptInput is never
+  // disabled regardless of in-flight tool calls.
   const [inFlightToolCalls, setInFlightToolCalls] = useState<Map<string, InFlightToolCall>>(new Map());
 
   // `runnerActive` tracks whether pipeline.run() is currently executing — i.e.,
@@ -49,13 +39,6 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
   // has a driver; subsequent submits during an active run just append user
   // messages and let the loop pick them up.
   const [runnerActive, setRunnerActive] = useState(false);
-
-  // Legacy fallback: when session+dispatcher aren't provided (e.g., linear Pipeline
-  // tests), preserve the slot-based behavior via emitter events so the old test
-  // suite keeps compiling until pipeline.ts dies in M3.
-  const legacyMode = !session || !dispatcher;
-  const [legacyIsRunning, setLegacyIsRunning] = useState(false);
-  const [legacyWaitingForInput, setLegacyWaitingForInput] = useState(false);
 
   const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
     setMessages((prev) => [...prev, { role, content }]);
@@ -95,62 +78,33 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
       setCurrentStep(null);
     });
 
-    pipeline.on('agent:start', (name, taskId, description) => {
-      const label = summarizeTask(description, taskId);
-      setAgents((prev) => [
-        ...prev.filter((a) => a.name !== name),
-        { name, status: 'running', task: label, startedAt: Date.now() },
-      ]);
-    });
-
     pipeline.on('agent:output', (name, taskId, chunk) => {
       appendStreamChunk(name, taskId, chunk);
     });
 
-    pipeline.on('agent:complete', (name, _taskId, result) => {
+    pipeline.on('agent:complete', () => {
       finalizeStream();
-      setAgents((prev) =>
-        prev.map((a) =>
-          a.name === name
-            ? { ...a, status: result.status === 'success' ? 'done' : 'error' }
-            : a,
-        ),
-      );
     });
 
     pipeline.on('report', (message) => {
       addMessage('assistant', message);
       setCurrentStep(null);
       setRunnerActive(false);
-      if (legacyMode) {
-        setLegacyIsRunning(false);
-        setLegacyWaitingForInput(false);
-      }
     });
-
-    // N5: legacy 'ask_user' listener removed — pipeline.ts throws on
-    // ask_user decisions (M1.5-11) and JudgmentRunner's legacy path also
-    // fails loudly if session/dispatcher aren't wired. Nothing emits the
-    // event anymore.
 
     pipeline.on('error', (error) => {
       addMessage('system', `Error: ${error.message}`);
       setCurrentStep(null);
       setRunnerActive(false);
-      if (legacyMode) {
-        setLegacyIsRunning(false);
-        setLegacyWaitingForInput(false);
-      }
     });
 
     return () => {
       pipeline.removeAllListeners();
     };
-  }, [pipeline, addMessage, appendStreamChunk, finalizeStream, legacyMode]);
+  }, [pipeline, addMessage, appendStreamChunk, finalizeStream]);
 
   // Wire dispatcher events to inFlightToolCalls state.
   useEffect(() => {
-    if (!dispatcher) return;
     const handles = [
       dispatcher.onEvent('run:start', (info) => {
         setInFlightToolCalls((prev) => {
@@ -223,11 +177,11 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
         }
       }
 
-      // Slash commands for cancellation (session-loop era).
-      if (!legacyMode && input.startsWith('/cancel')) {
+      // Slash commands for cancellation.
+      if (input.startsWith('/cancel')) {
         const rest = input.slice('/cancel'.length).trim();
         if (rest === '-all' || rest === 'all') {
-          const n = dispatcher!.cancelAll('user /cancel-all');
+          const n = dispatcher.cancelAll('user /cancel-all');
           addMessage('system', `Cancelled ${n} in-flight tool call${n === 1 ? '' : 's'}.`);
           return;
         }
@@ -239,7 +193,7 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
           return;
         }
         // /cancel <id>
-        const cancelled = dispatcher!.cancel(rest, 'user /cancel');
+        const cancelled = dispatcher.cancel(rest, 'user /cancel');
         addMessage(
           'system',
           cancelled
@@ -249,60 +203,28 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
         return;
       }
 
-      if (legacyMode) {
-        // Linear mode (Pipeline without session/dispatcher) is M3-scope.
-        // Post-M1.5-11 we still compile App without session for tests, but
-        // run behavior is simple: submit starts pipeline.run once, further
-        // submits are ignored with a note.
-        if (legacyIsRunning) {
-          if (input === '/cancel') {
-            pipeline.cancel('Cancelled by user from interactive session');
-            finalizeStream();
-            setLegacyIsRunning(false);
-            setLegacyWaitingForInput(false);
-            setCurrentStep(null);
-            addMessage('system', 'Cancelled. Workflow state saved as interrupted — rerun to resume.');
-            return;
-          }
-          addMessage('system', 'Input received but linear-mode pipeline cannot queue messages.');
-          return;
-        }
-        addMessage('user', input);
-        setLegacyIsRunning(true);
-        setAgents([]);
-        pipeline.run(input).catch((err) => {
-          addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
-          setLegacyIsRunning(false);
-          setCurrentStep(null);
-          setLegacyWaitingForInput(false);
-        });
-        return;
-      }
-
-      // M1.5 path: emit a user_message session event. If the runner is
-      // already active (pipeline.run in flight), the session-loop picks up
-      // the event automatically. Otherwise we need to kick off pipeline.run —
-      // this covers both cold-start (fresh session) and continuation (a
-      // persisted session whose prior pipeline.run already completed).
+      // Emit a user_message session event. If the runner is already active
+      // (pipeline.run in flight), the session-loop picks up the event
+      // automatically. Otherwise we kick off pipeline.run — this covers both
+      // cold-start (fresh session) and continuation (a persisted session
+      // whose prior pipeline.run already completed).
       addMessage('user', input);
       if (runnerActive) {
-        // Session-loop is live; just append. It'll see the event and
-        // schedule a fresh captain turn.
-        session!.appendUserMessage(input);
+        session.appendUserMessage(input);
         return;
       }
-      // Start a new workflow run. The runner will seed the session with the
-      // user_message if it's empty; if it's a continuation, we append first
-      // so the incoming user message is preserved even if the runner's
-      // seed-guard skips.
-      session!.appendUserMessage(input);
+      // Start a new workflow run. The runner seeds the session with the
+      // user_message if it's empty; on continuation we append first so the
+      // incoming user message is preserved even if the runner's seed-guard
+      // skips.
+      session.appendUserMessage(input);
       setRunnerActive(true);
       pipeline.run(input).catch((err) => {
-        addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
+        addMessage('system', `Run error: ${err instanceof Error ? err.message : String(err)}`);
         setRunnerActive(false);
       });
     },
-    [pipeline, session, dispatcher, addMessage, finalizeStream, legacyMode, legacyIsRunning, legacyWaitingForInput, sessionBusy, runnerActive],
+    [pipeline, session, dispatcher, addMessage, finalizeStream, sessionBusy, runnerActive],
   );
 
   useEffect(() => {
@@ -312,17 +234,11 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPrompt]);
 
-  const statusText = legacyMode
-    ? legacyWaitingForInput
-      ? 'Waiting for your input...'
-      : legacyIsRunning
-        ? `${currentStep ?? 'Running...'} (type /cancel to stop)`
-        : undefined
-    : sessionBusy
-      ? `${inFlightToolCalls.size} tool${inFlightToolCalls.size === 1 ? '' : 's'} in flight  —  type to send, /cancel-all to abort`
-      : currentStep
-        ? currentStep
-        : undefined;
+  const statusText = sessionBusy
+    ? `${inFlightToolCalls.size} tool${inFlightToolCalls.size === 1 ? '' : 's'} in flight  —  type to send, /cancel-all to abort`
+    : currentStep
+      ? currentStep
+      : undefined;
 
   return (
     <Box flexDirection="column" minHeight={10}>
@@ -333,7 +249,7 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
 
       <ConversationView messages={messages} />
 
-      {!legacyMode && inFlightToolCalls.size > 0 && (
+      {inFlightToolCalls.size > 0 && (
         <Box flexDirection="column" marginY={1}>
           {Array.from(inFlightToolCalls.values()).map((call) => (
             <Box key={call.toolCallId}>
@@ -344,12 +260,6 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
               </Text>
             </Box>
           ))}
-        </Box>
-      )}
-
-      {legacyMode && agents.length > 0 && (
-        <Box marginY={1}>
-          <AgentStatus agents={agents} />
         </Box>
       )}
 

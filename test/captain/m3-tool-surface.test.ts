@@ -18,7 +18,7 @@ import { CaptainSession } from '../../src/captain/session.js';
 import { ToolDispatcher } from '../../src/captain/tool-dispatcher.js';
 import type { AgentAdapter, ToolCall, ToolLoopResult, ToolDefinition, ToolLoopMessage, ToolResult } from '../../src/adapters/types.js';
 import type { WorkflowConfig } from '../../src/workflow/types.js';
-import type { AgentRegistry } from '../../src/captain/pipeline.js';
+import type { AgentRegistry } from '../../src/captain/events.js';
 
 const workflow: WorkflowConfig = {
   name: 'default',

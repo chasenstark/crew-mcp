@@ -1,7 +1,7 @@
-import { Pipeline, type AgentRegistry } from '../../captain/pipeline.js';
 import { JudgmentRunner } from '../../captain/judgment-runner.js';
 import { CaptainSession } from '../../captain/session.js';
 import { ToolDispatcher } from '../../captain/tool-dispatcher.js';
+import type { AgentRegistry } from '../../captain/events.js';
 import { AdapterRegistry, createRegistryFromConfig } from '../../adapters/registry.js';
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
@@ -29,15 +29,14 @@ export interface CreateRunnerResult {
   config: ReturnType<typeof loadWorkflowConfig>;
   registry: AdapterRegistry;
   stateStore: StateStore;
-  session: CaptainSession | undefined;
-  dispatcher: ToolDispatcher | undefined;
+  session: CaptainSession;
+  dispatcher: ToolDispatcher;
 }
 
 export function createRunner(
   projectRoot: string,
   options: {
     stateStore?: StateStore;
-    mode?: 'linear' | 'judgment';
   } = {},
 ): CreateRunnerResult {
   const config = loadWorkflowConfig(projectRoot);
@@ -45,7 +44,6 @@ export function createRunner(
   const stateStore = options.stateStore ?? new StateStore(projectRoot);
   const worktreeManager = new WorktreeManager(projectRoot);
   const captainAdapter = registry.getOrThrow(config.captain.cli);
-  const mode = options.mode ?? config.workflow.execution?.mode ?? 'judgment';
 
   // Sync preflight: mutate `config` for model compatibility + log any
   // CREW_CODEX_CONFIG deprecation notice *before* the runner captures
@@ -53,51 +51,35 @@ export function createRunner(
   checkCrewCodexConfigDeprecation();
   enforceCaptainModelCompatibility(config, captainAdapter);
 
-  // Hydrate the persistent captain session (M1.5-10). Judgment-mode runners
-  // always get one; linear-mode Pipeline doesn't use it (shim path remains
-  // the slot-based API until pipeline.ts is deleted in M3).
+  // Hydrate the persistent captain session (M1.5-10). JudgmentRunner is the
+  // only runner; linear-mode Pipeline was removed in M4. v5 state files
+  // with `executionMode: 'linear'` fall through the migration reader's
+  // LegacyExecutionModeError at load time.
   const agentModels = Object.fromEntries(
     Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
   );
   const captainModel = resolveCaptainModel(config.captain);
 
-  let session: CaptainSession | undefined;
-  let dispatcher: ToolDispatcher | undefined;
+  const session = CaptainSession.loadOrCreate({
+    projectRoot,
+    cliVersionTag: undefined,
+    toolSchemaHash: undefined,
+  });
+  const dispatcher = new ToolDispatcher();
 
-  if (mode === 'judgment') {
-    session = CaptainSession.loadOrCreate({
-      projectRoot,
-      cliVersionTag: undefined,
-      toolSchemaHash: undefined,
-    });
-    dispatcher = new ToolDispatcher();
-  }
-
-  const runner: CrewRunner = mode === 'judgment'
-    ? new JudgmentRunner(
-      captainAdapter,
-      toAgentRegistry(registry),
-      config.workflow,
-      stateStore,
-      worktreeManager,
-      {
-        captainModel,
-        agentModels,
-        session,
-        dispatcher,
-      },
-    )
-    : new Pipeline(
-      captainAdapter,
-      toAgentRegistry(registry),
-      config.workflow,
-      stateStore,
-      worktreeManager,
-      {
-        captainModel,
-        agentModels,
-      },
-    );
+  const runner: CrewRunner = new JudgmentRunner(
+    captainAdapter,
+    toAgentRegistry(registry),
+    config.workflow,
+    stateStore,
+    worktreeManager,
+    {
+      captainModel,
+      agentModels,
+      session,
+      dispatcher,
+    },
+  );
 
   return {
     runner,

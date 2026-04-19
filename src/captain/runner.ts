@@ -1,4 +1,4 @@
-import type { PipelineEvents } from './pipeline.js';
+import type { PipelineEvents } from './events.js';
 import type { PassSummary, WorkflowState } from '../state/types.js';
 
 export interface ResumeParams {
@@ -7,8 +7,7 @@ export interface ResumeParams {
 }
 
 /**
- * CrewRunner — the lifecycle contract shared by Pipeline (linear, deprecated)
- * and JudgmentRunner (M1.5+).
+ * CrewRunner — the lifecycle contract implemented by JudgmentRunner.
  *
  * Post-M1.5-11: the slot-based ask_user pair (requestUserInput /
  * provideUserInput) is gone. ask_user is a dispatcher-backed tool owned by

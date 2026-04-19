@@ -20,7 +20,7 @@ import { WorktreeManager } from '../../src/git/worktree.js';
 import { CaptainSession } from '../../src/captain/session.js';
 import { ToolDispatcher } from '../../src/captain/tool-dispatcher.js';
 import type { WorkflowConfig } from '../../src/workflow/types.js';
-import type { AgentRegistry } from '../../src/captain/pipeline.js';
+import type { AgentRegistry } from '../../src/captain/events.js';
 import type { AgentAdapter, McpRegistrationPayload } from '../../src/adapters/types.js';
 import { createFakeCaptain } from '../fixtures/captain/fake-adapter.js';
 
