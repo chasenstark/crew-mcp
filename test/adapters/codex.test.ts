@@ -234,11 +234,17 @@ describe('CodexAdapter', () => {
       mockExeca.mockResolvedValueOnce({
         stdout: [
           '{"type":"thread.started","thread_id":"thread_123"}',
-          `{"type":"item.agent_message","content":"${JSON.stringify({
-            type: 'finish',
-            output: 'done',
-            reasoning: 'workflow complete',
-          }).replace(/"/g, '\\"')}"}`,
+          JSON.stringify({
+            type: 'item.completed',
+            item: {
+              type: 'agent_message',
+              text: JSON.stringify({
+                type: 'finish',
+                output: 'done',
+                reasoning: 'workflow complete',
+              }),
+            },
+          }),
           '{"type":"turn.completed","turn_id":"turn_1"}',
         ].join('\n'),
         stderr: '',
@@ -324,10 +330,10 @@ describe('CodexAdapter', () => {
       // Create JSONL with actual file changes (action != "none")
       const jsonlWithChanges = [
         '{"type":"thread.started","thread_id":"thread_123"}',
-        '{"type":"item.file_change","path":"src/foo.ts","action":"modified"}',
-        '{"type":"item.file_change","path":"src/bar.ts","action":"created"}',
-        '{"type":"item.file_change","path":"src/baz.ts","action":"none"}',
-        '{"type":"item.agent_message","content":"Done"}',
+        '{"type":"item.completed","item":{"type":"file_change","path":"src/foo.ts","action":"modified"}}',
+        '{"type":"item.completed","item":{"type":"file_change","path":"src/bar.ts","action":"created"}}',
+        '{"type":"item.completed","item":{"type":"file_change","path":"src/baz.ts","action":"none"}}',
+        '{"type":"item.completed","item":{"type":"agent_message","text":"Done"}}',
         '{"type":"turn.completed","turn_id":"turn_1"}',
       ].join('\n');
 
@@ -368,7 +374,7 @@ describe('CodexAdapter', () => {
           '123',
           '"assistant"',
           'null',
-          '{"type":"item.agent_message","content":"Valid event"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"Valid event"}}',
         ].join('\n'),
         stderr: '',
         exitCode: 0,
@@ -383,7 +389,7 @@ describe('CodexAdapter', () => {
       expect(result.output).toBe('Valid event');
       expect(result.metadata.droppedLines).toBe(3);
       expect(result.metadata.rawEvents).toEqual([
-        { type: 'item.agent_message', content: 'Valid event' },
+        { type: 'item.completed', item: { type: 'agent_message', text: 'Valid event' } },
       ]);
     });
 
@@ -452,7 +458,7 @@ describe('CodexAdapter', () => {
 
     it('flushes the final unterminated streamed JSONL line', async () => {
       mockExeca.mockReturnValueOnce(createStreamingCodexProcess({
-        chunks: ['{"type":"item.agent_message","content":"Final streamed chunk"}'],
+        chunks: ['{"type":"item.completed","item":{"type":"agent_message","text":"Final streamed chunk"}}'],
       }) as any);
 
       const onOutput = vi.fn();

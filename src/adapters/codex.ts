@@ -38,16 +38,28 @@ import { buildDecisionPrompt } from './tool-loop/transcript.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
+ *
+ * Codex CLI 0.121+ wraps all content events in an `item.completed` envelope:
+ *   { type: 'item.completed', item: { type: 'agent_message', text: '...' } }
+ *   { type: 'item.completed', item: { type: 'file_change', path: '...', action: 'modified' } }
+ * Meta events (`thread.started`, `turn.started`, `turn.completed`, `turn.failed`, `error`)
+ * remain flat at the top level.
  */
-interface CodexEvent {
+interface CodexItem {
+  type?: string;
+  text?: string;
+  path?: string;
+  action?: string;
+  command?: string;
+  exit_code?: number;
+  [key: string]: unknown;
+}
+
+export interface CodexEvent {
   type: string;
   thread_id?: string;
   turn_id?: string;
-  content?: string;
-  command?: string;
-  exit_code?: number;
-  path?: string;
-  action?: string;
+  item?: CodexItem;
   message?: string;
   reason?: string;
   [key: string]: unknown;
@@ -96,7 +108,7 @@ function numberField(
  * Parses newline-delimited JSON (JSONL) into an array of events.
  * Malformed lines are logged at warn level and counted.
  */
-function parseJsonl(text: string): ParseJsonlResult {
+export function parseJsonl(text: string): ParseJsonlResult {
   const events: CodexEvent[] = [];
   const lines = text.split('\n');
   let droppedLines = 0;
@@ -128,30 +140,43 @@ function parseJsonl(text: string): ParseJsonlResult {
 }
 
 /**
- * Extracts file paths that were changed from Codex events.
+ * Returns the `item` payload for a Codex content event, matching the modern
+ * `item.completed` envelope. Older or unwrapped events return `undefined`.
  */
-function extractFileChanges(events: CodexEvent[]): string[] {
+function getItemOfType(event: CodexEvent, itemType: string): CodexItem | undefined {
+  if (event.type !== 'item.completed') return undefined;
+  const item = event.item;
+  if (!item || item.type !== itemType) return undefined;
+  return item;
+}
+
+/**
+ * Extracts file paths that were changed from Codex events.
+ * Recognizes the 0.121+ `{type: 'item.completed', item: {type: 'file_change', ...}}`
+ * shape.
+ */
+export function extractFileChanges(events: CodexEvent[]): string[] {
   const files: string[] = [];
   for (const event of events) {
-    if (
-      event.type === 'item.file_change' &&
-      event.path &&
-      event.action !== 'none'
-    ) {
-      files.push(event.path);
-    }
+    const item = getItemOfType(event, 'file_change');
+    if (!item) continue;
+    if (typeof item.path !== 'string') continue;
+    if (item.action === 'none') continue;
+    files.push(item.path);
   }
   return files;
 }
 
 /**
- * Gets the final agent message from events.
+ * Gets the final agent message text from events. Uses the modern
+ * `item.completed` → `item.type === 'agent_message'` envelope.
  */
-function getLastAgentMessage(events: CodexEvent[]): string {
+export function getLastAgentMessage(events: CodexEvent[]): string {
   let lastMessage = '';
   for (const event of events) {
-    if (event.type === 'item.agent_message' && event.content) {
-      lastMessage = event.content;
+    const item = getItemOfType(event, 'agent_message');
+    if (item && typeof item.text === 'string') {
+      lastMessage = item.text;
     }
   }
   return lastMessage;
@@ -159,29 +184,17 @@ function getLastAgentMessage(events: CodexEvent[]): string {
 
 /**
  * Formats a single Codex event as a user-visible chunk for streaming.
- * Return an empty string to suppress the event from the live view.
- *
- * TODO(user): Decide which event types should stream to the UI and how they
- * should be formatted. The Codex JSONL stream contains many event types
- * (item.agent_message, item.reasoning, item.command_execution, item.file_change,
- * turn.started, turn.completed, thread.started, etc.). Picking the right
- * subset shapes how the feature feels — too much is noisy, too little feels dead.
- *
- * Consider: do you want to show agent thoughts/reasoning, tool calls, file
- * edits, or only the final message? Format should be concise — users will
- * see these inline in the conversation view.
- *
- * Example formats:
- *   item.agent_message  -> event.content (the assistant's prose)
- *   item.command_execution -> `$ ${event.command}`
- *   item.file_change    -> `~ ${event.action} ${event.path}`
+ * Only forwards final `item.completed` content events; envelope/meta events
+ * (thread.*, turn.*) are intentionally dropped from the live view.
  */
-function formatEventForStream(event: CodexEvent): string {
-  if (event.type === 'item.agent_message' && event.content) {
-    return event.content;
+export function formatEventForStream(event: CodexEvent): string {
+  const agentMessage = getItemOfType(event, 'agent_message');
+  if (agentMessage && typeof agentMessage.text === 'string') {
+    return agentMessage.text;
   }
-  if (event.type === 'item.reasoning' && event.content) {
-    return `\u2502 ${event.content}\n`;
+  const reasoning = getItemOfType(event, 'reasoning');
+  if (reasoning && typeof reasoning.text === 'string') {
+    return `\u2502 ${reasoning.text}\n`;
   }
   return '';
 }
@@ -189,7 +202,7 @@ function formatEventForStream(event: CodexEvent): string {
 /**
  * Checks if the events contain an error.
  */
-function findError(events: CodexEvent[]): string | undefined {
+export function findError(events: CodexEvent[]): string | undefined {
   for (const event of events) {
     if (event.type === 'error' && event.message) {
       return event.message;
