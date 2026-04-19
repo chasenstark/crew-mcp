@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter, HealthCheckResult } from '../../../src/adapters/types.js';
 import type { FullConfig } from '../../../src/workflow/types.js';
-import { collectRequiredAgentNames, assertRequiredAgentsReady } from '../../../src/cli/runtime/preflight.js';
+import {
+  __resetPreflightWarningLatchForTest,
+  assertRequiredAgentsReady,
+  checkCrewCodexConfigDeprecation,
+  collectRequiredAgentNames,
+  enforceCaptainModelCompatibility,
+} from '../../../src/cli/runtime/preflight.js';
+import { logger } from '../../../src/utils/logger.js';
 
 function buildConfig(): FullConfig {
   return {
@@ -32,6 +39,7 @@ function buildConfig(): FullConfig {
 function createAdapter(
   name: string,
   healthCheck: () => Promise<HealthCheckResult>,
+  options: { recognizesModel?: (modelId: string) => boolean } = {},
 ): AgentAdapter {
   return {
     name,
@@ -39,6 +47,7 @@ function createAdapter(
     supportsJsonSchema: true,
     execute: vi.fn(),
     executeWithSchema: vi.fn(),
+    recognizesModel: options.recognizesModel,
     healthCheck,
   };
 }
@@ -110,5 +119,118 @@ describe('preflight runtime checks', () => {
     await expect(assertRequiredAgentsReady(registry, config)).rejects.toThrow(
       'gemini-cli: adapter is not registered',
     );
+  });
+});
+
+describe('enforceCaptainModelCompatibility', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('does nothing when captain.model is unset', () => {
+    const config = buildConfig();
+    const adapter = createAdapter('claude-code', async () => ({ available: true, authenticated: true }), {
+      recognizesModel: (m) => m.startsWith('claude-'),
+    });
+
+    const result = enforceCaptainModelCompatibility(config, adapter);
+    expect(result.warnedModel).toBeUndefined();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes through when the captain adapter recognizes the model', () => {
+    const config = buildConfig();
+    config.captain.model = 'claude-sonnet-4-7';
+    const adapter = createAdapter('claude-code', async () => ({ available: true, authenticated: true }), {
+      recognizesModel: (m) => m.startsWith('claude-'),
+    });
+
+    const result = enforceCaptainModelCompatibility(config, adapter);
+    expect(result.warnedModel).toBeUndefined();
+    expect(config.captain.model).toBe('claude-sonnet-4-7');
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('warns and clears the scalar model when the captain adapter does not recognize it', () => {
+    const config = buildConfig();
+    config.captain.cli = 'codex';
+    config.captain.model = 'claude-sonnet-4-7';
+    const adapter = createAdapter('codex', async () => ({ available: true, authenticated: true }), {
+      recognizesModel: (m) => m.startsWith('gpt-'),
+    });
+
+    const result = enforceCaptainModelCompatibility(config, adapter);
+    expect(result.warnedModel).toBe('claude-sonnet-4-7');
+    expect(config.captain.model).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops only the mismatched map entry when given a per-CLI map', () => {
+    const config = buildConfig();
+    config.captain.cli = 'codex';
+    config.captain.model = {
+      'claude-code': 'claude-sonnet-4-7',
+      codex: 'claude-sonnet-4-7', // intentionally wrong for codex
+    };
+    const adapter = createAdapter('codex', async () => ({ available: true, authenticated: true }), {
+      recognizesModel: (m) => m.startsWith('gpt-'),
+    });
+
+    enforceCaptainModelCompatibility(config, adapter);
+    const mapAfter = config.captain.model as Record<string, string>;
+    expect(mapAfter.codex).toBeUndefined();
+    expect(mapAfter['claude-code']).toBe('claude-sonnet-4-7');
+  });
+
+  it('passes through when the adapter exposes no recognizesModel', () => {
+    const config = buildConfig();
+    config.captain.model = 'anything';
+    const adapter = createAdapter('claude-code', async () => ({ available: true, authenticated: true }));
+
+    const result = enforceCaptainModelCompatibility(config, adapter);
+    expect(result.warnedModel).toBeUndefined();
+    expect(config.captain.model).toBe('anything');
+  });
+});
+
+describe('checkCrewCodexConfigDeprecation', () => {
+  const originalValue = process.env.CREW_CODEX_CONFIG;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    __resetPreflightWarningLatchForTest();
+    warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    if (originalValue === undefined) delete process.env.CREW_CODEX_CONFIG;
+    else process.env.CREW_CODEX_CONFIG = originalValue;
+  });
+
+  it('is silent when CREW_CODEX_CONFIG is unset', () => {
+    delete process.env.CREW_CODEX_CONFIG;
+    checkCrewCodexConfigDeprecation();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('warns exactly once per process when set', () => {
+    process.env.CREW_CODEX_CONFIG = '/some/path/config.toml';
+    checkCrewCodexConfigDeprecation();
+    checkCrewCodexConfigDeprecation();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/CREW_CODEX_CONFIG/);
+  });
+
+  it('is silent when set to an empty string', () => {
+    process.env.CREW_CODEX_CONFIG = '   ';
+    checkCrewCodexConfigDeprecation();
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

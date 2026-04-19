@@ -214,6 +214,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     supportsPauseForUserInput: true,
   };
 
+  recognizesModel(modelId: string): boolean {
+    return typeof modelId === 'string' && /^claude-/.test(modelId);
+  }
+
   async getCliVersionTag(): Promise<string | undefined> {
     const result = await execa('claude', ['--version'], {
       timeout: 10_000,

@@ -215,6 +215,10 @@ export class GeminiCliAdapter implements AgentAdapter {
     supportsPauseForUserInput: true,
   };
 
+  recognizesModel(modelId: string): boolean {
+    return typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId);
+  }
+
   async getCliVersionTag(): Promise<string | undefined> {
     const result = await execa('gemini', ['--version'], {
       timeout: 10_000,

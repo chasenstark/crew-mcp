@@ -258,6 +258,10 @@ export class CodexAdapter implements AgentAdapter {
     supportsPauseForUserInput: true,
   };
 
+  recognizesModel(modelId: string): boolean {
+    return typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId);
+  }
+
   async getCliVersionTag(): Promise<string | undefined> {
     const versionResult = await execa(AgentId.CODEX, ['--version'], {
       timeout: 10_000,

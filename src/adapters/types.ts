@@ -71,6 +71,13 @@ export interface AgentAdapter {
     context?: ToolLoopContext,
   ): Promise<ToolLoopResult>;
   getCliVersionTag?(): Promise<string | undefined>;
+  /**
+   * Returns true when the given model id is known to work with this adapter.
+   * Consumed by preflight to warn + fall back when captain.model is set to a
+   * model the captain CLI can't actually drive. Adapters that can drive any
+   * model they're handed (e.g., generic command adapters) return true.
+   */
+  recognizesModel?(modelId: string): boolean;
   healthCheck(): Promise<HealthCheckResult>;
 }
 
