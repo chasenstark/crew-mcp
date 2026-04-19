@@ -163,9 +163,15 @@ function readExistingGeminiSettings(path: string): Record<string, unknown> {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
-  } catch {
-    // malformed settings.json → overwrite with ours; we don't want to
-    // silently preserve invalid state here.
+    // Non-object top-level JSON (array, primitive) — treat as malformed
+    // rather than merging onto {}. Same warn path as a parse error.
+    logger.warn(
+      `[preflight] ${path} is not a JSON object; overwriting with catalog-derived content. Prior content may have been lost.`,
+    );
+  } catch (err: unknown) {
+    logger.warn(
+      `[preflight] ${path} is malformed; overwriting with catalog-derived content. Prior content may have been lost. (parse error: ${err instanceof Error ? err.message : String(err)})`,
+    );
   }
   return {};
 }

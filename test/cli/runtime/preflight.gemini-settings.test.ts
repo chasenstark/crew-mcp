@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -147,6 +147,24 @@ describe('syncGeminiSettingsFromCatalog', () => {
     const parsed = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(parsed.ui).toEqual({ theme: 'dark' });
     expect(parsed.mcpServers.crew).toBeDefined();
+  });
+
+  it('logs a warning when settings.json is malformed and overwrite discards it', async () => {
+    const { logger } = await import('../../../src/utils/logger.js');
+    const warnSpy = vi.spyOn(logger, 'warn');
+    const { dir, settingsPath } = resolveGeminiSettingsPath({ homeOverride });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(settingsPath, 'not-json-{{corrupt', 'utf-8');
+    syncGeminiSettingsFromCatalog({
+      projectRoot,
+      captainCliName: 'gemini-cli',
+      catalog: baseCatalog,
+      homeOverride,
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/malformed; overwriting.*Prior content may have been lost/),
+    );
+    warnSpy.mockRestore();
   });
 
   it('partial-write in the lockfile triggers regen on the next call', () => {
