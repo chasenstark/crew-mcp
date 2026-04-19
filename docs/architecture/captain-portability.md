@@ -50,5 +50,10 @@ this with exactly ONE automatic replay per turn:
 2. Second consecutive rejection in the same turn → hard failure.
 
 The first post-M3 turn on an existing session is expected to consume
-this replay because M3 bumps the tool-schema hash. See
-`docs/plans/active/m3-exit-smoke-log.md` for the per-captain matrix.
+this replay because M3 bumps the tool-schema hash. M4-3's per-tool
+description refresh (the **Primary** / **Optional** prefixes) bumps the
+hash a second time on the M3→M4 upgrade; the wire format is unchanged,
+so the only user-visible effect is a single automatic replay on the
+first M4 turn. See `docs/plans/active/m4-exit-smoke-log.md` for the M4
+per-captain matrix. (MCP tool-list browsers surface the new prefix text:
+Claude Code and Gemini show descriptions; Codex hides them.)

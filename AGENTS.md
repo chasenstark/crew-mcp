@@ -7,17 +7,22 @@ There are no production users, so we do not have to worry about being backward c
 - `src/` contains production TypeScript code.
 - `src/cli/` holds terminal entrypoints and Ink UI (`commands/` and `ui/`).
 - `src/captain/` contains the captain runtime:
-  - `tools/` — M3 tool surface (catalog.ts + 8 tools); the single source of
-    truth fed to each captain CLI via `mcp-registration.ts`.
+  - `tools/` — 8-tool surface (catalog.ts + one file per tool); the single
+    source of truth fed to each captain CLI via `mcp-registration.ts`.
   - `prompts/captain-system.ts` — the captain system prompt renderer.
   - `session.ts`, `session-loop.ts`, `session-store.ts`,
     `tool-dispatcher.ts` — durable conversation + event loop + dispatcher.
+  - `events.ts` — shared `PipelineEvents` + minimal `AgentRegistry` types
+    (relocated from the deleted `pipeline.ts` during M4-4).
   - `mcp-registration.ts` — Claude / Gemini / Codex argv converters.
   - `catalog-lock.ts` — `.crew/config.lock.json` cache for Gemini settings regen.
-  - `judgment-runner.ts` — the production runner (M3 tool surface default).
-  - `steps/` — legacy step helpers still wrapped by `plan_tasks` /
-    `analyze_output` / `compress_context` tools; the deprecated
-    `judge.ts` / `dispatch.ts` survive as backing for `toolSurface: 'legacy'`.
+  - `judgment-runner.ts` — the production runner (session-loop over the
+    8-tool surface; the legacy 11-verb controller was removed in M4-5).
+  - `steps/` — `decompose` / `ingest` / `summarize` helpers, wrapped by
+    the optional `plan_tasks` / `analyze_output` / `compress_context`
+    tools. `run-structured-step.ts` is their shared executor; the
+    earlier `dispatch.ts` / `judge.ts` / `report.ts` step files were
+    removed in M4-6.
 - `src/adapters/` contains agent integrations (Claude Code, Codex, Gemini,
   generic, openai-compatible).
 - `src/workflow/` handles config types/loading/defaults (PresetConfig +
@@ -74,7 +79,7 @@ There are no production users, so we do not have to worry about being backward c
 ## Testing Guidelines
 - Framework: Vitest (`vitest` + `ink-testing-library` for UI components).
 - Test files use `*.test.ts` / `*.test.tsx` and should mirror source paths.
-- Add tests for new behavior and regressions, especially around pipeline state, config loading, and CLI/UI command handling.
+- Add tests for new behavior and regressions, especially around session-loop routing, tool-schema stability, config loading, and CLI/UI command handling.
 - Run `npm run test:run && npm run lint` before opening a PR.
 
 ## Commit & Pull Request Guidelines

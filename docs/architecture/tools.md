@@ -1,9 +1,10 @@
 # Captain tool surface
 
-M3 replaces the 11-verb controller with an 8-tool surface the captain
-drives via each CLI's native tool-loop. The tool names + schemas are
-declared in one place — `src/captain/tools/catalog.ts` — and projected
-into three shapes:
+M3 replaced the 11-verb controller with an 8-tool surface the captain
+drives via each CLI's native tool-loop. M4 tightened that surface into
+"write your prompt inline; call wrappers only when you genuinely need
+them." The tool names + schemas are declared in one place —
+`src/captain/tools/catalog.ts` — and projected into three shapes:
 
 1. `CaptainActionServer` (the `mcp__crew__<name>`-prefixed tool list the
    captain sees).
@@ -14,16 +15,41 @@ into three shapes:
 
 ## The 8 tools
 
+M4-3 tags each tool with a **Primary** or **Optional** marker so the
+captain sees the hierarchy both in the MCP tool list (adapters that
+surface descriptions) and in the rendered captain-system prompt. The
+prefixes live in the per-tool `<NAME>_DESCRIPTION` exports — a single
+source of truth.
+
 | Tool | Dispatch kind | Description |
 |------|---------------|-------------|
-| `run_agent` | dispatched | Delegate a bounded task to a named subagent. Allocates `.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up. Input: `{agent_id, prompt, working_directory?, model?, capabilities_hint?}`. |
+| `run_agent` | dispatched | **Primary work primitive.** Delegate a bounded task to a named subagent. Allocates `.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up. Write the agent's prompt inline — do NOT route through `plan_tasks` for single-task work. Input: `{agent_id, prompt, working_directory?, model?, capabilities_hint?}`. |
 | `list_agents` | synchronous | Return the current agent inventory (name, capabilities, health, optional quota). |
 | `ask_user` | dispatched | Block until the user answers. Schedule via the ask-user coordinator; user_message events resolve in FIFO order. |
 | `message_user` | synchronous | Append an assistant-visible message without ending the turn. |
-| `plan_tasks` | synchronous | Wrapper over the legacy `decompose` step helper. Free-form `role` strings post-M3 (no hard enum). |
-| `analyze_output` | synchronous | Wrapper over `ingest`. Synthesizes a minimal `TaskResult` from `{task_description, agent_output, files_modified?}`. |
-| `compress_context` | synchronous | Wrapper over `summarize`. Validates `analyzed_output` via `IngestOutputSchema` before calling through. |
-| `finish` | synchronous | Emit the final report and terminate the session. Implementation is `dispatchFinish(session, loop, input)` (src/captain/tools/finish.ts) — appends summary as an assistant message and calls `SessionLoop.requestExit(summary)` so the loop exits on its next scheduleNextTurn check. |
+| `plan_tasks` | synchronous | **Optional.** Wrapper over the `decompose` step helper. Useful for genuinely multi-step work; for single-task work dispatch directly through `run_agent`. Free-form `role` strings post-M3 (no hard enum). |
+| `analyze_output` | synchronous | **Optional.** Wrapper over `ingest`. Skip for typical cases — reason about the raw `tool_result` inline. |
+| `compress_context` | synchronous | **Optional.** Wrapper over `summarize`. Reach for this when the operating guardrails render the compression advisory (session > 15 messages since last compression AND > 100 KB of log). |
+| `finish` | synchronous | Emit the final report and terminate the session. Call this as soon as the user's request is addressed; do NOT wait for a structured review unless the request explicitly asked for one. Implementation is `dispatchFinish(session, loop, input)` — appends summary as an assistant message and calls `SessionLoop.requestExit(summary)` so the loop exits on its next scheduleNextTurn check. |
+
+## When to use wrappers
+
+M4-1 + M4-3 reframe the three wrappers (`plan_tasks`, `analyze_output`,
+`compress_context`) as opt-in optimizations rather than default
+waypoints. Rules of thumb:
+
+- **`plan_tasks`**: earn it when you genuinely need a structured plan —
+  a multi-subagent flow with dependencies, or a request complex enough
+  that writing one plan up-front saves multiple inline prompts. Skip it
+  on single-task requests.
+- **`analyze_output`**: earn it when you need structured findings
+  (severity-tagged review findings, concerns with machine-readable
+  shape) or when an agent's output is too long to reason about inline.
+  Skip it for typical tool results — the captain reads them directly.
+- **`compress_context`**: earn it when the session-loop advisory fires
+  (the captain-system prompt grows a bullet pointing at the accumulation
+  of history). Before then, the thresholds aren't crossed and the
+  wrapper costs a turn without measurable benefit.
 
 ## Invariants
 

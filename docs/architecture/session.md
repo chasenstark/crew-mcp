@@ -74,3 +74,25 @@ overrides), so they self-heal on catalog drift. Gemini reads settings
 from `~/.gemini/settings.json`, so preflight keeps that file in sync
 with the catalog via `.crew/config.lock.json` — see M3-9 in
 `src/captain/catalog-lock.ts` + `src/cli/runtime/preflight.ts:syncGeminiSettingsFromCatalog`.
+
+## Compression advisories
+
+M4-2 adds a one-line nudge to the captain-system prompt's guardrails
+when the session has accumulated enough history to warrant calling
+`compress_context`. The helper `shouldAdviseCompression(session)`
+(`src/captain/session-loop.ts`) fires only when BOTH thresholds trip:
+
+- ≥ 15 messages since the last `compress_context` tool call, AND
+- ≥ 100 KB of accumulated message-log bytes (JSON-stringified).
+
+Either one alone is ignored — a short session with a few large tool
+results doesn't need compression, and a long session that just
+compressed also doesn't. The thresholds are module-level constants
+tagged `// M4 tunable`, so M5 presets can thread a per-preset override
+through without a schema bump.
+
+The advisory rides along `BuildCaptainSystemPromptArgs.advisory`, which
+`renderGuardrails()` appends as an extra bullet. It is prompt material,
+not tool schema — rendering it cannot invalidate `providerSessionRef`.
+The helper is scan-on-demand via `CaptainSession.messagesSinceToolCall`;
+no state file changes, and loads re-scan automatically.

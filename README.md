@@ -302,11 +302,15 @@ exhausted. For the captain role itself, prefer `codex` or
 
 ```
 src/
-├── adapters/          # CLI agent adapters (Claude, Codex, generic)
-├── captain/      # 6-step pipeline, schemas, prompts
-│   └── steps/         # Individual pipeline steps
+├── adapters/          # CLI agent adapters (Claude, Codex, Gemini, generic)
+├── captain/           # Session-loop runner + 8-tool surface
+│   ├── tools/         # run_agent, list_agents, ask_user, message_user,
+│   │                  # plan_tasks, analyze_output, compress_context, finish
+│   └── steps/         # decompose / ingest / summarize (wrapped by the
+│                      # optional plan_tasks / analyze_output / compress_context
+│                      # tools — the captain reasons inline for typical cases)
 ├── cli/
-│   ├── commands/      # run, init, resume, status
+│   ├── commands/      # run, init, status
 │   └── ui/            # Ink/React terminal components
 ├── git/               # Worktree isolation and merge
 ├── state/             # File-based persistence (.crew/)
@@ -335,11 +339,11 @@ npm run build
 
 ## Architecture
 
-- **Adapters** wrap CLI tools behind a common `AgentAdapter` interface — `execute()`, `executeWithSchema()`, `healthCheck()`
-- **Pipeline** orchestrates the 6-step cycle with an `EventEmitter` for UI updates
-- **Worktrees** give each agent an isolated git branch/directory under `.crew/worktrees/`
-- **State** persists to `.crew/` as JSON files — active workflow state in `state.json` and run-scoped artifacts under `.crew/runs/<runId>/`
-- **Context management** is tiered: full output for the current pass, structured summaries for previous passes, compressed one-liners for older passes
+- **Adapters** wrap CLI tools behind a common `AgentAdapter` interface — `execute()`, `executeWithSchema()`, `executeWithTools()`, `healthCheck()`.
+- **JudgmentRunner** drives the captain via a `SessionLoop` over an 8-tool MCP surface. The captain writes subagent prompts inline via `run_agent` and reasons about tool results inline; three wrapper tools (`plan_tasks`, `analyze_output`, `compress_context`) are opt-in when a request genuinely benefits from structured intermediate output.
+- **Worktrees** give each dispatched `run_agent` its own `.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up on success, failure, or cancellation.
+- **State** persists to `.crew/` as JSON files — active workflow state in `state.json` and the durable captain-session message log in `session.json`.
+- **Context management** is tiered: session-log message history for the current run, with an opt-in `compress_context` tool when the operating guardrails render the compression advisory (≥ 15 messages since last compression AND ≥ 100 KB of log).
 
 ## License
 

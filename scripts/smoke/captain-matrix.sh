@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# M1.5 captain smoke matrix — iterates over captain CLIs, runs the scenarios
-# from vision-alignment-implementation-plan §4.4, and captures a pass/fail
-# table with timing and automatic-replay counts.
+# Captain smoke matrix — iterates over captain CLIs, runs the M1.5/M3/M4
+# scenarios, and captures a pass/fail table with timing + automatic-replay
+# counts.
 #
 # Exit gate (per N9): captain-matrix fails if any scenario records ≥2
 # automatic-replays on any captain. Gemini-cli is allowed ≤1 replay on
@@ -9,6 +9,14 @@
 #
 # Usage:
 #   scripts/smoke/captain-matrix.sh [captain-cli...]
+#
+# Toggle which scenario set to exercise via MATRIX_PROFILE env var:
+#   - unset / "m3" (default): the 8 M1.5/M3 scenarios (written to
+#     docs/plans/active/m3-exit-smoke-log.md).
+#   - "m4": the 4 M4 scenarios (trivial / typo-fix / code-review /
+#     moderate-feature) written to docs/plans/active/m4-exit-smoke-log.md.
+#     M4 asserts LLM-call-count shapes (wrappers should NOT fire on
+#     trivial flows; plan_tasks is allowed-but-not-required on moderate).
 #
 # With no args, iterates claude-code, codex, gemini-cli. Pass a subset to
 # constrain. Requires the named CLIs on $PATH; unavailable ones are skipped
@@ -25,20 +33,29 @@ fi
 # Scenarios are described in docs/plans/active/vision-alignment-implementation-plan.md §4.4.
 # For each one we capture: pass/fail, elapsed wallclock, automatic-replay count
 # (from .crew/logs/*.log greppable markers).
-SCENARIOS=(
-  "1:trivial-message-finish"
-  "2:code-review-two-run_agents"
-  "3:long-run-user-interrupt"
-  "4:cancel-subagent-by-id"
-  "5:two-concurrent-run_agent"
-  "6:ask_user-roundtrip"
-  "7:cli-upgrade-replay"
-  "8:interrupt-and-resume"
-)
-
-# M3-13: the script writes to the M3 exit log by default; M1.5 callers
-# can still override via OUTPUT_LOG when re-running the earlier matrix.
-OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m3-exit-smoke-log.md}"
+MATRIX_PROFILE="${MATRIX_PROFILE:-m3}"
+if [ "$MATRIX_PROFILE" = "m4" ]; then
+  # M4 scope: four LLM-call-count scenarios.
+  SCENARIOS=(
+    "1:trivial-message-finish"
+    "2:typo-fix-one-run_agent"
+    "3:code-review-two-run_agents"
+    "4:moderate-feature-plan-then-two-run_agents"
+  )
+  OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m4-exit-smoke-log.md}"
+else
+  SCENARIOS=(
+    "1:trivial-message-finish"
+    "2:code-review-two-run_agents"
+    "3:long-run-user-interrupt"
+    "4:cancel-subagent-by-id"
+    "5:two-concurrent-run_agent"
+    "6:ask_user-roundtrip"
+    "7:cli-upgrade-replay"
+    "8:interrupt-and-resume"
+  )
+  OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m3-exit-smoke-log.md}"
+fi
 TMPDIR="$(mktemp -d -t crew-smoke-XXXXXX)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -103,33 +120,12 @@ YAML
   # suffices; scenarios 7 & 8 require orchestration (version flip, mid-run
   # interrupt) that the script shells out to sub-procedures for.
   local status="pass"
-  case "$scenario_num" in
-    1|2|3)
-      if ! timeout 180 crew run "$(scenario_prompt "$scenario_num")" --on-ask-user fail >"$workdir/stdout.log" 2>"$workdir/stderr.log"; then
-        status="fail"
-      fi
-      ;;
-    4|5|6)
-      # Concurrency scenarios need a second process to interject / cancel.
-      # Left as manual-drive hooks for now; the smoke script captures the
-      # single-shot result and flags one-replay as a soft warning.
-      if ! timeout 180 crew run "$(scenario_prompt "$scenario_num")" --on-ask-user fail >"$workdir/stdout.log" 2>"$workdir/stderr.log"; then
-        status="fail"
-      fi
-      ;;
-    7)
-      # Simulate a CLI upgrade by bumping the cliVersion tag in session.json
-      # between turns. Replays are expected ≤1; >1 fails.
-      if ! timeout 180 crew run "$(scenario_prompt "$scenario_num")" --on-ask-user fail >"$workdir/stdout.log" 2>"$workdir/stderr.log"; then
-        status="fail"
-      fi
-      ;;
-    8)
-      if ! timeout 180 crew run "$(scenario_prompt "$scenario_num")" --on-ask-user fail >"$workdir/stdout.log" 2>"$workdir/stderr.log"; then
-        status="fail"
-      fi
-      ;;
-  esac
+  # All M4 scenarios + M3 scenarios 1–3 run as single-shot invocations.
+  # M3 scenarios 4–8 need a second process to interject / cancel; they
+  # stay as single-shot hooks and flag one-replay as a soft warning.
+  if ! timeout 180 crew run "$(scenario_prompt "$scenario_num")" --on-ask-user fail >"$workdir/stdout.log" 2>"$workdir/stderr.log"; then
+    status="fail"
+  fi
 
   local end_ms; end_ms="$(date +%s%3N)"
   TIMINGS[$key]="$((end_ms - start_ms))"
@@ -153,6 +149,15 @@ YAML
 }
 
 scenario_prompt() {
+  if [ "$MATRIX_PROFILE" = "m4" ]; then
+    case "$1" in
+      1) echo "What is this repo?";;
+      2) echo "Fix the comment in README line 10";;
+      3) echo "Fix the typo and have another agent review it";;
+      4) echo "Add feature X with tests and documentation";;
+    esac
+    return
+  fi
   case "$1" in
     1) echo "Say hello";;
     2) echo "List three things we might work on";;
@@ -168,10 +173,16 @@ scenario_prompt() {
 write_exit_log() {
   local output="$1"
   mkdir -p "$(dirname "$output")"
+  local heading
+  if [ "$MATRIX_PROFILE" = "m4" ]; then
+    heading="M4 exit smoke log"
+  else
+    heading="M1.5 / M3 exit smoke log"
+  fi
   {
-    echo "# M1.5 exit smoke log"
+    echo "# $heading"
     echo ""
-    echo "Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by scripts/smoke/captain-matrix.sh."
+    echo "Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by scripts/smoke/captain-matrix.sh (profile=$MATRIX_PROFILE)."
     echo ""
     echo "Columns: scenario × captain. Cell value: status / wallclock-ms / replay-count."
     echo "N9 gate: any cell with replay-count ≥2 fails the matrix."
@@ -197,7 +208,11 @@ write_exit_log() {
     echo ""
     echo "- \`skip\` = CLI not installed on PATH."
     echo "- \`fail-N9-replay-count-N\` = exit gate tripped; captain required ≥2 automatic replays for one scenario."
-    echo "- \`pass-one-replay\` = gemini-cli 0.20+ acceptable under N9 semantics for scenarios 4–8."
+    if [ "$MATRIX_PROFILE" = "m4" ]; then
+      echo "- \`pass-one-replay\` = expected on the first M4 turn against an existing M3 session (M4-3 description-refresh bumps the tool-schema hash exactly once)."
+    else
+      echo "- \`pass-one-replay\` = gemini-cli 0.20+ acceptable under N9 semantics for scenarios 4–8."
+    fi
   } > "$output"
   echo "Exit log written to: $output"
 }

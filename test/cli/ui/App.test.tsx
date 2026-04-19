@@ -302,7 +302,8 @@ describe('App (M1.5 post-rewrite)', () => {
     expect(lastFrame()).toContain('config show output');
   });
 
-  // Deleted in M1.5-11: slot-based provideUserInput / ask_user runner event
-  // are retired. Legacy mode (Pipeline without session) now just runs once;
-  // no queueing, no ask_user pause. Linear mode dies with pipeline.ts in M3.
+  // M1.5-11 retired the slot-based provideUserInput / ask_user runner
+  // event; M4-4 deleted the linear-mode Pipeline + the App's legacyMode
+  // fallback. Session + dispatcher are always provided now — there is no
+  // legacy path left to test.
 });
