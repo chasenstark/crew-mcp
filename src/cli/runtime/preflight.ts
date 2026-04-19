@@ -1,8 +1,18 @@
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentAdapter } from '../../adapters/types.js';
 import { AgentId } from '../../workflow/agents.js';
 import type { FullConfig } from '../../workflow/types.js';
 import { resolveCaptainModel } from '../../workflow/config-codec.js';
 import { logger } from '../../utils/logger.js';
+import { CatalogLock } from '../../captain/catalog-lock.js';
+import {
+  hashGeminiSettings,
+  toGeminiMcpSettings,
+  type ToolCatalog as McpToolCatalog,
+} from '../../captain/mcp-registration.js';
+import { atomicWrite } from '../../utils/atomic-write.js';
 
 interface AdapterLookup {
   get(name: string): AgentAdapter | undefined;
@@ -89,6 +99,75 @@ export function enforceCaptainModelCompatibility(
     delete config.captain.model[key];
   }
   return { warnedModel: resolved };
+}
+
+/**
+ * Where the Gemini settings.json file should live. Respects the
+ * `GEMINI_HOME_OVERRIDE` env var so tests + sandboxed runs point at a
+ * writable tmp dir instead of `$HOME/.gemini/`. Production callers rarely
+ * pass it.
+ *
+ * Returns `{ dir, settingsPath }` so callers can ensure the directory and
+ * hand the file path to atomicWrite.
+ */
+export function resolveGeminiSettingsPath(
+  options: { homeOverride?: string } = {},
+): { dir: string; settingsPath: string } {
+  const home = options.homeOverride ?? process.env.GEMINI_HOME_OVERRIDE ?? join(homedir(), '.gemini');
+  return { dir: home, settingsPath: join(home, 'settings.json') };
+}
+
+/**
+ * M3-9: for captains that consume a file-based settings.json (currently
+ * only Gemini), regenerate the file iff the catalog hash has drifted from
+ * the lockfile.
+ *
+ * Returns a small summary so tests and telemetry can distinguish the three
+ * outcomes without observing the filesystem directly.
+ */
+export function syncGeminiSettingsFromCatalog(args: {
+  projectRoot: string;
+  captainCliName: string;
+  catalog: McpToolCatalog;
+  homeOverride?: string;
+}): { action: 'skipped-not-gemini' | 'skipped-match' | 'written'; hash?: string; settingsPath?: string } {
+  if (args.captainCliName !== 'gemini-cli') {
+    return { action: 'skipped-not-gemini' };
+  }
+
+  const hash = hashGeminiSettings(args.catalog);
+  const stored = CatalogLock.loadHash(args.projectRoot);
+  const { dir, settingsPath } = resolveGeminiSettingsPath({ homeOverride: args.homeOverride });
+
+  if (stored === hash && existsSync(settingsPath)) {
+    // No-op when the lockfile matches AND the settings file is present on
+    // disk (covers the case where a user deletes settings.json manually).
+    return { action: 'skipped-match', hash, settingsPath };
+  }
+
+  const { settingsJson } = toGeminiMcpSettings(args.catalog);
+  mkdirSync(dir, { recursive: true });
+  // Gemini reads the file as plain JSON; the official format allows other
+  // top-level keys we don't manage, so merge rather than overwrite.
+  const existing = readExistingGeminiSettings(settingsPath);
+  const merged = { ...existing, ...settingsJson };
+  atomicWrite(settingsPath, JSON.stringify(merged, null, 2));
+  CatalogLock.writeHash(args.projectRoot, hash);
+  return { action: 'written', hash, settingsPath };
+}
+
+function readExistingGeminiSettings(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // malformed settings.json → overwrite with ours; we don't want to
+    // silently preserve invalid state here.
+  }
+  return {};
 }
 
 export async function assertRequiredAgentsReady(

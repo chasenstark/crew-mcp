@@ -14,10 +14,16 @@ const RESET_ENTRIES: readonly string[] = [
   'captain',
 ];
 
+// M3-9: config.lock.json must NOT appear in RESET_ENTRIES. The lockfile
+// caches the catalog-hash for Gemini settings regen; wiping it would force
+// a settings.json rewrite on the next captain invocation even when the
+// catalog hasn't changed. Users who want to fully reset Gemini state can
+// delete ~/.gemini/settings.json manually.
 const PRESERVED_ENTRIES: readonly string[] = [
   'workflow.yaml',
   'logs',
   'profiles',
+  'config.lock.json',
 ];
 
 export interface StateResetOptions {

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Seam for registering MCP servers with each captain CLI per-invocation.
  *
@@ -177,6 +179,38 @@ export function resolveCaptainConverter(
     default:
       return undefined;
   }
+}
+
+/**
+ * Hash the canonical JSON of the Gemini settings-file content. Used by M3-9's
+ * catalog-lockfile machinery: the file is regenerated iff this hash changes.
+ *
+ * Keyed on the *settings.json* shape, not on the tool catalog as a whole —
+ * two catalogs that produce the same settings.json are considered equivalent
+ * even if their other projections (Claude JSON, Codex argv) differ. Two
+ * catalogs with identical server lists in a different insertion order hash
+ * to the same value because `JSON.stringify` over an Object preserves
+ * insertion order but the server names get sorted via `allowedServerNames`
+ * only for CSV output — settings.json retains whatever order the catalog
+ * hands in. To keep the hash drift-free under shuffle, sort the keys here.
+ */
+export function hashGeminiSettings(catalog: ToolCatalog): string {
+  const settings = toGeminiMcpSettings(catalog).settingsJson;
+  // Canonicalize: sort keys recursively so insertion order doesn't affect the hash.
+  const canonical = JSON.stringify(sortKeys(settings));
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (!value || typeof value !== 'object') return value;
+  const obj = value as Record<string, unknown>;
+  return Object.keys(obj)
+    .sort()
+    .reduce<Record<string, unknown>>((acc, key) => {
+      acc[key] = sortKeys(obj[key]);
+      return acc;
+    }, {});
 }
 
 export function toGeminiMcpSettings(catalog: ToolCatalog): GeminiMcpSettings {
