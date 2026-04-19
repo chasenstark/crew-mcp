@@ -61,7 +61,21 @@ export interface SessionLoopTurn {
     messages: ToolLoopMessage[];
     providerSessionRef?: string;
     signal: AbortSignal;
+    /**
+     * True when this turn is a retry after a previous turn reported
+     * providerSessionRejected. The captain can use this as a hint that
+     * providerSessionRef is undefined (already dropped by the loop) and
+     * full-replay context is in `messages`.
+     */
+    isReplay?: boolean;
   }): Promise<SessionLoopTurnResult>;
+
+  /**
+   * Optional: re-probe the CLI version so the next turn has a fresh tag.
+   * Called by the session-loop exactly once per resume rejection before
+   * spawning the replay turn (M1.5-8 cache self-heal integration).
+   */
+  refreshCliVersionTag?(): Promise<string | undefined>;
 }
 
 export interface ScheduledToolCall {
@@ -225,24 +239,9 @@ export class SessionLoop {
       throw new Error(`Session loop exceeded max turns (${this.maxTurns}).`);
     }
     this.turnNumber++;
-    this.currentTurnAbort = new AbortController();
-    const messages = this.session.toToolLoopMessages();
 
-    let result: SessionLoopTurnResult;
-    try {
-      result = await this.captain.execute({
-        messages,
-        providerSessionRef: this.session.providerSessionRef,
-        signal: this.currentTurnAbort.signal,
-      });
-    } catch (err: unknown) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      logger.warn('[session-loop] captain turn threw', { error: error.message });
-      this.turnError = error;
-      return;
-    } finally {
-      this.currentTurnAbort = undefined;
-    }
+    const result = await this.executeTurnWithReplay(/* isRetry */ false);
+    if (!result) return; // error already recorded
 
     if (result.assistantText) {
       this.session.appendAssistantMessage(result.assistantText);
@@ -263,6 +262,59 @@ export class SessionLoop {
 
     this.session.persist();
     this.onTurn?.({ turnNumber: this.turnNumber, result });
+  }
+
+  /**
+   * Execute one turn. If the captain reports providerSessionRejected, drop
+   * the ref, optionally re-probe cliVersion, and retry with full-replay
+   * context. Limit to ONE automatic replay per turn (N9 retry semantics —
+   * a second rejection propagates as a hard failure).
+   */
+  private async executeTurnWithReplay(isRetry: boolean): Promise<SessionLoopTurnResult | null> {
+    this.currentTurnAbort = new AbortController();
+    const messages = this.session.toToolLoopMessages();
+    let result: SessionLoopTurnResult;
+    try {
+      result = await this.captain.execute({
+        messages,
+        providerSessionRef: this.session.providerSessionRef,
+        signal: this.currentTurnAbort.signal,
+        isReplay: isRetry,
+      });
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      logger.warn('[session-loop] captain turn threw', { error: error.message });
+      this.turnError = error;
+      return null;
+    } finally {
+      this.currentTurnAbort = undefined;
+    }
+
+    if (result.providerSessionRejected) {
+      if (isRetry) {
+        // Second consecutive rejection within one turn — hard failure per N9.
+        this.turnError = new Error(
+          'providerSessionRef rejected twice within a single turn; replay limit exceeded',
+        );
+        return null;
+      }
+      // First rejection: drop the ref + optionally re-probe cliVersion, then
+      // retry once with full-replay context.
+      logger.warn('[session-loop] providerSessionRef rejected; dropping and replaying once');
+      this.session.providerSessionRef = undefined;
+      if (this.captain.refreshCliVersionTag) {
+        try {
+          await this.captain.refreshCliVersionTag();
+        } catch (err: unknown) {
+          logger.warn('[session-loop] refreshCliVersionTag threw during replay', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return this.executeTurnWithReplay(true);
+    }
+
+    return result;
   }
 
   private async applyToolCalls(calls: SessionLoopToolCall[]): Promise<void> {
