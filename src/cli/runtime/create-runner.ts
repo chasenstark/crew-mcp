@@ -36,7 +36,7 @@ export function createRunner(
   const stateStore = options.stateStore ?? new StateStore(projectRoot);
   const worktreeManager = new WorktreeManager(projectRoot);
   const captainAdapter = registry.getOrThrow(config.captain.cli);
-  const mode = options.mode ?? config.workflow.execution?.mode ?? 'linear';
+  const mode = options.mode ?? config.workflow.execution?.mode ?? 'judgment';
 
   const runner: CrewRunner = mode === 'judgment'
     ? new JudgmentRunner(
