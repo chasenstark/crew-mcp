@@ -1,5 +1,7 @@
 import { Pipeline, type AgentRegistry } from '../../captain/pipeline.js';
 import { JudgmentRunner } from '../../captain/judgment-runner.js';
+import { CaptainSession } from '../../captain/session.js';
+import { ToolDispatcher } from '../../captain/tool-dispatcher.js';
 import { AdapterRegistry, createRegistryFromConfig } from '../../adapters/registry.js';
 import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
@@ -27,6 +29,8 @@ export interface CreateRunnerResult {
   config: ReturnType<typeof loadWorkflowConfig>;
   registry: AdapterRegistry;
   stateStore: StateStore;
+  session: CaptainSession | undefined;
+  dispatcher: ToolDispatcher | undefined;
 }
 
 export function createRunner(
@@ -49,6 +53,26 @@ export function createRunner(
   checkCrewCodexConfigDeprecation();
   enforceCaptainModelCompatibility(config, captainAdapter);
 
+  // Hydrate the persistent captain session (M1.5-10). Judgment-mode runners
+  // always get one; linear-mode Pipeline doesn't use it (shim path remains
+  // the slot-based API until pipeline.ts is deleted in M3).
+  const agentModels = Object.fromEntries(
+    Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
+  );
+  const captainModel = resolveCaptainModel(config.captain);
+
+  let session: CaptainSession | undefined;
+  let dispatcher: ToolDispatcher | undefined;
+
+  if (mode === 'judgment') {
+    session = CaptainSession.loadOrCreate({
+      projectRoot,
+      cliVersionTag: undefined,
+      toolSchemaHash: undefined,
+    });
+    dispatcher = new ToolDispatcher();
+  }
+
   const runner: CrewRunner = mode === 'judgment'
     ? new JudgmentRunner(
       captainAdapter,
@@ -57,10 +81,10 @@ export function createRunner(
       stateStore,
       worktreeManager,
       {
-        captainModel: resolveCaptainModel(config.captain),
-        agentModels: Object.fromEntries(
-          Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
-        ),
+        captainModel,
+        agentModels,
+        session,
+        dispatcher,
       },
     )
     : new Pipeline(
@@ -70,10 +94,8 @@ export function createRunner(
       stateStore,
       worktreeManager,
       {
-        captainModel: resolveCaptainModel(config.captain),
-        agentModels: Object.fromEntries(
-          Object.entries(config.agents).map(([name, agentConfig]) => [name, agentConfig.model]),
-        ),
+        captainModel,
+        agentModels,
       },
     );
 
@@ -82,5 +104,7 @@ export function createRunner(
     config,
     registry,
     stateStore,
+    session,
+    dispatcher,
   };
 }

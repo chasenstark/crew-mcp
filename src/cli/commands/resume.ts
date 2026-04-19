@@ -6,12 +6,25 @@ import { attachRunnerEvents } from '../runtime/attach-runner-events.js';
 import { attachAskUserHandler, normalizeAskUserPolicy } from '../runtime/ask-user.js';
 import { assertRequiredAgentsReady } from '../runtime/preflight.js';
 
+/**
+ * @deprecated Since M1.5. The captain session is now durable — `crew run`
+ * auto-continues any prior conversation, so an explicit resume step is no
+ * longer required. This command is retained for one release as an explicit
+ * re-entry for mid-run-interrupted states; it will be removed in M3.
+ */
 export async function resumeCommand(
   options: { onAskUser?: string; skipPreflight?: boolean } = {},
 ): Promise<void> {
   const projectRoot = process.cwd();
   const stateStore = new StateStore(projectRoot);
   const onAskUser = normalizeAskUserPolicy(options.onAskUser, 'fail');
+
+  console.log(
+    chalk.yellow('  [deprecated]')
+      + chalk.dim(' crew resume is deprecated; use ')
+      + chalk.bold('crew run')
+      + chalk.dim(' — the captain conversation auto-continues.\n'),
+  );
 
   if (!stateStore.hasInterruptedWorkflow()) {
     console.log(chalk.dim('\n  No interrupted workflow found.\n'));
