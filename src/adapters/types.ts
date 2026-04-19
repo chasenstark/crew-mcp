@@ -81,13 +81,22 @@ export interface AgentAdapter {
   healthCheck(): Promise<HealthCheckResult>;
 }
 
-export type AgentCapability =
+/**
+ * Named capability strings that show up in first-party configs. Kept as a
+ * documentation anchor — downstream code treats capabilities as free-form
+ * lowercase strings, since M3 widened the surface to let users declare
+ * arbitrary capabilities (e.g., "typescript", "k8s-ops") for their own
+ * `run_agent` + `list_agents` discovery. Any string is valid at runtime.
+ */
+export type NamedAgentCapability =
   | 'implement'
   | 'review'
   | 'refactor'
   | 'test'
   | 'document'
   | 'analyze';
+
+export type AgentCapability = NamedAgentCapability | string;
 
 export interface Task {
   prompt: string;

@@ -1,4 +1,4 @@
-import type { AgentAdapter, AgentCapability, HealthCheckResult } from './types.js';
+import type { AgentAdapter, AgentCapability, HealthCheckResult, NamedAgentCapability } from './types.js';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { CodexAdapter } from './codex.js';
 import { GeminiCliAdapter } from './gemini-cli.js';
@@ -6,6 +6,7 @@ import { GenericAdapter } from './generic.js';
 import { OpenAiCompatibleAdapter } from './openai-compatible.js';
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
+import { logger } from '../utils/logger.js';
 
 export interface RegistryHealthReport {
   [adapterName: string]: HealthCheckResult;
@@ -66,7 +67,7 @@ export class AdapterRegistry {
   }
 }
 
-const VALID_CAPABILITIES: AgentCapability[] = [
+const NAMED_CAPABILITIES: readonly NamedAgentCapability[] = [
   'implement',
   'review',
   'refactor',
@@ -75,14 +76,30 @@ const VALID_CAPABILITIES: AgentCapability[] = [
   'analyze',
 ];
 
+/**
+ * Normalize capability strings: trim, lowercase, dedupe, preserve input
+ * order. M3 dropped the hard enum gate (`VALID_CAPABILITIES`) so users can
+ * declare arbitrary capability strings (e.g., "typescript", "k8s-ops") for
+ * their own `run_agent` + `list_agents` routing. Strings not in
+ * `NAMED_CAPABILITIES` are still accepted; we emit a debug log so a typo
+ * like "analyse" is visible without throwing.
+ */
 function toCapabilities(config: AgentConfig): AgentCapability[] {
   const candidates = config.capabilities ?? config.strengths ?? [];
-  const normalized = candidates
-    .map((value) => value.trim().toLowerCase())
-    .filter((value): value is AgentCapability =>
-      (VALID_CAPABILITIES as string[]).includes(value),
-    );
-
+  const seen = new Set<string>();
+  const normalized: AgentCapability[] = [];
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim().toLowerCase();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed);
+    if (!(NAMED_CAPABILITIES as readonly string[]).includes(trimmed)) {
+      logger.debug(
+        `[adapter-registry] capability "${trimmed}" is not in the named set — accepted as a user-defined capability`,
+      );
+    }
+  }
   if (normalized.length > 0) return normalized;
   return ['analyze'];
 }

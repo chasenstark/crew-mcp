@@ -80,3 +80,47 @@ describe('createBuiltinRegistry', () => {
     expect(registry.get('gemini-cli')).toBeDefined();
   });
 });
+
+describe('capabilities passthrough (M3-2)', () => {
+  it('accepts user-defined capability strings verbatim', () => {
+    const registry = createRegistryFromConfig({
+      custom: {
+        adapter: 'generic',
+        command: 'my-tool',
+        capabilities: ['typescript', 'k8s-ops', 'devops'],
+      },
+    });
+    const custom = registry.get('custom');
+    expect(custom?.capabilities).toEqual(['typescript', 'k8s-ops', 'devops']);
+  });
+
+  it('normalizes capabilities: trim, lowercase, dedupe, preserve order', () => {
+    const registry = createRegistryFromConfig({
+      custom: {
+        adapter: 'generic',
+        command: 'my-tool',
+        capabilities: ['  Review  ', 'REVIEW', 'TypeScript', 'typescript'],
+      },
+    });
+    const caps = registry.get('custom')?.capabilities;
+    expect(caps).toEqual(['review', 'typescript']);
+  });
+
+  it('defaults to ["analyze"] when no capabilities are supplied', () => {
+    const registry = createRegistryFromConfig({
+      custom: { adapter: 'generic', command: 'my-tool' },
+    });
+    expect(registry.get('custom')?.capabilities).toEqual(['analyze']);
+  });
+
+  it('defaults to ["analyze"] when every provided capability is empty/whitespace', () => {
+    const registry = createRegistryFromConfig({
+      custom: {
+        adapter: 'generic',
+        command: 'my-tool',
+        capabilities: ['  ', ''],
+      },
+    });
+    expect(registry.get('custom')?.capabilities).toEqual(['analyze']);
+  });
+});
