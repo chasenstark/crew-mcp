@@ -200,3 +200,99 @@ describe('defaults/workflow.yaml ships the per-CLI map', () => {
     expect(map['gemini-cli']).toBeDefined();
   });
 });
+
+describe('parseWorkflowYaml captain.preset + presets', () => {
+  it('accepts configs without preset/presets (legacy roundtrip)', () => {
+    const yaml = `
+workflow:
+  name: default
+  execution:
+    mode: judgment
+  steps: []
+  completion:
+    strategy: judge_approval
+    fallback: max_passes
+agents: {}
+captain:
+  cli: claude-code
+error_handling:
+  default:
+    retry: 1
+    fallback: null
+    on_exhausted: ask_user
+`;
+    const parsed = parseWorkflowYaml(yaml);
+    expect(parsed.captain.preset).toBeUndefined();
+    expect(parsed.presets).toBeUndefined();
+  });
+
+  it('parses a full preset + captain.preset reference', () => {
+    const yaml = `
+workflow:
+  name: default
+  execution:
+    mode: judgment
+  steps: []
+  completion:
+    strategy: judge_approval
+    fallback: max_passes
+agents: {}
+captain:
+  cli: claude-code
+  preset: default
+presets:
+  default:
+    description: The default preset
+    hint: |
+      prefer running a review
+      call finish when done
+error_handling:
+  default:
+    retry: 1
+    fallback: null
+    on_exhausted: ask_user
+`;
+    const parsed = parseWorkflowYaml(yaml);
+    expect(parsed.captain.preset).toBe('default');
+    expect(parsed.presets?.default?.description).toBe('The default preset');
+    expect(parsed.presets?.default?.hint).toContain('prefer running a review');
+  });
+
+  it('defaults/workflow.yaml ships captain.preset: default with a hint', () => {
+    const config = getDefaultConfig();
+    expect(config.captain.preset).toBe('default');
+    expect(config.presets?.default).toBeDefined();
+    expect(config.presets?.default?.hint).toBeTruthy();
+  });
+});
+
+describe('serializeWorkflowYaml preset roundtrip', () => {
+  it('roundtrips captain.preset + presets', () => {
+    const base = getDefaultConfig();
+    const config: FullConfig = {
+      ...base,
+      captain: { ...base.captain, preset: 'custom' },
+      presets: {
+        ...(base.presets ?? {}),
+        custom: { description: 'x', hint: 'do the thing' },
+      },
+    };
+    const yaml = serializeWorkflowYaml(config);
+    const parsed = parseWorkflowYaml(yaml);
+    expect(parsed.captain.preset).toBe('custom');
+    expect(parsed.presets?.custom?.hint).toBe('do the thing');
+    expect(parsed.presets?.custom?.description).toBe('x');
+  });
+
+  it('omits captain.preset + presets when absent', () => {
+    const base = getDefaultConfig();
+    const config: FullConfig = {
+      ...base,
+      captain: { ...base.captain, preset: undefined },
+      presets: undefined,
+    };
+    const yaml = serializeWorkflowYaml(config);
+    expect(yaml).not.toMatch(/preset:/);
+    expect(yaml).not.toMatch(/^presets:/m);
+  });
+});

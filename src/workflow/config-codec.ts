@@ -7,7 +7,14 @@ import {
   resolveAdapterAliasOrThrow,
   resolveAgentAlias,
 } from './agents.js';
-import type { AgentConfig, CaptainModelMap, CaptainModelSpec, FullConfig, WorkflowConfig } from './types.js';
+import type {
+  AgentConfig,
+  CaptainModelMap,
+  CaptainModelSpec,
+  FullConfig,
+  PresetConfig,
+  WorkflowConfig,
+} from './types.js';
 import { resolveModelAliasOrThrow } from './models.js';
 
 const CAPTAIN_CLI_KEYS: readonly ('claude-code' | 'codex' | 'gemini-cli')[] = [
@@ -96,6 +103,16 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
     ...(override.workflow.roleModels ?? {}),
   };
 
+  const mergedPresets: Record<string, PresetConfig> = {
+    ...(base.presets ?? {}),
+  };
+  for (const [name, overridePreset] of Object.entries(override.presets ?? {})) {
+    mergedPresets[name] = {
+      ...(base.presets?.[name] ?? {}),
+      ...overridePreset,
+    };
+  }
+
   return {
     workflow: {
       name: override.workflow.name ?? base.workflow.name,
@@ -110,7 +127,9 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
     captain: {
       cli: override.captain?.cli ?? base.captain.cli,
       model: override.captain?.model ?? base.captain.model,
+      preset: override.captain?.preset ?? base.captain.preset,
     },
+    presets: Object.keys(mergedPresets).length > 0 ? mergedPresets : undefined,
     errorHandling: {
       default: {
         ...base.errorHandling.default,
@@ -191,6 +210,25 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   }, {});
 
   const rawCaptain = asObject(parsed.captain);
+  const rawPresets = asObject(parsed.presets);
+
+  const parsedPresets = Object.entries(rawPresets).reduce<Record<string, PresetConfig>>(
+    (acc, [rawName, value]) => {
+      const name = typeof rawName === 'string' ? rawName : String(rawName);
+      if (!value || typeof value !== 'object') {
+        acc[name] = { name };
+        return acc;
+      }
+      const raw = value as Record<string, unknown>;
+      acc[name] = {
+        name,
+        description: typeof raw.description === 'string' ? raw.description : undefined,
+        hint: typeof raw.hint === 'string' ? raw.hint : undefined,
+      };
+      return acc;
+    },
+    {},
+  );
 
   const toWorkflowStep = (rawStep: unknown): WorkflowConfig['steps'][number] => {
     const step = asObject(rawStep);
@@ -230,7 +268,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         ? resolveAgentAlias(rawCaptain.cli)
         : AgentId.CLAUDE_CODE,
       model: parseCaptainModelSpec(rawCaptain.model),
+      preset: typeof rawCaptain.preset === 'string' ? rawCaptain.preset : undefined,
     },
+    presets: Object.keys(parsedPresets).length > 0 ? parsedPresets : undefined,
     errorHandling: {
       default: {
         retry: typeof parsedErrorDefault.retry === 'number' ? parsedErrorDefault.retry : 1,
@@ -287,7 +327,19 @@ export function serializeWorkflowYaml(config: FullConfig): string {
     captain: omitUndefined({
       cli: config.captain.cli,
       model: serializeCaptainModelSpec(config.captain.model),
+      preset: config.captain.preset,
     }),
+    presets: config.presets && Object.keys(config.presets).length > 0
+      ? Object.fromEntries(
+          Object.entries(config.presets).map(([name, preset]) => [
+            name,
+            omitUndefined({
+              description: preset.description,
+              hint: preset.hint,
+            }),
+          ]),
+        )
+      : undefined,
     error_handling: {
       default: {
         retry: config.errorHandling.default.retry,

@@ -43,13 +43,31 @@ export type CaptainModelMap = Partial<Record<'claude-code' | 'codex' | 'gemini-c
 
 export type CaptainModelSpec = string | CaptainModelMap;
 
+/**
+ * Preset-config shape. A preset bundles a `hint` paragraph that the
+ * captain-system prompt renders, plus a human-readable description. M3 ships
+ * only the `default` preset; M5 adds `/preset` + user-defined presets.
+ *
+ * `hint` is intentionally a free-form soft-policy nudge, not a runtime rule —
+ * it lives in the prompt, not in the tool-schema, so editing a hint between
+ * turns does NOT invalidate providerSessionRef.
+ */
+export interface PresetConfig {
+  name?: string;
+  description?: string;
+  hint?: string;
+}
+
 export interface FullConfig {
   workflow: WorkflowConfig;
   agents: Record<string, AgentConfig>;
   captain: {
     cli: string;
     model?: CaptainModelSpec;
+    /** Name key into FullConfig.presets; missing → "no hint injected". */
+    preset?: string;
   };
+  presets?: Record<string, PresetConfig>;
   errorHandling: {
     default: {
       retry: number;

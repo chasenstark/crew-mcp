@@ -64,6 +64,22 @@ captain:
     claude-code: CLAUDE_SONNET
     codex: GPT
     gemini-cli: QWEN
+  # Preset key (into top-level `presets`). Missing → no hint is injected into
+  # the captain's system prompt. M3 ships `default` only; /preset (M5) adds
+  # user-selectable presets at runtime.
+  preset: default
+
+presets:
+  default:
+    description: >-
+      General-purpose captain behavior: balanced code review, task planning, and
+      direct answers for trivial requests.
+    hint: >-
+      Prefer running a review pass after implementation work. Call `finish` when
+      the user's request is addressed — do not wait for external confirmation.
+      Reach for `ask_user` only when you are genuinely blocked; for clarifications
+      that require no user input, answer inline and continue. Budget warnings
+      arrive on tool results; treat them as advisory and decide whether to stop.
 
 error_handling:
   default:
