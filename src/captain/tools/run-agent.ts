@@ -21,7 +21,6 @@
 
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../adapters/types.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
@@ -49,19 +48,6 @@ export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
   'Delegate a bounded task to a named subagent. agent_id must come from list_agents; the prompt is what the agent sees verbatim. working_directory defaults to the run worktree.';
-
-/**
- * The catalog entry. Used by code that wants the action-server shape
- * (M3-4's ToolCatalog consumes this via its canonical input schemas
- * directly; this builder is a convenience for tests + external wirings).
- */
-export function buildRunAgentActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'run_agent',
-    description: RUN_AGENT_DESCRIPTION,
-    inputSchema: runAgentInputSchema,
-  };
-}
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;

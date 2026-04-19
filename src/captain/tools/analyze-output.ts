@@ -9,7 +9,6 @@
  */
 
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { AgentAdapter, TaskResult } from '../../adapters/types.js';
 import type { IngestOutput } from '../steps/ingest.js';
 import { ingest } from '../steps/index.js';
@@ -29,14 +28,6 @@ export interface AnalyzeOutputContext {
   readonly captain: AgentAdapter;
   readonly model?: string;
   readonly signal?: AbortSignal;
-}
-
-export function buildAnalyzeOutputActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'analyze_output',
-    description: ANALYZE_OUTPUT_DESCRIPTION,
-    inputSchema: analyzeOutputInputSchema,
-  };
 }
 
 export async function dispatchAnalyzeOutput(

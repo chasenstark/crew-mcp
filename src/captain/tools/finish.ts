@@ -14,9 +14,12 @@
  */
 
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { CaptainSession } from '../session.js';
 import type { SessionLoop } from '../session-loop.js';
+
+// NB: the canonical ActionCatalogEntry for each M3 tool is built by
+// src/captain/tools/catalog.ts. Per-tool files only export the schema +
+// description + dispatch helper so catalog.ts has a single source.
 
 export const finishInputSchema = z.object({
   summary: z.string().min(1),
@@ -31,14 +34,6 @@ export const FINISH_DESCRIPTION =
 export interface FinishResult {
   readonly status: 'finished';
   readonly outcome: FinishInput['outcome'];
-}
-
-export function buildFinishActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'finish',
-    description: FINISH_DESCRIPTION,
-    inputSchema: finishInputSchema,
-  };
 }
 
 export function dispatchFinish(

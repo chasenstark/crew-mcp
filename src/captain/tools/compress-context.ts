@@ -12,7 +12,6 @@
  */
 
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { AgentAdapter } from '../../adapters/types.js';
 import type { IngestOutput } from '../steps/ingest.js';
 import type { SummarizeOutput } from '../steps/summarize.js';
@@ -33,14 +32,6 @@ export interface CompressContextContext {
   readonly captain: AgentAdapter;
   readonly model?: string;
   readonly signal?: AbortSignal;
-}
-
-export function buildCompressContextActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'compress_context',
-    description: COMPRESS_CONTEXT_DESCRIPTION,
-    inputSchema: compressContextInputSchema,
-  };
 }
 
 export async function dispatchCompressContext(

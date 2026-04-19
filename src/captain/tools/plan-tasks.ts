@@ -8,7 +8,6 @@
  */
 
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { AgentAdapter } from '../../adapters/types.js';
 import type { WorkflowConfig } from '../../workflow/types.js';
 import type { DecomposeOutput } from '../steps/decompose.js';
@@ -30,14 +29,6 @@ export interface PlanTasksContext {
   readonly agents: readonly { name: string; capabilities: readonly string[] }[];
   readonly model?: string;
   readonly signal?: AbortSignal;
-}
-
-export function buildPlanTasksActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'plan_tasks',
-    description: PLAN_TASKS_DESCRIPTION,
-    inputSchema: planTasksInputSchema,
-  };
 }
 
 export async function dispatchPlanTasks(

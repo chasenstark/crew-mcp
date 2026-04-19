@@ -10,14 +10,12 @@ export {
   waitForUserResponse,
   AskUserAbortError,
   askUserInputSchema,
-  buildAskUserActionEntry,
   ASK_USER_DESCRIPTION,
   type AskUserInput,
   type AskUserResult,
   type DispatchAskUserArgs,
 } from './ask-user.js';
 export {
-  buildRunAgentActionEntry,
   planRunAgent,
   runAgentInputSchema,
   RUN_AGENT_DESCRIPTION,
@@ -28,7 +26,6 @@ export {
   type RunAgentHandlerContext,
 } from './run-agent.js';
 export {
-  buildListAgentsActionEntry,
   listAgents,
   listAgentsInputSchema,
   LIST_AGENTS_DESCRIPTION,
@@ -38,7 +35,6 @@ export {
   type ListAgentsOutput,
 } from './list-agents.js';
 export {
-  buildMessageUserActionEntry,
   dispatchMessageUser,
   messageUserInputSchema,
   MESSAGE_USER_DESCRIPTION,
@@ -46,7 +42,6 @@ export {
   type MessageUserResult,
 } from './message-user.js';
 export {
-  buildFinishActionEntry,
   dispatchFinish,
   finishInputSchema,
   FINISH_DESCRIPTION,
@@ -54,7 +49,6 @@ export {
   type FinishResult,
 } from './finish.js';
 export {
-  buildPlanTasksActionEntry,
   dispatchPlanTasks,
   planTasksInputSchema,
   PLAN_TASKS_DESCRIPTION,
@@ -62,7 +56,6 @@ export {
   type PlanTasksContext,
 } from './plan-tasks.js';
 export {
-  buildAnalyzeOutputActionEntry,
   dispatchAnalyzeOutput,
   analyzeOutputInputSchema,
   ANALYZE_OUTPUT_DESCRIPTION,
@@ -70,7 +63,6 @@ export {
   type AnalyzeOutputContext,
 } from './analyze-output.js';
 export {
-  buildCompressContextActionEntry,
   dispatchCompressContext,
   compressContextInputSchema,
   COMPRESS_CONTEXT_DESCRIPTION,

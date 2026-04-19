@@ -12,7 +12,6 @@
  */
 
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter } from '../../adapters/types.js';
 
@@ -62,14 +61,6 @@ export interface ListAgentsContext {
     remainingTokens?: number;
     resetAt?: string;
   } | undefined>;
-}
-
-export function buildListAgentsActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'list_agents',
-    description: LIST_AGENTS_DESCRIPTION,
-    inputSchema: listAgentsInputSchema,
-  };
 }
 
 /**

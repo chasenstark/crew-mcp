@@ -10,7 +10,6 @@
  */
 
 import { z } from 'zod';
-import type { ActionCatalogEntry } from '../action-server.js';
 import type { CaptainSession } from '../session.js';
 
 export const messageUserInputSchema = z.object({
@@ -25,14 +24,6 @@ export const MESSAGE_USER_DESCRIPTION =
 export interface MessageUserResult {
   readonly status: 'sent';
   readonly timestamp: string;
-}
-
-export function buildMessageUserActionEntry(): ActionCatalogEntry {
-  return {
-    name: 'message_user',
-    description: MESSAGE_USER_DESCRIPTION,
-    inputSchema: messageUserInputSchema,
-  };
 }
 
 export function dispatchMessageUser(
