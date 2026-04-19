@@ -261,6 +261,51 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
     ).toBe(true);
   });
 
+  it("'m3-tools' does not invoke validateDecision / computeDeterministicFallback (M3-10c)", async () => {
+    // This is a behavioral invariant: the M3 path goes directly through
+    // handleM3ToolCallFromAdapter. Legacy 11-verb budgets
+    // (maxDeterministicFallbacks, etc.) are dead on this path — each
+    // tool's zod schema is the only gate.
+    let validateDecisionCalls = 0;
+    const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
+      // Call run_agent multiple times in a single adapter turn. In the old
+      // flow, the controller's validateDecision + deterministic-fallback
+      // logic would have gated these; on the M3 path they pass straight
+      // through to the scheduler.
+      for (let i = 0; i < 3; i++) {
+        await onToolCall({
+          name: 'mcp__crew__run_agent',
+          input: { agent_id: 'codex', prompt: `task ${i + 1}` },
+        });
+      }
+      await onToolCall({
+        name: 'mcp__crew__finish',
+        input: { summary: 'all queued' },
+      });
+      return { status: 'completed', transcript: [] };
+    });
+    const codex = makeSubagent('codex');
+    const session = CaptainSession.create({ projectRoot });
+    session.appendUserMessage('triple');
+    const dispatcher = new ToolDispatcher();
+    const runner = new JudgmentRunner(
+      captain,
+      makeRegistry([captain, codex]),
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher, toolSurface: 'm3-tools' },
+    );
+    const report = await runner.run('triple');
+    expect(report).toBe('all queued');
+    expect(validateDecisionCalls).toBe(0);
+    // Three run_agent tool_calls were recorded, all dispatched.
+    const runAgentCalls = session.getMessages().filter(
+      (m) => m.role === 'tool_call' && m.toolName === 'run_agent',
+    );
+    expect(runAgentCalls).toHaveLength(3);
+  });
+
   it("getToolSchemaHash is stable for two identical 'm3-tools' constructions", () => {
     const captain = makeCaptain(async () => ({ status: 'completed', transcript: [] }));
     const session = CaptainSession.create({ projectRoot });

@@ -2134,6 +2134,21 @@ ${JSON.stringify(historyTail, null, 2)}
 Return valid JSON matching the schema.`;
   }
 
+  /**
+   * @deprecated M3-10c: validateDecision + computeDeterministicFallback
+   * are legacy 11-verb controller plumbing. The M3 path
+   * (buildM3SessionLoopPair) does not call either — native tool calls go
+   * directly through handleM3ToolCallFromAdapter + the scheduler, with
+   * input validation delegated to each tool's zod schema. These survive
+   * only while `toolSurface: 'legacy'` tests run; a follow-up deletes
+   * both, along with buildActionRegistry. Budget-exceeded paths on the
+   * legacy side still throw; on the M3 side, SessionLoop's `maxTurns`
+   * is the only active budget, and overflow throws from the loop itself.
+   *
+   * M4 introduces a warnings-on-tool-result-metadata path so budget
+   * exceedance surfaces to the captain as advisory rather than fatal —
+   * tracked on the plan's §5 Open Q list, deferred past this milestone.
+   */
   private validateDecision(
     decision: ControllerDecision,
     runtime: RuntimeState,
