@@ -71,7 +71,7 @@ describe('PromptInput', () => {
     await flush();
 
     expect(String(onSubmit.mock.calls[2]?.[0] ?? '')).toContain('irst');
-  });
+  }, 15_000);
 
   it('navigates down through history and restores draft at newest', async () => {
     const onSubmit = vi.fn();

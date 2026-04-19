@@ -42,6 +42,14 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
   // at any time, so the PromptInput is never disabled.
   const [inFlightToolCalls, setInFlightToolCalls] = useState<Map<string, InFlightToolCall>>(new Map());
 
+  // `runnerActive` tracks whether pipeline.run() is currently executing — i.e.,
+  // whether the session-loop is consuming events. Decoupled from session
+  // message count: a persisted session has messages but no live loop. The
+  // first submit in a UI mount always kicks off pipeline.run so the loop
+  // has a driver; subsequent submits during an active run just append user
+  // messages and let the loop pick them up.
+  const [runnerActive, setRunnerActive] = useState(false);
+
   // Legacy fallback: when session+dispatcher aren't provided (e.g., linear Pipeline
   // tests), preserve the slot-based behavior via emitter events so the old test
   // suite keeps compiling until pipeline.ts dies in M3.
@@ -113,6 +121,7 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
     pipeline.on('report', (message) => {
       addMessage('assistant', message);
       setCurrentStep(null);
+      setRunnerActive(false);
       if (legacyMode) {
         setLegacyIsRunning(false);
         setLegacyWaitingForInput(false);
@@ -130,6 +139,7 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
     pipeline.on('error', (error) => {
       addMessage('system', `Error: ${error.message}`);
       setCurrentStep(null);
+      setRunnerActive(false);
       if (legacyMode) {
         setLegacyIsRunning(false);
         setLegacyWaitingForInput(false);
@@ -272,27 +282,30 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
         return;
       }
 
-      // M1.5 path: emit a user_message session event. If the session is idle
-      // (no captain turn running and no pending work), the runner's internal
-      // loop will react — but the first-run case also needs an explicit
-      // pipeline.run() kick-off since the session-loop isn't running yet
-      // until the runner has started.
+      // M1.5 path: emit a user_message session event. If the runner is
+      // already active (pipeline.run in flight), the session-loop picks up
+      // the event automatically. Otherwise we need to kick off pipeline.run —
+      // this covers both cold-start (fresh session) and continuation (a
+      // persisted session whose prior pipeline.run already completed).
       addMessage('user', input);
-      const hasActiveMessages = session!.getMessages().length > 0;
-      if (!hasActiveMessages) {
-        // Cold-start: kick off the runner. The initial user_message is the
-        // appended-first event; the session-loop picks it up.
+      if (runnerActive) {
+        // Session-loop is live; just append. It'll see the event and
+        // schedule a fresh captain turn.
         session!.appendUserMessage(input);
-        pipeline.run(input).catch((err) => {
-          addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      } else {
-        // Session is already active; just append. The running session-loop
-        // will see the event and schedule a fresh captain turn.
-        session!.appendUserMessage(input);
+        return;
       }
+      // Start a new workflow run. The runner will seed the session with the
+      // user_message if it's empty; if it's a continuation, we append first
+      // so the incoming user message is preserved even if the runner's
+      // seed-guard skips.
+      session!.appendUserMessage(input);
+      setRunnerActive(true);
+      pipeline.run(input).catch((err) => {
+        addMessage('system', `Pipeline error: ${err instanceof Error ? err.message : String(err)}`);
+        setRunnerActive(false);
+      });
     },
-    [pipeline, session, dispatcher, addMessage, finalizeStream, legacyMode, legacyIsRunning, legacyWaitingForInput, sessionBusy],
+    [pipeline, session, dispatcher, addMessage, finalizeStream, legacyMode, legacyIsRunning, legacyWaitingForInput, sessionBusy, runnerActive],
   );
 
   useEffect(() => {

@@ -138,6 +138,50 @@ describe('App (M1.5 post-rewrite)', () => {
     expect(userMessages.length).toBe(2);
   });
 
+  it('boots pipeline.run on submit when session is persisted (B3 regression)', async () => {
+    const { runner, fake, emitter } = createFakeRunner();
+    // Seed a persisted session: messages + a completed report.
+    session.appendUserMessage('prior', '2026-04-19T00:00:00.000Z');
+    session.appendAssistantMessage('prior report', '2026-04-19T00:00:01.000Z');
+    session.persist();
+
+    renderApp(<App pipeline={runner} session={session} dispatcher={dispatcher} />);
+    await flush();
+    // A persisted session has messages but runner isn't active. Submitting
+    // MUST call pipeline.run so the session-loop boots.
+    submit('next request');
+    await flush();
+    expect(fake.run).toHaveBeenCalledWith('next request');
+
+    // Simulate workflow completing.
+    emitter.emit('report', 'final');
+    await flush();
+
+    // Another submit after the workflow done should boot pipeline.run again.
+    submit('and another');
+    await flush();
+    expect(fake.run).toHaveBeenCalledTimes(2);
+    expect(fake.run).toHaveBeenLastCalledWith('and another');
+  });
+
+  it('does not re-boot pipeline.run during active session (second submit just appends)', async () => {
+    const { runner, fake } = createFakeRunner();
+    renderApp(<App pipeline={runner} session={session} dispatcher={dispatcher} />);
+    await flush();
+    submit('initial');
+    await flush();
+    expect(fake.run).toHaveBeenCalledTimes(1);
+
+    // While runnerActive = true, subsequent submits just append.
+    submit('intermediate');
+    submit('another intermediate');
+    await flush();
+    expect(fake.run).toHaveBeenCalledTimes(1);
+    // All three user messages are in the session.
+    const users = session.getMessages().filter((m) => m.role === 'user');
+    expect(users.length).toBe(3);
+  });
+
   it('PromptInput is never disabled even while tool calls are in flight', async () => {
     const { runner } = createFakeRunner();
     renderApp(<App pipeline={runner} session={session} dispatcher={dispatcher} />);
