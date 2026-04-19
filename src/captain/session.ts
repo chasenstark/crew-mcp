@@ -115,6 +115,35 @@ export class CaptainSession {
     return this._toolSchemaHash;
   }
 
+  /**
+   * Re-probe the CLI version and update the cached tag. Used as the one-turn
+   * self-heal after an adapter reports a resume rejection: a prior turn's
+   * cliVersionTag read may be stale (e.g., user upgraded the CLI between
+   * turns), so we re-probe before the replay turn.
+   *
+   * getCliVersionTag() calls are expensive (Finding 12), so the session
+   * caches the value and only re-probes on explicit request. If the fetched
+   * value differs from the cached one, providerSessionRef is invalidated.
+   *
+   * Returns the fresh tag (or undefined if the adapter cannot determine it).
+   */
+  async refreshCliVersionTag(
+    fetcher: () => Promise<string | undefined>,
+  ): Promise<string | undefined> {
+    let fresh: string | undefined;
+    try {
+      fresh = await fetcher();
+    } catch (err: unknown) {
+      logger.warn('[captain-session] refreshCliVersionTag: fetcher threw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return this._cliVersionTag;
+    }
+    if (fresh === undefined) return this._cliVersionTag;
+    this.updateEnvironmentFingerprint({ cliVersionTag: fresh });
+    return fresh;
+  }
+
   updateEnvironmentFingerprint(args: {
     cliVersionTag?: string;
     toolSchemaHash?: string;

@@ -204,4 +204,83 @@ describe('CaptainSession', () => {
     const reloaded = CaptainSession.load({ projectRoot: root });
     expect(reloaded?.getMessages().length).toBe(1);
   });
+
+  describe('refreshCliVersionTag (M1.5-8 self-heal)', () => {
+    it('returns fresh value and invalidates providerSessionRef on drift', async () => {
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      s.providerSessionRef = 'sess-1';
+      let probes = 0;
+      const fetch = async (): Promise<string> => {
+        probes++;
+        return 'claude-code@2.0.0';
+      };
+
+      const fresh = await s.refreshCliVersionTag(fetch);
+      expect(fresh).toBe('claude-code@2.0.0');
+      expect(s.cliVersionTag).toBe('claude-code@2.0.0');
+      expect(s.providerSessionRef).toBeUndefined();
+      expect(probes).toBe(1);
+    });
+
+    it('preserves providerSessionRef when version is unchanged', async () => {
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      s.providerSessionRef = 'sess-1';
+      const fresh = await s.refreshCliVersionTag(async () => 'claude-code@1.0.0');
+      expect(fresh).toBe('claude-code@1.0.0');
+      expect(s.providerSessionRef).toBe('sess-1');
+    });
+
+    it('is safe to call exactly once per resume rejection (one-turn self-heal)', async () => {
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      s.providerSessionRef = 'sess-1';
+      let probes = 0;
+      const fetch = async (): Promise<string> => {
+        probes++;
+        return 'claude-code@2.0.0';
+      };
+
+      // First rejection: re-probe, drop ref, proceed to replay.
+      await s.refreshCliVersionTag(fetch);
+      expect(probes).toBe(1);
+      expect(s.providerSessionRef).toBeUndefined();
+
+      // Post-replay, a second rejection would re-probe again — the cache is
+      // fresh, so providerSessionRef would STILL be undefined from the replay
+      // turn's own write. This test just confirms the method is re-entrant.
+      await s.refreshCliVersionTag(fetch);
+      expect(probes).toBe(2);
+    });
+
+    it('returns the cached value if fetcher returns undefined', async () => {
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      const fresh = await s.refreshCliVersionTag(async () => undefined);
+      expect(fresh).toBe('claude-code@1.0.0');
+    });
+
+    it('returns the cached value when the fetcher throws', async () => {
+      const s = CaptainSession.create({
+        projectRoot: root,
+        cliVersionTag: 'claude-code@1.0.0',
+      });
+      s.providerSessionRef = 'sess-1';
+      const fresh = await s.refreshCliVersionTag(async () => {
+        throw new Error('detection failed');
+      });
+      expect(fresh).toBe('claude-code@1.0.0');
+      // ref should still be intact since we didn't actually learn of a change
+      expect(s.providerSessionRef).toBe('sess-1');
+    });
+  });
 });
