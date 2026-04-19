@@ -190,6 +190,10 @@ export class SessionLoop {
   cancel(reason = 'session-loop cancelled'): void {
     if (this.cancelled) return;
     this.cancelled = true;
+    // S5: the loop owns dispatcher lifecycle. Runner.cancel just aborts its
+    // own AbortController (externalSignal to the loop); the loop's abort
+    // handler calls cancel(), and cancel() is what cancels the dispatcher.
+    // Single owner = no double-cancel, clear responsibility line.
     this.dispatcher.cancelAll(reason);
     this.currentTurnAbort?.abort(reason);
     this.exitResolver();

@@ -254,15 +254,15 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   /**
-   * Override RunnerBase.cancel() so session-kill also aborts any in-flight
-   * dispatcher tasks (M1.5-9 requirement). The order matters: cancel
-   * dispatcher tasks FIRST so their worktrees can clean up before the
-   * runner's own AbortController fires and yanks the process.
+   * Override RunnerBase.cancel() to abort our activeAbortController. When
+   * the session-loop is active, that signal is the loop's externalSignal —
+   * the loop's abort handler calls loop.cancel() which owns
+   * dispatcher.cancelAll + currentTurn abort. Single-owner cascade (S5).
+   *
+   * For the legacy path (no session-loop), the native-loop consumes the
+   * AbortController signal directly; dispatcher is typically absent.
    */
   override cancel(reason = 'Cancelled by user'): void {
-    if (this.dispatcher) {
-      this.dispatcher.cancelAll(reason);
-    }
     super.cancel(reason);
   }
 
