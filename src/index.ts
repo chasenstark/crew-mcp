@@ -2,7 +2,6 @@ import { program } from 'commander';
 import { runCommand } from './cli/commands/run.js';
 import { statusCommand } from './cli/commands/status.js';
 import { initCommand } from './cli/commands/init.js';
-import { resumeCommand } from './cli/commands/resume.js';
 import { registerConfigCommand } from './cli/commands/config.js';
 import { stateResetCommand } from './cli/commands/state-reset.js';
 import { setLogLevel } from './utils/logger.js';
@@ -40,20 +39,10 @@ program
     await initCommand({ project: opts.project });
   });
 
-program
-  .command('resume')
-  .description('Resume an interrupted workflow')
-  .option('--on-ask-user <policy>', 'Behavior when human input is required during resume: fail or prompt')
-  .option('--skip-preflight', 'Skip adapter readiness/authentication checks before resuming')
-  .action(async (opts: { onAskUser?: string; skipPreflight?: boolean }) => {
-    if (program.opts<{ debug?: boolean }>().debug) {
-      setLogLevel('debug');
-    }
-    await resumeCommand({
-      onAskUser: opts.onAskUser,
-      skipPreflight: opts.skipPreflight,
-    });
-  });
+// M3-12: `crew resume` is removed. The captain session is durable; run
+// auto-continues any prior conversation so a separate entry point is
+// unnecessary. A stale invocation now falls through to commander's
+// "unknown command" help.
 
 program
   .command('status')
