@@ -367,4 +367,71 @@ describe('CaptainSession', () => {
       expect(s.providerSessionRef).toBe('sess-1');
     });
   });
+
+  describe('messagesSinceToolCall (M4-2)', () => {
+    it('returns Number.MAX_SAFE_INTEGER for an empty log', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      expect(s.messagesSinceToolCall('compress_context')).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    it('returns MAX_SAFE_INTEGER when the tool has never been called', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      s.appendUserMessage('hi');
+      s.appendToolCall({ toolCallId: 'a', toolName: 'run_agent', input: {} });
+      expect(s.messagesSinceToolCall('compress_context')).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    it('returns 0 when the last message IS the target tool call', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      s.appendUserMessage('hi');
+      s.appendToolCall({ toolCallId: 'a', toolName: 'compress_context', input: {} });
+      expect(s.messagesSinceToolCall('compress_context')).toBe(0);
+    });
+
+    it('counts intervening messages since the most recent call', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      s.appendToolCall({ toolCallId: 'c', toolName: 'compress_context', input: {} });
+      s.appendToolResult({ toolCallId: 'c', output: 'ok', status: 'success' });
+      s.appendUserMessage('follow up');
+      s.appendAssistantMessage('sure');
+      // 3 entries after the tool_call
+      expect(s.messagesSinceToolCall('compress_context')).toBe(3);
+    });
+
+    it('re-scans on load (no persisted state)', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      s.appendToolCall({ toolCallId: 'c', toolName: 'compress_context', input: {} });
+      s.appendUserMessage('later');
+      s.persist();
+
+      const loaded = CaptainSession.load({ projectRoot: root })!;
+      expect(loaded.messagesSinceToolCall('compress_context')).toBe(1);
+    });
+
+    it('invalidates the cache when a new message is appended', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      s.appendUserMessage('first');
+      expect(s.messagesSinceToolCall('compress_context')).toBe(Number.MAX_SAFE_INTEGER);
+      // Appending the target tool call flips the value — if the cache wasn't
+      // invalidated, this would still report MAX_SAFE_INTEGER.
+      s.appendToolCall({ toolCallId: 'c', toolName: 'compress_context', input: {} });
+      expect(s.messagesSinceToolCall('compress_context')).toBe(0);
+    });
+  });
+
+  describe('approximateMessageLogBytes (M4-2)', () => {
+    it('returns 0 for an empty log', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      expect(s.approximateMessageLogBytes()).toBe(0);
+    });
+
+    it('scales linearly with appended content', () => {
+      const s = CaptainSession.create({ projectRoot: root });
+      s.appendUserMessage('short');
+      const small = s.approximateMessageLogBytes();
+      s.appendUserMessage('x'.repeat(10_000));
+      const large = s.approximateMessageLogBytes();
+      expect(large).toBeGreaterThan(small + 10_000);
+    });
+  });
 });

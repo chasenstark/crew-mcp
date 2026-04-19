@@ -48,6 +48,11 @@ export class CaptainSession {
   // where two events fired between await-points would orphan the second one.
   private eventSubscriptions = new Set<EventSubscription>();
   private liveEventListeners: Set<(event: SessionEvent) => void> = new Set();
+  // Cache for messagesSinceToolCall — invalidated on every append so the
+  // advisory computation runs O(1) on steady-state and O(n) once per-append.
+  // Per-toolName; keys clear wholesale on mutation rather than selectively
+  // because a new tool_call message could be the target tool.
+  private sinceToolCallCache = new Map<string, number>();
 
   private constructor(init: {
     projectRoot: string;
@@ -183,11 +188,13 @@ export class CaptainSession {
 
   appendMessage(message: SessionMessage): void {
     this.messages.push(message);
+    this.sinceToolCallCache.clear();
   }
 
   appendUserMessage(text: string, timestamp = new Date().toISOString()): SessionUserMessage {
     const message: SessionUserMessage = { role: 'user', text, timestamp };
     this.messages.push(message);
+    this.sinceToolCallCache.clear();
     this.emitEvent({ kind: 'user_message', text, ts: timestamp });
     return message;
   }
@@ -195,6 +202,7 @@ export class CaptainSession {
   appendAssistantMessage(text: string, timestamp = new Date().toISOString()): SessionAssistantMessage {
     const message: SessionAssistantMessage = { role: 'assistant', text, timestamp };
     this.messages.push(message);
+    this.sinceToolCallCache.clear();
     return message;
   }
 
@@ -212,6 +220,7 @@ export class CaptainSession {
       timestamp: call.timestamp ?? new Date().toISOString(),
     };
     this.messages.push(message);
+    this.sinceToolCallCache.clear();
     return message;
   }
 
@@ -230,6 +239,7 @@ export class CaptainSession {
       timestamp: ts,
     };
     this.messages.push(message);
+    this.sinceToolCallCache.clear();
 
     if (result.status === 'success') {
       this.emitEvent({
@@ -331,6 +341,47 @@ export class CaptainSession {
     if (this.messages.length === 0) return false;
     const last = this.messages[this.messages.length - 1];
     return last.role === 'user' || last.role === 'tool_result';
+  }
+
+  /**
+   * Distance (in message-log entries) since the most recent `tool_call`
+   * message for `toolName`. Returns `Number.MAX_SAFE_INTEGER` when the tool
+   * has never been called — an unambiguous "far in the past" sentinel that
+   * threshold comparisons (`distance >= 15`) treat as always-true.
+   *
+   * Scan-on-demand (no persisted index): backward scan once per call, cached
+   * until the next append. The cache is invalidated wholesale on any append
+   * since a fresh `tool_call` for the target tool would flip the result.
+   * This keeps `session.json` schema stable across M4 — the advisory is
+   * purely a runtime consideration (Finding: M4-2 persistence).
+   */
+  messagesSinceToolCall(toolName: string): number {
+    const cached = this.sinceToolCallCache.get(toolName);
+    if (cached !== undefined) return cached;
+    let distance = Number.MAX_SAFE_INTEGER;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role === 'tool_call' && m.toolName === toolName) {
+        distance = this.messages.length - 1 - i;
+        break;
+      }
+    }
+    this.sinceToolCallCache.set(toolName, distance);
+    return distance;
+  }
+
+  /**
+   * Approximate serialized size of the in-memory message log, in bytes. Uses
+   * JSON.stringify of each message as a proxy for the persisted session.json
+   * size. Callers (M4-2 compression advisory) use this as an upper-bound
+   * cheap proxy; not suitable for tight budgeting.
+   */
+  approximateMessageLogBytes(): number {
+    let total = 0;
+    for (const m of this.messages) {
+      total += JSON.stringify(m).length;
+    }
+    return total;
   }
 
   /**

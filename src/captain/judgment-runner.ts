@@ -55,6 +55,7 @@ import { resolveCaptainConverter } from './mcp-registration.js';
 import type { WorkflowConfig, PresetConfig } from '../workflow/types.js';
 import {
   SessionLoop,
+  shouldAdviseCompression,
   type SessionLoopTurn,
   type SessionLoopToolCall,
   type ToolCallScheduler,
@@ -1670,6 +1671,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
               : t.name,
             description: t.description,
           })),
+          advisory: this.session ? shouldAdviseCompression(this.session) : undefined,
         });
 
         // Seed messages with the system prompt in front. The existing session

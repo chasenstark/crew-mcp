@@ -29,6 +29,42 @@ import type { ToolDispatcher, DispatchTask } from './tool-dispatcher.js';
 import type { ToolLoopMessage } from '../adapters/types.js';
 import { logger } from '../utils/logger.js';
 
+// M4 tunable — kept as module-level constants so M5 presets can thread a
+// per-preset override through without a schema bump.
+const COMPRESSION_ADVISORY_TURN_THRESHOLD = 15;
+const COMPRESSION_ADVISORY_BYTES_THRESHOLD = 100 * 1024;
+
+/**
+ * Compute the one-line advisory (if any) that the captain-turn builder
+ * should append to the system prompt's guardrails. Fires when the session
+ * has accumulated material — measured by turns since the last
+ * `compress_context` call AND by the approximate message-log size in bytes.
+ * Returns `undefined` when no advisory is needed so callers can skip the
+ * string entirely.
+ *
+ * Two thresholds, both satisfied → advisory. Either one alone is ignored:
+ * a short session with a few large tool_results doesn't need compression,
+ * and a long session that just compressed also doesn't. The advisory is
+ * cost-free text (prompt material, not tool-schema), so there's no risk of
+ * invalidating `providerSessionRef`.
+ */
+export function shouldAdviseCompression(session: CaptainSession): string | undefined {
+  const since = session.messagesSinceToolCall('compress_context');
+  const bytes = session.approximateMessageLogBytes();
+  if (
+    since < COMPRESSION_ADVISORY_TURN_THRESHOLD ||
+    bytes < COMPRESSION_ADVISORY_BYTES_THRESHOLD
+  ) {
+    return undefined;
+  }
+  const sinceLabel = since === Number.MAX_SAFE_INTEGER ? 'never' : `${since} messages`;
+  const kb = Math.round(bytes / 1024);
+  return (
+    `Session is getting long (compress_context last called: ${sinceLabel}; ~${kb} KB of history). ` +
+    'Consider calling `compress_context` on your most recent analyzed output before the next subagent dispatch.'
+  );
+}
+
 export interface SessionLoopToolCall {
   toolCallId: string;
   toolName: string;
