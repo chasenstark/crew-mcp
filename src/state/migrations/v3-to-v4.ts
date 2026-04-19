@@ -1,7 +1,10 @@
 import type { WorkflowState } from '../types.js';
 import { logger } from '../../utils/logger.js';
 
-export const CURRENT_STATE_SCHEMA_VERSION = 4;
+// CURRENT_STATE_SCHEMA_VERSION now lives in v4-to-v5.ts — v5 is the target
+// for fresh writes post-M3-11. The v4 tag is still a valid intermediate
+// shape produced by this migrator when called from store.loadState().
+export const V4_SCHEMA_VERSION = 4;
 
 /**
  * Migrates a raw state blob read from disk up to the current schema version.
@@ -20,17 +23,25 @@ export function migrateStateToV4(raw: unknown): WorkflowState | null {
   const state = raw as Partial<WorkflowState> & Record<string, unknown>;
   const version = typeof state.schemaVersion === 'number' ? state.schemaVersion : undefined;
 
-  if (version === CURRENT_STATE_SCHEMA_VERSION) {
+  if (version === V4_SCHEMA_VERSION) {
+    return state as WorkflowState;
+  }
+
+  // Let v5+ pass through untouched — the caller (store.loadState) chains
+  // this migrator with migrateStateToV5, so a fresh v5 state should not be
+  // downgraded to v4. Unknown higher versions are surfaced via the v5
+  // migrator's own "refuse to load" branch.
+  if (typeof version === 'number' && version > V4_SCHEMA_VERSION) {
     return state as WorkflowState;
   }
 
   if (version === undefined || version <= 3) {
-    logger.info(
-      `[state] upgrading workflow state from schemaVersion ${version ?? 'unversioned'} to ${CURRENT_STATE_SCHEMA_VERSION}`,
+    logger.debug(
+      `[state] upgrading workflow state from schemaVersion ${version ?? 'unversioned'} to ${V4_SCHEMA_VERSION}`,
     );
     return {
       ...(state as WorkflowState),
-      schemaVersion: CURRENT_STATE_SCHEMA_VERSION,
+      schemaVersion: V4_SCHEMA_VERSION,
     };
   }
 

@@ -2,8 +2,15 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } 
 import { join } from 'path';
 import type { WorkflowState, PassSummary } from './types.js';
 import { atomicWrite } from '../utils/atomic-write.js';
-import { CURRENT_STATE_SCHEMA_VERSION, migrateStateToV4 } from './migrations/v3-to-v4.js';
+import { migrateStateToV4 } from './migrations/v3-to-v4.js';
+import {
+  CURRENT_STATE_SCHEMA_VERSION,
+  migrateStateToV5,
+  LegacyExecutionModeError,
+} from './migrations/v4-to-v5.js';
 import { logger } from '../utils/logger.js';
+
+export { LegacyExecutionModeError };
 
 export class StateStore {
   private basePath: string;
@@ -37,7 +44,11 @@ export class StateStore {
     } catch {
       return null;
     }
-    return migrateStateToV4(raw);
+    // Chain v3→v4→v5. migrateStateToV4 tags v3/unversioned as v4; v5 drops
+    // the nine runtime-scratch fields and rejects legacy linear mode.
+    const v4 = migrateStateToV4(raw);
+    if (v4 === null) return null;
+    return migrateStateToV5(v4);
   }
 
   private renameLegacyConversationFile(): void {

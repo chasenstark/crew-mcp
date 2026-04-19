@@ -321,10 +321,11 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   async resume({ workflowState, previousSummaries }: ResumeParams): Promise<string> {
-    if ((workflowState.executionMode ?? 'linear') !== 'judgment') {
-      throw new Error('Cannot resume a linear-mode run with JudgmentRunner.');
-    }
-
+    // M3-11: linear-mode gating moved to the v4→v5 migration reader, which
+    // throws LegacyExecutionModeError before this method is reached. The
+    // reader's error is the single user-facing recovery path (see
+    // migrations/v4-to-v5.ts). `resume()` itself is deprecated —
+    // `crew resume` is removed in M3-12; `crew run` is the single entry.
     const runId = workflowState.runId ?? this.createRunId(workflowState.startedAt);
     const startedAt = workflowState.startedAt ?? new Date().toISOString();
     const providerSession = await this.resolveResumeProviderSession(workflowState.providerSession);
@@ -1069,23 +1070,21 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   private toWorkflowState(runtime: RuntimeState): WorkflowState {
+    // v5-shaped snapshot (M3-11). The nine runtime-scratch fields removed
+    // in v5 — executionMode, toolCallTranscript, actionHistory,
+    // controllerCursor, nativeToolCalls, artifactsByTask, taskStates,
+    // pendingQueue, providerSession — are NOT written. Legacy-mode test
+    // fixtures under `toolSurface: 'legacy'` still populate runtime with
+    // these fields internally; they just don't persist. store.saveState
+    // stamps schemaVersion to the current version (5) on write.
     return {
-      schemaVersion: 4,
-      executionMode: 'judgment',
+      schemaVersion: 5,
       runId: runtime.runId,
       status: 'running',
       userRequest: runtime.userRequest,
       decomposition: runtime.decomposition,
       currentTaskIndex: this.computeCurrentTaskIndex(runtime),
       passes: runtime.passRecords,
-      taskStates: runtime.taskStates,
-      pendingQueue: runtime.pendingQueue,
-      artifactsByTask: runtime.artifactsByTask,
-      actionHistory: runtime.actionHistory,
-      controllerCursor: runtime.controllerCursor,
-      toolCallTranscript: runtime.toolCallTranscript,
-      nativeToolCalls: runtime.nativeToolCalls,
-      providerSession: runtime.providerSession,
       startedAt: runtime.startedAt,
     };
   }

@@ -103,25 +103,35 @@ export type SessionMessage =
 
 export interface WorkflowState {
   schemaVersion?: number;
-  executionMode?: 'linear' | 'judgment';
   runId?: string;
   status: 'running' | 'interrupted' | 'completed' | 'failed';
   userRequest: string;
   decomposition: DecomposeOutputRef;
   currentTaskIndex: number;
   passes: PassRecord[];
-  taskStates?: Record<string, TaskLifecycleState>;
-  pendingQueue?: string[];
-  artifactsByTask?: Record<string, TaskArtifacts>;
-  actionHistory?: ActionRecord[];
-  controllerCursor?: number;
-  toolCallTranscript?: ToolTranscriptMessage[];
-  nativeToolCalls?: number;
-  providerSession?: ProviderSession;
   startedAt?: string;
   completedAt?: string;
   interruptedAt?: string;
   lastError?: string;
+  /**
+   * M3-11 dropped (do not use on new writes; still typed optional so
+   * legacy readers compile while the migration reader strips them):
+   *   executionMode, toolCallTranscript, actionHistory, controllerCursor,
+   *   nativeToolCalls, artifactsByTask, taskStates, pendingQueue,
+   *   providerSession.
+   * Kept in the type declaration for the `toWorkflowState` and
+   * `migrateStateToV5` call sites that still reference them during
+   * transition.
+   */
+  executionMode?: 'linear' | 'judgment';
+  toolCallTranscript?: ToolTranscriptMessage[];
+  actionHistory?: ActionRecord[];
+  controllerCursor?: number;
+  nativeToolCalls?: number;
+  artifactsByTask?: Record<string, TaskArtifacts>;
+  taskStates?: Record<string, TaskLifecycleState>;
+  pendingQueue?: string[];
+  providerSession?: ProviderSession;
 }
 
 export interface PassRecord {
