@@ -119,6 +119,17 @@ describe('gemini parser (0.20+ stream-json + -o json)', () => {
       expect(extractStreamJsonAssistantText(events)).toBe('17');
     });
 
+    it('also strips the deprecation notice when it is streamed as a sequence of deltas', () => {
+      const events: GeminiEvent[] = [
+        { type: 'init', session_id: 's' },
+        { type: 'message', role: 'assistant', delta: 'The --prompt (-p) flag ' },
+        { type: 'message', role: 'assistant', delta: 'has been deprecated.' },
+        { type: 'message', role: 'assistant', delta: ' 17' },
+        { type: 'result' },
+      ];
+      expect(extractStreamJsonAssistantText(events)).toBe('17');
+    });
+
     it('skips user-role messages', () => {
       const events: GeminiEvent[] = [
         { type: 'message', role: 'user', content: 'should not appear' },

@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { AdapterId, AgentId } from '../../src/workflow/agents.js';
-import { getDefaultConfig } from '../../src/workflow/config-codec.js';
+import { getDefaultConfig, resolveCaptainModel } from '../../src/workflow/config-codec.js';
 import { ModelId } from '../../src/workflow/models.js';
 import { loadConfigByScope } from '../../src/workflow/config-repository.js';
 import {
@@ -327,7 +327,7 @@ describe('config-service', () => {
 
     const profileConfig = loadConfigByScope('project', cwd, { profile: 'codex-first' });
     expect(profileConfig?.captain.cli).toBe('codex');
-    expect(profileConfig?.captain.model).toBe(ModelId.GPT_CODEX);
+    expect(resolveCaptainModel(profileConfig!.captain)).toBe(ModelId.GPT_CODEX);
 
     const defaultConfig = loadConfigByScope('project', cwd);
     expect(defaultConfig).toBeNull();
@@ -341,6 +341,6 @@ describe('config-service', () => {
 
     const activeProfileConfig = loadConfigByScope('project', cwd, { profile: 'claude-first' });
     expect(activeProfileConfig?.captain.cli).toBe('codex');
-    expect(activeProfileConfig?.captain.model).toBe(ModelId.GPT_CODEX);
+    expect(resolveCaptainModel(activeProfileConfig!.captain)).toBe(ModelId.GPT_CODEX);
   });
 });

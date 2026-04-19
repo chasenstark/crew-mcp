@@ -151,7 +151,17 @@ function normalizeIncompatibleModels(config: FullConfig): void {
   const captainAdapterType = resolveCaptainAdapterType(config);
   const resolvedCaptainModel = resolveCaptainModel(config.captain);
   if (!isModelCompatibleWithAdapter(captainAdapterType, resolvedCaptainModel)) {
-    config.captain.model = firstCompatibleModel(captainAdapterType);
+    const replacement = firstCompatibleModel(captainAdapterType);
+    const current = config.captain.model;
+    if (current && typeof current === 'object') {
+      // Preserve the map shape; only overwrite the current CLI's entry.
+      const key = config.captain.cli as keyof typeof current;
+      config.captain.model = replacement === undefined
+        ? { ...current, [key]: undefined }
+        : { ...current, [key]: replacement };
+    } else {
+      config.captain.model = replacement;
+    }
   }
 
   const normalizedCaptainModel = resolveCaptainModel(config.captain);

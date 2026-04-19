@@ -12,6 +12,7 @@ import {
   configShowCommand,
 } from '../../../src/cli/commands/config.js';
 import { loadConfigByScope, readActiveScopePreference } from '../../../src/workflow/config-repository.js';
+import { resolveCaptainModel } from '../../../src/workflow/config-codec.js';
 import { ModelId } from '../../../src/workflow/models.js';
 
 vi.mock('os', async (importOriginal) => {
@@ -60,7 +61,7 @@ describe('config command handlers', () => {
   it('supports next/prev cycling via set command', async () => {
     await configSetCommand('captain.model', 'next', { cwd });
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.captain.model).toBe(ModelId.CLAUDE_OPUS);
+    expect(resolveCaptainModel(projectConfig!.captain)).toBe(ModelId.CLAUDE_OPUS);
   });
 
   it('sets active profile', async () => {

@@ -95,6 +95,11 @@ export async function assertRequiredAgentsReady(
   registry: AdapterLookup,
   config: FullConfig,
 ): Promise<void> {
+  // The sync sweep (CREW_CODEX_CONFIG deprecation + captain-model compat
+  // fallback) is performed inside createRunner so the runner captures the
+  // mutated model. Re-running it here is idempotent — the deprecation latch
+  // ensures we don't warn twice — so it's safe for callers that build their
+  // own registries without going through createRunner.
   checkCrewCodexConfigDeprecation();
 
   const captainAdapter = registry.get(config.captain.cli);

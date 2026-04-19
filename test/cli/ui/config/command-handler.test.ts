@@ -4,6 +4,7 @@ import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { handleConfigSlashCommand } from '../../../../src/cli/ui/config/command-handler.js';
 import { loadConfigByScope, readActiveScopePreference } from '../../../../src/workflow/config-repository.js';
+import { resolveCaptainModel } from '../../../../src/workflow/config-codec.js';
 import { ModelId } from '../../../../src/workflow/models.js';
 
 vi.mock('os', async (importOriginal) => {
@@ -72,7 +73,7 @@ describe('handleConfigSlashCommand', () => {
     const response = handleConfigSlashCommand('/config set captain.model next', { cwd, isRunning: false });
     expect(response).toContain('Configuration updated');
     const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.captain.model).toBe(ModelId.CLAUDE_OPUS);
+    expect(resolveCaptainModel(projectConfig!.captain)).toBe(ModelId.CLAUDE_OPUS);
   });
 
   it('updates role model override with slash set command', () => {

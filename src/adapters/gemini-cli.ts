@@ -128,6 +128,12 @@ export function extractStreamJsonSessionId(events: GeminiEvent[]): string | unde
  * Accumulates assistant text from stream-json `message` events. Handles both
  * full-content and delta-chunk shapes, drops the deprecation notice, and
  * returns an empty string when no assistant text was produced.
+ *
+ * The deprecation notice is filtered in two passes: (1) whole-message
+ * `content` events that equal/contain the notice are skipped outright, and
+ * (2) the final concatenation is post-scrubbed to catch cases where Gemini
+ * streams the notice as a sequence of deltas instead of a single content
+ * event. Both paths are exercised by the parser tests.
  */
 export function extractStreamJsonAssistantText(events: GeminiEvent[]): string {
   const chunks: string[] = [];
@@ -147,7 +153,19 @@ export function extractStreamJsonAssistantText(events: GeminiEvent[]): string {
       chunks.push(delta);
     }
   }
-  return chunks.join('');
+  return stripDeprecationNoticeSentences(chunks.join(''));
+}
+
+function stripDeprecationNoticeSentences(text: string): string {
+  if (!text.includes(GEMINI_DEPRECATION_FRAGMENT)) return text;
+  // Drop the entire sentence/line that contains the notice. We remove
+  // characters up to (and including) the nearest terminating punctuation or
+  // newline after the fragment so a stray "<prefix>... deprecated." doesn't
+  // leak into the assistant's actual reply.
+  return text.replace(
+    /[^.\n]*--prompt \(-p\) flag has been deprecated[^.\n]*[.\n]?/g,
+    '',
+  ).trim();
 }
 
 function renderProcessFailureOutput(stdout: string, stderr: string, message: string): string {

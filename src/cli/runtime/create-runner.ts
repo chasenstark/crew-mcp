@@ -5,6 +5,10 @@ import { StateStore } from '../../state/store.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import { resolveCaptainModel } from '../../workflow/config-codec.js';
+import {
+  checkCrewCodexConfigDeprecation,
+  enforceCaptainModelCompatibility,
+} from './preflight.js';
 import type { CrewRunner } from '../../captain/runner.js';
 
 export function toAgentRegistry(registry: AdapterRegistry): AgentRegistry {
@@ -38,6 +42,12 @@ export function createRunner(
   const worktreeManager = new WorktreeManager(projectRoot);
   const captainAdapter = registry.getOrThrow(config.captain.cli);
   const mode = options.mode ?? config.workflow.execution?.mode ?? 'judgment';
+
+  // Sync preflight: mutate `config` for model compatibility + log any
+  // CREW_CODEX_CONFIG deprecation notice *before* the runner captures
+  // captainModel. Async health checks still live in assertRequiredAgentsReady.
+  checkCrewCodexConfigDeprecation();
+  enforceCaptainModelCompatibility(config, captainAdapter);
 
   const runner: CrewRunner = mode === 'judgment'
     ? new JudgmentRunner(

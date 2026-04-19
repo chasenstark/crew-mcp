@@ -224,7 +224,20 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
       path,
     ),
     write: (config, _params, value) => {
-      config.captain.model = String(value);
+      const next = String(value);
+      const current = config.captain.model;
+      // Preserve the per-CLI map shape when one is already configured so
+      // `/config set captain.model X` updates just the current CLI's entry
+      // instead of silently wiping the other captains' models.
+      if (current && typeof current === 'object') {
+        const key = config.captain.cli as keyof typeof current;
+        config.captain.model = {
+          ...current,
+          [key]: next,
+        };
+        return;
+      }
+      config.captain.model = next;
     },
     options: (config) => modelPresetsForCaptain(config),
   },

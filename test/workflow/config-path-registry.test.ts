@@ -43,4 +43,46 @@ describe('config path registry', () => {
   it('returns null for unsupported paths', () => {
     expect(resolveConfigPath('workflow.name')).toBeNull();
   });
+
+  describe('captain.model write semantics', () => {
+    it('replaces a scalar captain.model with a new scalar', () => {
+      const config = getDefaultConfig();
+      config.captain.cli = 'claude-code';
+      config.captain.model = 'claude-opus-4-7';
+      const resolved = resolveConfigPath('captain.model');
+      const descriptor = resolved!.descriptor;
+      const parsed = descriptor.parse(
+        'claude-sonnet-4-7',
+        config,
+        resolved!.params,
+        'captain.model',
+      );
+      descriptor.write(config, resolved!.params, parsed, 'captain.model');
+      expect(config.captain.model).toBe('claude-sonnet-4-7');
+    });
+
+    it('preserves the per-CLI map when writing; only updates the current CLI entry', () => {
+      const config = getDefaultConfig();
+      config.captain.cli = 'claude-code';
+      config.captain.model = {
+        'claude-code': 'claude-sonnet-4-7',
+        codex: 'gpt-5.4',
+        'gemini-cli': 'qwen3:32b',
+      };
+      const resolved = resolveConfigPath('captain.model');
+      const descriptor = resolved!.descriptor;
+      const parsed = descriptor.parse(
+        'claude-opus-4-7',
+        config,
+        resolved!.params,
+        'captain.model',
+      );
+      descriptor.write(config, resolved!.params, parsed, 'captain.model');
+
+      const map = config.captain.model as Record<string, string>;
+      expect(map['claude-code']).toBe('claude-opus-4-7');
+      expect(map.codex).toBe('gpt-5.4');
+      expect(map['gemini-cli']).toBe('qwen3:32b');
+    });
+  });
 });
