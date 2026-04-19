@@ -43,6 +43,11 @@ import { CaptainSession } from './session.js';
 import { ToolDispatcher } from './tool-dispatcher.js';
 import { dispatchAskUser } from './tools/ask-user.js';
 import {
+  SessionLoop,
+  type SessionLoopTurn,
+  type ToolCallScheduler,
+} from './session-loop.js';
+import {
   buildFallbackReport as buildWorkflowFallbackReport,
   createRunId as createWorkflowRunId,
   getMaxPasses,
@@ -297,6 +302,55 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
 
     this.persistRuntimeState(runtime, 'running');
     return this.execute(runtime);
+  }
+
+  /**
+   * M1.5-6a scaffold. Constructs a SessionLoop wired to this runner's
+   * captain + dispatcher, and delegates driving to it. Not called by
+   * `execute()` yet — M1.5-6b flips the switch.
+   */
+  async executeSessionLoop(runtime: RuntimeState): Promise<string> {
+    if (!this.session || !this.dispatcher) {
+      throw new Error(
+        'executeSessionLoop requires session + dispatcher injected in constructor (M1.5-10 wires these).',
+      );
+    }
+    this.activeAbortController = new AbortController();
+    const captainTurn = this.buildSessionLoopCaptain(runtime);
+    const scheduler = this.buildSessionLoopScheduler(runtime);
+    const loop = new SessionLoop({
+      session: this.session,
+      dispatcher: this.dispatcher,
+      captain: captainTurn,
+      scheduler,
+    });
+    try {
+      const { finalReport } = await loop.run({
+        externalSignal: this.activeAbortController.signal,
+      });
+      if (finalReport) runtime.finalReport = finalReport;
+      return runtime.finalReport ?? this.buildFallbackReport(runtime.summaries, runtime.userRequest);
+    } finally {
+      this.activeAbortController = null;
+    }
+  }
+
+  private buildSessionLoopCaptain(_runtime: RuntimeState): SessionLoopTurn {
+    // Placeholder scaffold for M1.5-6a. M1.5-6b wires the real captain
+    // adapter through executeWithTools / executeWithResumeSession.
+    return {
+      execute: async () => {
+        throw new Error('SessionLoopCaptain scaffold — real integration lands in M1.5-6b.');
+      },
+    };
+  }
+
+  private buildSessionLoopScheduler(_runtime: RuntimeState): ToolCallScheduler {
+    return {
+      schedule: async () => {
+        throw new Error('SessionLoop scheduler scaffold — real integration lands in M1.5-6b.');
+      },
+    };
   }
 
   private async execute(runtime: RuntimeState): Promise<string> {

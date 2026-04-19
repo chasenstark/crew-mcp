@@ -37,6 +37,7 @@ export class CaptainSession {
   private startedAt: string;
   private lastTurnAt: string | undefined;
   private pendingEvents: Array<(event: SessionEvent) => void> = [];
+  private liveEventListeners: Set<(event: SessionEvent) => void> = new Set();
 
   private constructor(init: {
     projectRoot: string;
@@ -265,18 +266,46 @@ export class CaptainSession {
     return this.projectRoot;
   }
 
+  /**
+   * Yields only NEW events emitted after subscription. Does not replay the
+   * on-disk log — consumers that need the full history should read it via
+   * getMessages() / toToolLoopMessages(), which are the durable record.
+   *
+   * This intentional asymmetry keeps the session loop from re-running a
+   * turn for every disk-persisted event on cold start: the message log
+   * already reflects them.
+   */
   async *events(): AsyncIterable<SessionEvent> {
-    // Replay what's on disk first so a fresh load surfaces durable history,
-    // then keep streaming future events.
-    for (const existing of this.store.readAllEvents()) {
-      yield existing;
-    }
     while (true) {
       const next = await new Promise<SessionEvent>((resolve) => {
         this.pendingEvents.push(resolve);
       });
       yield next;
     }
+  }
+
+  /**
+   * Subscribe to future events. Returns a Disposable. Used by the session
+   * loop to drive turns from events without the overhead of async iteration.
+   */
+  subscribe(listener: (event: SessionEvent) => void): { dispose: () => void } {
+    this.liveEventListeners.add(listener);
+    return {
+      dispose: () => {
+        this.liveEventListeners.delete(listener);
+      },
+    };
+  }
+
+  /**
+   * True when the session has material the captain has not yet responded to
+   * (i.e., the last message is a user input or tool_result). Used by the
+   * session loop to decide whether to kick off an initial turn on start.
+   */
+  hasPendingCaptainWork(): boolean {
+    if (this.messages.length === 0) return false;
+    const last = this.messages[this.messages.length - 1];
+    return last.role === 'user' || last.role === 'tool_result';
   }
 
   /**
@@ -322,6 +351,13 @@ export class CaptainSession {
     this.pendingEvents = [];
     for (const resolver of resolvers) {
       resolver(event);
+    }
+    for (const listener of this.liveEventListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Subscribers shouldn't break the session; swallow + continue.
+      }
     }
   }
 

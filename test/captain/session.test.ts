@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CaptainSession } from '../../src/captain/session.js';
+import { SessionStore } from '../../src/captain/session-store.js';
 
 describe('CaptainSession', () => {
   let root: string;
@@ -61,30 +62,51 @@ describe('CaptainSession', () => {
     expect(s.providerSessionRef).toBeUndefined();
   });
 
-  it('events() yields prior events + newly emitted events in order', async () => {
+  it('events() yields only future events (no disk replay)', async () => {
     const s = CaptainSession.create({ projectRoot: root });
+
+    // Kick the iterator so its pending resolver is in place before we append.
+    const iter = s.events()[Symbol.asyncIterator]();
+    const firstP = iter.next();
+
     s.appendUserMessage('one', '2026-04-19T00:00:00.000Z');
+    const first = await firstP;
+    expect(first.value?.kind).toBe('user_message');
+
+    const secondP = iter.next();
     s.appendToolResult({
       toolCallId: 'c-1',
       output: { r: 1 },
       status: 'success',
       timestamp: '2026-04-19T00:00:01.000Z',
     });
-
-    const iter = s.events()[Symbol.asyncIterator]();
-    const first = await iter.next();
-    expect(first.value?.kind).toBe('user_message');
-    const second = await iter.next();
+    const second = await secondP;
     expect(second.value?.kind).toBe('tool_completed');
+  });
 
-    // future events stream live
-    const pending = iter.next();
-    s.appendUserMessage('two', '2026-04-19T00:00:02.000Z');
-    const third = await pending;
-    expect(third.value?.kind).toBe('user_message');
-    if (third.value?.kind === 'user_message') {
-      expect(third.value.text).toBe('two');
-    }
+  it('events() does NOT replay events that were appended before subscribe()', async () => {
+    const s = CaptainSession.create({ projectRoot: root });
+    s.appendUserMessage('pre', '2026-04-19T00:00:00.000Z');
+
+    // The pre-subscription event must not arrive on the iterator; events()
+    // is strictly future-only. Race against a short timeout to prove nothing
+    // is yielded.
+    const iter = s.events()[Symbol.asyncIterator]();
+    const timeout = new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 30));
+    const winner = await Promise.race([iter.next().then(() => 'next' as const), timeout]);
+    expect(winner).toBe('timeout');
+  });
+
+  it('subscribe() delivers future events, not prior ones', () => {
+    const s = CaptainSession.create({ projectRoot: root });
+    s.appendUserMessage('pre', '2026-04-19T00:00:00.000Z');
+    const received: string[] = [];
+    const handle = s.subscribe((event) => {
+      if (event.kind === 'user_message') received.push(event.text);
+    });
+    s.appendUserMessage('post', '2026-04-19T00:00:01.000Z');
+    handle.dispose();
+    expect(received).toEqual(['post']);
   });
 
   it('updateEnvironmentFingerprint drops providerSessionRef on cliVersionTag change', () => {
@@ -164,33 +186,31 @@ describe('CaptainSession', () => {
     expect(msgs[3].name).toBe('c-1');
   });
 
-  it('appendUserMessage emits a user_message event persisted to events.log', async () => {
+  it('appendUserMessage writes a user_message event to events.log', () => {
     const s = CaptainSession.create({ projectRoot: root });
     s.appendUserMessage('hi', '2026-04-19T00:00:00.000Z');
-    s.persist();
 
-    // Reload and verify event is present on disk.
-    const reloaded = CaptainSession.load({ projectRoot: root });
-    expect(reloaded).not.toBeNull();
-    const iter = reloaded!.events()[Symbol.asyncIterator]();
-    const first = await iter.next();
-    expect(first.value?.kind).toBe('user_message');
+    // Read from the persisted log directly (not via events(), which is
+    // future-only). This verifies durability.
+    const store = new SessionStore(root);
+    const events = store.readAllEvents();
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe('user_message');
   });
 
-  it('appendToolResult with status=error emits a tool_failed event', async () => {
+  it('appendToolResult with status=error fires a tool_failed subscription event', () => {
     const s = CaptainSession.create({ projectRoot: root });
+    const received: string[] = [];
+    s.subscribe((event) => {
+      received.push(event.kind);
+    });
     s.appendToolResult({
       toolCallId: 'c-1',
       output: 'boom',
       status: 'error',
       timestamp: '2026-04-19T00:00:00.000Z',
     });
-    const iter = s.events()[Symbol.asyncIterator]();
-    const first = await iter.next();
-    expect(first.value?.kind).toBe('tool_failed');
-    if (first.value?.kind === 'tool_failed') {
-      expect(first.value.error).toBe('boom');
-    }
+    expect(received).toEqual(['tool_failed']);
   });
 
   it('persist() is idempotent across calls', () => {
