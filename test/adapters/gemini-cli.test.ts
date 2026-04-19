@@ -73,7 +73,7 @@ describe('GeminiCliAdapter', () => {
 
   it('passes --model through executeWithSchema', async () => {
     mockExeca.mockResolvedValueOnce({
-      stdout: `${JSON.stringify({ content: '{"ok":true}' })}\n`,
+      stdout: `${JSON.stringify({ response: '{"ok":true}' })}\n`,
       stderr: '',
       exitCode: 0,
     } as any);
@@ -101,19 +101,24 @@ describe('GeminiCliAdapter', () => {
   it('does not replay the full transcript inline when resuming a provider session', async () => {
     mockExeca
       .mockResolvedValueOnce({
-        stdout: 'gemini-cli 1.2.3',
+        stdout: 'gemini-cli 0.20.1',
         stderr: '',
         exitCode: 0,
       } as any)
       .mockResolvedValueOnce({
-        stdout: `${JSON.stringify({
-          session_id: 'session-2',
-          content: JSON.stringify({
-            type: 'finish',
-            output: 'done',
-            reasoning: 'workflow complete',
+        stdout: [
+          JSON.stringify({ type: 'init', session_id: 'session-2' }),
+          JSON.stringify({
+            type: 'message',
+            role: 'assistant',
+            content: JSON.stringify({
+              type: 'finish',
+              output: 'done',
+              reasoning: 'workflow complete',
+            }),
           }),
-        })}\n`,
+          JSON.stringify({ type: 'result' }),
+        ].join('\n'),
         stderr: '',
         exitCode: 0,
       } as any);
@@ -146,7 +151,10 @@ describe('GeminiCliAdapter', () => {
     expect(result.status).toBe('completed');
     const args = mockExeca.mock.calls[1]?.[1] as string[];
     expect(args).toContain('--resume');
-    const prompt = args.at(-1) ?? '';
+    // With --prompt the prompt is at index args.indexOf('--prompt') + 1.
+    const promptIndex = args.indexOf('--prompt');
+    expect(promptIndex).toBeGreaterThan(-1);
+    const prompt = args[promptIndex + 1] ?? '';
     expect(prompt).toContain('provider resume session already contains prior turns');
     expect(prompt).not.toContain('prior transcript should not be replayed inline');
   });

@@ -25,23 +25,50 @@ import type {
   ToolResult,
 } from './types.js';
 
-interface GeminiEvent {
-  type?: string;
+/**
+ * Event shapes emitted by `gemini -o stream-json`. The CLI prints one JSON
+ * object per newline-terminated line with a discriminated `type` field.
+ *
+ *   init    — { type: 'init', session_id: '<uuid>' }  (always the first line on a fresh session)
+ *   message — { type: 'message', role: 'assistant'|'user', content?: string, delta?: string }
+ *   result  — { type: 'result', stats?: {...}, ... }   (last line; summary)
+ *
+ * The CLI additionally emits an assistant `message` on resume turns
+ * containing a `--prompt (-p) flag has been deprecated` notice. We filter
+ * those out before accumulating assistant text — otherwise the captain
+ * would see the deprecation warning as part of its reply.
+ */
+export type GeminiEventType = 'init' | 'message' | 'result';
+
+export interface GeminiEvent {
+  type?: GeminiEventType | string;
   session_id?: string;
+  role?: 'user' | 'assistant' | 'system';
   content?: string;
   text?: string;
   message?: string;
+  delta?: string;
   usage?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
-function parseJsonl(stdout: string): GeminiEvent[] {
+/**
+ * Parses `-o stream-json` output into its newline-delimited JSON events.
+ * Malformed or non-object lines are logged and dropped. Exported for the
+ * dedicated parser tests; end-to-end callers go through the adapter.
+ */
+export function parseStreamJsonEvents(stdout: string): GeminiEvent[] {
   const events: GeminiEvent[] = [];
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      events.push(JSON.parse(trimmed) as GeminiEvent);
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        events.push(parsed as GeminiEvent);
+      } else {
+        logger.warn('[adapter:gemini-cli] dropped non-object JSON line');
+      }
     } catch {
       logger.warn('[adapter:gemini-cli] dropped malformed JSON line');
     }
@@ -49,26 +76,123 @@ function parseJsonl(stdout: string): GeminiEvent[] {
   return events;
 }
 
-function extractLastText(events: GeminiEvent[]): string {
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event = events[index];
-    if (typeof event.content === 'string' && event.content.trim()) {
-      return event.content;
+/**
+ * Parses `-o json` output, which is a single JSON object like
+ * `{response: string, stats: {...}}`. Returns the response text, or an empty
+ * string if the shape is unexpected.
+ */
+export function parseSingleJsonResponse(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const maybe = (parsed as { response?: unknown }).response;
+      if (typeof maybe === 'string') return maybe;
     }
-    if (typeof event.text === 'string' && event.text.trim()) {
-      return event.text;
-    }
-    if (typeof event.message === 'string' && event.message.trim()) {
-      return event.message;
-    }
+  } catch {
+    logger.warn('[adapter:gemini-cli] -o json output was not valid JSON');
   }
   return '';
+}
+
+/**
+ * Gemini emits this exact assistant-role line on resume turns. It must be
+ * filtered out before being surfaced to the captain.
+ */
+const GEMINI_DEPRECATION_FRAGMENT = '--prompt (-p) flag has been deprecated';
+
+export function isGeminiDeprecationNotice(content: string | undefined): boolean {
+  return typeof content === 'string' && content.includes(GEMINI_DEPRECATION_FRAGMENT);
+}
+
+/**
+ * Extracts the session id from a stream-json event stream. The `init` event
+ * emitted on a fresh or resumed session carries it.
+ */
+export function extractStreamJsonSessionId(events: GeminiEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type === 'init' && typeof event.session_id === 'string' && event.session_id.length > 0) {
+      return event.session_id;
+    }
+  }
+  for (const event of events) {
+    if (typeof event.session_id === 'string' && event.session_id.length > 0) {
+      return event.session_id;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Accumulates assistant text from stream-json `message` events. Handles both
+ * full-content and delta-chunk shapes, drops the deprecation notice, and
+ * returns an empty string when no assistant text was produced.
+ */
+export function extractStreamJsonAssistantText(events: GeminiEvent[]): string {
+  const chunks: string[] = [];
+  for (const event of events) {
+    if (event.type !== 'message') continue;
+    if (event.role && event.role !== 'assistant') continue;
+
+    const content = typeof event.content === 'string' ? event.content : undefined;
+    const delta = typeof event.delta === 'string' ? event.delta : undefined;
+
+    if (content) {
+      if (isGeminiDeprecationNotice(content)) continue;
+      chunks.push(content);
+      continue;
+    }
+    if (delta) {
+      chunks.push(delta);
+    }
+  }
+  return chunks.join('');
 }
 
 function renderProcessFailureOutput(stdout: string, stderr: string, message: string): string {
   if (stderr) return stderr;
   if (stdout) return stdout;
   return message;
+}
+
+/**
+ * Minimum Gemini CLI version eligible for the captain role. Resume-by-UUID
+ * is flaky in < 0.20 per upstream issues #24808/#24532/#24535; healthCheck
+ * rejects older releases so users see a clear error instead of a mystery
+ * mid-run failure.
+ */
+export const GEMINI_MIN_VERSION = { major: 0, minor: 20, patch: 0 } as const;
+
+/**
+ * Returns the argv fragment for a `gemini -o stream-json` resume invocation.
+ * The prompt is passed via `--prompt` (not positional) on resume turns; seed
+ * turns use positional since no `--resume` target exists yet.
+ */
+export function buildGeminiResumeArgs(
+  sessionId: string | undefined,
+  prompt: string,
+): string[] {
+  if (sessionId) {
+    return ['-o', 'stream-json', '--resume', sessionId, '--prompt', prompt];
+  }
+  return ['-o', 'stream-json', prompt];
+}
+
+export function isInvalidSessionStderr(stderr: string): boolean {
+  if (!stderr) return false;
+  return /invalid session identifier/i.test(stderr);
+}
+
+export function isVersionBelowFloor(
+  parsed: { major: number; minor: number; patch: number } | null,
+): boolean {
+  if (!parsed) return true;
+  if (parsed.major < GEMINI_MIN_VERSION.major) return true;
+  if (parsed.major > GEMINI_MIN_VERSION.major) return false;
+  if (parsed.minor < GEMINI_MIN_VERSION.minor) return true;
+  if (parsed.minor > GEMINI_MIN_VERSION.minor) return false;
+  return parsed.patch < GEMINI_MIN_VERSION.patch;
 }
 
 export class GeminiCliAdapter implements AgentAdapter {
@@ -81,7 +205,10 @@ export class GeminiCliAdapter implements AgentAdapter {
     'document',
     'analyze',
   ];
-  readonly supportsJsonSchema = true;
+  // Gemini CLI has no native schema-enforcement flag; executeWithSchema
+  // post-validates with Zod. Reporting false makes downstream code pick the
+  // right branch (prompt-based structured output instead of native schema).
+  readonly supportsJsonSchema = false;
   readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
@@ -149,8 +276,7 @@ export class GeminiCliAdapter implements AgentAdapter {
 
     const stdoutText = result.stdout ?? '';
     const stderrText = result.stderr ?? '';
-    const events = parseJsonl(stdoutText);
-    const output = extractLastText(events);
+    const output = parseSingleJsonResponse(stdoutText);
     if (task.onOutput && output) {
       task.onOutput(output);
     }
@@ -159,7 +285,7 @@ export class GeminiCliAdapter implements AgentAdapter {
       filesModified: [],
       status: result.exitCode === 0 ? 'success' : 'error',
       metadata: {
-        rawEvents: events,
+        rawEvents: [{ stdout: stdoutText, stderr: stderrText }],
       },
     };
   }
@@ -245,17 +371,43 @@ export class GeminiCliAdapter implements AgentAdapter {
         timeout: 10_000,
         reject: false,
       });
-      if (result.exitCode === 0) {
+      if (result.exitCode !== 0) {
         return {
-          available: true,
-          authenticated: true,
-          version: result.stdout.trim() || undefined,
+          available: false,
+          authenticated: false,
+          error: result.stderr || 'gemini --version failed',
         };
       }
+      const combined = `${result.stdout ?? ''} ${result.stderr ?? ''}`;
+      const match = combined.match(/(\d+)\.(\d+)\.(\d+)/);
+      const parsed = match
+        ? { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) }
+        : null;
+      const versionString = match ? `${match[1]}.${match[2]}.${match[3]}` : result.stdout.trim() || undefined;
+
+      if (!parsed) {
+        return {
+          available: false,
+          authenticated: false,
+          version: versionString,
+          error: 'Could not parse Gemini CLI version; upgrade to 0.20.0 or later.',
+        };
+      }
+
+      if (isVersionBelowFloor(parsed)) {
+        const floor = `${GEMINI_MIN_VERSION.major}.${GEMINI_MIN_VERSION.minor}.${GEMINI_MIN_VERSION.patch}`;
+        return {
+          available: false,
+          authenticated: false,
+          version: versionString,
+          error: `Gemini CLI ${versionString} is below the supported floor ${floor}. Upgrade gemini-cli; resume is unstable on earlier releases.`,
+        };
+      }
+
       return {
-        available: false,
-        authenticated: false,
-        error: result.stderr || 'gemini --version failed',
+        available: true,
+        authenticated: true,
+        version: versionString,
       };
     } catch {
       return {
@@ -295,9 +447,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     );
 
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
-      const args = providerSession.sessionId
-        ? ['--output-format', 'json', '--resume', providerSession.sessionId, prompt]
-        : ['--output-format', 'json', prompt];
+      const args = buildGeminiResumeArgs(providerSession.sessionId, prompt);
 
       const result = await execa('gemini', args, {
         cwd: context.workingDirectory,
@@ -305,12 +455,26 @@ export class GeminiCliAdapter implements AgentAdapter {
         reject: false,
       });
 
-      if (result.exitCode !== 0 && !result.stdout) {
-        throw new Error(result.stderr || `gemini exited with code ${result.exitCode}`);
+      const stderrText = result.stderr ?? '';
+      if (isInvalidSessionStderr(stderrText)) {
+        logger.warn('[adapter:gemini-cli] session id rejected by CLI; dropping it for replay', {
+          sessionId: providerSession.sessionId,
+        });
+        providerSession = {
+          ...providerSession,
+          sessionId: undefined,
+          lastTurnAt: new Date().toISOString(),
+        };
+        context.onProviderSession?.(providerSession);
+        throw new Error('Gemini resume session invalidated upstream; caller must replay.');
       }
 
-      const events = parseJsonl(result.stdout ?? '');
-      const maybeSessionId = events.find((event) => typeof event.session_id === 'string')?.session_id;
+      if (result.exitCode !== 0 && !result.stdout) {
+        throw new Error(stderrText || `gemini exited with code ${result.exitCode}`);
+      }
+
+      const events = parseStreamJsonEvents(result.stdout ?? '');
+      const maybeSessionId = extractStreamJsonSessionId(events);
       if (maybeSessionId && maybeSessionId !== providerSession.sessionId) {
         providerSession = {
           ...providerSession,
@@ -320,7 +484,7 @@ export class GeminiCliAdapter implements AgentAdapter {
         context.onProviderSession?.(providerSession);
       }
 
-      const assistantText = extractLastText(events);
+      const assistantText = extractStreamJsonAssistantText(events);
       if (!assistantText) {
         throw new Error('Gemini CLI returned no decision text.');
       }
