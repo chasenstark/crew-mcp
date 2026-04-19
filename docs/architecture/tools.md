@@ -23,7 +23,7 @@ into three shapes:
 | `plan_tasks` | synchronous | Wrapper over the legacy `decompose` step helper. Free-form `role` strings post-M3 (no hard enum). |
 | `analyze_output` | synchronous | Wrapper over `ingest`. Synthesizes a minimal `TaskResult` from `{task_description, agent_output, files_modified?}`. |
 | `compress_context` | synchronous | Wrapper over `summarize`. Validates `analyzed_output` via `IngestOutputSchema` before calling through. |
-| `finish` | synchronous | Emit the final report and terminate the session. Calls `SessionLoop.requestExit(summary)`. |
+| `finish` | synchronous | Emit the final report and terminate the session. Implementation is `dispatchFinish(session, loop, input)` (src/captain/tools/finish.ts) — appends summary as an assistant message and calls `SessionLoop.requestExit(summary)` so the loop exits on its next scheduleNextTurn check. |
 
 ## Invariants
 

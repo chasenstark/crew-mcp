@@ -36,7 +36,7 @@ import {
 import type { DispatchOutput } from './steps/dispatch.js';
 import type { SummarizeOutput } from './steps/summarize.js';
 import type { JudgeOutput } from './steps/judge.js';
-import type { AgentRegistry, PipelineEvents } from './pipeline.js';
+import type { AgentRegistry } from './pipeline.js';
 import type { CrewRunner, ResumeParams } from './runner.js';
 import { RunnerBase } from './runner-base.js';
 import { CaptainSession } from './session.js';
@@ -52,7 +52,7 @@ import { dispatchAnalyzeOutput } from './tools/analyze-output.js';
 import { dispatchCompressContext } from './tools/compress-context.js';
 import { buildCaptainSystemPrompt } from './prompts/captain-system.js';
 import { resolveCaptainConverter } from './mcp-registration.js';
-import type { WorkflowConfig, PresetConfig, FullConfig } from '../workflow/types.js';
+import type { WorkflowConfig, PresetConfig } from '../workflow/types.js';
 import {
   SessionLoop,
   type SessionLoopTurn,
@@ -69,6 +69,13 @@ import {
   type CaptainStage,
 } from './task-execution-core.js';
 
+/**
+ * @deprecated Legacy 11-verb controller vocabulary. Reachable only via
+ * `toolSurface: 'legacy'` migration-coverage tests (M3-10b). A follow-up
+ * milestone deletes these schemas along with `buildActionRegistry`,
+ * `buildSessionLoopCaptain`, `buildSessionLoopScheduler`, and
+ * `validateDecision` (all already `@deprecated`).
+ */
 const ControllerActionNameSchema = z.enum([
   'run_decompose',
   'select_task',
@@ -388,8 +395,14 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       this.session.appendUserMessage(runtime.userRequest);
     }
 
+    // Holder for the SessionLoop so the M3 captain-turn closure can call
+    // loop.requestExit(summary) when the captain invokes the finish tool.
+    // Populated just after loop construction below; read lazily inside
+    // handleM3ToolCallFromAdapter.
+    const loopHolder: { loop?: SessionLoop } = {};
+
     const { captainTurn, scheduler, actionServer } = this.toolSurface === 'm3-tools'
-      ? this.buildM3SessionLoopPair(runtime)
+      ? this.buildM3SessionLoopPair(runtime, loopHolder)
       : this.buildLegacySessionLoopPair(runtime);
 
     // Wire dispatcher cleanup: terminal dispatcher events with a runId should
@@ -413,6 +426,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       scheduler,
       maxTurns: this.guardrails.maxTotalActions,
     });
+    loopHolder.loop = loop;
 
     try {
       const { finalReport } = await loop.run({
@@ -1566,6 +1580,28 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   /**
+   * Cached AgentListSource for list_agents. Adapts the legacy AgentRegistry
+   * shape (which exposes only `get` + `list`) to the AgentListSource that
+   * listAgents consumes. Cached so repeated list_agents calls don't
+   * re-allocate the shim object — the underlying registry never mutates
+   * after construction.
+   */
+  private listAgentsSource: { listAvailable: () => AgentAdapter[] } | undefined;
+  private getListAgentsSource(): { listAvailable: () => AgentAdapter[] } {
+    if (!this.listAgentsSource) {
+      this.listAgentsSource = {
+        listAvailable: () => {
+          const names = this.registry.list().map((a) => a.name);
+          return names
+            .map((n) => this.registry.get(n))
+            .filter((a): a is AgentAdapter => a !== undefined);
+        },
+      };
+    }
+    return this.listAgentsSource;
+  }
+
+  /**
    * M3-10a: lazy M3 tool catalog. Cached after first construction — the
    * inputs (registry, workflow, preset) don't mutate after `new
    * JudgmentRunner(...)`.
@@ -1592,7 +1628,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
    * This is structurally parallel to buildLegacySessionLoopPair and lives
    * beside it; M3-10b deletes the legacy pair.
    */
-  private buildM3SessionLoopPair(runtime: RuntimeState): {
+  private buildM3SessionLoopPair(
+    runtime: RuntimeState,
+    loopHolder: { loop?: SessionLoop },
+  ): {
     captainTurn: SessionLoopTurn;
     scheduler: ToolCallScheduler;
     actionServer: CaptainActionServer;
@@ -1600,8 +1639,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     const catalog = this.getM3Catalog();
     const actionServer = catalog.buildActionServer();
     const pendingDispatched = new Map<string, SessionLoopToolCall>();
-    // Mutable summary for the finish tool. Typed explicitly so closures can
-    // mutate it without TypeScript narrowing to `never`.
+    // Mutable summary for the finish tool. The handler calls
+    // `dispatchFinish(session, loop, input)` which does the session append +
+    // loop.requestExit; the summary is captured here so the turn-result
+    // carries `finalReport` for callers that read it off the turn return.
     const finishState: { summary: string | undefined } = { summary: undefined };
 
     const captainTurn: SessionLoopTurn = {
@@ -1644,7 +1685,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           messages,
           (call) => this.handleM3ToolCallFromAdapter(call, actionServer, pendingDispatched, (f) => {
             finishState.summary = f.summary;
-          }),
+          }, loopHolder),
           {
             signal: args.signal,
             workingDirectory: process.cwd(),
@@ -1774,6 +1815,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     actionServer: CaptainActionServer,
     pendingDispatched: Map<string, SessionLoopToolCall>,
     onFinish: (signal: { summary: string }) => void,
+    loopHolder: { loop?: SessionLoop },
   ): Promise<{ output: unknown }> {
     const normalized = actionServer.resolveToolCall(call);
     const toolCallId = randomUUID();
@@ -1797,35 +1839,37 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       const summary = typeof normalized.input.summary === 'string'
         ? normalized.input.summary
         : '';
-      if (this.session && summary) {
+      if (this.session && loopHolder.loop && summary) {
+        // Route through the canonical dispatchFinish helper — appends the
+        // summary as an assistant message and calls loop.requestExit so the
+        // loop exits on the next scheduleNextTurn check. Mirrors the
+        // contract documented in docs/architecture/tools.md.
+        const outcome = typeof normalized.input.outcome === 'string'
+          ? normalized.input.outcome as 'success' | 'partial' | 'failed'
+          : undefined;
+        dispatchFinish(this.session, loopHolder.loop, { summary, outcome });
+      } else if (this.session && summary) {
+        // Fallback when loop hasn't been populated yet (should not happen
+        // in production — the runner populates loopHolder just after
+        // constructing the SessionLoop). Keep the append so the summary
+        // still lands in the durable log.
         this.session.appendAssistantMessage(summary);
       }
       onFinish({ summary });
-      return { output: { status: 'finished', summary } };
+      return { output: { status: 'ok', outcome: 'finished', summary } };
     }
 
     if (normalized.name === 'message_user') {
-      if (!this.session) return { output: { status: 'skipped', reason: 'no session' } };
+      if (!this.session) return { output: { status: 'error', error: 'no session' } };
       const text = typeof normalized.input.text === 'string' ? normalized.input.text : '';
       if (!text) return { output: { status: 'error', error: 'empty text' } };
       const result = dispatchMessageUser(this.session, { text });
-      return { output: result };
+      return { output: { status: 'ok', result } };
     }
 
     if (normalized.name === 'list_agents') {
-      // Adapt legacy AgentRegistry to the AgentListSource minimal
-      // interface that listAgents consumes — `listAvailable()` returns
-      // the per-adapter objects the tool needs for health probes.
-      const source = {
-        listAvailable: () => {
-          const names = this.registry.list().map((a) => a.name);
-          return names
-            .map((n) => this.registry.get(n))
-            .filter((a): a is AgentAdapter => a !== undefined);
-        },
-      };
-      const out = await listAgents({ registry: source });
-      return { output: out };
+      const out = await listAgents({ registry: this.getListAgentsSource() });
+      return { output: { status: 'ok', result: out } };
     }
 
     if (normalized.name === 'plan_tasks') {
@@ -1845,9 +1889,9 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             signal: this.activeAbortController?.signal,
           },
         );
-        return { output: out };
+        return { output: { status: 'ok', result: out } };
       } catch (err) {
-        return { output: { error: err instanceof Error ? err.message : String(err) } };
+        return { output: { status: 'error', error: err instanceof Error ? err.message : String(err) } };
       }
     }
 
@@ -1869,9 +1913,9 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             signal: this.activeAbortController?.signal,
           },
         );
-        return { output: out };
+        return { output: { status: 'ok', result: out } };
       } catch (err) {
-        return { output: { error: err instanceof Error ? err.message : String(err) } };
+        return { output: { status: 'error', error: err instanceof Error ? err.message : String(err) } };
       }
     }
 
@@ -1890,14 +1934,14 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             signal: this.activeAbortController?.signal,
           },
         );
-        return { output: out };
+        return { output: { status: 'ok', result: out } };
       } catch (err) {
-        return { output: { error: err instanceof Error ? err.message : String(err) } };
+        return { output: { status: 'error', error: err instanceof Error ? err.message : String(err) } };
       }
     }
 
     return {
-      output: { error: `Unknown tool: ${call.name}` },
+      output: { status: 'error', error: `Unknown tool: ${call.name}` },
     };
   }
 
