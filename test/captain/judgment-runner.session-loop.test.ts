@@ -248,6 +248,131 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
     expect(dispatcherStarts).toContain('run_execute');
   });
 
+  it('run_execute lands its worktree under .crew/runs/<runId>/worktree/ (M1.5-14 integration)', async () => {
+    const agent = createAgent('agent-a');
+    const agentRegistry = {
+      get: (name: string) => (name === 'agent-a' ? agent : undefined),
+      list: () => [{ name: 'agent-a', capabilities: ['implement'] }],
+    };
+
+    const { adapter: captainAdapter } = createDecisionAdapter([
+      { reasoning: 'start', action: 'run_decompose', payload: {} },
+      { reasoning: 'pick task', action: 'select_task', payload: {} },
+      { reasoning: 'dispatch', action: 'run_dispatch', target: { taskId: 'task-1' } },
+      { reasoning: 'execute', action: 'run_execute', target: { taskId: 'task-1' } },
+      { reasoning: 'ingest', action: 'run_ingest', target: { taskId: 'task-1' } },
+      { reasoning: 'summarize', action: 'run_summarize', target: { taskId: 'task-1' } },
+      { reasoning: 'judge', action: 'run_judge', target: { taskId: 'task-1' } },
+      { reasoning: 'finalize', action: 'finalize_report', payload: {} },
+      { reasoning: 'done', action: 'finish', payload: {} },
+    ]);
+
+    mockDecompose.mockResolvedValue(singleTaskDecomposition());
+    mockDispatch.mockResolvedValue({ agentPrompt: 'x', workingDirectory: undefined, expectedOutputs: [], successCriteria: '' });
+    mockIngest.mockResolvedValue({ status: 'success', summary: 'ok', needsHumanAttention: false, files: [] });
+    mockSummarize.mockResolvedValue({ passNumber: 1, summary: 'ok', unresolvedIssues: [], contextForNextPass: '', filesInScope: [] });
+    mockJudge.mockResolvedValue({ decision: 'done', reasoning: 'done', isLooping: false });
+    mockReport.mockResolvedValue('final report');
+
+    const stateStore = new StateStore(tmpRoot);
+    const worktreeManager = new WorktreeManager(tmpRoot);
+    const session = CaptainSession.create({ projectRoot: tmpRoot });
+    const dispatcher = new ToolDispatcher();
+
+    // Capture working directories the agent was invoked with.
+    const agentInvocationCwds: string[] = [];
+    agent.execute = vi.fn(async (task) => {
+      agentInvocationCwds.push(task.context.workingDirectory);
+      return { output: 'done', filesModified: ['src/a.ts'], status: 'success', metadata: {} };
+    });
+
+    const workflow = { steps: [], completion: { strategy: 'judge_approval' as const, fallback: 'max_passes' as const } } as any;
+    const runner = new JudgmentRunner(
+      captainAdapter,
+      agentRegistry,
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    await runner.run('Do it');
+
+    // The per-run worktree path should be under .crew/runs/
+    expect(agentInvocationCwds.length).toBeGreaterThan(0);
+    const runKeyedPattern = join(tmpRoot, '.crew', 'runs');
+    expect(agentInvocationCwds[0].startsWith(runKeyedPattern)).toBe(true);
+    // And NOT under the legacy .crew/worktrees/ layout.
+    expect(agentInvocationCwds[0].includes('.crew/worktrees')).toBe(false);
+  });
+
+  it('concurrent run_execute dispatches get distinct worktrees', async () => {
+    // Direct-test the WorktreeManager run-keyed API to document the
+    // concurrent-dispatch invariant. The JudgmentRunner scheduler will
+    // produce distinct subagentRunIds for distinct tasks, so distinct
+    // paths fall out of the design.
+    const worktreeManager = new WorktreeManager(tmpRoot);
+    const [pathA, pathB] = await Promise.all([
+      worktreeManager.createRunWorktree('workflow-1:task-1:0'),
+      worktreeManager.createRunWorktree('workflow-1:task-2:0'),
+    ]);
+    expect(pathA).not.toBe(pathB);
+    // Each lands under .crew/runs/<token>/worktree
+    expect(pathA).toContain('/.crew/runs/');
+    expect(pathB).toContain('/.crew/runs/');
+  });
+
+  it('dispatcher cleanup listener invokes cleanupByRunId on terminal events', async () => {
+    const agent = createAgent('agent-a');
+    const agentRegistry = {
+      get: () => agent,
+      list: () => [{ name: 'agent-a', capabilities: ['implement'] }],
+    };
+
+    const { adapter: captainAdapter } = createDecisionAdapter([
+      { reasoning: 'start', action: 'run_decompose', payload: {} },
+      { reasoning: 'pick task', action: 'select_task', payload: {} },
+      { reasoning: 'dispatch', action: 'run_dispatch', target: { taskId: 'task-1' } },
+      { reasoning: 'execute', action: 'run_execute', target: { taskId: 'task-1' } },
+      { reasoning: 'ingest', action: 'run_ingest', target: { taskId: 'task-1' } },
+      { reasoning: 'summarize', action: 'run_summarize', target: { taskId: 'task-1' } },
+      { reasoning: 'judge', action: 'run_judge', target: { taskId: 'task-1' } },
+      { reasoning: 'finalize', action: 'finalize_report', payload: {} },
+      { reasoning: 'done', action: 'finish', payload: {} },
+    ]);
+
+    mockDecompose.mockResolvedValue(singleTaskDecomposition());
+    mockDispatch.mockResolvedValue({ agentPrompt: 'x', workingDirectory: undefined, expectedOutputs: [], successCriteria: '' });
+    mockIngest.mockResolvedValue({ status: 'success', summary: 'ok', needsHumanAttention: false, files: [] });
+    mockSummarize.mockResolvedValue({ passNumber: 1, summary: 'ok', unresolvedIssues: [], contextForNextPass: '', filesInScope: [] });
+    mockJudge.mockResolvedValue({ decision: 'done', reasoning: 'done', isLooping: false });
+    mockReport.mockResolvedValue('final report');
+
+    const stateStore = new StateStore(tmpRoot);
+    const worktreeManager = new WorktreeManager(tmpRoot);
+    const cleanupSpy = vi.spyOn(worktreeManager, 'cleanupByRunId');
+
+    const session = CaptainSession.create({ projectRoot: tmpRoot });
+    const dispatcher = new ToolDispatcher();
+    const workflow = { steps: [], completion: { strategy: 'judge_approval' as const, fallback: 'max_passes' as const } } as any;
+    const runner = new JudgmentRunner(
+      captainAdapter,
+      agentRegistry,
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    await runner.run('Do it');
+
+    // Cleanup should have been called for the run_execute's runId.
+    expect(cleanupSpy).toHaveBeenCalled();
+    const calledWith = cleanupSpy.mock.calls.map((c) => c[0]);
+    expect(calledWith.some((id) => id.startsWith('workflow'))).toBe(false); // sanity
+    expect(calledWith.some((id) => id.includes('task-1'))).toBe(true);
+  });
+
   it('legacy mode (no session/dispatcher) still uses executeNativeToolLoop fallback', async () => {
     // Verifies backwards compat: pre-M1.5 constructors keep working.
     const agent = createAgent('agent-a');

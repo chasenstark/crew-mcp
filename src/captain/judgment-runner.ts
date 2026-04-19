@@ -482,28 +482,31 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         if (call.toolName === 'run_execute') {
           // Long-running subagent. Dispatch via ToolDispatcher; the tool_result
           // will arrive on run:complete and trigger the next captain turn.
+          //
+          // S4: no activeAbortController shuffle. Each dispatched task owns
+          // its own per-call AbortController inside the dispatcher's map;
+          // taskCtx.signal is what cooperative work should observe.
+          //
+          // subagentRunId matches the worktree runKey the handler will
+          // derive (workflowRunId:taskId:executionCountBeforeIncrement),
+          // so the cleanup listener can target the right worktree.
+          const taskId = decision.target?.taskId ?? '';
+          const executionCountBefore = runtime.taskExecutionCounts[taskId] ?? 0;
+          const subagentRunId = `${runtime.runId}:${taskId}:${executionCountBefore}`;
           return {
             kind: 'dispatched',
             task: {
               toolCallId: call.toolCallId,
               toolName: 'run_execute',
-              runId: runtime.runId,
-              run: async (taskCtx) => {
-                const previousController = this.activeAbortController;
-                this.activeAbortController = new AbortController();
-                const mergedSignal = taskCtx.signal;
-                try {
-                  await this.executeActionDecision(decision, runtime, 'adapter');
-                  return {
-                    ok: true,
-                    action: 'run_execute',
-                    taskId: decision.target?.taskId,
-                    sequence: runtime.actionHistory.length,
-                  };
-                } finally {
-                  this.activeAbortController = previousController;
-                  void mergedSignal;
-                }
+              runId: subagentRunId,
+              run: async (_taskCtx) => {
+                await this.executeActionDecision(decision, runtime, 'adapter');
+                return {
+                  ok: true,
+                  action: 'run_execute',
+                  taskId,
+                  sequence: runtime.actionHistory.length,
+                };
               },
             },
           };
@@ -1152,10 +1155,30 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
             );
           }
 
-          let worktree = runtime.taskWorktrees[task.id];
-          if (!worktree) {
-            worktree = await this.worktreeManager.createWorktree(task.id);
-            runtime.taskWorktrees[task.id] = worktree;
+          // M1.5-14: session-loop runs use the run-keyed worktree API
+          // (.crew/runs/<subRunId>/worktree/). Each run_execute dispatch
+          // gets a unique subRunId so concurrent run_executes never share
+          // a worktree and so the dispatcher cleanup hook
+          // (cleanupByRunId on terminal events) can release resources
+          // eagerly. Iteration on the same task produces a fresh
+          // worktree per call — the captain is expected to carry state
+          // via the conversation + file-modified outputs, not the
+          // worktree directory.
+          //
+          // Legacy (no session) path keeps the cached task-keyed layout
+          // to preserve judgment-runner.test.ts fixtures exactly.
+          const useRunKeyed = Boolean(this.session && this.dispatcher);
+          let worktree: string;
+          let runKey: string | undefined;
+          if (useRunKeyed) {
+            runKey = `${runtime.runId}:${task.id}:${executionCount}`;
+            worktree = await this.worktreeManager.createRunWorktree(runKey);
+          } else {
+            worktree = runtime.taskWorktrees[task.id];
+            if (!worktree) {
+              worktree = await this.worktreeManager.createWorktree(task.id);
+              runtime.taskWorktrees[task.id] = worktree;
+            }
           }
 
           const artifacts = this.ensureTaskArtifacts(runtime, task.id);
@@ -1188,7 +1211,9 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
 
           if (agentResult.filesModified.length === 0) {
             try {
-              const detectedFiles = await this.worktreeManager.getModifiedFiles(task.id);
+              const detectedFiles = useRunKeyed && runKey !== undefined
+                ? await this.worktreeManager.getModifiedFilesByRun(runKey)
+                : await this.worktreeManager.getModifiedFiles(task.id);
               if (detectedFiles.length > 0) {
                 agentResult.filesModified = detectedFiles;
               }
