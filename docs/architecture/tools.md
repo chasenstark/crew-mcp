@@ -41,13 +41,15 @@ into three shapes:
 ## Adding a tool
 
 1. Create the tool file under `src/captain/tools/`:
-   - Zod input schema
-   - Description string
-   - Optional `build*ActionEntry()` helper
+   - Zod input schema — exported as `<name>InputSchema`
+   - Description string — exported as `<NAME>_DESCRIPTION`
    - Handler (for sync) or `plan*` helper (for dispatched)
 2. Register the tool in `src/captain/tools/catalog.ts`:
    - Append to `M3_TOOL_NAMES`
-   - Add entries to `DESCRIPTIONS` + `INPUT_SCHEMAS`
+   - Add an import-line for the schema + description and wire into
+     `DESCRIPTIONS` + `INPUT_SCHEMAS`. `catalog.ts` is the router — do not
+     re-declare the schema here (see `test/captain/tools/catalog.test.ts`
+     "catalog schema + description parity" which locks this by identity).
 3. Route it in `src/captain/judgment-runner.ts:handleM3ToolCallFromAdapter`
    (for sync) or `buildM3SessionLoopPair.scheduler` (for dispatched).
 4. Write a test under `test/captain/tools/<name>.test.ts` and extend

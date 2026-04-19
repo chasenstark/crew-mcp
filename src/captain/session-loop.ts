@@ -310,11 +310,16 @@ export class SessionLoop {
     // cleanly. M3-10b deletes the legacy path that never hit this case;
     // the M3 path may hit it if the captain stops mid-conversation without
     // calling finish.
+    //
+    // Skip when `this.done` is already true — that means a tool handler
+    // (typically finish) called requestExit inside the turn, so the
+    // "quiet turn" is expected, not a bug, and we don't want a misleading
+    // warn log.
     const quietTurn =
       !result.done &&
       !result.assistantText &&
       (!result.toolCalls || result.toolCalls.length === 0);
-    if (quietTurn && this.dispatcher.inFlightCount() === 0) {
+    if (quietTurn && !this.done && this.dispatcher.inFlightCount() === 0) {
       logger.warn('[session-loop] captain turn produced no output and no tool calls; exiting');
       this.done = true;
     }

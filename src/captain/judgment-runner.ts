@@ -1639,11 +1639,13 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     const catalog = this.getM3Catalog();
     const actionServer = catalog.buildActionServer();
     const pendingDispatched = new Map<string, SessionLoopToolCall>();
-    // Mutable summary for the finish tool. The handler calls
-    // `dispatchFinish(session, loop, input)` which does the session append +
-    // loop.requestExit; the summary is captured here so the turn-result
-    // carries `finalReport` for callers that read it off the turn return.
-    const finishState: { summary: string | undefined } = { summary: undefined };
+    // Finish semantics: the handler calls `dispatchFinish(session, loop,
+    // input)` which is the SINGLE canonical path — it appends the
+    // assistant summary and calls loop.requestExit(summary). The loop's
+    // `finalReport` is what surfaces back to executeSessionLoop; no
+    // turn-result done/finalReport indirection needed. The quiet-turn
+    // safety net in SessionLoop.runOneTurn already guards with
+    // `!this.done` so an explicit requestExit doesn't trip it.
 
     const captainTurn: SessionLoopTurn = {
       execute: async (args) => {
@@ -1653,7 +1655,6 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           );
         }
         pendingDispatched.clear();
-        finishState.summary = undefined;
 
         const agents = catalog.toPromptAgentInventory();
         const tools = actionServer.listTools();
@@ -1683,9 +1684,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         const result = await this.captain.executeWithTools(
           tools,
           messages,
-          (call) => this.handleM3ToolCallFromAdapter(call, actionServer, pendingDispatched, (f) => {
-            finishState.summary = f.summary;
-          }, loopHolder),
+          (call) => this.handleM3ToolCallFromAdapter(call, actionServer, pendingDispatched, loopHolder),
           {
             signal: args.signal,
             workingDirectory: process.cwd(),
@@ -1710,8 +1709,10 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         const toolCalls = [...pendingDispatched.values()];
         return {
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-          done: finishState.summary !== undefined,
-          finalReport: finishState.summary,
+          // `done` + `finalReport` are driven by SessionLoop.requestExit
+          // (invoked inside dispatchFinish) — not by the turn-result.
+          // Having one canonical exit path avoids the "which path won"
+          // confusion during debugging.
           providerSessionRejected:
             result.status === 'failed' &&
             typeof result.error === 'string' &&
@@ -1814,7 +1815,6 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     call: { name: string; input: Record<string, unknown> },
     actionServer: CaptainActionServer,
     pendingDispatched: Map<string, SessionLoopToolCall>,
-    onFinish: (signal: { summary: string }) => void,
     loopHolder: { loop?: SessionLoop },
   ): Promise<{ output: unknown }> {
     const normalized = actionServer.resolveToolCall(call);
@@ -1839,23 +1839,30 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       const summary = typeof normalized.input.summary === 'string'
         ? normalized.input.summary
         : '';
-      if (this.session && loopHolder.loop && summary) {
-        // Route through the canonical dispatchFinish helper — appends the
-        // summary as an assistant message and calls loop.requestExit so the
-        // loop exits on the next scheduleNextTurn check. Mirrors the
-        // contract documented in docs/architecture/tools.md.
-        const outcome = typeof normalized.input.outcome === 'string'
-          ? normalized.input.outcome as 'success' | 'partial' | 'failed'
-          : undefined;
-        dispatchFinish(this.session, loopHolder.loop, { summary, outcome });
-      } else if (this.session && summary) {
-        // Fallback when loop hasn't been populated yet (should not happen
-        // in production — the runner populates loopHolder just after
-        // constructing the SessionLoop). Keep the append so the summary
-        // still lands in the durable log.
-        this.session.appendAssistantMessage(summary);
+      if (!summary) {
+        return { output: { status: 'error', error: 'finish requires a non-empty summary' } };
       }
-      onFinish({ summary });
+      if (!this.session || !loopHolder.loop) {
+        // Invariant: executeSessionLoop populates loopHolder.loop synchronously
+        // before loop.run() starts, so this branch is unreachable in
+        // production. If a future refactor moves the assignment, fail fast
+        // rather than silently skipping requestExit.
+        throw new Error(
+          '[judgment-runner] finish handler reached without session+loop wired — check executeSessionLoop ordering.',
+        );
+      }
+      // Validate outcome against the enum rather than casting — a bogus
+      // value becomes `undefined` (matches `finishInputSchema.outcome`
+      // being optional).
+      const rawOutcome = normalized.input.outcome;
+      const outcome: 'success' | 'partial' | 'failed' | undefined =
+        rawOutcome === 'success' || rawOutcome === 'partial' || rawOutcome === 'failed'
+          ? rawOutcome
+          : undefined;
+      // Canonical exit path (review NEW-A/B): dispatchFinish appends the
+      // assistant summary AND calls loop.requestExit. The loop's
+      // `finalReport` is what surfaces to executeSessionLoop.
+      dispatchFinish(this.session, loopHolder.loop, { summary, outcome });
       return { output: { status: 'ok', outcome: 'finished', summary } };
     }
 

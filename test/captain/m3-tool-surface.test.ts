@@ -324,6 +324,13 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       }));
       const session = CaptainSession.create({ projectRoot });
       session.appendUserMessage(`trigger: ${errorText}`);
+      // Seed a non-undefined providerSessionRef BEFORE the run — this is
+      // the load-bearing part of the assertion. If the regex fails to
+      // match, the session-loop's replay path never fires, the ref
+      // survives, and our post-run assertion catches it. Without this
+      // sentinel the ref would be `undefined` both before and after
+      // regardless of regex behavior (review Finding 7 follow-up).
+      session.providerSessionRef = `sentinel-ref-${errorText.length}`;
       const dispatcher = new ToolDispatcher();
       const runner = new JudgmentRunner(
         captain,
@@ -337,9 +344,9 @@ describe('JudgmentRunner toolSurface option (M3-10a)', () => {
       // also fails; the loop throws per N9 (two consecutive rejections).
       // We catch that to isolate the assertion on replay-detection plumbing.
       await runner.run(`trigger: ${errorText}`).catch(() => undefined);
-      // If the regex correctly detected session-rejection on at least the
-      // first turn, the session log should NOT carry a providerSessionRef
-      // any longer (dropped during replay detection).
+      // The regex correctly detected session-rejection on the first turn
+      // → session-loop cleared the sentinel ref during replay. If the
+      // regex tightens and misses any variant, the ref survives.
       expect(session.providerSessionRef).toBeUndefined();
     }
   });
