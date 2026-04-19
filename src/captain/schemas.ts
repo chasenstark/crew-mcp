@@ -1,13 +1,17 @@
 import { z } from 'zod';
 
 // Step 1: DECOMPOSE
+// M3-6: `role` is now `z.string()` — the hard enum
+// (implement|review|test|refactor|document|analyze) was tied to the 11-verb
+// controller's capability gate (dropped in M3-2). Free-form strings let
+// users decompose with domain-appropriate roles (e.g., "devops", "security").
 export const DecomposeOutputSchema = z.object({
   reasoning: z.string().describe('Brief explanation of how the request was broken down (2-3 sentences)'),
   tasks: z.array(z.object({
     id: z.string().describe("Short identifier, e.g. 'task-1'"),
     description: z.string().describe('What this task accomplishes'),
     agent: z.string().describe('Which agent should handle this'),
-    role: z.enum(['implement', 'review', 'test', 'refactor', 'document', 'analyze']),
+    role: z.string().describe('The semantic role the task plays (e.g. implement, review, devops)'),
     dependencies: z.array(z.string()).describe('IDs of tasks that must complete first'),
     scope: z.object({
       files: z.array(z.string()).optional().describe('Specific files/directories involved'),

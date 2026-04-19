@@ -19,8 +19,27 @@
 // at the front of the FIFO, and a second message answers the other).
 
 import { randomUUID } from 'crypto';
+import { z } from 'zod';
+import type { ActionCatalogEntry } from '../action-server.js';
 import type { CaptainSession } from '../session.js';
 import type { ToolDispatcher } from '../tool-dispatcher.js';
+
+export const askUserInputSchema = z.object({
+  question: z.string().min(1),
+});
+
+export type AskUserInput = z.infer<typeof askUserInputSchema>;
+
+export const ASK_USER_DESCRIPTION =
+  'Block and wait for a user response. Use only when genuinely blocked.';
+
+export function buildAskUserActionEntry(): ActionCatalogEntry {
+  return {
+    name: 'ask_user',
+    description: ASK_USER_DESCRIPTION,
+    inputSchema: askUserInputSchema,
+  };
+}
 
 export interface DispatchAskUserArgs {
   session: CaptainSession;

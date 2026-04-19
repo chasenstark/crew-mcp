@@ -199,6 +199,29 @@ export class SessionLoop {
     this.exitResolver();
   }
 
+  /**
+   * M3 seam: mark the session as done without requiring the current captain
+   * turn's result to carry `done: true`. Used by the `finish` tool's handler
+   * (M3-6) — the handler appends the final-report assistant message, calls
+   * requestExit(), and returns a synchronous tool_result. The current turn
+   * completes normally; the outer while loop then sees `this.done === true`
+   * and exits.
+   *
+   * Subsequent events (tool_completed from concurrent run_agent dispatches,
+   * user_message) are ignored — the loop's scheduleNextTurn branch exits
+   * early when `this.done` is set.
+   */
+  requestExit(finalReport?: string): void {
+    if (this.done) return;
+    this.done = true;
+    if (finalReport !== undefined) this.finalReport = finalReport;
+    // Resolve the exit promise if no turn is currently running; otherwise the
+    // turn's finally block handles it (see scheduleNextTurn).
+    if (!this.turnInFlight) {
+      this.exitResolver();
+    }
+  }
+
   private wireDispatcherEvents(): void {
     this.disposeListeners.push(
       this.dispatcher.onEvent('run:complete', (info) => {

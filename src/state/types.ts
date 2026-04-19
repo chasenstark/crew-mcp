@@ -7,7 +7,12 @@ export interface DecomposeOutputRef {
     id: string;
     description: string;
     agent: string;
-    role: 'implement' | 'review' | 'test' | 'refactor' | 'document' | 'analyze';
+    /**
+     * Free-form role string. The hard enum was dropped in M3 alongside the
+     * capability-gate (M3-2). Writers emit whatever the captain produces;
+     * readers MUST NOT assume a bounded set.
+     */
+    role: string;
     dependencies: string[];
     scope: { files?: string[]; description: string };
     estimatedComplexity: 'low' | 'medium' | 'high';
