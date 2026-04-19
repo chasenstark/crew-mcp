@@ -18,18 +18,22 @@ User: "Build a DatePicker component. Claude builds, Codex reviews."
 
 ## How It Works
 
-The captain runs a **6-step pipeline** for each workflow cycle:
+The captain is a CLI-backed LLM that drives the crew through **8 tools**:
 
-| Step | Purpose |
+| Tool | Purpose |
 |------|---------|
-| **Decompose** | Break the request into tasks, assign agents |
-| **Dispatch** | Craft a focused prompt for the assigned agent |
-| **Ingest** | Parse agent output, extract structured findings |
-| **Summarize** | Compress results for future context |
-| **Judge** | Decide: done, iterate, or ask the user |
-| **Report** | Summarize results in natural language |
+| **run_agent** | Delegate a bounded task to a named subagent |
+| **list_agents** | Discover available agents + capabilities + health |
+| **ask_user** | Block until the user answers |
+| **message_user** | Narrate without ending the turn |
+| **plan_tasks** | Decompose into structured tasks (optional wrapper) |
+| **analyze_output** | Structured assessment of agent output (optional) |
+| **compress_context** | Terse summary for the next pass (optional) |
+| **finish** | Emit final report and terminate |
 
-Each agent works in its own **git worktree** — full repo access, zero interference. The captain uses **Zod schemas** with native JSON schema enforcement for structured LLM output at every step.
+Each `run_agent` call spawns the subagent in its own **per-run git worktree** at `.crew/runs/<runId>/worktree/` — full repo access, zero interference. The captain's session is durable: messages persist across invocations, and the `providerSessionRef` lets Claude / Codex / Gemini resume natively without replay when the environment hasn't drifted.
+
+See `docs/architecture/tools.md` for the tool surface, `docs/architecture/session.md` for how the session + dispatcher + ToolCatalog fit together, and `docs/architecture/captain-portability.md` for the captain support matrix.
 
 ## Architecture Notes
 
@@ -191,17 +195,16 @@ Health-checks all registered agents and shows which are installed and authentica
   ✗ codex: not installed
 ```
 
-### `crew resume`
+### Session continuity (post-M3)
 
-Resumes an interrupted workflow from `.crew/state.json`.
+`crew resume` was removed in M3. `crew run` auto-continues any durable
+session under `.crew/` without an explicit resume step — the captain
+picks up where the prior invocation left off. If the captain environment
+drifted (new CLI version, tool-schema bump), one automatic full-message-log
+replay reconciles state on the next turn; subsequent turns use native
+resume again.
 
-```bash
-# Resume and fail if user input is required
-crew resume
-
-# Resume and prompt in terminal if user input is required
-crew resume --on-ask-user prompt
-```
+To discard a session entirely, use `crew state reset`.
 
 ## Configuration
 
