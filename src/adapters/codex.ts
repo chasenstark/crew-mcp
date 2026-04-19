@@ -687,7 +687,14 @@ export class CodexAdapter implements AgentAdapter {
       context.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
     };
     const cliVersion = await this.getCliVersionTag();
-    const configFlags = this.buildPerRunConfigFlags();
+    // M3-8: if the session-loop supplied a `codex`-kind mcpRegistration, its
+    // `configOverrideArgv` is the already-serialized `-c mcp_servers.*=...`
+    // list that `toCodexConfigOverrides(catalog)` emits. Threading it
+    // through here replaces M0.5's empty stub.
+    const configFlags =
+      context.mcpRegistration?.kind === 'codex'
+        ? [...context.mcpRegistration.configOverrideArgv]
+        : this.buildPerRunConfigFlags();
 
     let providerSession = {
       provider: 'codex' as const,

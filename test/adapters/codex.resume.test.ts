@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildCodexResumeArgs } from '../../src/adapters/codex.js';
+import { toCodexConfigOverrides } from '../../src/captain/mcp-registration.js';
 
 describe('buildCodexResumeArgs', () => {
   const prompt = 'Say hi.';
@@ -86,5 +87,24 @@ describe('buildCodexResumeArgs', () => {
   it('does not inject --config from any env var (CREW_CODEX_CONFIG is advisory only)', () => {
     const args = buildCodexResumeArgs({ sessionId: 'sid' }, prompt);
     expect(args).not.toContain('--config');
+  });
+
+  it('threads a real catalog through toCodexConfigOverrides into the argv (M3-8)', () => {
+    const overrides = toCodexConfigOverrides({
+      mcpServers: [{ name: 'crew', command: '/bin/crew-mcp', args: ['--namespace', 'mcp__crew__'] }],
+    });
+    const args = buildCodexResumeArgs({ sessionId: 'sid' }, prompt, overrides);
+    expect(args).toEqual([
+      'exec',
+      'resume',
+      'sid',
+      '--json',
+      '--skip-git-repo-check',
+      prompt,
+      '-c',
+      'mcp_servers.crew.command="/bin/crew-mcp"',
+      '-c',
+      'mcp_servers.crew.args=["--namespace", "mcp__crew__"]',
+    ]);
   });
 });

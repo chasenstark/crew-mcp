@@ -145,6 +145,40 @@ export interface GeminiMcpSettings {
  * Both derive from the catalog's server list, so drift is impossible as long
  * as the callers use this function instead of hand-rolling either half.
  */
+/**
+ * Thin helper the session-loop uses when building the per-turn adapter
+ * payload. Given the captain adapter name, returns the `McpRegistrationPayload`
+ * the adapter will consume. Keeps the per-captain branching in one place so
+ * M3-8 adapters don't each reimplement the catalog→shape projection.
+ *
+ * Unknown adapter names (generic, openai-compatible) return undefined —
+ * those adapters do not yet participate in MCP registration.
+ */
+export function resolveCaptainConverter(
+  adapterName: string,
+  catalog: ToolCatalog,
+): import('../adapters/types.js').McpRegistrationPayload | undefined {
+  switch (adapterName) {
+    case 'claude-code':
+      return {
+        kind: 'claude-code',
+        inlineConfigJson: toClaudeMcpConfigJson(catalog),
+      };
+    case 'gemini-cli':
+      return {
+        kind: 'gemini-cli',
+        allowedServerNames: toGeminiMcpSettings(catalog).allowedServerNames,
+      };
+    case 'codex':
+      return {
+        kind: 'codex',
+        configOverrideArgv: toCodexConfigOverrides(catalog),
+      };
+    default:
+      return undefined;
+  }
+}
+
 export function toGeminiMcpSettings(catalog: ToolCatalog): GeminiMcpSettings {
   const servers = catalog.mcpServers ?? [];
   const mcpServers: GeminiMcpSettings['settingsJson']['mcpServers'] = {};

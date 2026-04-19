@@ -3,6 +3,7 @@ import {
   toCodexConfigOverrides,
   toClaudeMcpConfigJson,
   toGeminiMcpSettings,
+  resolveCaptainConverter,
   type ToolCatalog,
 } from '../../src/captain/mcp-registration.js';
 
@@ -239,6 +240,30 @@ describe('three-way converter parity', () => {
     const geminiSettings = toGeminiMcpSettings(extended);
     expect(geminiSettings.settingsJson.mcpServers.delta).toEqual({ command: '/bin/d' });
     expect(geminiSettings.allowedServerNames).toContain('delta');
+  });
+
+  it('resolveCaptainConverter returns the matching payload for each captain', () => {
+    const claude = resolveCaptainConverter('claude-code', threeServerCatalog);
+    expect(claude?.kind).toBe('claude-code');
+    if (claude?.kind === 'claude-code') {
+      const parsed = JSON.parse(claude.inlineConfigJson);
+      expect(Object.keys(parsed.mcpServers)).toContain('alpha');
+    }
+
+    const gemini = resolveCaptainConverter('gemini-cli', threeServerCatalog);
+    expect(gemini?.kind).toBe('gemini-cli');
+    if (gemini?.kind === 'gemini-cli') {
+      expect(gemini.allowedServerNames).toEqual(['alpha', 'bravo', 'charlie']);
+    }
+
+    const codex = resolveCaptainConverter('codex', threeServerCatalog);
+    expect(codex?.kind).toBe('codex');
+    if (codex?.kind === 'codex') {
+      expect(codex.configOverrideArgv.some((a) => a.startsWith('mcp_servers.alpha'))).toBe(true);
+    }
+
+    expect(resolveCaptainConverter('generic', threeServerCatalog)).toBeUndefined();
+    expect(resolveCaptainConverter('openai-compatible', threeServerCatalog)).toBeUndefined();
   });
 
   it('drift invariant: removing a server propagates uniformly', () => {

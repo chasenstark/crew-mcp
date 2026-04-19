@@ -186,15 +186,43 @@ export const GEMINI_MIN_VERSION = { major: 0, minor: 20, patch: 0 } as const;
  * Returns the argv fragment for a `gemini -o stream-json` resume invocation.
  * The prompt is passed via `--prompt` (not positional) on resume turns; seed
  * turns use positional since no `--resume` target exists yet.
+ *
+ * When the session-loop supplies an `allowedServerNames` list (via
+ * `McpRegistrationPayload.kind === 'gemini-cli'`), the flag
+ * `--allowed-mcp-server-names <csv>` is appended. Empty list → no flag so
+ * argv stays clean when the catalog has no servers.
  */
 export function buildGeminiResumeArgs(
   sessionId: string | undefined,
   prompt: string,
+  options?: { readonly allowedServerNames?: readonly string[] },
 ): string[] {
-  if (sessionId) {
-    return ['-o', 'stream-json', '--resume', sessionId, '--prompt', prompt];
+  const base: string[] = sessionId
+    ? ['-o', 'stream-json', '--resume', sessionId, '--prompt', prompt]
+    : ['-o', 'stream-json', prompt];
+  const allowed = options?.allowedServerNames;
+  if (allowed && allowed.length > 0) {
+    // Allowed-names is a flag that precedes any positional prompt; we
+    // prepend it to the stream-json options to keep the prompt at the tail
+    // for both seed and resume calls.
+    return injectAllowedMcpNames(base, allowed);
   }
-  return ['-o', 'stream-json', prompt];
+  return base;
+}
+
+function injectAllowedMcpNames(
+  args: string[],
+  allowed: readonly string[],
+): string[] {
+  // Insert after `-o stream-json` so the prompt (positional or via --prompt)
+  // stays at the end.
+  const out = [...args];
+  const csv = allowed.join(',');
+  // Find index right after `stream-json` token.
+  const idx = out.findIndex((t, i) => t === 'stream-json' && out[i - 1] === '-o');
+  const insertAt = idx === -1 ? 0 : idx + 1;
+  out.splice(insertAt, 0, '--allowed-mcp-server-names', csv);
+  return out;
 }
 
 export function isInvalidSessionStderr(stderr: string): boolean {
@@ -468,8 +496,15 @@ export class GeminiCliAdapter implements AgentAdapter {
       { continueFromSession: Boolean(providerSession.sessionId) },
     );
 
+    const allowedServerNames =
+      context.mcpRegistration?.kind === 'gemini-cli'
+        ? context.mcpRegistration.allowedServerNames
+        : undefined;
+
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
-      const args = buildGeminiResumeArgs(providerSession.sessionId, prompt);
+      const args = buildGeminiResumeArgs(providerSession.sessionId, prompt, {
+        allowedServerNames,
+      });
 
       const result = await execa('gemini', args, {
         cwd: context.workingDirectory,

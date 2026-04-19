@@ -43,12 +43,42 @@ export interface ToolLoopResult {
   };
 }
 
+/**
+ * Per-invocation MCP wiring the session-loop hands to an adapter via
+ * `ToolLoopContext.mcpRegistration`. Each captain CLI has a different native
+ * shape — the session-loop projects a single `ToolCatalog` through
+ * `resolveCaptainConverter` (M3-8 wiring) and attaches the result here so the
+ * adapter can extract what it needs.
+ *
+ * - `claude-code`: `inlineConfigJson` goes to `--mcp-config <json>`.
+ * - `gemini-cli`: `allowedServerNames` goes to `--allowed-mcp-server-names <csv>`.
+ * - `codex`: `configOverrideArgv` is the ready-to-spread `-c mcp_servers.*=...` argv.
+ *
+ * Adapters MUST tolerate an undefined `mcpRegistration` and the shape
+ * belonging to a different CLI (session-loop sends at most one shape per
+ * call, but resilience keeps cross-test wiring simple).
+ */
+export type McpRegistrationPayload =
+  | {
+      readonly kind: 'claude-code';
+      readonly inlineConfigJson: string;
+    }
+  | {
+      readonly kind: 'gemini-cli';
+      readonly allowedServerNames: readonly string[];
+    }
+  | {
+      readonly kind: 'codex';
+      readonly configOverrideArgv: readonly string[];
+    };
+
 export interface ToolLoopContext {
   signal?: AbortSignal;
   workingDirectory?: string;
   providerSession?: ProviderSession;
   toolNamespace?: string;
   toolSchemaHash?: string;
+  mcpRegistration?: McpRegistrationPayload;
   onProviderSession?: (session: ProviderSession | undefined) => void;
   onTranscriptUpdate?: (transcript: ToolLoopMessage[]) => void;
 }

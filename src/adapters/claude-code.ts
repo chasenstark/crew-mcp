@@ -45,6 +45,38 @@ const ClaudeResponseSchema = z.object({
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
 
+/**
+ * Exported argv builder for Claude's streaming tool-loop invocation.
+ * Lives outside the class so M3-8 tests can assert `--mcp-config` placement
+ * without spinning up a subprocess or mocking execa. Callers inside the
+ * adapter delegate to this to keep argv construction in one place.
+ */
+export function buildClaudeStreamArgs(opts: {
+  readonly resumedSessionId?: string;
+  readonly mcpConfigJson?: string;
+}): string[] {
+  const args = [
+    '-p',
+    '--input-format',
+    'stream-json',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--dangerously-skip-permissions',
+  ];
+  if (opts.resumedSessionId) {
+    args.push('--resume', opts.resumedSessionId);
+  }
+  // M3-8: per-invocation MCP config. Claude accepts either a file path or
+  // an inline JSON literal for `--mcp-config`; inline keeps install-time
+  // writes out. Session-loop attaches a `claude-code`-kind payload sourced
+  // from `toClaudeMcpConfigJson(catalog)`.
+  if (opts.mcpConfigJson !== undefined) {
+    args.push('--mcp-config', opts.mcpConfigJson);
+  }
+  return args;
+}
+
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
   if (text.length <= max) return text;
@@ -614,18 +646,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const cliVersion = await this.getCliVersionTag();
     const resumedSessionId = context.providerSession?.sessionId;
 
-    const args = [
-      '-p',
-      '--input-format',
-      'stream-json',
-      '--output-format',
-      'stream-json',
-      '--verbose',
-      '--dangerously-skip-permissions',
-    ];
-    if (resumedSessionId) {
-      args.push('--resume', resumedSessionId);
-    }
+    const args = buildClaudeStreamArgs({
+      resumedSessionId,
+      mcpConfigJson:
+        context.mcpRegistration?.kind === 'claude-code'
+          ? context.mcpRegistration.inlineConfigJson
+          : undefined,
+    });
 
     logger.info('[adapter:claude-code] spawning stream session', {
       cwd: context.workingDirectory,
