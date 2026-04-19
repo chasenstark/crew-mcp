@@ -26,17 +26,19 @@ fi
 # For each one we capture: pass/fail, elapsed wallclock, automatic-replay count
 # (from .crew/logs/*.log greppable markers).
 SCENARIOS=(
-  "1:single-turn-fresh-run"
-  "2:multi-turn-continuation"
-  "3:second-run-auto-continues"
-  "4:user-msg-during-subagent"
-  "5:cancel-subagent-by-id"
-  "6:two-concurrent-run_agent"
+  "1:trivial-message-finish"
+  "2:code-review-two-run_agents"
+  "3:long-run-user-interrupt"
+  "4:cancel-subagent-by-id"
+  "5:two-concurrent-run_agent"
+  "6:ask_user-roundtrip"
   "7:cli-upgrade-replay"
   "8:interrupt-and-resume"
 )
 
-OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m1.5-exit-smoke-log.md}"
+# M3-13: the script writes to the M3 exit log by default; M1.5 callers
+# can still override via OUTPUT_LOG when re-running the earlier matrix.
+OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m3-exit-smoke-log.md}"
 TMPDIR="$(mktemp -d -t crew-smoke-XXXXXX)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
