@@ -90,8 +90,3 @@ export interface PassSummary {
   filesInScope: string[];
 }
 
-export interface Message {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: string;
-}

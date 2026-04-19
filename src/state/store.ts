@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs';
 import { join } from 'path';
-import type { WorkflowState, PassSummary, Message } from './types.js';
+import type { WorkflowState, PassSummary } from './types.js';
 import { atomicWrite } from '../utils/atomic-write.js';
 
 export class StateStore {
@@ -109,25 +109,8 @@ export class StateStore {
     );
   }
 
-  saveConversation(messages: Message[]): void {
-    atomicWrite(
-      join(this.basePath, 'conversation.json'),
-      JSON.stringify(messages, null, 2),
-    );
-  }
-
-  loadConversation(): Message[] {
-    const path = join(this.basePath, 'conversation.json');
-    if (!existsSync(path)) return [];
-    try {
-      return JSON.parse(readFileSync(path, 'utf-8'));
-    } catch {
-      return [];
-    }
-  }
-
   clear(): void {
-    for (const sub of ['state.json', 'conversation.json', 'passes', 'summaries', 'runs']) {
+    for (const sub of ['state.json', 'passes', 'summaries', 'runs']) {
       const path = join(this.basePath, sub);
       if (existsSync(path)) {
         rmSync(path, { recursive: true, force: true });

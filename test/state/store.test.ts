@@ -125,15 +125,6 @@ describe('StateStore', () => {
     expect(runBSummaries[0].summary).toBe('summary b');
   });
 
-  it('saves and loads conversation', () => {
-    const messages = [
-      { role: 'user' as const, content: 'Hello', timestamp: '2024-01-01T00:00:00Z' },
-      { role: 'assistant' as const, content: 'Hi', timestamp: '2024-01-01T00:00:01Z' },
-    ];
-    store.saveConversation(messages);
-    expect(store.loadConversation()).toEqual(messages);
-  });
-
   it('clears all state', () => {
     store.saveState({
       status: 'running',
