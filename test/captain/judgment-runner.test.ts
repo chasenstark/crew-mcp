@@ -187,7 +187,7 @@ describe('JudgmentRunner', () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('executes a scripted judgment-mode workflow and persists schemaVersion 3 state', async () => {
+  it('executes a scripted judgment-mode workflow and persists schemaVersion 4 state', async () => {
     const { adapter } = createDecisionAdapter([
       { reasoning: 'start', action: 'run_decompose', payload: {} },
       { reasoning: 'pick task', action: 'select_task', payload: { taskId: 'task-1' } },
@@ -236,7 +236,7 @@ describe('JudgmentRunner', () => {
 
     const saved = stateStore.loadState() as WorkflowState;
     expect(saved.status).toBe('completed');
-    expect(saved.schemaVersion).toBe(3);
+    expect(saved.schemaVersion).toBe(4);
     expect(saved.executionMode).toBe('judgment');
     expect(saved.actionHistory?.some((record) => record.action === 'finalize_report')).toBe(true);
   });

@@ -626,7 +626,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
 
   private toWorkflowState(runtime: RuntimeState): WorkflowState {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       executionMode: 'judgment',
       runId: runtime.runId,
       status: 'running',

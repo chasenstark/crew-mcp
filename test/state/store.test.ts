@@ -31,7 +31,7 @@ describe('StateStore', () => {
     };
     store.saveState(state);
     const loaded = store.loadState();
-    expect(loaded).toEqual(state);
+    expect(loaded).toEqual({ ...state, schemaVersion: 4 });
   });
 
   it('returns null for missing state', () => {

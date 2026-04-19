@@ -1,33 +1,64 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'fs';
 import { join } from 'path';
 import type { WorkflowState, PassSummary } from './types.js';
 import { atomicWrite } from '../utils/atomic-write.js';
+import { CURRENT_STATE_SCHEMA_VERSION, migrateStateToV4 } from './migrations/v3-to-v4.js';
+import { logger } from '../utils/logger.js';
 
 export class StateStore {
   private basePath: string;
+  private legacyConversationHandled = false;
 
   constructor(projectRoot: string) {
     this.basePath = join(projectRoot, '.crew');
     mkdirSync(join(this.basePath, 'passes'), { recursive: true });
     mkdirSync(join(this.basePath, 'summaries'), { recursive: true });
     mkdirSync(join(this.basePath, 'runs'), { recursive: true });
+    this.renameLegacyConversationFile();
   }
 
   saveState(state: WorkflowState): void {
+    const versioned: WorkflowState = {
+      ...state,
+      schemaVersion: CURRENT_STATE_SCHEMA_VERSION,
+    };
     atomicWrite(
       join(this.basePath, 'state.json'),
-      JSON.stringify(state, null, 2),
+      JSON.stringify(versioned, null, 2),
     );
   }
 
   loadState(): WorkflowState | null {
     const path = join(this.basePath, 'state.json');
     if (!existsSync(path)) return null;
+    let raw: unknown;
     try {
-      return JSON.parse(readFileSync(path, 'utf-8'));
+      raw = JSON.parse(readFileSync(path, 'utf-8'));
     } catch {
       return null;
     }
+    return migrateStateToV4(raw);
+  }
+
+  private renameLegacyConversationFile(): void {
+    if (this.legacyConversationHandled) return;
+    const legacyPath = join(this.basePath, 'conversation.json');
+    if (!existsSync(legacyPath)) {
+      this.legacyConversationHandled = true;
+      return;
+    }
+    const renamedPath = join(this.basePath, 'conversation.legacy.json');
+    try {
+      renameSync(legacyPath, renamedPath);
+      logger.warn(
+        `[state] legacy .crew/conversation.json found; renamed to conversation.legacy.json. ` +
+          'The conversation persistence layer was removed; this file is no longer read.',
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`[state] failed to rename legacy conversation.json: ${message}`);
+    }
+    this.legacyConversationHandled = true;
   }
 
   hasInterruptedWorkflow(): boolean {
