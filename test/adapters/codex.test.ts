@@ -276,7 +276,10 @@ describe('CodexAdapter', () => {
 
       expect(result.status).toBe('completed');
       const cliArgs = mockExeca.mock.calls[0]?.[1] as string[];
-      const prompt = cliArgs[1];
+      // Argv shape: ['exec', '--json', '--skip-git-repo-check', <prompt>, ...overrides]
+      const skipGitIndex = cliArgs.indexOf('--skip-git-repo-check');
+      expect(skipGitIndex).toBeGreaterThan(-1);
+      const prompt = cliArgs[skipGitIndex + 1];
       expect(prompt).toContain('omitted 6 earlier transcript messages');
       expect(prompt).not.toContain('message-00-');
       expect(prompt).toContain('message-29-');

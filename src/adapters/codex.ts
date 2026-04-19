@@ -214,6 +214,33 @@ export function findError(events: CodexEvent[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Locked argv ordering for `codex exec` invocations under the resume path.
+ *
+ * Shape:
+ *   codex exec [resume <sid>] --json --skip-git-repo-check <prompt> [-c k=v ...]
+ *
+ * `--skip-git-repo-check` is always present — Codex 0.121 refuses to run in
+ * untrusted cwds (including /tmp worktrees) without it. Additional
+ * `-c k=v` overrides, if any, are appended after the prompt so argv order
+ * stays predictable when M0.5-3's MCP-server override builder feeds in.
+ */
+export function buildCodexResumeArgs(
+  session: { sessionId?: string; threadId?: string },
+  prompt: string,
+  overrideFlags: readonly string[] = [],
+): string[] {
+  const sessionId = session.sessionId ?? session.threadId;
+  const base = sessionId ? ['exec', 'resume', sessionId] : ['exec'];
+  return [
+    ...base,
+    '--json',
+    '--skip-git-repo-check',
+    prompt,
+    ...overrideFlags,
+  ];
+}
+
 export class CodexAdapter implements AgentAdapter {
   readonly name = AgentId.CODEX;
   readonly capabilities: AgentCapability[] = [
@@ -247,7 +274,14 @@ export class CodexAdapter implements AgentAdapter {
     try {
       const outputFile = join(tmpDir, 'output.json');
 
-      const args = ['exec', task.prompt, '--json', '-o', outputFile];
+      const args = [
+        'exec',
+        task.prompt,
+        '--json',
+        '--skip-git-repo-check',
+        '-o',
+        outputFile,
+      ];
       if (task.constraints?.model) {
         args.push('--model', task.constraints.model);
       }
@@ -467,6 +501,7 @@ export class CodexAdapter implements AgentAdapter {
         'exec',
         prompt,
         '--json',
+        '--skip-git-repo-check',
         '--output-schema',
         schemaFile,
         '-o',
@@ -809,23 +844,28 @@ export class CodexAdapter implements AgentAdapter {
     };
   }
 
+  /**
+   * Returns the argv fragment for per-run Codex overrides.
+   *
+   * Historical behavior wrote `--config <path>` from the `CREW_CODEX_CONFIG`
+   * env var, but Codex's `-c/--config` flag takes `key=value` TOML overrides,
+   * not a file path — so that wiring always errored. The env var is kept
+   * readable here only so M0.5-8 preflight can surface a one-time deprecation
+   * notice when it is set; it no longer contributes to argv.
+   *
+   * M0.5-3 will inject MCP-server overrides (e.g., `-c mcp_servers.crew.command=…`)
+   * via a separate builder that feeds into `buildResumeArgs`.
+   */
   private buildPerRunConfigFlags(): string[] {
-    const configPath = process.env.CREW_CODEX_CONFIG?.trim();
-    if (!configPath) return [];
-    return ['--config', configPath];
+    return [];
   }
 
   private buildResumeArgs(
     session: { sessionId?: string; threadId?: string },
     prompt: string,
-    configFlags: string[],
+    overrideFlags: string[],
   ): string[] {
-    const sessionId = session.sessionId ?? session.threadId;
-    if (!sessionId) {
-      return ['exec', prompt, '--json', ...configFlags];
-    }
-
-    return ['exec', 'resume', sessionId, '--json', prompt, ...configFlags];
+    return buildCodexResumeArgs(session, prompt, overrideFlags);
   }
 
   private extractThreadId(events: CodexEvent[]): string | undefined {
