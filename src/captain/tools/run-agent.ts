@@ -47,7 +47,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Delegate a bounded task to a named subagent. agent_id must come from list_agents; the prompt is what the agent sees verbatim. working_directory defaults to the run worktree.';
+  '**Primary work primitive.** Delegate a bounded task to a named subagent. agent_id must come from list_agents; write the agent\'s prompt inline — do NOT route through plan_tasks for single-task work. working_directory defaults to the run worktree.';
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;

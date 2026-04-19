@@ -26,7 +26,7 @@ export const compressContextInputSchema = z.object({
 export type CompressContextInput = z.infer<typeof compressContextInputSchema>;
 
 export const COMPRESS_CONTEXT_DESCRIPTION =
-  'Condense an analyzed output into a terse summary for the next pass.';
+  '**Optional.** Condense an analyzed output into a terse summary for the next pass. Reach for this when the guardrails emit the compression advisory (long session, accumulating message log).';
 
 export interface CompressContextContext {
   readonly captain: AgentAdapter;

@@ -22,7 +22,7 @@ export const analyzeOutputInputSchema = z.object({
 export type AnalyzeOutputInput = z.infer<typeof analyzeOutputInputSchema>;
 
 export const ANALYZE_OUTPUT_DESCRIPTION =
-  'Summarize an agent result into a structured assessment (decisions, concerns, review findings).';
+  '**Optional.** Summarize an agent result into a structured assessment (decisions, concerns, review findings). Skip for typical cases — reason about the raw tool_result inline.';
 
 export interface AnalyzeOutputContext {
   readonly captain: AgentAdapter;

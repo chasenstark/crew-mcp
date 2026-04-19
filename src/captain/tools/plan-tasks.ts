@@ -21,7 +21,7 @@ export const planTasksInputSchema = z.object({
 export type PlanTasksInput = z.infer<typeof planTasksInputSchema>;
 
 export const PLAN_TASKS_DESCRIPTION =
-  'Decompose the user request into structured tasks (id, role, dependencies, scope).';
+  '**Optional.** Decompose the user request into structured tasks (id, role, dependencies, scope). Useful for multi-step work; for single-task work dispatch directly through run_agent.';
 
 export interface PlanTasksContext {
   readonly captain: AgentAdapter;

@@ -39,6 +39,34 @@ describe('ToolCatalog.toActionCatalog', () => {
     }
   });
 
+  it('tags run_agent as Primary and the three wrapper tools as Optional (M4-3)', () => {
+    const catalog = new ToolCatalog({ registry: registry(), workflow });
+    const by = Object.fromEntries(
+      catalog.toActionCatalog().map((e) => [e.name, e]),
+    );
+    expect(by.run_agent.description).toMatch(/^\*\*Primary work primitive\.\*\*/);
+    expect(by.plan_tasks.description).toMatch(/^\*\*Optional\.\*\*/);
+    expect(by.analyze_output.description).toMatch(/^\*\*Optional\.\*\*/);
+    expect(by.compress_context.description).toMatch(/^\*\*Optional\.\*\*/);
+    // No other tool carries a Primary/Optional tag — those four are the
+    // full set M4-3 marks.
+    const tagged = Object.values(by).filter((e) =>
+      /^\*\*(Primary|Optional)/.test(e.description),
+    );
+    expect(tagged.map((e) => e.name).sort()).toEqual(
+      ['analyze_output', 'compress_context', 'plan_tasks', 'run_agent'].sort(),
+    );
+  });
+
+  it('finish tells the captain to end as soon as the request is addressed (M4-3)', () => {
+    const catalog = new ToolCatalog({ registry: registry(), workflow });
+    const finish = catalog.toActionCatalog().find((e) => e.name === 'finish')!;
+    expect(finish.description).toContain(
+      'Call this as soon as the user\'s request is addressed',
+    );
+    expect(finish.description).toContain('Do NOT wait');
+  });
+
   it('run_agent schema requires agent_id + prompt', () => {
     const catalog = new ToolCatalog({ registry: registry(), workflow });
     const runAgent = catalog

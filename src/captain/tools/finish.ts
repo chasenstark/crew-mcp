@@ -29,7 +29,7 @@ export const finishInputSchema = z.object({
 export type FinishInput = z.infer<typeof finishInputSchema>;
 
 export const FINISH_DESCRIPTION =
-  'Emit the final report and terminate the session. Call when the user request is addressed.';
+  'Emit the final report and terminate the session. Call this as soon as the user\'s request is addressed. Do NOT wait for a structured review unless the request explicitly asked for one.';
 
 export interface FinishResult {
   readonly status: 'finished';
