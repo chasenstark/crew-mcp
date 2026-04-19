@@ -81,3 +81,93 @@ function toTomlString(value: string): string {
 function toTomlStringArray(values: readonly string[]): string {
   return `[${values.map(toTomlString).join(', ')}]`;
 }
+
+/**
+ * Turns a `ToolCatalog` into the inline JSON string Claude accepts via
+ * `claude --mcp-config <json-or-path>`. Shape:
+ *
+ *   { "mcpServers": { "<name>": { "command": ..., "args": ..., ... } } }
+ *
+ * Returns `"{}"` (valid, empty JSON object) when the catalog has no servers
+ * so the adapter can always pass the flag unconditionally. Claude treats
+ * `{}` as "no servers" — the flag itself is harmless.
+ *
+ * M3-8 threads this through claude-code.ts' argv assembly.
+ */
+export function toClaudeMcpConfigJson(catalog: ToolCatalog): string {
+  const servers = catalog.mcpServers ?? [];
+  if (servers.length === 0) return '{}';
+  const mcpServers: Record<string, {
+    command: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+  }> = {};
+  for (const server of servers) {
+    const entry: typeof mcpServers[string] = {
+      command: server.command,
+    };
+    if (server.args && server.args.length > 0) entry.args = [...server.args];
+    if (server.cwd) entry.cwd = server.cwd;
+    if (server.env) entry.env = { ...server.env };
+    mcpServers[server.name] = entry;
+  }
+  return JSON.stringify({ mcpServers });
+}
+
+export interface GeminiMcpSettings {
+  /**
+   * File content for `~/.gemini/settings.json`. Top-level shape is
+   * `{ mcpServers: { [name]: ... } }` matching upstream's documented
+   * format. M3-9 atomically writes this to disk when the catalog hash drifts.
+   */
+  readonly settingsJson: {
+    readonly mcpServers: Readonly<Record<string, {
+      readonly command: string;
+      readonly args?: readonly string[];
+      readonly cwd?: string;
+      readonly env?: Readonly<Record<string, string>>;
+    }>>;
+  };
+  /**
+   * CSV-ready list of server names, sorted deterministically so the
+   * CLI argv is stable across runs. Adapter joins with `,` and passes
+   * as `--allowed-mcp-server-names`.
+   */
+  readonly allowedServerNames: readonly string[];
+}
+
+/**
+ * Turns a `ToolCatalog` into the settings.json content + the per-invocation
+ * allowed-names list. Two outputs because Gemini's native wiring splits them:
+ * settings.json is file-based, allowed-names is per-invocation.
+ *
+ * Both derive from the catalog's server list, so drift is impossible as long
+ * as the callers use this function instead of hand-rolling either half.
+ */
+export function toGeminiMcpSettings(catalog: ToolCatalog): GeminiMcpSettings {
+  const servers = catalog.mcpServers ?? [];
+  const mcpServers: GeminiMcpSettings['settingsJson']['mcpServers'] = {};
+  const allowedServerNames: string[] = [];
+  for (const server of servers) {
+    const entry: GeminiMcpSettings['settingsJson']['mcpServers'][string] = {
+      command: server.command,
+    };
+    if (server.args && server.args.length > 0) {
+      Object.assign(entry, { args: [...server.args] });
+    }
+    if (server.cwd) {
+      Object.assign(entry, { cwd: server.cwd });
+    }
+    if (server.env) {
+      Object.assign(entry, { env: { ...server.env } });
+    }
+    (mcpServers as Record<string, unknown>)[server.name] = entry;
+    allowedServerNames.push(server.name);
+  }
+  allowedServerNames.sort();
+  return {
+    settingsJson: { mcpServers },
+    allowedServerNames,
+  };
+}

@@ -1,5 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { toCodexConfigOverrides, type ToolCatalog } from '../../src/captain/mcp-registration.js';
+import {
+  toCodexConfigOverrides,
+  toClaudeMcpConfigJson,
+  toGeminiMcpSettings,
+  type ToolCatalog,
+} from '../../src/captain/mcp-registration.js';
+
+// The 3-server fixture is forward-looking regression coverage for M5's real
+// multi-server catalog. M3 production ships ONE server entry (the `crew`
+// namespace proxy). Locking the three converters against a richer fixture
+// keeps drift impossible when the M5 catalog expands.
+const threeServerCatalog: ToolCatalog = {
+  mcpServers: [
+    { name: 'alpha', command: '/bin/a', args: ['--verbose'] },
+    { name: 'bravo', command: '/bin/b', cwd: '/tmp/b' },
+    {
+      name: 'charlie',
+      command: '/bin/c',
+      env: { LOG_LEVEL: 'debug', PORT: '4000' },
+    },
+  ],
+};
 
 describe('toCodexConfigOverrides', () => {
   it('returns [] for an empty catalog', () => {
@@ -90,5 +111,148 @@ describe('toCodexConfigOverrides', () => {
       '-c',
       'mcp_servers.b.command="/bin/b"',
     ]);
+  });
+});
+
+describe('toClaudeMcpConfigJson', () => {
+  it('returns "{}" for an empty catalog', () => {
+    expect(toClaudeMcpConfigJson({})).toBe('{}');
+    expect(toClaudeMcpConfigJson({ mcpServers: [] })).toBe('{}');
+  });
+
+  it('serializes a single server with only command', () => {
+    const json = toClaudeMcpConfigJson({
+      mcpServers: [{ name: 'crew', command: '/bin/crew-mcp' }],
+    });
+    expect(JSON.parse(json)).toEqual({
+      mcpServers: { crew: { command: '/bin/crew-mcp' } },
+    });
+  });
+
+  it('serializes args / cwd / env per server', () => {
+    const json = toClaudeMcpConfigJson(threeServerCatalog);
+    const parsed = JSON.parse(json);
+    expect(parsed.mcpServers.alpha).toEqual({ command: '/bin/a', args: ['--verbose'] });
+    expect(parsed.mcpServers.bravo).toEqual({ command: '/bin/b', cwd: '/tmp/b' });
+    expect(parsed.mcpServers.charlie).toEqual({
+      command: '/bin/c',
+      env: { LOG_LEVEL: 'debug', PORT: '4000' },
+    });
+  });
+
+  it('omits empty args arrays', () => {
+    const json = toClaudeMcpConfigJson({
+      mcpServers: [{ name: 'x', command: '/bin/x', args: [] }],
+    });
+    expect(JSON.parse(json).mcpServers.x).toEqual({ command: '/bin/x' });
+  });
+});
+
+describe('toGeminiMcpSettings', () => {
+  it('returns empty settings + empty allowedServerNames for an empty catalog', () => {
+    const out = toGeminiMcpSettings({});
+    expect(out.settingsJson.mcpServers).toEqual({});
+    expect(out.allowedServerNames).toEqual([]);
+  });
+
+  it('produces settings.json mcpServers + deterministic allowedServerNames', () => {
+    const out = toGeminiMcpSettings(threeServerCatalog);
+    expect(Object.keys(out.settingsJson.mcpServers).sort()).toEqual([
+      'alpha',
+      'bravo',
+      'charlie',
+    ]);
+    // Sorted alphabetically regardless of catalog order.
+    expect(out.allowedServerNames).toEqual(['alpha', 'bravo', 'charlie']);
+  });
+
+  it('preserves args / cwd / env round-trip', () => {
+    const out = toGeminiMcpSettings(threeServerCatalog);
+    expect(out.settingsJson.mcpServers.alpha).toEqual({
+      command: '/bin/a',
+      args: ['--verbose'],
+    });
+    expect(out.settingsJson.mcpServers.bravo).toEqual({
+      command: '/bin/b',
+      cwd: '/tmp/b',
+    });
+    expect(out.settingsJson.mcpServers.charlie).toEqual({
+      command: '/bin/c',
+      env: { LOG_LEVEL: 'debug', PORT: '4000' },
+    });
+  });
+
+  it('allowedServerNames is sorted deterministically even when catalog order changes', () => {
+    const a = toGeminiMcpSettings({
+      mcpServers: [
+        { name: 'zebra', command: '/z' },
+        { name: 'aardvark', command: '/a' },
+      ],
+    });
+    const b = toGeminiMcpSettings({
+      mcpServers: [
+        { name: 'aardvark', command: '/a' },
+        { name: 'zebra', command: '/z' },
+      ],
+    });
+    expect(a.allowedServerNames).toEqual(['aardvark', 'zebra']);
+    expect(b.allowedServerNames).toEqual(['aardvark', 'zebra']);
+  });
+});
+
+describe('three-way converter parity', () => {
+  it('every server appears exactly once in each projection', () => {
+    const codexArgv = toCodexConfigOverrides(threeServerCatalog);
+    const claudeJson = JSON.parse(toClaudeMcpConfigJson(threeServerCatalog));
+    const geminiSettings = toGeminiMcpSettings(threeServerCatalog);
+
+    for (const server of threeServerCatalog.mcpServers!) {
+      // Codex: each server name appears as the mcp_servers.<name>.command key
+      const codexMatches = codexArgv.filter((entry) =>
+        entry.startsWith(`mcp_servers.${server.name}.command=`),
+      );
+      expect(codexMatches.length).toBe(1);
+
+      expect(claudeJson.mcpServers[server.name]).toBeDefined();
+      expect(geminiSettings.settingsJson.mcpServers[server.name]).toBeDefined();
+      expect(geminiSettings.allowedServerNames).toContain(server.name);
+    }
+  });
+
+  it('drift invariant: adding a 4th server propagates to all three converters identically', () => {
+    const extended: ToolCatalog = {
+      mcpServers: [
+        ...(threeServerCatalog.mcpServers!),
+        { name: 'delta', command: '/bin/d' },
+      ],
+    };
+
+    // Codex
+    const codexArgv = toCodexConfigOverrides(extended);
+    expect(codexArgv.some((a) => a === 'mcp_servers.delta.command="/bin/d"')).toBe(true);
+
+    // Claude
+    const claudeJson = JSON.parse(toClaudeMcpConfigJson(extended));
+    expect(claudeJson.mcpServers.delta).toEqual({ command: '/bin/d' });
+
+    // Gemini
+    const geminiSettings = toGeminiMcpSettings(extended);
+    expect(geminiSettings.settingsJson.mcpServers.delta).toEqual({ command: '/bin/d' });
+    expect(geminiSettings.allowedServerNames).toContain('delta');
+  });
+
+  it('drift invariant: removing a server propagates uniformly', () => {
+    const reduced: ToolCatalog = {
+      mcpServers: threeServerCatalog.mcpServers!.filter((s) => s.name !== 'bravo'),
+    };
+    const codex = toCodexConfigOverrides(reduced);
+    expect(codex.some((e) => e.includes('mcp_servers.bravo'))).toBe(false);
+
+    const claude = JSON.parse(toClaudeMcpConfigJson(reduced));
+    expect(claude.mcpServers.bravo).toBeUndefined();
+
+    const gemini = toGeminiMcpSettings(reduced);
+    expect(gemini.settingsJson.mcpServers.bravo).toBeUndefined();
+    expect(gemini.allowedServerNames).not.toContain('bravo');
   });
 });
