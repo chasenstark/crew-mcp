@@ -193,3 +193,40 @@ describe('promptAgentInventoryFromRegistry helper', () => {
     expect(promptAgentInventoryFromRegistry(r)).toEqual(catalog.toPromptAgentInventory());
   });
 });
+
+describe('catalog schema + description parity with per-tool files', () => {
+  it('each catalog entry references the per-tool schema object by identity (not a copy)', async () => {
+    const { runAgentInputSchema, RUN_AGENT_DESCRIPTION } = await import('../../../src/captain/tools/run-agent.js');
+    const { listAgentsInputSchema, LIST_AGENTS_DESCRIPTION } = await import('../../../src/captain/tools/list-agents.js');
+    const { askUserInputSchema, ASK_USER_DESCRIPTION } = await import('../../../src/captain/tools/ask-user.js');
+    const { messageUserInputSchema, MESSAGE_USER_DESCRIPTION } = await import('../../../src/captain/tools/message-user.js');
+    const { planTasksInputSchema, PLAN_TASKS_DESCRIPTION } = await import('../../../src/captain/tools/plan-tasks.js');
+    const { analyzeOutputInputSchema, ANALYZE_OUTPUT_DESCRIPTION } = await import('../../../src/captain/tools/analyze-output.js');
+    const { compressContextInputSchema, COMPRESS_CONTEXT_DESCRIPTION } = await import('../../../src/captain/tools/compress-context.js');
+    const { finishInputSchema, FINISH_DESCRIPTION } = await import('../../../src/captain/tools/finish.js');
+
+    const catalog = new ToolCatalog({ registry: registry(), workflow });
+    const by = Object.fromEntries(
+      catalog.toActionCatalog().map((e) => [e.name, e]),
+    );
+
+    // Identity check prevents schema drift — if catalog.ts ever re-declares
+    // a schema rather than re-exporting, this test fails.
+    expect(by.run_agent.inputSchema).toBe(runAgentInputSchema);
+    expect(by.run_agent.description).toBe(RUN_AGENT_DESCRIPTION);
+    expect(by.list_agents.inputSchema).toBe(listAgentsInputSchema);
+    expect(by.list_agents.description).toBe(LIST_AGENTS_DESCRIPTION);
+    expect(by.ask_user.inputSchema).toBe(askUserInputSchema);
+    expect(by.ask_user.description).toBe(ASK_USER_DESCRIPTION);
+    expect(by.message_user.inputSchema).toBe(messageUserInputSchema);
+    expect(by.message_user.description).toBe(MESSAGE_USER_DESCRIPTION);
+    expect(by.plan_tasks.inputSchema).toBe(planTasksInputSchema);
+    expect(by.plan_tasks.description).toBe(PLAN_TASKS_DESCRIPTION);
+    expect(by.analyze_output.inputSchema).toBe(analyzeOutputInputSchema);
+    expect(by.analyze_output.description).toBe(ANALYZE_OUTPUT_DESCRIPTION);
+    expect(by.compress_context.inputSchema).toBe(compressContextInputSchema);
+    expect(by.compress_context.description).toBe(COMPRESS_CONTEXT_DESCRIPTION);
+    expect(by.finish.inputSchema).toBe(finishInputSchema);
+    expect(by.finish.description).toBe(FINISH_DESCRIPTION);
+  });
+});

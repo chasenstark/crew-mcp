@@ -20,12 +20,20 @@
  * declares the schemas; the scheduler declares the behavior.
  */
 
-import { z } from 'zod';
 import type { ToolDefinition } from '../../adapters/types.js';
 import type {
   AgentAdapter,
 } from '../../adapters/types.js';
 import type { AdapterRegistry } from '../../adapters/registry.js';
+import type { z } from 'zod';
+import { runAgentInputSchema, RUN_AGENT_DESCRIPTION } from './run-agent.js';
+import { listAgentsInputSchema, LIST_AGENTS_DESCRIPTION } from './list-agents.js';
+import { askUserInputSchema, ASK_USER_DESCRIPTION } from './ask-user.js';
+import { messageUserInputSchema, MESSAGE_USER_DESCRIPTION } from './message-user.js';
+import { planTasksInputSchema, PLAN_TASKS_DESCRIPTION } from './plan-tasks.js';
+import { analyzeOutputInputSchema, ANALYZE_OUTPUT_DESCRIPTION } from './analyze-output.js';
+import { compressContextInputSchema, COMPRESS_CONTEXT_DESCRIPTION } from './compress-context.js';
+import { finishInputSchema, FINISH_DESCRIPTION } from './finish.js';
 
 /**
  * Minimal registry surface the catalog needs. Accepts either the full
@@ -94,82 +102,34 @@ export interface ToolCatalogInit {
 }
 
 /**
- * Input schemas — the canonical contract for each tool. These are the ONLY
- * thing that feeds the schema hash; descriptions, agent inventory shifts,
- * and preset hints do not.
- */
-const runAgentInput = z.object({
-  agent_id: z.string().min(1),
-  prompt: z.string().min(1),
-  working_directory: z.string().optional(),
-  model: z.string().optional(),
-  capabilities_hint: z.array(z.string()).optional(),
-});
-
-const listAgentsInput = z.object({}).passthrough();
-
-const askUserInput = z.object({
-  question: z.string().min(1),
-});
-
-const messageUserInput = z.object({
-  text: z.string().min(1),
-});
-
-const planTasksInput = z.object({
-  user_request: z.string().min(1),
-  hints: z.array(z.string()).optional(),
-});
-
-const analyzeOutputInput = z.object({
-  task_description: z.string().min(1),
-  agent_output: z.string(),
-  files_modified: z.array(z.string()).optional(),
-});
-
-const compressContextInput = z.object({
-  analyzed_output: z.unknown(),
-  pass_number: z.number().optional(),
-});
-
-const finishInput = z.object({
-  summary: z.string().min(1),
-  outcome: z.enum(['success', 'partial', 'failed']).optional(),
-});
-
-/**
- * Descriptions — prompt material that DOES feed the schema hash (via
- * CaptainActionServer.listTools → JSON schema). Keep stable across releases
- * so providerSessionRef doesn't invalidate gratuitously.
+ * Descriptions + input schemas re-export the per-tool canonical values
+ * from each tool's own module. Keeping catalog a router (not a parallel
+ * declaration) means there's a single schema per tool across:
+ *   - the per-tool file's exported schema
+ *   - the ActionCatalogEntry the CaptainActionServer publishes
+ *   - the JSON Schema the captain sees
+ * Schema drift was the Finding 1 risk from the M3 review.
  */
 const DESCRIPTIONS: Record<M3ToolName, string> = {
-  run_agent:
-    'Delegate a bounded task to a named subagent. agent_id must come from list_agents; the prompt is what the agent sees verbatim. working_directory defaults to the run worktree.',
-  list_agents:
-    'Return the current agent inventory (name, capabilities, health, optional quota).',
-  ask_user:
-    'Block and wait for a user response. Use only when genuinely blocked.',
-  message_user:
-    'Write a message visible to the user without ending the turn.',
-  plan_tasks:
-    'Decompose the user request into structured tasks (id, role, dependencies, scope).',
-  analyze_output:
-    'Summarize an agent result into a structured assessment (decisions, concerns, review findings).',
-  compress_context:
-    'Condense an analyzed output into a terse summary for the next pass.',
-  finish:
-    'Emit the final report and terminate the session. Call when the user request is addressed.',
+  run_agent: RUN_AGENT_DESCRIPTION,
+  list_agents: LIST_AGENTS_DESCRIPTION,
+  ask_user: ASK_USER_DESCRIPTION,
+  message_user: MESSAGE_USER_DESCRIPTION,
+  plan_tasks: PLAN_TASKS_DESCRIPTION,
+  analyze_output: ANALYZE_OUTPUT_DESCRIPTION,
+  compress_context: COMPRESS_CONTEXT_DESCRIPTION,
+  finish: FINISH_DESCRIPTION,
 };
 
 const INPUT_SCHEMAS: Record<M3ToolName, z.ZodType> = {
-  run_agent: runAgentInput,
-  list_agents: listAgentsInput,
-  ask_user: askUserInput,
-  message_user: messageUserInput,
-  plan_tasks: planTasksInput,
-  analyze_output: analyzeOutputInput,
-  compress_context: compressContextInput,
-  finish: finishInput,
+  run_agent: runAgentInputSchema,
+  list_agents: listAgentsInputSchema,
+  ask_user: askUserInputSchema,
+  message_user: messageUserInputSchema,
+  plan_tasks: planTasksInputSchema,
+  analyze_output: analyzeOutputInputSchema,
+  compress_context: compressContextInputSchema,
+  finish: finishInputSchema,
 };
 
 /**
