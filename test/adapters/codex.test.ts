@@ -136,21 +136,26 @@ describe('CodexAdapter', () => {
       expect(tag).toBe('codex@0.120.0');
     });
 
-    it('falls back to parsing --help when --version does not provide a version', async () => {
-      mockExeca
-        .mockResolvedValueOnce({
-          stdout: '',
-          stderr: '',
-          exitCode: 0,
-        } as any)
-        .mockResolvedValueOnce({
-          stdout: 'codex v0.121.2',
-          stderr: '',
-          exitCode: 0,
-        } as any);
+    it('returns undefined when --version exits non-zero', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: '',
+        stderr: 'command not found',
+        exitCode: 127,
+      } as any);
 
       const tag = await adapter.getCliVersionTag();
-      expect(tag).toBe('codex@0.121.2');
+      expect(tag).toBeUndefined();
+    });
+
+    it('returns undefined when --version emits output without a version match', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const tag = await adapter.getCliVersionTag();
+      expect(tag).toBeUndefined();
     });
   });
 
@@ -483,9 +488,9 @@ describe('CodexAdapter', () => {
   });
 
   describe('healthCheck', () => {
-    it('returns available when codex --help succeeds', async () => {
+    it('returns available when codex --version succeeds', async () => {
       mockExeca.mockResolvedValueOnce({
-        stdout: 'codex v0.5.2\nUsage: codex [options]',
+        stdout: 'codex-cli 0.121.0',
         stderr: '',
         exitCode: 0,
       } as any);
@@ -493,7 +498,7 @@ describe('CodexAdapter', () => {
       const result = await adapter.healthCheck();
 
       expect(result.available).toBe(true);
-      expect(result.version).toBe('0.5.2');
+      expect(result.version).toBe('0.121.0');
     });
 
     it('returns unavailable when codex not found', async () => {
@@ -506,7 +511,7 @@ describe('CodexAdapter', () => {
       expect(result.error).toBe('Codex CLI not found');
     });
 
-    it('returns unavailable when --help fails', async () => {
+    it('returns unavailable when --version fails', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: '',
         stderr: 'unknown command',

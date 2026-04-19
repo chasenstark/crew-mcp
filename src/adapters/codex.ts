@@ -222,23 +222,11 @@ export class CodexAdapter implements AgentAdapter {
       timeout: 10_000,
       reject: false,
     });
-    if (versionResult.exitCode === 0) {
-      const match = `${versionResult.stdout ?? ''} ${versionResult.stderr ?? ''}`
-        .match(/(\d+\.\d+\.\d+)/);
-      if (match) {
-        return buildCliVersionTag(AgentId.CODEX, match[1]);
-      }
-    }
-
-    const helpResult = await execa(AgentId.CODEX, ['--help'], {
-      timeout: 10_000,
-      reject: false,
-    });
-    if (helpResult.exitCode !== 0) return undefined;
-    const fallbackMatch = `${helpResult.stdout ?? ''} ${helpResult.stderr ?? ''}`
+    if (versionResult.exitCode !== 0) return undefined;
+    const match = `${versionResult.stdout ?? ''} ${versionResult.stderr ?? ''}`
       .match(/(\d+\.\d+\.\d+)/);
-    if (!fallbackMatch) return undefined;
-    return buildCliVersionTag(AgentId.CODEX, fallbackMatch[1]);
+    if (!match) return undefined;
+    return buildCliVersionTag(AgentId.CODEX, match[1]);
   }
 
   async execute(task: Task): Promise<TaskResult> {
@@ -876,14 +864,14 @@ export class CodexAdapter implements AgentAdapter {
 
   async healthCheck(): Promise<HealthCheckResult> {
     try {
-      const result = await execa(AgentId.CODEX, ['--help'], {
+      const result = await execa(AgentId.CODEX, ['--version'], {
         timeout: 10_000,
         reject: false,
       });
 
       if (result.exitCode === 0) {
-        // Try to extract version from help output
-        const versionMatch = result.stdout?.match(/v?(\d+\.\d+\.\d+)/);
+        const versionMatch = `${result.stdout ?? ''} ${result.stderr ?? ''}`
+          .match(/(\d+\.\d+\.\d+)/);
         return {
           available: true,
           version: versionMatch ? versionMatch[1] : undefined,
@@ -894,7 +882,7 @@ export class CodexAdapter implements AgentAdapter {
       return {
         available: false,
         authenticated: false,
-        error: result.stderr || 'codex --help failed',
+        error: result.stderr || 'codex --version failed',
       };
     } catch {
       return {
