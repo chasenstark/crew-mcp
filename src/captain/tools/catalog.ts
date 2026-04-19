@@ -26,6 +26,33 @@ import type {
   AgentAdapter,
 } from '../../adapters/types.js';
 import type { AdapterRegistry } from '../../adapters/registry.js';
+
+/**
+ * Minimal registry surface the catalog needs. Accepts either the full
+ * AdapterRegistry or the legacy AgentRegistry that exposes only `list` +
+ * `get`.
+ */
+export interface RegistryForCatalog {
+  listAvailable?(): AgentAdapter[];
+  list?(): { name: string; capabilities: readonly string[] | string[] }[];
+  get(name: string): AgentAdapter | undefined;
+}
+
+function registryAgents(r: AdapterRegistry | RegistryForCatalog): Array<{ name: string; capabilities: string[] }> {
+  if (typeof (r as RegistryForCatalog).listAvailable === 'function') {
+    return (r as RegistryForCatalog).listAvailable!().map((a) => ({
+      name: a.name,
+      capabilities: [...a.capabilities],
+    }));
+  }
+  if (typeof (r as RegistryForCatalog).list === 'function') {
+    return (r as RegistryForCatalog).list!().map((a) => ({
+      name: a.name,
+      capabilities: [...(a.capabilities as string[])],
+    }));
+  }
+  return [];
+}
 import type { WorkflowConfig, PresetConfig } from '../../workflow/types.js';
 import type { ActionCatalogEntry } from '../action-server.js';
 import { CaptainActionServer, DEFAULT_TOOL_NAMESPACE } from '../action-server.js';
@@ -52,7 +79,7 @@ export const M3_TOOL_NAMES = [
 export type M3ToolName = typeof M3_TOOL_NAMES[number];
 
 export interface ToolCatalogInit {
-  readonly registry: AdapterRegistry;
+  readonly registry: AdapterRegistry | RegistryForCatalog;
   readonly workflow: WorkflowConfig;
   readonly preset?: PresetConfig;
   readonly session?: CaptainSession;
@@ -153,7 +180,7 @@ const INPUT_SCHEMAS: Record<M3ToolName, z.ZodType> = {
  * a plain-object catalog (the latter is what test fixtures typically use).
  */
 export class ToolCatalog {
-  readonly registry: AdapterRegistry;
+  readonly registry: AdapterRegistry | RegistryForCatalog;
   readonly workflow: WorkflowConfig;
   readonly preset: PresetConfig | undefined;
   readonly session: CaptainSession | undefined;
@@ -229,10 +256,7 @@ export class ToolCatalog {
    * informs it only after an explicit call to list_agents.
    */
   toPromptAgentInventory(): CaptainPromptAgentEntry[] {
-    return this.registry.listAvailable().map((adapter) => ({
-      name: adapter.name,
-      capabilities: [...adapter.capabilities],
-    }));
+    return registryAgents(this.registry);
   }
 
   /**
@@ -279,10 +303,7 @@ export class ToolCatalog {
  * Used by M3-3's prompt module when it is not handed a ToolCatalog directly.
  */
 export function promptAgentInventoryFromRegistry(
-  registry: AdapterRegistry,
+  registry: AdapterRegistry | RegistryForCatalog,
 ): CaptainPromptAgentEntry[] {
-  return registry.listAvailable().map((adapter: AgentAdapter) => ({
-    name: adapter.name,
-    capabilities: [...adapter.capabilities],
-  }));
+  return registryAgents(registry);
 }

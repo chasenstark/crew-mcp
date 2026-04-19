@@ -302,6 +302,22 @@ export class SessionLoop {
 
     this.session.persist();
     this.onTurn?.({ turnNumber: this.turnNumber, result });
+
+    // Safety net: if the captain turn returned NO toolCalls, NO assistantText,
+    // and did not mark done, AND the session has no dispatcher work in flight
+    // AND no pending user input, the loop would otherwise wait for an event
+    // that never arrives. Treat this as an implicit end-of-turn and exit
+    // cleanly. M3-10b deletes the legacy path that never hit this case;
+    // the M3 path may hit it if the captain stops mid-conversation without
+    // calling finish.
+    const quietTurn =
+      !result.done &&
+      !result.assistantText &&
+      (!result.toolCalls || result.toolCalls.length === 0);
+    if (quietTurn && this.dispatcher.inFlightCount() === 0) {
+      logger.warn('[session-loop] captain turn produced no output and no tool calls; exiting');
+      this.done = true;
+    }
   }
 
   /**

@@ -14,6 +14,17 @@
 import { z } from 'zod';
 import type { ActionCatalogEntry } from '../action-server.js';
 import type { AdapterRegistry } from '../../adapters/registry.js';
+import type { AgentAdapter } from '../../adapters/types.js';
+
+/**
+ * Minimal registry surface list_agents needs. Both AdapterRegistry and the
+ * legacy AgentRegistry can provide it — keeping the dependency narrow here
+ * avoids pulling the full registry shape into tool handlers that don't
+ * need it.
+ */
+export interface AgentListSource {
+  listAvailable(): AgentAdapter[];
+}
 
 export const listAgentsInputSchema = z.object({}).passthrough();
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
@@ -40,7 +51,7 @@ export interface ListAgentsOutput {
 }
 
 export interface ListAgentsContext {
-  readonly registry: AdapterRegistry;
+  readonly registry: AdapterRegistry | AgentListSource;
   /**
    * Optional per-agent quota probe. M3 ships without a probe (returns
    * undefined for every agent); M4 can wire a real implementation. When
@@ -68,6 +79,9 @@ export function buildListAgentsActionEntry(): ActionCatalogEntry {
  */
 export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutput> {
   const adapters = ctx.registry.listAvailable();
+  // listAvailable() returns AgentAdapter[] on AdapterRegistry and is expected
+  // to be present on any AgentListSource; the type narrowing above covers
+  // the ambient case where a caller passes a plain object shape.
   const entries = await Promise.all(
     adapters.map(async (adapter): Promise<ListAgentsAgentEntry> => {
       const base = {

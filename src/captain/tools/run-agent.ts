@@ -27,6 +27,16 @@ import type { AgentAdapter, TaskResult } from '../../adapters/types.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
 import type { WorktreeManager } from '../../git/worktree.js';
 
+/**
+ * Minimal registry surface for run_agent. Accepts either AdapterRegistry or
+ * the legacy AgentRegistry shape that only exposes `get`.
+ */
+export interface RegistryForRunAgent {
+  get(name: string): AgentAdapter | undefined;
+  listAvailable?(): AgentAdapter[];
+  list?(): { name: string; capabilities: readonly string[] | string[] }[];
+}
+
 export const runAgentInputSchema = z.object({
   agent_id: z.string().min(1),
   prompt: z.string().min(1),
@@ -54,7 +64,7 @@ export function buildRunAgentActionEntry(): ActionCatalogEntry {
 }
 
 export interface RunAgentHandlerContext {
-  readonly registry: AdapterRegistry;
+  readonly registry: AdapterRegistry | RegistryForRunAgent;
   readonly worktreeManager: WorktreeManager;
   /**
    * Captain-level model resolver: if the call leaves `model` undefined,
@@ -109,7 +119,16 @@ export async function planRunAgent(
 ): Promise<RunAgentPlan> {
   const adapter = ctx.registry.get(input.agent_id);
   if (!adapter) {
-    const available = ctx.registry.listAvailable().map((a) => a.name).sort();
+    const reg = ctx.registry as { listAvailable?: () => AgentAdapter[]; list?: () => Array<{ name: string }> };
+    const fromListAvailable =
+      typeof reg.listAvailable === 'function'
+        ? reg.listAvailable().map((a) => a.name)
+        : undefined;
+    const fromList =
+      typeof reg.list === 'function'
+        ? reg.list().map((a) => a.name)
+        : undefined;
+    const available = (fromListAvailable ?? fromList ?? []).slice().sort();
     return {
       kind: 'error',
       message:

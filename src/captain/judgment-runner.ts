@@ -6,7 +6,6 @@ import type {
   ToolLoopMessage,
   ToolLoopResult,
 } from '../adapters/types.js';
-import type { WorkflowConfig } from '../workflow/types.js';
 import type {
   ActionRecord,
   DecomposeOutputRef,
@@ -43,9 +42,21 @@ import { RunnerBase } from './runner-base.js';
 import { CaptainSession } from './session.js';
 import { ToolDispatcher } from './tool-dispatcher.js';
 import { dispatchAskUser, waitForUserResponse } from './tools/ask-user.js';
+import { ToolCatalog as M3ToolCatalog } from './tools/catalog.js';
+import { planRunAgent } from './tools/run-agent.js';
+import { listAgents } from './tools/list-agents.js';
+import { dispatchMessageUser } from './tools/message-user.js';
+import { dispatchFinish } from './tools/finish.js';
+import { dispatchPlanTasks } from './tools/plan-tasks.js';
+import { dispatchAnalyzeOutput } from './tools/analyze-output.js';
+import { dispatchCompressContext } from './tools/compress-context.js';
+import { buildCaptainSystemPrompt } from './prompts/captain-system.js';
+import { resolveCaptainConverter } from './mcp-registration.js';
+import type { WorkflowConfig, PresetConfig, FullConfig } from '../workflow/types.js';
 import {
   SessionLoop,
   type SessionLoopTurn,
+  type SessionLoopToolCall,
   type ToolCallScheduler,
 } from './session-loop.js';
 import {
@@ -189,6 +200,17 @@ const DEFAULT_GUARDRAILS: Guardrails = {
   maxDeterministicFallbacks: 6,
 };
 
+/**
+ * Captain tool surface selector. `'legacy'` is the pre-M3 11-verb controller
+ * surface (buildSessionLoopCaptain + buildSessionLoopScheduler paired with
+ * buildActionRegistry). `'m3-tools'` is the 8-tool surface introduced in M3-4
+ * (ToolCatalog) and scheduled via buildM3SessionLoopCaptain +
+ * buildM3Scheduler. Default is `'legacy'` in M3-10a so existing tests keep
+ * passing; M3-10b flips the default to `'m3-tools'` and deletes the legacy
+ * branch entirely.
+ */
+export type CaptainToolSurface = 'legacy' | 'm3-tools';
+
 export class JudgmentRunner extends RunnerBase implements CrewRunner {
   private captain: AgentAdapter;
   private registry: AgentRegistry;
@@ -202,6 +224,11 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   private guardrails: Guardrails;
   private session: CaptainSession | undefined;
   private dispatcher: ToolDispatcher | undefined;
+  private readonly toolSurface: CaptainToolSurface;
+  private readonly preset: PresetConfig | undefined;
+  // Cached so successive turns don't rebuild — the catalog is pure relative
+  // to (registry, workflow, preset) and those don't mutate after construction.
+  private m3Catalog: M3ToolCatalog | undefined;
 
   constructor(
     captainAdapter: AgentAdapter,
@@ -225,6 +252,17 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
        * same dispatcher.
        */
       dispatcher?: ToolDispatcher;
+      /**
+       * Which captain tool surface to present. Default `'legacy'` until
+       * M3-10b flips it. Opt-in via constructor option (NOT an env var) so
+       * tool-schema hashes stay stable across parallel CI workers.
+       */
+      toolSurface?: CaptainToolSurface;
+      /**
+       * Active preset — consumed by the M3 captain-system prompt. Passed
+       * through from create-runner; absent → no hint injected.
+       */
+      preset?: PresetConfig;
     },
   ) {
     super(state);
@@ -241,6 +279,8 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     };
     this.session = options?.session;
     this.dispatcher = options?.dispatcher;
+    this.toolSurface = options?.toolSurface ?? 'legacy';
+    this.preset = options?.preset;
     this.actions = this.buildActionRegistry();
     this.actionServer = this.buildActionServer();
   }
@@ -319,10 +359,19 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   }
 
   /**
-   * M1.5-6b entry point. Drives the captain via SessionLoop: each turn pulls
-   * one structured decision, executes synchronous actions inline, dispatches
-   * run_execute and ask_user via ToolDispatcher so subagent runs proceed
-   * concurrently with user input.
+   * M1.5-6b entry point. Drives the captain via SessionLoop. Branches on
+   * `this.toolSurface`:
+   *   - `'legacy'`: 11-verb controller via buildSessionLoopCaptain +
+   *     buildSessionLoopScheduler. Each turn pulls one structured decision,
+   *     executes synchronous actions inline, dispatches run_execute and
+   *     ask_user via ToolDispatcher.
+   *   - `'m3-tools'`: 8-tool surface via buildM3SessionLoopCaptain +
+   *     buildM3Scheduler. The captain emits real tool_calls over the 8 M3
+   *     tools (run_agent, list_agents, ask_user, message_user, plan_tasks,
+   *     analyze_output, compress_context, finish).
+   *
+   * M3-10a adds the branch; M3-10b flips the default to `'m3-tools'` and
+   * deletes the legacy pair.
    */
   async executeSessionLoop(runtime: RuntimeState): Promise<string> {
     if (!this.session || !this.dispatcher) {
@@ -337,8 +386,9 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       this.session.appendUserMessage(runtime.userRequest);
     }
 
-    const captainTurn = this.buildSessionLoopCaptain(runtime);
-    const scheduler = this.buildSessionLoopScheduler(runtime);
+    const { captainTurn, scheduler, actionServer } = this.toolSurface === 'm3-tools'
+      ? this.buildM3SessionLoopPair(runtime)
+      : this.buildLegacySessionLoopPair(runtime);
 
     // Wire dispatcher cleanup: terminal dispatcher events with a runId should
     // release the per-run worktree (M1.5-14 integration).
@@ -367,11 +417,26 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         externalSignal: this.activeAbortController.signal,
       });
       if (finalReport) runtime.finalReport = finalReport;
+      // Use the active action-server's hash for logging continuity in M3
+      // mode; legacy mode already returned its own hash elsewhere.
+      void actionServer;
       return runtime.finalReport ?? this.buildFallbackReport(runtime.summaries, runtime.userRequest);
     } finally {
       for (const l of cleanupListeners) l.dispose();
       this.activeAbortController = null;
     }
+  }
+
+  private buildLegacySessionLoopPair(runtime: RuntimeState): {
+    captainTurn: SessionLoopTurn;
+    scheduler: ToolCallScheduler;
+    actionServer: CaptainActionServer;
+  } {
+    return {
+      captainTurn: this.buildSessionLoopCaptain(runtime),
+      scheduler: this.buildSessionLoopScheduler(runtime),
+      actionServer: this.actionServer,
+    };
   }
 
   private buildSessionLoopCaptain(runtime: RuntimeState): SessionLoopTurn {
@@ -1490,6 +1555,342 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
         inputSchema: action.inputSchema,
       })),
     );
+  }
+
+  /**
+   * M3-10a: lazy M3 tool catalog. Cached after first construction — the
+   * inputs (registry, workflow, preset) don't mutate after `new
+   * JudgmentRunner(...)`.
+   */
+  private getM3Catalog(): M3ToolCatalog {
+    if (!this.m3Catalog) {
+      this.m3Catalog = new M3ToolCatalog({
+        registry: this.registry,
+        workflow: this.workflow,
+        preset: this.preset,
+        session: this.session,
+        dispatcher: this.dispatcher,
+      });
+    }
+    return this.m3Catalog;
+  }
+
+  /**
+   * M3-10a: build the M3 session-loop pair (captain-turn + scheduler +
+   * action-server). The action-server is constructed from the ToolCatalog,
+   * so its listTools() returns exactly the 8 M3 tools namespaced with
+   * `mcp__crew__`.
+   *
+   * This is structurally parallel to buildLegacySessionLoopPair and lives
+   * beside it; M3-10b deletes the legacy pair.
+   */
+  private buildM3SessionLoopPair(runtime: RuntimeState): {
+    captainTurn: SessionLoopTurn;
+    scheduler: ToolCallScheduler;
+    actionServer: CaptainActionServer;
+  } {
+    const catalog = this.getM3Catalog();
+    const actionServer = catalog.buildActionServer();
+    const pendingDispatched = new Map<string, SessionLoopToolCall>();
+    // Mutable summary for the finish tool. Typed explicitly so closures can
+    // mutate it without TypeScript narrowing to `never`.
+    const finishState: { summary: string | undefined } = { summary: undefined };
+
+    const captainTurn: SessionLoopTurn = {
+      execute: async (args) => {
+        if (!this.captain.executeWithTools) {
+          throw new Error(
+            'M3 captain-turn requires adapter.executeWithTools. Got: ' + this.captain.name,
+          );
+        }
+        pendingDispatched.clear();
+        finishState.summary = undefined;
+
+        const agents = catalog.toPromptAgentInventory();
+        const tools = actionServer.listTools();
+        const systemPrompt = buildCaptainSystemPrompt({
+          workflow: this.workflow,
+          agents,
+          preset: this.preset,
+          tools: tools.map((t) => ({
+            // strip the mcp__crew__ prefix so the prompt matches how the
+            // adapter will present the tool to the model.
+            name: t.name.startsWith(actionServer.toolNamespace)
+              ? t.name.slice(actionServer.toolNamespace.length)
+              : t.name,
+            description: t.description,
+          })),
+        });
+
+        // Seed messages with the system prompt in front. The existing session
+        // messages (user + prior tool_calls/results) remain the durable
+        // history; the system prompt is rebuilt per turn since the agent
+        // inventory and preset may shift.
+        const messages = [
+          { role: 'system' as const, content: systemPrompt },
+          ...args.messages,
+        ];
+
+        const result = await this.captain.executeWithTools(
+          tools,
+          messages,
+          (call) => this.handleM3ToolCallFromAdapter(call, actionServer, pendingDispatched, (f) => {
+            finishState.summary = f.summary;
+          }),
+          {
+            signal: args.signal,
+            workingDirectory: process.cwd(),
+            providerSession: runtime.providerSession,
+            toolNamespace: actionServer.toolNamespace,
+            toolSchemaHash: actionServer.getToolSchemaHash(),
+            mcpRegistration: resolveCaptainConverter(
+              this.captain.name,
+              catalog.toMcpRegistrationCatalog(),
+            ),
+            onProviderSession: (session) => {
+              runtime.providerSession = session;
+            },
+          },
+        );
+
+        if (result.providerSession && this.session) {
+          this.session.providerSessionRef = result.providerSession.sessionId;
+          runtime.providerSession = result.providerSession;
+        }
+
+        const toolCalls = [...pendingDispatched.values()];
+        return {
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          done: finishState.summary !== undefined,
+          finalReport: finishState.summary,
+          providerSessionRejected:
+            result.status === 'failed' &&
+            typeof result.error === 'string' &&
+            /session id|invalid session|rejected/i.test(result.error),
+        };
+      },
+      refreshCliVersionTag: async () => {
+        if (!this.captain.getCliVersionTag) return undefined;
+        return this.session?.refreshCliVersionTag(() =>
+          (this.captain.getCliVersionTag as () => Promise<string | undefined>)(),
+        );
+      },
+    };
+
+    const scheduler: ToolCallScheduler = {
+      schedule: async (call) => {
+        // SessionLoopToolCall uses toolName; action-server's resolver maps
+        // the mcp__crew__ prefix. Reshape to its expected `{name, input}`.
+        const normalized = actionServer.resolveToolCall({
+          name: call.toolName,
+          input: call.input,
+        });
+        if (normalized.name === 'run_agent') {
+          // Re-plan here so the runId + worktree are allocated inside the
+          // dispatcher's window. planRunAgent returns a fresh runId each
+          // call — the pending marker in pendingDispatched was only a
+          // signal to the session-loop that we needed scheduling.
+          const input = call.input as Record<string, unknown>;
+          const plan = await planRunAgent(
+            {
+              agent_id: String(input.agent_id ?? ''),
+              prompt: String(input.prompt ?? ''),
+              working_directory: typeof input.working_directory === 'string'
+                ? input.working_directory
+                : undefined,
+              model: typeof input.model === 'string' ? input.model : undefined,
+            },
+            call.toolCallId,
+            {
+              registry: this.registry,
+              worktreeManager: this.worktreeManager,
+              resolveModel: (agentName) => this.agentModels[agentName],
+            },
+          );
+          if (plan.kind === 'error') {
+            return { kind: 'synchronous', result: { error: plan.message }, status: 'error' };
+          }
+          return {
+            kind: 'dispatched',
+            task: {
+              toolCallId: plan.task.toolCallId,
+              toolName: plan.task.toolName,
+              runId: plan.task.runId,
+              input: plan.task.input,
+              run: plan.task.run,
+            },
+          };
+        }
+        if (normalized.name === 'ask_user') {
+          return {
+            kind: 'dispatched',
+            task: {
+              toolCallId: call.toolCallId,
+              toolName: 'ask_user',
+              run: async (ctx) => {
+                const response = await waitForUserResponse(this.session!, ctx.signal);
+                return { response };
+              },
+            },
+          };
+        }
+        // All other M3 tools were handled inline in onToolCall via
+        // handleM3ToolCallFromAdapter; they should not appear here.
+        return {
+          kind: 'synchronous',
+          result: { error: `Unexpected tool for scheduler: ${normalized.name}` },
+          status: 'error',
+        };
+      },
+    };
+
+    return { captainTurn, scheduler, actionServer };
+  }
+
+  /**
+   * Unified onToolCall handler for the M3 captain-turn. The adapter invokes
+   * this for each tool call the model emits. Synchronous M3 tools
+   * (message_user, list_agents, plan_tasks, analyze_output,
+   * compress_context) run inline and return their real output so the
+   * adapter's inner loop can continue if the model wants to chain calls.
+   *
+   * Dispatched tools (run_agent, ask_user) return a placeholder tool result
+   * immediately — `{status: 'dispatched', toolCallId}` — and record the
+   * call so buildM3SessionLoopPair's execute() can emit it as a
+   * SessionLoopToolCall for the scheduler to pick up. finish is handled
+   * inline (write assistant summary, set done flag) but also returns a
+   * placeholder so the adapter's loop stops cleanly.
+   */
+  private async handleM3ToolCallFromAdapter(
+    call: { name: string; input: Record<string, unknown> },
+    actionServer: CaptainActionServer,
+    pendingDispatched: Map<string, SessionLoopToolCall>,
+    onFinish: (signal: { summary: string }) => void,
+  ): Promise<{ output: unknown }> {
+    const normalized = actionServer.resolveToolCall(call);
+    const toolCallId = randomUUID();
+
+    if (normalized.name === 'run_agent' || normalized.name === 'ask_user') {
+      pendingDispatched.set(toolCallId, {
+        toolCallId,
+        toolName: normalized.name,
+        input: normalized.input,
+      });
+      return {
+        output: {
+          status: 'dispatched',
+          toolCallId,
+          note: 'Result will arrive on a subsequent turn; stop calling tools for this turn.',
+        },
+      };
+    }
+
+    if (normalized.name === 'finish') {
+      const summary = typeof normalized.input.summary === 'string'
+        ? normalized.input.summary
+        : '';
+      if (this.session && summary) {
+        this.session.appendAssistantMessage(summary);
+      }
+      onFinish({ summary });
+      return { output: { status: 'finished', summary } };
+    }
+
+    if (normalized.name === 'message_user') {
+      if (!this.session) return { output: { status: 'skipped', reason: 'no session' } };
+      const text = typeof normalized.input.text === 'string' ? normalized.input.text : '';
+      if (!text) return { output: { status: 'error', error: 'empty text' } };
+      const result = dispatchMessageUser(this.session, { text });
+      return { output: result };
+    }
+
+    if (normalized.name === 'list_agents') {
+      // Adapt legacy AgentRegistry to the AgentListSource minimal
+      // interface that listAgents consumes — `listAvailable()` returns
+      // the per-adapter objects the tool needs for health probes.
+      const source = {
+        listAvailable: () => {
+          const names = this.registry.list().map((a) => a.name);
+          return names
+            .map((n) => this.registry.get(n))
+            .filter((a): a is AgentAdapter => a !== undefined);
+        },
+      };
+      const out = await listAgents({ registry: source });
+      return { output: out };
+    }
+
+    if (normalized.name === 'plan_tasks') {
+      try {
+        const out = await dispatchPlanTasks(
+          {
+            user_request: String(normalized.input.user_request ?? ''),
+            hints: Array.isArray(normalized.input.hints)
+              ? (normalized.input.hints as unknown[]).filter((h): h is string => typeof h === 'string')
+              : undefined,
+          },
+          {
+            captain: this.captain,
+            workflow: this.workflow,
+            agents: this.getM3Catalog().toPromptAgentInventory(),
+            model: this.captainModel,
+            signal: this.activeAbortController?.signal,
+          },
+        );
+        return { output: out };
+      } catch (err) {
+        return { output: { error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (normalized.name === 'analyze_output') {
+      try {
+        const out = await dispatchAnalyzeOutput(
+          {
+            task_description: String(normalized.input.task_description ?? ''),
+            agent_output: String(normalized.input.agent_output ?? ''),
+            files_modified: Array.isArray(normalized.input.files_modified)
+              ? (normalized.input.files_modified as unknown[]).filter(
+                  (h): h is string => typeof h === 'string',
+                )
+              : undefined,
+          },
+          {
+            captain: this.captain,
+            model: this.captainModel,
+            signal: this.activeAbortController?.signal,
+          },
+        );
+        return { output: out };
+      } catch (err) {
+        return { output: { error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    if (normalized.name === 'compress_context') {
+      try {
+        const out = await dispatchCompressContext(
+          {
+            analyzed_output: normalized.input.analyzed_output,
+            pass_number: typeof normalized.input.pass_number === 'number'
+              ? normalized.input.pass_number
+              : undefined,
+          },
+          {
+            captain: this.captain,
+            model: this.captainModel,
+            signal: this.activeAbortController?.signal,
+          },
+        );
+        return { output: out };
+      } catch (err) {
+        return { output: { error: err instanceof Error ? err.message : String(err) } };
+      }
+    }
+
+    return {
+      output: { error: `Unknown tool: ${call.name}` },
+    };
   }
 
   private buildNativeStartMessages(runtime: RuntimeState): ToolLoopMessage[] {
