@@ -44,6 +44,9 @@ export interface SessionSnapshot {
 
 const CURRENT_SESSION_SCHEMA_VERSION = 1;
 
+// Conservative 3 KB ceiling on event output (N3). The comment above mentions
+// 4 KB as the OS-atomic-append threshold; 3 KB gives headroom for the JSON
+// envelope around the payload.
 const MAX_EVENT_OUTPUT_BYTES = 3 * 1024;
 
 function serializeEvent(event: SessionEvent): string {

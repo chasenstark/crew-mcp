@@ -43,11 +43,18 @@ export interface AskUserResult {
  * Coordinate ask_user calls so a new dispatchAskUser always waits for the
  * NEXT user_message event (not one that slipped in before it subscribed).
  *
- * This is a simple FIFO: a user_message is handed to the oldest pending
- * subscriber. The plan's "concurrent ask_user keyed per toolCallId" is
- * satisfied because the subscribers are per-tool-call-id — two concurrent
- * dispatchAskUser calls each get their own subscription, and two sequential
- * user messages resolve them in order.
+ * Ordering model: the coordinator maintains a FIFO queue of `accept`
+ * callbacks. Each `subscribe()` appends one closure; each user_message
+ * event pops the oldest and resolves it with the message text. The
+ * FIFO happens to match subscription order — which is the order
+ * dispatchAskUser calls `coordinatorFor(session).subscribe(signal)`.
+ * It is NOT per-toolCallId keyed: the coordinator doesn't know about
+ * toolCallIds at all. Concurrent dispatchAskUser calls each register
+ * their own subscriber, and user messages resolve them in the order
+ * they subscribed (not in the order their toolCallIds were assigned).
+ *
+ * Aborting a subscriber via the provided signal removes it from the
+ * queue, so a dead subscriber never steals a later user message.
  */
 class AskUserCoordinator {
   private subscribers: Array<(text: string) => void> = [];

@@ -128,13 +128,10 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
       }
     });
 
-    if (legacyMode) {
-      pipeline.on('ask_user', (question) => {
-        addMessage('assistant', question);
-        setCurrentStep(null);
-        setLegacyWaitingForInput(true);
-      });
-    }
+    // N5: legacy 'ask_user' listener removed — pipeline.ts throws on
+    // ask_user decisions (M1.5-11) and JudgmentRunner's legacy path also
+    // fails loudly if session/dispatcher aren't wired. Nothing emits the
+    // event anymore.
 
     pipeline.on('error', (error) => {
       addMessage('system', `Error: ${error.message}`);

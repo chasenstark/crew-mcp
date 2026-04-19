@@ -277,9 +277,10 @@ export class CaptainSession {
   }
 
   /**
-   * Yields only NEW events emitted after subscription. Does not replay the
-   * on-disk log — consumers that need the full history should read it via
-   * getMessages() / toToolLoopMessages(), which are the durable record.
+   * Yields only NEW events emitted after subscription — events appended
+   * BEFORE the iterator starts are NOT replayed. Callers that need full
+   * history should read it via getMessages() / toToolLoopMessages(),
+   * which are the durable record.
    *
    * This intentional asymmetry keeps the session loop from re-running a
    * turn for every disk-persisted event on cold start: the message log
@@ -287,7 +288,7 @@ export class CaptainSession {
    *
    * Per-iterator buffering: each active iterator has its own queue + waiting
    * slot. Events fired while the consumer is between next() calls are queued
-   * rather than dropped. See B4 in the M1.5 review.
+   * rather than dropped (the B4 drop-window fix).
    */
   async *events(): AsyncIterable<SessionEvent> {
     const sub: EventSubscription = { queue: [], waiting: null };
@@ -336,6 +337,13 @@ export class CaptainSession {
    * Convert the message log into the ToolLoopMessage shape an adapter turn
    * expects. Used when a providerSessionRef is invalid and the session must
    * replay full history to rebuild context.
+   *
+   * N2 caveat (M3-scope): tool_call messages are serialized as prose
+   * (`Tool call foo({...})`) because ToolLoopMessage doesn't yet have a
+   * structured tool_call variant. Adapters that want the real structured
+   * tool-call form (e.g., OpenAI's `tool_calls`) won't get it on replay.
+   * The session log is still correct; the serialization is what gets
+   * lossy. Fix alongside the M3 adapter-contract rework.
    */
   toToolLoopMessages(): ToolLoopMessage[] {
     const out: ToolLoopMessage[] = [];

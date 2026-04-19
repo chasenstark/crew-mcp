@@ -697,6 +697,12 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     }
   }
 
+  /**
+   * @deprecated M1.5-6b — the SessionLoop path (executeSessionLoop) is the
+   * production driver when create-runner wires session+dispatcher. This
+   * method is retained as a fallback for legacy tests that construct a
+   * JudgmentRunner without them. M3 will delete along with pipeline.ts.
+   */
   private async executeFallbackLoop(runtime: RuntimeState): Promise<boolean> {
     const signal = this.activeAbortController?.signal;
 
@@ -764,6 +770,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     return false;
   }
 
+  /** @deprecated M1.5-6b — see executeFallbackLoop. M3: delete. */
   private async executeNativeToolLoop(runtime: RuntimeState): Promise<boolean> {
     if (!this.captain.executeWithTools) {
       throw new Error('Adapter does not implement executeWithTools.');

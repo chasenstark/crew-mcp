@@ -512,6 +512,66 @@ describe('JudgmentRunner session-loop integration (M1.5-6b)', () => {
     expect(session.providerSessionRef).toBeUndefined();
   });
 
+  it('dual-path parity: both paths produce identical final reports (S8)', async () => {
+    const happyPathDecisions = () => [
+      { reasoning: 'start', action: 'run_decompose', payload: {} },
+      { reasoning: 'pick task', action: 'select_task', payload: {} },
+      { reasoning: 'dispatch', action: 'run_dispatch', target: { taskId: 'task-1' } },
+      { reasoning: 'execute', action: 'run_execute', target: { taskId: 'task-1' } },
+      { reasoning: 'ingest', action: 'run_ingest', target: { taskId: 'task-1' } },
+      { reasoning: 'summarize', action: 'run_summarize', target: { taskId: 'task-1' } },
+      { reasoning: 'judge', action: 'run_judge', target: { taskId: 'task-1' } },
+      { reasoning: 'finalize', action: 'finalize_report', payload: {} },
+      { reasoning: 'done', action: 'finish', payload: {} },
+    ];
+
+    const makeMocks = () => {
+      mockDecompose.mockResolvedValue(singleTaskDecomposition());
+      mockDispatch.mockResolvedValue({ agentPrompt: 'x', workingDirectory: undefined, expectedOutputs: [], successCriteria: '' });
+      mockIngest.mockResolvedValue({ status: 'success', summary: 'ok', needsHumanAttention: false, files: [] });
+      mockSummarize.mockResolvedValue({ passNumber: 1, summary: 'ok', unresolvedIssues: [], contextForNextPass: '', filesInScope: [] });
+      mockJudge.mockResolvedValue({ decision: 'done', reasoning: 'done', isLooping: false });
+      mockReport.mockResolvedValue('final report');
+    };
+
+    const workflow = { steps: [], completion: { strategy: 'judge_approval' as const, fallback: 'max_passes' as const } } as any;
+
+    const runPath = async (withSessionLoop: boolean): Promise<string> => {
+      const agent = createAgent('agent-a');
+      const agentRegistry = {
+        get: () => agent,
+        list: () => [{ name: 'agent-a', capabilities: ['implement'] }],
+      };
+      const { adapter: captainAdapter } = createDecisionAdapter(happyPathDecisions());
+      makeMocks();
+      const stateStore = new StateStore(tmpRoot);
+      const worktreeManager = new WorktreeManager(tmpRoot);
+      const runnerOptions = withSessionLoop
+        ? {
+          session: CaptainSession.create({ projectRoot: tmpRoot }),
+          dispatcher: new ToolDispatcher(),
+        }
+        : {};
+      const runner = new JudgmentRunner(
+        captainAdapter,
+        agentRegistry,
+        workflow,
+        stateStore,
+        worktreeManager,
+        runnerOptions,
+      );
+      return runner.run('Do it');
+    };
+
+    const sessionLoopFinal = await runPath(true);
+    // Reset state for the legacy run: delete state + worktrees, keep git init.
+    rmSync(join(tmpRoot, '.crew'), { recursive: true, force: true });
+    const legacyFinal = await runPath(false);
+
+    expect(sessionLoopFinal).toBe(legacyFinal);
+    expect(sessionLoopFinal).toBe('final report');
+  });
+
   it('legacy mode (no session/dispatcher) still uses executeNativeToolLoop fallback', async () => {
     // Verifies backwards compat: pre-M1.5 constructors keep working.
     const agent = createAgent('agent-a');
