@@ -229,27 +229,19 @@ describe('CodexAdapter', () => {
       expect(prompt).not.toContain(`${'x'.repeat(2000)}`);
     });
 
-    it('uses the shared transcript windowing helper when bootstrapping resume sessions', async () => {
+    it('passes a windowed transcript to executeWithSchema when the input transcript is long', async () => {
+      // Post-option-A: executeWithTools routes through executeWithPromptLoop
+      // which calls executeWithSchema per inner turn. This test asserts
+      // that buildDecisionPrompt's transcript window is still applied when
+      // the adapter's entry point receives a long message log.
       vi.spyOn(adapter, 'getCliVersionTag').mockResolvedValue('codex@0.120.0');
-      mockExeca.mockResolvedValueOnce({
-        stdout: [
-          '{"type":"thread.started","thread_id":"thread_123"}',
-          JSON.stringify({
-            type: 'item.completed',
-            item: {
-              type: 'agent_message',
-              text: JSON.stringify({
-                type: 'finish',
-                output: 'done',
-                reasoning: 'workflow complete',
-              }),
-            },
-          }),
-          '{"type":"turn.completed","turn_id":"turn_1"}',
-        ].join('\n'),
-        stderr: '',
-        exitCode: 0,
-      } as any);
+      const executeWithSchemaSpy = vi
+        .spyOn(adapter, 'executeWithSchema')
+        .mockResolvedValueOnce({
+          type: 'finish',
+          output: 'done',
+          reasoning: 'workflow complete',
+        } as unknown as Awaited<ReturnType<typeof adapter.executeWithSchema>>);
 
       const longContent = 'x'.repeat(3000);
       const manyMessages = Array.from({ length: 30 }, (_, i) => ({
@@ -275,21 +267,18 @@ describe('CodexAdapter', () => {
       );
 
       expect(result.status).toBe('completed');
-      const cliArgs = mockExeca.mock.calls[0]?.[1] as string[];
-      // Argv shape: ['exec', '--json', '--skip-git-repo-check', <prompt>, ...overrides]
-      const skipGitIndex = cliArgs.indexOf('--skip-git-repo-check');
-      expect(skipGitIndex).toBeGreaterThan(-1);
-      const prompt = cliArgs[skipGitIndex + 1];
+      expect(executeWithSchemaSpy).toHaveBeenCalled();
+      const prompt = executeWithSchemaSpy.mock.calls[0][0] as string;
       expect(prompt).toContain('omitted 6 earlier transcript messages');
       expect(prompt).not.toContain('message-00-');
       expect(prompt).toContain('message-29-');
     });
 
-    it('returns interrupted and skips prompt-loop fallback when signal is already aborted', async () => {
+    it('returns interrupted and skips executeWithSchema when signal is already aborted', async () => {
+      // Post-option-A: the abort-before-fallback invariant still holds via
+      // executePromptToolLoop's top-of-loop signal check — if the signal is
+      // already aborted when the loop starts, the schema call never fires.
       const executeWithSchemaSpy = vi.spyOn(adapter, 'executeWithSchema');
-      vi.spyOn(adapter as any, 'executeWithResumeSession').mockRejectedValueOnce(
-        new Error('resume session failed'),
-      );
 
       const controller = new AbortController();
       controller.abort('Cancelled by test');

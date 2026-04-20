@@ -611,49 +611,36 @@ export class CodexAdapter implements AgentAdapter {
       return this.executeWithPromptLoop(tools, messages, onToolCall);
     }
 
-    let latestTranscript = messages.map((message) => ({ ...message }));
-    const wrappedContext: ToolLoopContext = {
-      ...context,
-      onTranscriptUpdate: (transcript) => {
-        latestTranscript = transcript.map((message) => ({ ...message }));
-        context.onTranscriptUpdate?.(latestTranscript);
-      },
-    };
-
-    try {
-      return await this.executeWithResumeSession(tools, messages, onToolCall, wrappedContext);
-    } catch (error: unknown) {
-      if (context.signal?.aborted) {
-        return {
-          status: 'interrupted',
-          transcript: latestTranscript,
-          pathTaken: 'fallback',
-          error: String(context.signal.reason ?? 'Cancelled'),
-        };
-      }
-      logger.warn('[adapter:codex] stateful resume path failed; falling back to adapter loop', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      context.onProviderSession?.({
-        provider: 'codex',
-        transport: 'adapter',
-        cliVersion: await this.getCliVersionTag(),
-        toolNamespace: context.toolNamespace ?? 'mcp__crew__',
-        toolSchemaHash: context.toolSchemaHash ?? '',
-        startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
-        lastTurnAt: new Date().toISOString(),
-      });
-      const fallbackResult = await this.executeWithPromptLoop(
-        tools,
-        latestTranscript,
-        onToolCall,
-        wrappedContext,
-      );
-      return {
-        ...fallbackResult,
-        pathTaken: 'adapter',
-      };
-    }
+    // M5 post-launch (option A, see
+    // docs/plans/active/codex-captain-performance.md): skip the
+    // JSON-envelope-in-assistant-text path that `executeWithResumeSession`
+    // implements. Codex reliably fails to emit valid JSON in plain
+    // assistant text (e.g., "Yes." instead of
+    // `{"type":"finish","output":"Yes."}`), which forced the adapter
+    // to round-trip through executeWithSchema as a fallback on nearly
+    // every turn — doubling latency.
+    //
+    // executeWithPromptLoop uses executeWithSchema under the hood,
+    // which sends the zod schema to OpenAI as a `response_format`
+    // guaranteeing a structured response. One subprocess per inner
+    // turn either way, but we save the ~6s envelope→fallback round-trip.
+    //
+    // Trade-off: we lose thread continuity via `codex exec resume <id>`.
+    // Codex's per-call system preamble (~80k tokens) dominates latency,
+    // and its prompt cache matches on identical prefixes regardless of
+    // thread state, so the practical hit is smaller than the envelope
+    // tax was. The full fix is option C (a real crew-mcp stdio server)
+    // tracked in that same design doc.
+    context.onProviderSession?.({
+      provider: 'codex',
+      transport: 'adapter',
+      cliVersion: await this.getCliVersionTag(),
+      toolNamespace: context.toolNamespace ?? 'mcp__crew__',
+      toolSchemaHash: context.toolSchemaHash ?? '',
+      startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
+      lastTurnAt: new Date().toISOString(),
+    });
+    return this.executeWithPromptLoop(tools, messages, onToolCall, context);
   }
 
   private async executeWithPromptLoop(
