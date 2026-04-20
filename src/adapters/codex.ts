@@ -31,6 +31,7 @@ import { AgentId } from '../workflow/agents.js';
 import { toCodexConfigOverrides, type ToolCatalog } from '../captain/mcp-registration.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
 import {
+  parseToolInput,
   ToolLoopDecisionSchema,
   type ToolLoopDecision,
 } from './tool-loop/decision.js';
@@ -827,7 +828,7 @@ export class CodexAdapter implements AgentAdapter {
         throw new Error(`Unknown tool "${toolName}".`);
       }
 
-      const toolInput = parsedDecision.input ?? {};
+      const toolInput = parseToolInput(parsedDecision.input);
       transcript.push({
         role: 'assistant',
         content: JSON.stringify({

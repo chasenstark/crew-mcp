@@ -7,6 +7,7 @@ import type {
 } from '../types.js';
 import { TOOL_LOOP_MAX_TURNS } from './constants.js';
 import type { ToolLoopDecision } from './decision.js';
+import { parseToolInput } from './decision.js';
 import { buildDecisionPrompt } from './transcript.js';
 
 function cloneTranscript(transcript: ToolLoopMessage[]): ToolLoopMessage[] {
@@ -124,7 +125,7 @@ export async function executePromptToolLoop(
       };
     }
 
-    const toolInput = decision.input ?? {};
+    const toolInput = parseToolInput(decision.input);
     transcript.push({
       role: 'assistant',
       content: JSON.stringify({

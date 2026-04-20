@@ -6,6 +6,7 @@ import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
 import {
+  parseToolInput,
   ToolLoopDecisionSchema,
 } from './tool-loop/decision.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
@@ -573,7 +574,7 @@ export class GeminiCliAdapter implements AgentAdapter {
 
       const toolName = decision.tool?.trim();
       if (!toolName) throw new Error('Tool call missing tool name.');
-      const toolInput = decision.input ?? {};
+      const toolInput = parseToolInput(decision.input);
       transcript.push({
         role: 'assistant',
         content: JSON.stringify({ type: 'tool_call', tool: toolName, input: toolInput }),

@@ -23,7 +23,10 @@ describe('OpenAiCompatibleAdapter', () => {
                 content: JSON.stringify({
                   type: 'tool_call',
                   tool: 'read_file',
-                  input: { path: 'src/index.ts' },
+                  // `input` is now a stringified JSON per the adapter
+                  // contract (OpenAI structured output requires typed
+                  // schema nodes — see decision.ts comment).
+                  input: JSON.stringify({ path: 'src/index.ts' }),
                   reasoning: 'Need the file contents first.',
                 }),
               },

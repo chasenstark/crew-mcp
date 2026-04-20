@@ -21,6 +21,7 @@ import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
 import {
+  parseToolInput,
   ToolLoopDecisionSchema,
   type ToolLoopDecision,
 } from './tool-loop/decision.js';
@@ -794,7 +795,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           throw new Error(`Unknown tool "${toolName}".`);
         }
 
-        const toolInput = parsedDecision.input ?? {};
+        const toolInput = parseToolInput(parsedDecision.input);
         transcript.push({
           role: 'assistant',
           content: JSON.stringify({

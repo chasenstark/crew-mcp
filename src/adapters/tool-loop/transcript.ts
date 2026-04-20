@@ -87,12 +87,13 @@ export function buildDecisionPrompt(
   sections.push(
     '# Adapter response format',
     'The adapter wraps your replies in a JSON envelope. Respond with exactly one JSON object:',
-    '- Tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
+    '- Tool invocation: {"type":"tool_call","tool":"<name>","input":"<stringified JSON>","reasoning":"..."}',
     '- End this adapter turn: {"type":"finish","output":"...","reasoning":"..."}',
     '- Hard failure: {"type":"fail","error":"...","reasoning":"..."}',
     'Rules:',
     '- Never emit multiple tool calls in one turn.',
     '- `tool` must match exactly one available tool name.',
+    '- `input` is a STRING containing a JSON-encoded object. Example: `"input": "{\\"summary\\":\\"done\\"}"`. It is serialized as a string (not an inline object) because OpenAI\'s structured-output response format requires every schema node to have a concrete type; the adapter JSON.parses it on the way back in.',
     '- Envelope `finish` ends the current adapter invocation but does NOT end the captain workflow — to end the workflow, invoke the `finish` tool (e.g. `mcp__crew__finish`) via `tool_call`.',
   );
 
