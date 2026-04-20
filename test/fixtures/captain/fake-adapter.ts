@@ -51,12 +51,20 @@ export interface FakeCaptainProbe {
    * and in session.tool_call records.
    */
   toolCalls: ToolCall[];
+  /**
+   * Per-turn snapshot of the messages array the adapter received. M5-8
+   * needs this for assertions like "turn 1 used default, turn 2 used
+   * thorough-review" — `lastMessages` only tracks the most recent. Extended
+   * as an orthogonal addition rather than replacing `lastMessages` so
+   * existing tests don't change.
+   */
+  allMessages: ToolLoopMessage[][];
 }
 
 export function createFakeCaptain(
   script: FakeCaptainScript,
 ): { adapter: AgentAdapter; probe: FakeCaptainProbe } {
-  const probe: FakeCaptainProbe = { turnCount: 0, toolCalls: [] };
+  const probe: FakeCaptainProbe = { turnCount: 0, toolCalls: [], allMessages: [] };
   let turnIdx = 0;
 
   const adapter: AgentAdapter = {
@@ -86,6 +94,7 @@ export function createFakeCaptain(
       probe.turnCount++;
       probe.lastTools = tools;
       probe.lastMessages = messages;
+      probe.allMessages.push(messages);
       probe.lastMcpPayload = context?.mcpRegistration;
       const turn = script.turns[turnIdx] ?? [];
       turnIdx++;
