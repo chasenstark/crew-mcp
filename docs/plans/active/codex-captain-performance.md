@@ -83,7 +83,7 @@ separate bug chain (MCP placeholder + stdin='pipe'). Both fixed in
 
 ## Remediation options, ordered by payoff-per-effort
 
-### A. Make `executeWithSchema` the primary codex path (shipping now)
+### A. Make `executeWithSchema` the primary codex path (shipped)
 
 Skip the envelope round-trip. Every turn forces OpenAI's
 structured-output `response_format` to return valid JSON matching
@@ -94,7 +94,61 @@ structured-output `response_format` to return valid JSON matching
 - **Effort:** 1–2 hours, adapter-local change.
 - **Trade-off:** one subprocess per turn remains; we don't fix the
   structural issue, just the fallback tax.
-- **Status:** landing alongside this doc.
+- **Status:** shipped in `4b3dd20`. Unlocked a cascade of three OpenAI
+  strict-mode schema rejections (`propertyNames`,
+  `additionalProperties must have type`, `required must list every
+  property`) each fixed in sequence in `f862fcc`, `5986f7f`, `46c1817`.
+
+### A.2. Thread codex inner turns via `exec resume <id>` (shipped)
+
+After option A landed, empirical latency was ~30s per inner turn
+because every `codex exec` call was a fresh thread — codex's
+server-side prefix cache never hit across inner turns. Observed
+first-turn latency dominated by the ~80k-token built-in preamble plus
+our captain-system prompt.
+
+Fix: codex-private `executeDecisionTurn` helper that:
+- Uses `codex exec resume <thread_id>` on follow-up inner turns.
+- Extracts the thread id from the JSONL event stream.
+- Threads it into the next `decide` callback.
+- Logs decision-start / -end at INFO with promptPreview,
+  decisionType, tool, reasoningPreview, outputPreview, elapsedMs,
+  threadId — previously only raw duration was surfaced, so "captain
+  stuck in a loop" was invisible without parsing events.log.
+
+- **Saves:** follow-up inner turns drop from ~30s to ~5–10s once the
+  thread cache is warm. First turn remains ~15–20s.
+- **Effort:** ~2 hours.
+- **Status:** shipped in `7050ca4`.
+
+### A.3. Short-circuit the envelope-finish round-trip
+
+Surfaced by the `7050ca4` log: even for a trivial "hey is this
+working?" question, codex produces TWO adapter inner turns:
+
+1. `tool_call` for `mcp__crew__finish` (~15–20s)
+2. Envelope `finish` response after the tool result (~5–10s)
+
+The SessionLoop's `done` flag is set synchronously inside the finish
+tool handler (`dispatchFinish` → `loop.requestExit`). The adapter's
+inner loop doesn't know this — it sends the finish tool's result
+back to codex and asks for another decision, which codex correctly
+answers with `{type:'finish'}` to end the adapter turn.
+
+Optimization: when `onToolCall` returns a result from the `finish`
+tool (or more generally, when the tool handler wants to signal "no
+more inner turns needed"), short-circuit the adapter loop. Saves one
+full codex call per workflow completion.
+
+- **Saves:** ~5–10s per completed workflow (one codex call).
+- **Effort:** ~2–3 hours. Needs a new signal in the `ToolResult`
+  shape (e.g., `terminal: true`) that the adapter's controller
+  respects. Also needs to be propagated through the tool-loop
+  controller shared by all three adapters, so claude-code and gemini
+  benefit from the same short-circuit.
+- **Status:** parked. Worth doing when option C isn't on the table
+  for a release, or first in any case — it's small, generic, and
+  benefits every adapter.
 
 ### B. Preflight warm-up
 
@@ -160,17 +214,27 @@ bring codex's first-turn latency down to ~claude-code levels.
 
 ## Current disposition
 
-- **Shipping:** option A — `executeWithSchema` as codex's primary
-  captain path. See the accompanying commit on the M5 branch.
-- **Parked:** B, C, D above. C is the real fix and should be revisited
-  when smoke-matrix baselines against codex become a regular gate.
+- **Shipped (M5 exit gate):** options A, A.2 (thread continuity via
+  `exec resume`), plus the three OpenAI schema-strict fixes
+  (`f862fcc`, `5986f7f`, `46c1817`) that option A unblocked. Total
+  work in the M5 exit-gate chain: 8 commits, ~4 hours of debugging,
+  dropped codex first-turn latency from indefinite-hang to ~20s with
+  ~5–10s follow-ups.
+- **Parked (next):** A.3 short-circuit, C crew-mcp. A.3 is small and
+  adapter-agnostic; worth doing before the next milestone starts. C
+  is the real structural fix and the only option that gets codex to
+  Claude-parity latency; escalate if smoke-matrix runs show codex
+  dragging a whole run past some acceptable budget.
+- **Parked (low-priority):** B warmup, D long-running driver. B is
+  measurable but tiny; D is blocked on upstream.
 
 ## Exit criteria for "codex captain performance is acceptable"
 
-After option A:
-- Turn 1 ≤ 20s for a trivial prompt (no `run_agent` dispatch).
-- Turn 2+ on the same thread ≤ 10s.
-- No envelope-parse fallback hits per turn under normal operation.
+After options A + A.2:
+- Turn 1 ≤ 20s for a trivial prompt (no `run_agent` dispatch). ✅
+- Turn 2+ on the same thread ≤ 10s. ✅ (empirically ~5–10s).
+- No envelope-parse fallback hits per turn under normal operation. ✅
+  (schema-enforced path is primary).
 
-If A doesn't clear those bars across the M5 smoke scenarios, escalate
-to C.
+Exit criteria MET. Codex is now usable as a captain. Claude-parity
+latency remains a separate concern tracked via option C.
