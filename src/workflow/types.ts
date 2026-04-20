@@ -56,6 +56,22 @@ export interface PresetConfig {
   name?: string;
   description?: string;
   hint?: string;
+  /**
+   * Soft-policy role suggestions, rendered as prose in the hint section of
+   * the captain-system prompt. These are NOT `agent_id` values — the captain
+   * still dispatches to the registered agent adapters via `list_agents`.
+   * The renderer qualifies unregistered roles as "(intent — no adapter
+   * registered)" to prevent the captain from hallucinating
+   * `run_agent(agent_id='X')` for a role that does not exist in the
+   * inventory.
+   *
+   * Scope note (M5 §7.5): the preset schema is intentionally tiny —
+   * name, description, hint, suggestedAgentRoles. Any proposal to add
+   * `steps`, `conditions`, `max_passes`, or `maxIterations` gets rejected
+   * with a pointer at the "preset format balloons into a workflow DSL"
+   * risk line.
+   */
+  suggestedAgentRoles?: string[];
 }
 
 export interface FullConfig {

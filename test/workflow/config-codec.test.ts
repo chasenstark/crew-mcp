@@ -284,6 +284,91 @@ describe('serializeWorkflowYaml preset roundtrip', () => {
     expect(parsed.presets?.custom?.description).toBe('x');
   });
 
+  it('roundtrips suggestedAgentRoles (M5-2 schema extension)', () => {
+    const base = getDefaultConfig();
+    const config: FullConfig = {
+      ...base,
+      captain: { ...base.captain, preset: 'thorough-review' },
+      presets: {
+        ...(base.presets ?? {}),
+        'thorough-review': {
+          description: 'fan out',
+          hint: 'review twice',
+          suggestedAgentRoles: ['reviewer', 'security', 'tests'],
+        },
+      },
+    };
+    const yaml = serializeWorkflowYaml(config);
+    // Uses snake_case on disk (matches the rest of the YAML surface).
+    expect(yaml).toMatch(/suggested_agent_roles:\s*\n\s*- reviewer/);
+    const parsed = parseWorkflowYaml(yaml);
+    expect(parsed.presets?.['thorough-review']?.suggestedAgentRoles).toEqual([
+      'reviewer',
+      'security',
+      'tests',
+    ]);
+  });
+
+  it('drops non-string suggestedAgentRoles entries silently', () => {
+    const yaml = `
+workflow:
+  name: default
+  execution:
+    mode: judgment
+  steps: []
+  completion:
+    strategy: judge_approval
+    fallback: max_passes
+agents: {}
+captain:
+  cli: claude-code
+  preset: mixed
+presets:
+  mixed:
+    hint: hi
+    suggested_agent_roles:
+      - reviewer
+      - 42
+      - null
+      - security
+error_handling:
+  default:
+    retry: 1
+    fallback: null
+    on_exhausted: ask_user
+`;
+    const parsed = parseWorkflowYaml(yaml);
+    expect(parsed.presets?.mixed?.suggestedAgentRoles).toEqual(['reviewer', 'security']);
+  });
+
+  it('accepts camelCase suggestedAgentRoles too (defensive)', () => {
+    const yaml = `
+workflow:
+  name: default
+  execution:
+    mode: judgment
+  steps: []
+  completion:
+    strategy: judge_approval
+    fallback: max_passes
+agents: {}
+captain:
+  cli: claude-code
+  preset: camel
+presets:
+  camel:
+    hint: hi
+    suggestedAgentRoles: [analyst, reviewer]
+error_handling:
+  default:
+    retry: 1
+    fallback: null
+    on_exhausted: ask_user
+`;
+    const parsed = parseWorkflowYaml(yaml);
+    expect(parsed.presets?.camel?.suggestedAgentRoles).toEqual(['analyst', 'reviewer']);
+  });
+
   it('omits captain.preset + presets when absent', () => {
     const base = getDefaultConfig();
     const config: FullConfig = {

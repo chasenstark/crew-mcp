@@ -143,6 +143,78 @@ describe('buildCaptainSystemPrompt', () => {
     expect(a).toBe(b);
   });
 
+  describe('suggestedAgentRoles (M5-2)', () => {
+    it('renders suggested roles inline under the hint when roles are registered', () => {
+      const prompt = buildCaptainSystemPrompt({
+        workflow,
+        agents,
+        tools: liveCatalogEntries(),
+        preset: {
+          name: 'thorough-review',
+          hint: 'review twice',
+          suggestedAgentRoles: ['review', 'implement'],
+        },
+      });
+      expect(prompt).toContain('## Preset hint');
+      expect(prompt).toContain('review twice');
+      expect(prompt).toContain('Suggested roles: review, implement');
+      expect(prompt).not.toContain('(intent — no adapter registered)');
+    });
+
+    it('qualifies unregistered roles so the captain does not hallucinate agent_id', () => {
+      const prompt = buildCaptainSystemPrompt({
+        workflow,
+        agents: [{ name: 'codex', capabilities: ['implement', 'review'] }],
+        tools: liveCatalogEntries(),
+        preset: {
+          name: 'mixed',
+          hint: 'hi',
+          suggestedAgentRoles: ['review', 'security', 'tests'],
+        },
+      });
+      expect(prompt).toContain('Suggested roles: review, security (intent — no adapter registered), tests (intent — no adapter registered)');
+    });
+
+    it('renders roles alone when hint is absent', () => {
+      const prompt = buildCaptainSystemPrompt({
+        workflow,
+        agents,
+        tools: liveCatalogEntries(),
+        preset: {
+          name: 'roles-only',
+          suggestedAgentRoles: ['review'],
+        },
+      });
+      expect(prompt).toContain('## Preset hint');
+      expect(prompt).toContain('Suggested roles: review');
+      // No residue of a blank hint line
+      expect(prompt).not.toMatch(/## Preset hint\n\n/);
+    });
+
+    it('falls back to (none) when both hint and roles are empty', () => {
+      const prompt = buildCaptainSystemPrompt({
+        workflow,
+        agents,
+        tools: liveCatalogEntries(),
+        preset: { name: 'empty' },
+      });
+      expect(prompt).toMatch(/## Preset hint\n\(none\)/);
+    });
+
+    it('is case-insensitive when matching roles against capabilities', () => {
+      const prompt = buildCaptainSystemPrompt({
+        workflow,
+        agents: [{ name: 'agent', capabilities: ['Review', 'Implement'] }],
+        tools: liveCatalogEntries(),
+        preset: {
+          name: 'case',
+          suggestedAgentRoles: ['review', 'implement'],
+        },
+      });
+      expect(prompt).not.toContain('(intent — no adapter registered)');
+    });
+  });
+
   it('accepts a caller-supplied tool list (M3-4 integration seam)', () => {
     const prompt = buildCaptainSystemPrompt({
       workflow,

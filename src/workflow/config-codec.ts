@@ -222,10 +222,18 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         return acc;
       }
       const raw = value as Record<string, unknown>;
+      const rawRolesValue = (raw as { suggestedAgentRoles?: unknown; suggested_agent_roles?: unknown });
+      const rawRoles = rawRolesValue.suggestedAgentRoles ?? rawRolesValue.suggested_agent_roles;
+      const suggestedAgentRoles = Array.isArray(rawRoles)
+        ? rawRoles.filter((r): r is string => typeof r === 'string' && r.length > 0)
+        : undefined;
       acc[name] = {
         name,
         description: typeof raw.description === 'string' ? raw.description : undefined,
         hint: typeof raw.hint === 'string' ? raw.hint : undefined,
+        suggestedAgentRoles: suggestedAgentRoles && suggestedAgentRoles.length > 0
+          ? suggestedAgentRoles
+          : undefined,
       };
       return acc;
     },
@@ -342,6 +350,10 @@ export function serializeWorkflowYaml(config: FullConfig): string {
             omitUndefined({
               description: preset.description,
               hint: preset.hint,
+              suggested_agent_roles:
+                preset.suggestedAgentRoles && preset.suggestedAgentRoles.length > 0
+                  ? preset.suggestedAgentRoles
+                  : undefined,
             }),
           ]),
         )

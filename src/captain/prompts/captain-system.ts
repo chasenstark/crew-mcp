@@ -59,7 +59,7 @@ export function buildCaptainSystemPrompt(args: BuildCaptainSystemPromptArgs): st
   sections.push(renderRole(args.workflow));
   sections.push(renderTools(args.tools));
   sections.push(renderAgents(args.agents));
-  sections.push(renderPreset(args.preset));
+  sections.push(renderPreset(args.preset, args.agents));
   sections.push(renderGuardrails(args.advisory));
 
   return sections
@@ -97,15 +97,52 @@ function renderAgents(agents: readonly CaptainPromptAgentEntry[]): string {
   return [header, ...lines].join('\n');
 }
 
-function renderPreset(preset: PresetConfig | undefined): string {
+function renderPreset(
+  preset: PresetConfig | undefined,
+  agents: readonly CaptainPromptAgentEntry[],
+): string {
   const header = '## Preset hint';
   const hint = preset?.hint?.trim();
-  if (!hint) {
+  const rolesLine = renderSuggestedRoles(preset?.suggestedAgentRoles, agents);
+
+  if (!hint && !rolesLine) {
     // Empty section header with no body — the plan calls for an "empty section
     // header when preset is absent" so the prompt shape stays stable.
     return `${header}\n(none)`;
   }
-  return `${header}\n${hint}`;
+
+  const body: string[] = [];
+  if (hint) body.push(hint);
+  if (rolesLine) body.push(rolesLine);
+  return `${header}\n${body.join('\n')}`;
+}
+
+/**
+ * Render `suggestedAgentRoles` inline with an inventory-aware qualifier.
+ * Each role is checked against every registered agent's `capabilities` array
+ * (case-insensitive). A role that no agent claims is qualified as
+ * "(intent — no adapter registered)" so the captain doesn't hallucinate
+ * `run_agent(agent_id='X')` for an unregistered role.
+ *
+ * Returns an empty string when roles is empty/undefined — caller decides
+ * how to compose the section.
+ */
+function renderSuggestedRoles(
+  roles: readonly string[] | undefined,
+  agents: readonly CaptainPromptAgentEntry[],
+): string {
+  if (!roles || roles.length === 0) return '';
+  const registered = new Set<string>();
+  for (const agent of agents) {
+    for (const cap of agent.capabilities) {
+      registered.add(cap.toLowerCase());
+    }
+  }
+  const rendered = roles.map((role) => {
+    const match = registered.has(role.toLowerCase());
+    return match ? role : `${role} (intent — no adapter registered)`;
+  });
+  return `Suggested roles: ${rendered.join(', ')}`;
 }
 
 function renderGuardrails(advisory?: string): string {
