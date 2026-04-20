@@ -24,6 +24,19 @@
 
 set -euo pipefail
 
+# Portable millisecond timestamp. macOS BSD `date` doesn't support `%N`, so
+# we route through python3 (present on every supported dev environment).
+# Fallback to seconds*1000 if python3 is missing for some reason.
+now_ms() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(int(time.time()*1000))'
+  else
+    # Coarse fallback: seconds × 1000. Loses sub-second precision but
+    # keeps the arithmetic valid on the hypothetical no-python host.
+    echo $(( $(date +%s) * 1000 ))
+  fi
+}
+
 CAPTAINS=("${@:-claude-code codex gemini-cli}")
 readarray -t CAPTAINS_ARRAY < <(printf '%s\n' ${CAPTAINS[@]})
 if [ "${#CAPTAINS_ARRAY[@]}" -eq 1 ] && [ "${CAPTAINS_ARRAY[0]}" = "claude-code codex gemini-cli" ]; then
@@ -146,7 +159,7 @@ YAML
     printf '\n%s\n' "$presets_block" >> .crew/workflow.yaml
   fi
 
-  local start_ms; start_ms="$(date +%s%3N)"
+  local start_ms; start_ms="$(now_ms)"
   # Dispatch the scenario. For most scenarios a single `crew run` invocation
   # suffices; scenarios 7 & 8 require orchestration (version flip, mid-run
   # interrupt) that the script shells out to sub-procedures for.
@@ -158,7 +171,7 @@ YAML
     status="fail"
   fi
 
-  local end_ms; end_ms="$(date +%s%3N)"
+  local end_ms; end_ms="$(now_ms)"
   TIMINGS[$key]="$((end_ms - start_ms))"
 
   # Count automatic replays in the log (marker from session-loop.ts).
