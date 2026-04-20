@@ -97,20 +97,29 @@ describe('session-loop tool reachability (M3-13, closes S11)', () => {
       expect(names).toContain('mcp__crew__list_agents');
       expect(names).toContain('mcp__crew__finish');
 
-      // mcpRegistration kind must match the captain name.
+      // mcpRegistration kind must match the captain name. Payloads carry
+      // an empty MCP-server set since the M3 `crew-mcp` placeholder was
+      // removed (no such binary existed; tool invocation flows through
+      // the JSON-envelope loop + `onToolCall`, not the MCP protocol).
       const payload = probe.lastMcpPayload as McpRegistrationPayload | undefined;
       expect(payload?.kind).toBe(captainName);
       if (payload?.kind === 'claude-code') {
         const parsed = JSON.parse(payload.inlineConfigJson);
-        expect(parsed.mcpServers.crew).toBeDefined();
+        // Empty mcpServers is what claude-code receives post-cleanup.
+        expect(parsed).toEqual({});
       }
       if (payload?.kind === 'gemini-cli') {
-        expect(payload.allowedServerNames).toContain('crew');
+        // Gemini's allowed-server list is empty; no `-c mcp_servers.*`
+        // writes to settings.json.
+        expect(payload.allowedServerNames).toEqual([]);
       }
       if (payload?.kind === 'codex') {
+        // Codex's config-override argv has no mcp_servers.* entries
+        // (previously caused it to hang spawning the nonexistent
+        // `crew-mcp` binary).
         expect(
-          payload.configOverrideArgv.some((a) => a.startsWith('mcp_servers.crew')),
-        ).toBe(true);
+          payload.configOverrideArgv.some((a) => a.startsWith('mcp_servers.')),
+        ).toBe(false);
       }
     });
   }

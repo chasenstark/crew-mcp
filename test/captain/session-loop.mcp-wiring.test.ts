@@ -24,7 +24,12 @@ const workflow: WorkflowConfig = {
 };
 
 describe('session-loop mcp wiring (M3-8)', () => {
-  it('one ToolCatalogClass instance feeds all three converters via resolveCaptainConverter', () => {
+  it('one ToolCatalogClass instance feeds all three converters with (currently empty) MCP-server registrations via resolveCaptainConverter', () => {
+    // The M3 `crew-mcp` placeholder was removed — no such binary existed
+    // and codex would hang trying to spawn it. Tool routing flows through
+    // the JSON envelope in each adapter, not the MCP protocol. This test
+    // locks the converter wiring (catalog → per-captain payload shape)
+    // while asserting the now-empty registration surface.
     const catalog = new ToolCatalogClass({
       registry: createRegistryFromConfig({
         codex: { adapter: 'codex' },
@@ -33,27 +38,28 @@ describe('session-loop mcp wiring (M3-8)', () => {
     });
     const mcpCatalog = catalog.toMcpRegistrationCatalog();
 
-    // Claude
+    // Claude: empty `{}` inline config.
     const claude = resolveCaptainConverter('claude-code', mcpCatalog);
     expect(claude?.kind).toBe('claude-code');
     if (claude?.kind === 'claude-code') {
       const parsed = JSON.parse(claude.inlineConfigJson);
-      expect(parsed.mcpServers.crew).toBeDefined();
-      expect(parsed.mcpServers.crew.command).toBe('crew-mcp');
+      expect(parsed).toEqual({});
     }
 
-    // Gemini
+    // Gemini: empty allowed-server list.
     const gemini = resolveCaptainConverter('gemini-cli', mcpCatalog);
     expect(gemini?.kind).toBe('gemini-cli');
     if (gemini?.kind === 'gemini-cli') {
-      expect(gemini.allowedServerNames).toEqual(['crew']);
+      expect(gemini.allowedServerNames).toEqual([]);
     }
 
-    // Codex
+    // Codex: no `-c mcp_servers.*` argv fragments.
     const codex = resolveCaptainConverter('codex', mcpCatalog);
     expect(codex?.kind).toBe('codex');
     if (codex?.kind === 'codex') {
-      expect(codex.configOverrideArgv).toContain('mcp_servers.crew.command="crew-mcp"');
+      expect(
+        codex.configOverrideArgv.some((a) => a.startsWith('mcp_servers.')),
+      ).toBe(false);
     }
   });
 

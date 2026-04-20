@@ -63,7 +63,7 @@ function registryAgents(r: AdapterRegistry | RegistryForCatalog): Array<{ name: 
 }
 import type { WorkflowConfig } from '../../workflow/types.js';
 import type { ActionCatalogEntry } from '../action-server.js';
-import { CaptainActionServer, DEFAULT_TOOL_NAMESPACE } from '../action-server.js';
+import { CaptainActionServer } from '../action-server.js';
 import type { McpServerSpec } from '../mcp-registration.js';
 import type { CaptainPromptAgentEntry } from '../prompts/captain-system.js';
 import type { CaptainSession } from '../session.js';
@@ -184,26 +184,25 @@ export class ToolCatalog {
   }
 
   /**
-   * MCP-server list for the three adapter converters. M3 emits a single
-   * `crew` server entry describing the captain action namespace; M5 will
-   * add real external MCP servers. The converters don't distinguish — they
-   * serialize whatever the catalog emits.
+   * MCP-server list for the three adapter converters. Currently empty:
+   * the M3 `crew` placeholder (`command: 'crew-mcp'`) was decorative —
+   * no such binary exists. claude-code silently tolerated the missing
+   * binary; codex hung on the MCP handshake; gemini wrote broken settings
+   * to `~/.gemini/settings.json`. Tool invocation in all three adapters
+   * flows through the JSON-envelope loop + `onToolCall` callback anyway,
+   * so the MCP registration was never load-bearing for routing.
+   *
+   * If M5 or later introduces a real captain-side MCP server (e.g., an
+   * out-of-process crew-mcp that federates into other MCP endpoints),
+   * put its spec here. Until then, this returns `[]` so:
+   *   - claude-code's `--mcp-config` is literally `"{}"`
+   *   - codex gets no `-c mcp_servers.*=...` flags
+   *   - gemini's `~/.gemini/settings.json` has an empty `mcpServers`
+   *
+   * All three adapters handle empty configs cleanly.
    */
   toMcpServers(): readonly McpServerSpec[] {
-    // The `crew` server entry is a self-reference: it describes the MCP
-    // namespace the captain sees but does not point at a real process.
-    // Converters serialize `command` verbatim; M3 ships no external servers
-    // so this is a placeholder record the real catalog can later be
-    // superseded by (see M3-4 plan: "today this is a derivation of
-    // CaptainActionServer.listTools() wrapped in the crew MCP transport
-    // metadata; most real MCP-server entries land in M5").
-    return [
-      {
-        name: 'crew',
-        command: 'crew-mcp',
-        args: ['--namespace', DEFAULT_TOOL_NAMESPACE],
-      },
-    ];
+    return [];
   }
 
   /**

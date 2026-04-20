@@ -197,12 +197,17 @@ describe('ToolCatalog + CaptainActionServer integration', () => {
 });
 
 describe('ToolCatalog projections', () => {
-  it('toMcpServers returns the deterministic single "crew" entry', () => {
+  it('toMcpServers is empty (the M3 crew-mcp placeholder was removed)', () => {
+    // Historical context: M3 shipped a `crew` MCP server pointing at a
+    // `crew-mcp` binary that never existed. Tool invocation in all three
+    // captain adapters flows through the JSON-envelope loop + onToolCall
+    // callback, not the MCP protocol — the declaration was decorative.
+    // Claude Code tolerated the missing binary; codex hung on the MCP
+    // handshake; gemini wrote broken settings.json. Now no MCP server
+    // is declared; if a real captain-side MCP server is introduced later,
+    // this test should assert its presence.
     const catalog = new ToolCatalog({ registry: registry(), workflow });
-    const servers = catalog.toMcpServers();
-    expect(servers).toHaveLength(1);
-    expect(servers[0].name).toBe('crew');
-    expect(servers[0].command).toBe('crew-mcp');
+    expect(catalog.toMcpServers()).toEqual([]);
   });
 
   it('toPromptAgentInventory reflects the registry state verbatim', () => {
@@ -223,10 +228,13 @@ describe('ToolCatalog projections', () => {
     expect(byName.custom?.capabilities).toEqual(['typescript', 'devops']);
   });
 
-  it('toMcpRegistrationCatalog feeds converters with both mcpServers and crewTools', () => {
+  it('toMcpRegistrationCatalog feeds converters with empty mcpServers + populated crewTools', () => {
     const catalog = new ToolCatalog({ registry: registry(), workflow });
     const out = catalog.toMcpRegistrationCatalog();
-    expect(out.mcpServers[0].name).toBe('crew');
+    // No MCP server declarations post-M3-placeholder cleanup; the
+    // namespaced tool names in `crewTools` are surfaced to the captain
+    // via the JSON-envelope prompt, not via MCP handshake.
+    expect(out.mcpServers).toEqual([]);
     expect(out.crewTools.length).toBe(8);
     expect(out.crewTools.every((t) => t.name.startsWith(DEFAULT_TOOL_NAMESPACE))).toBe(true);
   });
