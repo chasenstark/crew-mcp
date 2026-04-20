@@ -38,6 +38,18 @@ export function buildDecisionPrompt(
     continueFromSession?: boolean;
   } = {},
 ): string {
+  // Split system messages out of the transcript. The caller (judgment-runner
+  // for captain turns, or a generic tool-loop consumer) typically puts the
+  // grounding prompt at position 0 with role='system'. Rendering it through
+  // the transcript's 1,500-char truncation chops load-bearing sections —
+  // the M3 captain-system prompt in particular is ~2,000 chars and its
+  // tail (agent inventory, preset hint, operating guardrails) is the part
+  // the captain needs most to avoid hallucinating agent_ids. Render system
+  // messages verbatim at the top instead; non-system messages still go
+  // through the transcript window + char limit.
+  const systemMessages = transcript.filter((m) => m.role === 'system');
+  const nonSystemTranscript = transcript.filter((m) => m.role !== 'system');
+
   const conversationSection = options.continueFromSession
     ? [
         'Conversation transcript:',
@@ -46,24 +58,43 @@ export function buildDecisionPrompt(
       ]
     : [
         'Conversation transcript:',
-        renderTranscript(transcript),
+        renderTranscript(nonSystemTranscript),
       ];
 
-  return [
-    'You are a workflow controller using external tools.',
-    'Decide exactly one next step per turn.',
-    '',
-    'Available tools:',
-    renderToolCatalog(tools),
-    '',
-    ...conversationSection,
-    '',
-    'Respond with one JSON object matching the schema.',
-    '- For tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
-    '- For completion: {"type":"finish","output":"...","reasoning":"..."}',
-    '- For hard failure: {"type":"fail","error":"...","reasoning":"..."}',
+  // When the caller provided a system message, render it as the primary
+  // framing and keep the adapter-owned JSON envelope protocol as a clearly
+  // labeled sub-section. When no system message exists (generic tool-loop
+  // callers), fall back to the adapter's default controller framing.
+  const preamble = systemMessages.length > 0
+    ? systemMessages.map((m) => m.content).join('\n\n')
+    : [
+        'You are a workflow controller using external tools.',
+        'Decide exactly one next step per turn.',
+      ].join('\n');
+
+  const sections: string[] = [preamble, ''];
+
+  // Only repeat the tool catalog when there's no caller-provided system
+  // prompt — captain-system prompts already render a `## Tools` section
+  // with identical names + descriptions, so listing them a second time is
+  // noise that pushes the useful transcript further down the context.
+  if (systemMessages.length === 0) {
+    sections.push('Available tools:', renderToolCatalog(tools), '');
+  }
+
+  sections.push(...conversationSection, '');
+
+  sections.push(
+    '# Adapter response format',
+    'The adapter wraps your replies in a JSON envelope. Respond with exactly one JSON object:',
+    '- Tool invocation: {"type":"tool_call","tool":"<name>","input":{...},"reasoning":"..."}',
+    '- End this adapter turn: {"type":"finish","output":"...","reasoning":"..."}',
+    '- Hard failure: {"type":"fail","error":"...","reasoning":"..."}',
     'Rules:',
     '- Never emit multiple tool calls in one turn.',
-    '- tool must match exactly one available tool name.',
-  ].join('\n');
+    '- `tool` must match exactly one available tool name.',
+    '- Envelope `finish` ends the current adapter invocation but does NOT end the captain workflow — to end the workflow, invoke the `finish` tool (e.g. `mcp__crew__finish`) via `tool_call`.',
+  );
+
+  return sections.join('\n');
 }
