@@ -71,7 +71,7 @@ export async function runCommand(
   normalizeAskUserPolicy(options.onAskUser, 'prompt');
 
   const { waitUntilExit } = render(
-    React.createElement(App, { pipeline: runner, session, dispatcher }),
+    React.createElement(App, { pipeline: runner, session, dispatcher, config }),
   );
   await waitUntilExit();
 }

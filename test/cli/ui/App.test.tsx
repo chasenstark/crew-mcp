@@ -10,6 +10,25 @@ import type { PipelineEvents } from '../../../src/captain/events.js';
 import type { CrewRunner } from '../../../src/captain/runner.js';
 import { CaptainSession } from '../../../src/captain/session.js';
 import { ToolDispatcher } from '../../../src/captain/tool-dispatcher.js';
+import type { FullConfig } from '../../../src/workflow/types.js';
+
+function makeConfig(): FullConfig {
+  return {
+    workflow: {
+      name: 'default',
+      execution: { mode: 'judgment' },
+      steps: [],
+      completion: { strategy: 'judge_approval', fallback: 'max_passes' },
+    },
+    agents: {},
+    captain: { cli: 'claude-code', preset: 'default' },
+    presets: {
+      default: { name: 'default', hint: 'default' },
+      'thorough-review': { name: 'thorough-review', hint: 'review twice' },
+    },
+    errorHandling: { default: { retry: 1, fallback: null, onExhausted: 'ask_user' } },
+  };
+}
 
 let latestSubmit: ((value: string) => void) | null = null;
 let latestDisabled: boolean | undefined;
@@ -38,6 +57,18 @@ vi.mock('../../../src/cli/ui/PromptInput.js', () => ({
 vi.mock('../../../src/cli/ui/config/command-handler.js', () => ({
   handleConfigSlashCommand: (input: string, context: { sessionBusy: boolean }) =>
     mockHandleConfigSlashCommand(input, context),
+}));
+
+const mockHandlePresetSlashCommand = vi.fn((input: string) => {
+  if (!input.startsWith('/preset')) return null;
+  if (input === '/preset list') return 'preset list output';
+  if (input === '/preset thorough-review') return 'Preset set to thorough-review';
+  return 'preset help output';
+});
+
+vi.mock('../../../src/cli/ui/preset/command-handler.js', () => ({
+  handlePresetSlashCommand: (input: string, context: unknown) =>
+    mockHandlePresetSlashCommand(input, context),
 }));
 
 const { App } = await import('../../../src/cli/ui/App.js');
@@ -306,4 +337,65 @@ describe('App (M1.5 post-rewrite)', () => {
   // event; M4-4 deleted the linear-mode Pipeline + the App's legacyMode
   // fallback. Session + dispatcher are always provided now — there is no
   // legacy path left to test.
+
+  describe('/preset routing (M5-5)', () => {
+    beforeEach(() => {
+      mockHandlePresetSlashCommand.mockClear();
+    });
+
+    it('/preset list is handled by the preset router, not /cancel', async () => {
+      const { runner, fake } = createFakeRunner();
+      const cancelSpy = vi.spyOn(fake, 'cancel');
+      const { lastFrame } = renderApp(
+        <App
+          pipeline={runner}
+          session={session}
+          dispatcher={dispatcher}
+          config={makeConfig()}
+        />,
+      );
+      await flush();
+      submit('/preset list');
+      await flush();
+      expect(mockHandlePresetSlashCommand).toHaveBeenCalledWith(
+        '/preset list',
+        expect.anything(),
+      );
+      expect(cancelSpy).not.toHaveBeenCalled();
+      expect(lastFrame()).toContain('preset list output');
+    });
+
+    it('/preset does NOT trigger the /cancel handler even though /presetbogus would be shaped like a prefix hit', async () => {
+      const { runner, fake } = createFakeRunner();
+      const cancelSpy = vi.spyOn(fake, 'cancel');
+      renderApp(
+        <App
+          pipeline={runner}
+          session={session}
+          dispatcher={dispatcher}
+          config={makeConfig()}
+        />,
+      );
+      await flush();
+      submit('/presetbogus');
+      await flush();
+      // Router prefix matched /preset (since it starts with /preset), so the
+      // preset handler saw it as an invalid command; /cancel was never
+      // consulted. Regression guard — if a future change deletes the
+      // /preset branch, /presetbogus would slip through to /cancel.
+      expect(cancelSpy).not.toHaveBeenCalled();
+      expect(mockHandlePresetSlashCommand).toHaveBeenCalled();
+    });
+
+    it('emits an error message if config was not threaded', async () => {
+      const { runner } = createFakeRunner();
+      const { lastFrame } = renderApp(
+        <App pipeline={runner} session={session} dispatcher={dispatcher} />,
+      );
+      await flush();
+      submit('/preset list');
+      await flush();
+      expect(lastFrame()).toContain('Preset commands require the config to be threaded');
+    });
+  });
 });

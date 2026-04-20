@@ -3,9 +3,11 @@ import { Box, Text, useApp } from 'ink';
 import { ConversationView, type ChatMessage } from './ConversationView.js';
 import { PromptInput } from './PromptInput.js';
 import { handleConfigSlashCommand } from './config/command-handler.js';
+import { handlePresetSlashCommand } from './preset/command-handler.js';
 import type { CrewRunner } from '../../captain/runner.js';
 import type { CaptainSession } from '../../captain/session.js';
 import type { ToolDispatcher } from '../../captain/tool-dispatcher.js';
+import type { FullConfig } from '../../workflow/types.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
 
 interface InFlightToolCall {
@@ -19,10 +21,17 @@ interface Props {
   pipeline: CrewRunner;
   session: CaptainSession;
   dispatcher: ToolDispatcher;
+  /**
+   * Loaded config. Required for `/preset` support (the handler reads
+   * `config.presets` + `config.captain.preset`). Optional at the type
+   * level so legacy callers that don't need /preset can still construct
+   * App without breaking — but `/preset` is a no-op in that case.
+   */
+  config?: FullConfig;
   initialPrompt?: string;
 }
 
-export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
+export function App({ pipeline, session, dispatcher, config, initialPrompt }: Props) {
   useApp();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
@@ -177,6 +186,34 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
         }
       }
 
+      // /preset routes BETWEEN /config and /cancel. Placement matters:
+      // placing it before /config would shadow any future `/config preset-*`
+      // paths; placing it after /cancel would let `/cancel --preset` prefix-
+      // match. The explicit ordering here prevents both regressions.
+      // Preset switching is safe mid-run (prompt material only; NOT
+      // tool-schema material), so unlike /config it does not gate on
+      // sessionBusy.
+      if (input.startsWith('/preset')) {
+        if (!config) {
+          addMessage(
+            'system',
+            'Preset commands require the config to be threaded into App. This is a /preset configuration bug, not a user error.',
+          );
+          return;
+        }
+        try {
+          const response = handlePresetSlashCommand(input, { session, config });
+          if (response !== null) {
+            addMessage('system', response);
+            return;
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          addMessage('system', `Preset error: ${message}`);
+          return;
+        }
+      }
+
       // Slash commands for cancellation.
       if (input.startsWith('/cancel')) {
         const rest = input.slice('/cancel'.length).trim();
@@ -224,7 +261,7 @@ export function App({ pipeline, session, dispatcher, initialPrompt }: Props) {
         setRunnerActive(false);
       });
     },
-    [pipeline, session, dispatcher, addMessage, finalizeStream, sessionBusy, runnerActive],
+    [pipeline, session, dispatcher, config, addMessage, finalizeStream, sessionBusy, runnerActive],
   );
 
   useEffect(() => {
