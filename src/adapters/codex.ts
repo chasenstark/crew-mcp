@@ -650,21 +650,134 @@ export class CodexAdapter implements AgentAdapter {
     onToolCall: (call: ToolCall) => Promise<ToolResult>,
     context?: ToolLoopContext,
   ): Promise<ToolLoopResult> {
+    // Track codex thread_id across inner turns. The first call is a fresh
+    // `codex exec`; subsequent calls use `codex exec resume <thread_id>`
+    // so codex's server-side prefix cache can hit. Without this, each
+    // inner turn is a brand-new thread and the whole ~80k-token built-in
+    // preamble + our growing transcript has to be re-processed from
+    // scratch — observed as 30s per turn. Sharing the thread typically
+    // drops follow-up turns to ~5-10s.
+    let threadId: string | undefined = context?.providerSession?.sessionId;
+
     return executePromptToolLoop(
       tools,
       messages,
       onToolCall,
-      (prompt) =>
-        this.executeWithSchema(prompt, ToolLoopDecisionSchema, {
+      async (prompt) => {
+        const { decision, threadId: nextThreadId } = await this.executeDecisionTurn(prompt, {
+          threadId,
           signal: context?.signal,
           workingDirectory: context?.workingDirectory,
-        }),
+        });
+        if (nextThreadId) threadId = nextThreadId;
+        return decision;
+      },
       {
         pathTaken: 'adapter',
         signal: context?.signal,
         onTranscriptUpdate: context?.onTranscriptUpdate,
       },
     );
+  }
+
+  /**
+   * Codex-private wrapper around the `codex exec [resume <id>] --output-schema`
+   * invocation used as the primary decision-making path for captain turns.
+   * Differs from the public `executeWithSchema` in three ways:
+   *
+   *   1. Accepts an optional `threadId`; emits `exec resume <id>` when set
+   *      so codex's prefix cache can hit across inner turns.
+   *   2. Extracts the `thread_id` from the JSONL event stream and returns
+   *      it to the caller for use on the next turn.
+   *   3. Logs a decision-preview at INFO level (previously, only the raw
+   *      duration was logged, so debugging "captain stuck in a loop" was
+   *      blind without parsing events.log).
+   */
+  private async executeDecisionTurn(
+    prompt: string,
+    options: {
+      threadId?: string;
+      signal?: AbortSignal;
+      workingDirectory?: string;
+    },
+  ): Promise<{ decision: ToolLoopDecision; threadId: string | undefined }> {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'codex-decision-'));
+    try {
+      const schemaFile = join(tmpDir, 'schema.json');
+      const outputFile = join(tmpDir, 'output.json');
+      const jsonSchema = z.toJSONSchema(ToolLoopDecisionSchema);
+      writeFileSync(schemaFile, JSON.stringify(jsonSchema, null, 2), 'utf-8');
+
+      const base = options.threadId
+        ? ['exec', 'resume', options.threadId]
+        : ['exec'];
+      const args = [
+        ...base,
+        prompt,
+        '--json',
+        '--skip-git-repo-check',
+        '--output-schema',
+        schemaFile,
+        '-o',
+        outputFile,
+      ];
+
+      const turnStartedAt = Date.now();
+      logger.info('[adapter:codex] decision turn start', {
+        resumedThreadId: options.threadId,
+        promptChars: prompt.length,
+        promptPreview: preview(prompt, 200),
+      });
+      const result = await execa(AgentId.CODEX, args, {
+        cwd: options.workingDirectory,
+        cancelSignal: options.signal,
+        reject: false,
+        stdin: 'ignore',
+        // Large timeout — inner turns can take ~30s cold on codex, and
+        // ~5-10s warm. 5m is a hard safety-net cap.
+        timeout: 300_000,
+      });
+
+      if (result.exitCode !== 0 && !result.stdout) {
+        throw new Error(
+          `Codex decision turn exited ${result.exitCode}: ${result.stderr || '(no stderr)'}`,
+        );
+      }
+
+      const { events } = parseJsonl(result.stdout ?? '');
+      const errorMessage = findError(events);
+      if (errorMessage) {
+        throw new Error(`Codex returned an error: ${errorMessage}`);
+      }
+
+      if (!existsSync(outputFile)) {
+        throw new Error(
+          `Codex did not produce output file (exit ${result.exitCode}): ${result.stderr}`,
+        );
+      }
+
+      const raw: unknown = JSON.parse(readFileSync(outputFile, 'utf-8'));
+      const decision = ToolLoopDecisionSchema.parse(raw) as ToolLoopDecision;
+
+      // thread_id appears on the `thread.started` event of the first
+      // turn; subsequent resume turns reuse the same thread so the
+      // extractor returns the same id (or undefined when nothing in the
+      // stream carried it, e.g. a subprocess that failed before starting).
+      const nextThreadId = this.extractThreadId(events) ?? options.threadId;
+
+      logger.info('[adapter:codex] decision turn end', {
+        elapsedMs: Date.now() - turnStartedAt,
+        threadId: nextThreadId,
+        decisionType: decision.type,
+        tool: decision.tool ?? undefined,
+        reasoningPreview: decision.reasoning ? preview(decision.reasoning, 160) : undefined,
+        outputPreview: decision.output ? preview(decision.output, 160) : undefined,
+      });
+
+      return { decision, threadId: nextThreadId };
+    } finally {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   }
 
   private async executeWithResumeSession(

@@ -161,19 +161,34 @@ describe('CodexAdapter', () => {
 
   describe('executeWithTools', () => {
     it('runs tool calls and completes when the controller emits finish', async () => {
+      // executeWithTools now routes through the codex-private
+      // executeDecisionTurn (which adds thread-continuity via
+      // `codex exec resume <id>` on follow-up inner turns). Mock that
+      // helper to return scripted decisions + a stable thread id.
       const schemaSpy = vi
-        .spyOn(adapter, 'executeWithSchema')
+        .spyOn(adapter as any, 'executeDecisionTurn')
         .mockResolvedValueOnce({
-          type: 'tool_call',
-          tool: 'run_decompose',
-          input: {},
-          reasoning: 'decompose first',
-        } as any)
+          decision: {
+            type: 'tool_call',
+            tool: 'run_decompose',
+            input: JSON.stringify({}),
+            reasoning: 'decompose first',
+            output: null,
+            error: null,
+          },
+          threadId: 'thread-1',
+        })
         .mockResolvedValueOnce({
-          type: 'finish',
-          output: 'done',
-          reasoning: 'workflow complete',
-        } as any);
+          decision: {
+            type: 'finish',
+            output: 'done',
+            reasoning: 'workflow complete',
+            tool: null,
+            input: null,
+            error: null,
+          },
+          threadId: 'thread-1',
+        });
 
       const onToolCall = vi.fn(async () => ({ output: { ok: true } }));
 
@@ -198,13 +213,19 @@ describe('CodexAdapter', () => {
     });
 
     it('caps transcript context to avoid unbounded prompt growth', async () => {
-      const schemaSpy = vi
-        .spyOn(adapter, 'executeWithSchema')
+      const decisionSpy = vi
+        .spyOn(adapter as any, 'executeDecisionTurn')
         .mockResolvedValueOnce({
-          type: 'finish',
-          output: 'done',
-          reasoning: 'workflow complete',
-        } as any);
+          decision: {
+            type: 'finish',
+            output: 'done',
+            reasoning: 'workflow complete',
+            tool: null,
+            input: null,
+            error: null,
+          },
+          threadId: 'thread-1',
+        });
 
       const longContent = 'x'.repeat(3000);
       const manyMessages = Array.from({ length: 30 }, (_, i) => ({
@@ -224,24 +245,30 @@ describe('CodexAdapter', () => {
         vi.fn(async () => ({ output: { ok: true } })),
       );
 
-      const prompt = schemaSpy.mock.calls[0][0];
+      const prompt = decisionSpy.mock.calls[0][0];
       expect(prompt).toContain('omitted 6 earlier transcript messages');
       expect(prompt).not.toContain(`${'x'.repeat(2000)}`);
     });
 
-    it('passes a windowed transcript to executeWithSchema when the input transcript is long', async () => {
+    it('passes a windowed transcript to executeDecisionTurn when the input transcript is long', async () => {
       // Post-option-A: executeWithTools routes through executeWithPromptLoop
-      // which calls executeWithSchema per inner turn. This test asserts
+      // which calls executeDecisionTurn per inner turn. This test asserts
       // that buildDecisionPrompt's transcript window is still applied when
       // the adapter's entry point receives a long message log.
       vi.spyOn(adapter, 'getCliVersionTag').mockResolvedValue('codex@0.120.0');
       const executeWithSchemaSpy = vi
-        .spyOn(adapter, 'executeWithSchema')
+        .spyOn(adapter as any, 'executeDecisionTurn')
         .mockResolvedValueOnce({
-          type: 'finish',
-          output: 'done',
-          reasoning: 'workflow complete',
-        } as unknown as Awaited<ReturnType<typeof adapter.executeWithSchema>>);
+          decision: {
+            type: 'finish',
+            output: 'done',
+            reasoning: 'workflow complete',
+            tool: null,
+            input: null,
+            error: null,
+          },
+          threadId: 'thread-1',
+        });
 
       const longContent = 'x'.repeat(3000);
       const manyMessages = Array.from({ length: 30 }, (_, i) => ({
@@ -274,11 +301,11 @@ describe('CodexAdapter', () => {
       expect(prompt).toContain('message-29-');
     });
 
-    it('returns interrupted and skips executeWithSchema when signal is already aborted', async () => {
+    it('returns interrupted and skips executeDecisionTurn when signal is already aborted', async () => {
       // Post-option-A: the abort-before-fallback invariant still holds via
       // executePromptToolLoop's top-of-loop signal check — if the signal is
-      // already aborted when the loop starts, the schema call never fires.
-      const executeWithSchemaSpy = vi.spyOn(adapter, 'executeWithSchema');
+      // already aborted when the loop starts, the decision call never fires.
+      const executeWithSchemaSpy = vi.spyOn(adapter as any, 'executeDecisionTurn');
 
       const controller = new AbortController();
       controller.abort('Cancelled by test');
