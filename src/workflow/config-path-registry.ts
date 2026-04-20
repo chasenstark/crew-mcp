@@ -242,6 +242,24 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     options: (config) => modelPresetsForCaptain(config),
   },
   {
+    path: 'captain.preset',
+    examples: [
+      '/config set captain.preset default',
+      '/config set captain.preset thorough-review',
+    ],
+    match: exactPath('captain.preset'),
+    read: (config) => config.captain.preset,
+    parse: (raw, _config, _params, path) =>
+      parseNonEmptyString(path, raw, '/config set captain.preset default'),
+    write: (config, _params, value) => {
+      config.captain.preset = String(value);
+    },
+    options: (config) => {
+      const declared = Object.keys(config.presets ?? {}).sort();
+      return withCurrentOption(declared, config.captain.preset);
+    },
+  },
+  {
     path: 'workflow.execution.mode',
     examples: ['/config set workflow.execution.mode judgment'],
     match: exactPath('workflow.execution.mode'),

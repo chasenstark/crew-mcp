@@ -10,6 +10,7 @@ describe('config path registry', () => {
     expect(SUPPORTED_CONFIG_SET_PATHS).toEqual([
       'captain.cli',
       'captain.model',
+      'captain.preset',
       'workflow.execution.mode',
       'workflow.roleModels.<role>',
       'agents.<name>.adapter',
@@ -20,6 +21,55 @@ describe('config path registry', () => {
       'workflow.reviewer.maxPasses',
       'errorHandling.default.retry',
     ]);
+  });
+
+  describe('captain.preset (M5-5a)', () => {
+    it('parses + writes via descriptor contract', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('captain.preset');
+      expect(resolved).not.toBeNull();
+      const descriptor = resolved!.descriptor;
+
+      const parsed = descriptor.parse(
+        'thorough-review',
+        config,
+        resolved!.params,
+        'captain.preset',
+      );
+      descriptor.write(config, resolved!.params, parsed, 'captain.preset');
+      expect(config.captain.preset).toBe('thorough-review');
+      expect(descriptor.read(config, resolved!.params)).toBe('thorough-review');
+    });
+
+    it('rejects the empty string', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('captain.preset');
+      expect(() =>
+        resolved!.descriptor.parse('', config, resolved!.params, 'captain.preset'),
+      ).toThrow(/non-empty string/);
+    });
+
+    it('options() enumerates declared presets plus the current value', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('captain.preset');
+      const descriptor = resolved!.descriptor;
+      const options = descriptor.options(config, resolved!.params);
+      // All three built-ins declared in defaults/workflow.yaml.
+      expect(options).toContain('default');
+      expect(options).toContain('thorough-review');
+      expect(options).toContain('read-only');
+    });
+
+    it('options() includes the current value even when it names an unknown preset', () => {
+      const config = getDefaultConfig();
+      config.captain.preset = 'user-custom';
+      config.presets = { ...(config.presets ?? {}) };
+      delete (config.presets as Record<string, unknown>)['user-custom'];
+      const resolved = resolveConfigPath('captain.preset');
+      const descriptor = resolved!.descriptor;
+      const options = descriptor.options(config, resolved!.params);
+      expect(options).toContain('user-custom');
+    });
   });
 
   it('resolves dynamic role-model path descriptors', () => {

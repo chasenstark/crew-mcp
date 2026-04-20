@@ -210,6 +210,28 @@ describe('config-service', () => {
     expect(options).not.toContain(ModelId.GPT_CODEX);
   });
 
+  describe('captain.preset (M5-5a)', () => {
+    it('sets the preset via /config set captain.preset', () => {
+      const result = setConfigValue(cwd, 'captain.preset', 'thorough-review');
+      expect(result.nextValue).toBe('thorough-review');
+      const projectConfig = loadConfigByScope('project', cwd);
+      expect(projectConfig?.captain.preset).toBe('thorough-review');
+    });
+
+    it('rejects the empty string (matches parseNonEmptyString)', () => {
+      expect(() =>
+        setConfigValue(cwd, 'captain.preset', ''),
+      ).toThrow(/non-empty string/);
+    });
+
+    it('options enumerate declared presets from defaults', () => {
+      const options = getConfigValueOptions(getDefaultConfig(), 'captain.preset');
+      expect(options).toContain('default');
+      expect(options).toContain('thorough-review');
+      expect(options).toContain('read-only');
+    });
+  });
+
   it('does not rewrite arbitrary openai-compatible models during unrelated edits', () => {
     addAgent(cwd, 'local-llama', {
       adapter: AdapterId.OPENAI_COMPATIBLE,
