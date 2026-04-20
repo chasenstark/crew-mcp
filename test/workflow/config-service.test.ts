@@ -224,6 +224,12 @@ describe('config-service', () => {
       ).toThrow(/non-empty string/);
     });
 
+    it('rejects unknown preset names at parse time', () => {
+      expect(() =>
+        setConfigValue(cwd, 'captain.preset', 'bogus-preset-name'),
+      ).toThrow(/declared preset/);
+    });
+
     it('options enumerate declared presets from defaults', () => {
       const options = getConfigValueOptions(getDefaultConfig(), 'captain.preset');
       expect(options).toContain('default');

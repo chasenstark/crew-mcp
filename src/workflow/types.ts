@@ -45,8 +45,10 @@ export type CaptainModelSpec = string | CaptainModelMap;
 
 /**
  * Preset-config shape. A preset bundles a `hint` paragraph that the
- * captain-system prompt renders, plus a human-readable description. M3 ships
- * only the `default` preset; M5 adds `/preset` + user-defined presets.
+ * captain-system prompt renders, plus a human-readable description. M5
+ * ships three built-ins (`default` / `thorough-review` / `read-only`) and
+ * the `/preset` slash command; user-defined presets live under
+ * `presets:` in `workflow.yaml`.
  *
  * `hint` is intentionally a free-form soft-policy nudge, not a runtime rule —
  * it lives in the prompt, not in the tool-schema, so editing a hint between

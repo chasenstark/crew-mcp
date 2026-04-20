@@ -99,6 +99,19 @@ export function handlePresetSlashCommand(
       sessionOverride: session.activePreset,
     });
     if (!active) {
+      // Distinguish "truly no preset" from "the session points at a
+      // preset the config no longer declares". The latter is actively
+      // misleading if we say "no active preset" — the user thinks /preset
+      // is unset when actually they have a broken override. Surface the
+      // stored name so they can /preset clear or re-add the preset.
+      if (session.activePreset) {
+        return [
+          `Session override '${session.activePreset}' is not declared in presets.`,
+          '  /preset list       see available presets',
+          '  /preset clear      remove the override',
+          '  (or re-add the preset to workflow.yaml)',
+        ].join('\n');
+      }
       return 'No active preset. (/preset <name> to set one.)';
     }
     const descr = active.preset.description?.trim() || '(no description)';

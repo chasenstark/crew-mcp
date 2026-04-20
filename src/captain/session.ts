@@ -149,11 +149,18 @@ export class CaptainSession {
   /**
    * Set (or clear, when passed `undefined`) the session's active preset.
    *
-   * **Atomicity contract:** mutates the in-memory field, emits a
-   * `preset_changed` event, AND persists the session snapshot — all in the
-   * same tick. A crash between the mutation and the next turn therefore
-   * cannot leave the session half-updated: either the write landed (next
-   * load sees the new value) or it didn't (next load sees the old one).
+   * **Atomicity contract:** the in-memory mutation, the snapshot persist,
+   * and the `preset_changed` event either ALL land or NONE does. If
+   * persist throws (disk full, permission denied, lock contention), the
+   * in-memory mutation is rolled back before re-throwing — the caller
+   * sees the error, the event log stays clean, and the next load sees
+   * the pre-swap value. This gives `/preset` the "either the switch
+   * happened or it didn't" guarantee that the slash-command handler
+   * relies on.
+   *
+   * Does NOT bump `lastTurnAt` — that field reflects turn-boundary
+   * timestamps, not preset-swap timestamps. Conflating them would make
+   * debugging "did preset swap land before or after turn N" harder.
    *
    * Preset swaps are NOT tool-schema material — providerSessionRef is
    * intentionally preserved (a mid-run preset switch should not invalidate
@@ -165,12 +172,21 @@ export class CaptainSession {
       // No-op: avoids churning the event log on redundant calls.
       return;
     }
+    const previous = this._activePreset;
     this._activePreset = normalized;
-    // Persist FIRST so the event below reflects committed state; if persist
-    // throws, the in-memory mutation is still there for the current process
-    // (which matches the documented best-effort write semantics), but no
-    // event fires to mislead the log reader.
-    this.persist();
+    try {
+      // Persist without touching `lastTurnAt` — a preset swap isn't a turn.
+      this.store.writeSession(this.toSnapshot());
+    } catch (err) {
+      // Rollback the in-memory mutation so the session + the (unwritten)
+      // snapshot agree. Then re-throw so the /preset handler surfaces the
+      // error instead of silently accepting a half-committed swap.
+      this._activePreset = previous;
+      throw err;
+    }
+    // Only log the event once persist succeeded — an event in the log
+    // without a corresponding snapshot update would mislead future
+    // debuggers reading events.log.
     this.store.appendEvent({
       kind: 'preset_changed',
       preset: normalized,

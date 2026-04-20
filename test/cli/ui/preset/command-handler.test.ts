@@ -135,6 +135,30 @@ describe('handlePresetSlashCommand (M5-5)', () => {
     expect(out).toContain('No active preset');
   });
 
+  it('/preset show distinguishes "no override" from "override points at an undeclared preset"', () => {
+    // Session has an activePreset, but the config no longer declares it
+    // (e.g., user renamed it, or config was edited between sessions).
+    // The handler should NOT report "No active preset" — that's actively
+    // misleading because the session DOES have an override, it's just
+    // broken. Surface the stored name so the user can /preset clear or
+    // re-add.
+    session.setActivePreset('thorough-review');
+    const trimmedConfig = makeConfig({
+      presets: {
+        default: { name: 'default', hint: 'default hint' },
+        // thorough-review deliberately absent here.
+      },
+    });
+    const out = handlePresetSlashCommand('/preset show', {
+      session,
+      config: trimmedConfig,
+    });
+    expect(out).toContain('thorough-review');
+    expect(out).toContain('not declared');
+    expect(out).toContain('/preset clear');
+    expect(out).not.toContain('No active preset');
+  });
+
   it('invalid identifier triggers the parser error', () => {
     const out = handlePresetSlashCommand('/preset my.preset', {
       session,

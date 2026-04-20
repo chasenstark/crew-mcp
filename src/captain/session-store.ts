@@ -308,16 +308,14 @@ function isValidSnapshot(value: unknown): value is SessionSnapshot {
 
 /**
  * Normalize any supported-version snapshot into the current v2 shape. v1
- * files pick up `activePreset: undefined` (the user had no opportunity to
- * set one before the bump); v2 files pass through unchanged.
+ * files pick up `activePreset: undefined` implicitly (the field never
+ * existed on v1); v2 files pass through unchanged. The spread carries
+ * any optional fields through automatically, so we only override the
+ * version tag.
  */
 function normalizeSnapshot(snapshot: SessionSnapshot): SessionSnapshot {
   if (snapshot.schemaVersion === CURRENT_SESSION_SCHEMA_VERSION) return snapshot;
-  return {
-    ...snapshot,
-    schemaVersion: CURRENT_SESSION_SCHEMA_VERSION,
-    activePreset: snapshot.activePreset, // carry through if present (always undefined for v1)
-  };
+  return { ...snapshot, schemaVersion: CURRENT_SESSION_SCHEMA_VERSION };
 }
 
 function isValidEvent(value: unknown): value is SessionEvent {

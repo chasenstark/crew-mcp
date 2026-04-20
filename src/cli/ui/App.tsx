@@ -195,9 +195,13 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
       // sessionBusy.
       if (input.startsWith('/preset')) {
         if (!config) {
+          // Production paths always thread `config` via run.ts. This branch
+          // only fires under test harnesses that mount App without config —
+          // surface a user-facing message rather than a developer telemetry
+          // string if that ever happens in the wild.
           addMessage(
             'system',
-            'Preset commands require the config to be threaded into App. This is a /preset configuration bug, not a user error.',
+            'Preset commands are unavailable right now (configuration did not load). Try restarting, or run `crew config show` to inspect.',
           );
           return;
         }

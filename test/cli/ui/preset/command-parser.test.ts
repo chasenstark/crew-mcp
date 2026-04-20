@@ -59,6 +59,31 @@ describe('parsePresetSlashCommand (M5-5)', () => {
     });
   });
 
+  describe('arity for zero-arg subcommands', () => {
+    it('/preset clear <trailing> is invalid (does NOT silently wipe the override)', () => {
+      // Regression guard for the "user typed `/preset clear default` thinking
+      // it would clear only default, but actually wiped their override"
+      // UX trap.
+      const result = parsePresetSlashCommand('/preset clear default');
+      expect(result?.kind).toBe('invalid');
+      if (result?.kind === 'invalid') {
+        expect(result.reason).toMatch(/takes no arguments/);
+      }
+    });
+
+    it('/preset list <trailing> is invalid', () => {
+      expect(parsePresetSlashCommand('/preset list default')?.kind).toBe('invalid');
+    });
+
+    it('/preset show <trailing> is invalid', () => {
+      expect(parsePresetSlashCommand('/preset show default')?.kind).toBe('invalid');
+    });
+
+    it('/preset help <trailing> is invalid', () => {
+      expect(parsePresetSlashCommand('/preset help list')?.kind).toBe('invalid');
+    });
+  });
+
   describe('identifier-only contract', () => {
     it('rejects names with spaces (shell quoting is NOT supported)', () => {
       const result = parsePresetSlashCommand('/preset "quoted name"');

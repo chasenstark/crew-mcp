@@ -154,10 +154,55 @@ describe('CaptainSession.activePreset (M5-4)', () => {
     expect(secondEvents.length).toBe(firstEvents.length);
   });
 
-  it('treats empty string as "clear" (matches the resolver contract)', () => {
+  it('treats empty string as "clear" (matches the resolver contract) and fires a clear event', () => {
     const s = CaptainSession.create({ projectRoot: root });
     s.setActivePreset('read-only');
     s.setActivePreset('');
     expect(s.activePreset).toBeUndefined();
+    const store = new SessionStore(root);
+    const events = store.readAllEvents().filter((e) => e.kind === 'preset_changed');
+    // Set-to-read-only → set-to-undefined; both events should be in the log.
+    expect(events.length).toBe(2);
+    const cleared = events[1];
+    if (cleared.kind === 'preset_changed') {
+      expect(cleared.preset).toBeUndefined();
+    }
+  });
+
+  it('does not bump lastTurnAt when a preset swap happens (preset swaps are not turn boundaries)', () => {
+    const s = CaptainSession.create({ projectRoot: root });
+    // Establish a baseline lastTurnAt by appending + persisting once.
+    s.appendUserMessage('first turn');
+    s.persist();
+    const store = new SessionStore(root);
+    const before = store.loadSession()!.lastTurnAt;
+    expect(before).toBeDefined();
+
+    // Preset swap should persist the activePreset without advancing lastTurnAt.
+    s.setActivePreset('read-only');
+    const after = new SessionStore(root).loadSession()!;
+    expect(after.activePreset).toBe('read-only');
+    expect(after.lastTurnAt).toBe(before);
+  });
+
+  it('setActivePreset is atomic: if persist throws, in-memory state rolls back and no event is logged', () => {
+    const s = CaptainSession.create({ projectRoot: root });
+    s.setActivePreset('default');
+    const eventsBefore = new SessionStore(root).readAllEvents().length;
+
+    // Monkey-patch the store's writeSession to throw on the next call.
+    const store = (s as unknown as { store: { writeSession: (x: unknown) => void } }).store;
+    const originalWrite = store.writeSession.bind(store);
+    store.writeSession = () => {
+      throw new Error('simulated disk failure');
+    };
+
+    expect(() => s.setActivePreset('thorough-review')).toThrow('simulated disk failure');
+    // In-memory state must have rolled back to the pre-swap value.
+    expect(s.activePreset).toBe('default');
+    // No event was logged (the event fires only after persist succeeds).
+    store.writeSession = originalWrite;
+    const eventsAfter = new SessionStore(root).readAllEvents().length;
+    expect(eventsAfter).toBe(eventsBefore);
   });
 });

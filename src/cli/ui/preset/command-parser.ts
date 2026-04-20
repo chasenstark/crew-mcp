@@ -51,10 +51,26 @@ export function parsePresetSlashCommand(input: string): PresetSlashCommand | nul
   const subcommand = tokens[1].toLowerCase();
   const extra = tokens.slice(2);
 
-  if (subcommand === 'help') return { kind: 'help' };
-  if (subcommand === 'list') return { kind: 'list' };
-  if (subcommand === 'clear') return { kind: 'clear' };
-  if (subcommand === 'show') return { kind: 'show' };
+  // Arity check: no subcommand takes trailing positional tokens. Rejecting
+  // them consistently prevents silently-ignored args like `/preset clear
+  // default` (which would otherwise drop through to a plain `clear` and
+  // wipe the override while the user thought they were clearing "only
+  // default").
+  const zeroArgSubcommands: Record<string, PresetSlashCommand['kind']> = {
+    help: 'help',
+    list: 'list',
+    clear: 'clear',
+    show: 'show',
+  };
+  if (subcommand in zeroArgSubcommands) {
+    if (extra.length > 0) {
+      return {
+        kind: 'invalid',
+        reason: `/preset ${subcommand} takes no arguments (got: "${extra.join(' ')}").`,
+      };
+    }
+    return { kind: zeroArgSubcommands[subcommand] } as PresetSlashCommand;
+  }
 
   // `/preset <name>` — treat the second token as the preset name. Any
   // trailing tokens are rejected (names cannot contain spaces).

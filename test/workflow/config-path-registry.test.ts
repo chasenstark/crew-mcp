@@ -49,6 +49,30 @@ describe('config path registry', () => {
       ).toThrow(/non-empty string/);
     });
 
+    it('rejects names that are not declared in config.presets (symmetry with /preset)', () => {
+      // `/config set captain.preset bogus` should fail at parse time, not
+      // silently persist a broken reference that only surfaces as a
+      // preflight warn on the next `crew run`. Matches the `/preset bogus`
+      // slash-command contract.
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('captain.preset');
+      expect(() =>
+        resolved!.descriptor.parse('bogus-preset', config, resolved!.params, 'captain.preset'),
+      ).toThrow(/declared preset/);
+    });
+
+    it('accepts any string when no presets are declared (no spec to validate against)', () => {
+      const config = getDefaultConfig();
+      config.presets = undefined;
+      const resolved = resolveConfigPath('captain.preset');
+      // Without a presets map we can't validate — fall through to accepting
+      // the parse (preflight will warn at load time when the reference
+      // remains unresolvable).
+      expect(() =>
+        resolved!.descriptor.parse('anything', config, resolved!.params, 'captain.preset'),
+      ).not.toThrow();
+    });
+
     it('options() enumerates declared presets plus the current value', () => {
       const config = getDefaultConfig();
       const resolved = resolveConfigPath('captain.preset');

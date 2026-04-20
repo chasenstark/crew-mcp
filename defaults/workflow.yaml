@@ -65,8 +65,9 @@ captain:
     codex: GPT
     gemini-cli: QWEN
   # Preset key (into top-level `presets`). Missing → no hint is injected into
-  # the captain's system prompt. M3 ships `default` only; /preset (M5) adds
-  # user-selectable presets at runtime.
+  # the captain's system prompt. Three built-ins ship below (`default`,
+  # `thorough-review`, `read-only`); `/preset <name>` overrides this at
+  # runtime for a single session.
   preset: default
 
 presets:

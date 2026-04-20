@@ -249,8 +249,25 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     ],
     match: exactPath('captain.preset'),
     read: (config) => config.captain.preset,
-    parse: (raw, _config, _params, path) =>
-      parseNonEmptyString(path, raw, '/config set captain.preset default'),
+    parse: (raw, config, _params, path) => {
+      const parsed = parseNonEmptyString(path, raw, '/config set captain.preset default');
+      // Symmetry with the `agents.<name>.*` descriptors, and with the
+      // `/preset <name>` slash command: unknown names are rejected at
+      // parse time so a user typo doesn't silently persist a broken
+      // reference that only surfaces as a preflight warn on the next run.
+      const declared = Object.keys(config.presets ?? {});
+      if (declared.length > 0 && !declared.includes(parsed)) {
+        throw new Error(
+          invalidValueMessage(
+            path,
+            `declared preset (one of: ${declared.sort().join(', ')})`,
+            raw,
+            '/config set captain.preset default',
+          ),
+        );
+      }
+      return parsed;
+    },
     write: (config, _params, value) => {
       config.captain.preset = String(value);
     },

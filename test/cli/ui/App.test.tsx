@@ -387,7 +387,7 @@ describe('App (M1.5 post-rewrite)', () => {
       expect(mockHandlePresetSlashCommand).toHaveBeenCalled();
     });
 
-    it('emits an error message if config was not threaded', async () => {
+    it('emits a user-facing error message if config was not threaded', async () => {
       const { runner } = createFakeRunner();
       const { lastFrame } = renderApp(
         <App pipeline={runner} session={session} dispatcher={dispatcher} />,
@@ -395,7 +395,10 @@ describe('App (M1.5 post-rewrite)', () => {
       await flush();
       submit('/preset list');
       await flush();
-      expect(lastFrame()).toContain('Preset commands require the config to be threaded');
+      // User-facing copy — no developer-telemetry strings like "threaded
+      // into App is a /preset configuration bug".
+      expect(lastFrame()).toContain('Preset commands are unavailable');
+      expect(lastFrame()).toContain('crew config show');
     });
   });
 });
