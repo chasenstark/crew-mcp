@@ -32,17 +32,35 @@ import type { SessionEvent } from './event-types.js';
 import type { SessionMessage } from '../state/types.js';
 import { logger } from '../utils/logger.js';
 
+/**
+ * M5-4: session snapshot schema v2. `activePreset` was added at v2; v1
+ * snapshots without the field load cleanly via the version-aware reader
+ * below, and writes always stamp the current version.
+ *
+ * The type reflects the on-disk union: readers of an older snapshot see a
+ * `schemaVersion` of `1 | 2`, and the normalizer below upgrades to v2 in
+ * memory so downstream code only deals with one shape.
+ */
 export interface SessionSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   messages: SessionMessage[];
   providerSessionRef?: string;
   cliVersionTag?: string;
   toolSchemaHash?: string;
   startedAt: string;
   lastTurnAt?: string;
+  /**
+   * Name key into `FullConfig.presets`. Set via `/preset <name>` in the
+   * interactive UI and persists across restarts. Storing the NAME (not the
+   * resolved PresetConfig) means an edit to workflow.yaml between sessions
+   * takes effect on the next turn without a session-side migration. Absent
+   * in v1 snapshots; the reader normalizes to `undefined`.
+   */
+  activePreset?: string;
 }
 
-const CURRENT_SESSION_SCHEMA_VERSION = 1;
+const CURRENT_SESSION_SCHEMA_VERSION = 2;
+const SUPPORTED_SESSION_SCHEMA_VERSIONS: ReadonlyArray<SessionSnapshot['schemaVersion']> = [1, 2];
 
 // Conservative 3 KB ceiling on event output (N3). The comment above mentions
 // 4 KB as the OS-atomic-append threshold; 3 KB gives headroom for the JSON
@@ -120,7 +138,7 @@ export class SessionStore {
       logger.warn('[session-store] session.json shape unrecognized; treating as missing');
       return null;
     }
-    return parsed;
+    return normalizeSnapshot(parsed);
   }
 
   writeSession(snapshot: SessionSnapshot): void {
@@ -274,10 +292,32 @@ function atomicWrite(filePath: string, data: string): void {
 function isValidSnapshot(value: unknown): value is SessionSnapshot {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
-  if (v.schemaVersion !== CURRENT_SESSION_SCHEMA_VERSION) return false;
+  // M5-4: accept both v1 and v2 on read. Naïvely bumping the version check to
+  // `=== 2` would silently eat every v1 session on disk (treated as
+  // "shape unrecognized → start fresh"). Writes always stamp v2; the reader
+  // upgrades v1 → v2 in memory in normalizeSnapshot().
+  if (!SUPPORTED_SESSION_SCHEMA_VERSIONS.includes(v.schemaVersion as SessionSnapshot['schemaVersion'])) {
+    return false;
+  }
   if (!Array.isArray(v.messages)) return false;
   if (typeof v.startedAt !== 'string') return false;
+  // activePreset is optional at both v1 (implicit undefined) and v2; no
+  // assertion needed beyond the per-role type check in the getter.
   return true;
+}
+
+/**
+ * Normalize any supported-version snapshot into the current v2 shape. v1
+ * files pick up `activePreset: undefined` (the user had no opportunity to
+ * set one before the bump); v2 files pass through unchanged.
+ */
+function normalizeSnapshot(snapshot: SessionSnapshot): SessionSnapshot {
+  if (snapshot.schemaVersion === CURRENT_SESSION_SCHEMA_VERSION) return snapshot;
+  return {
+    ...snapshot,
+    schemaVersion: CURRENT_SESSION_SCHEMA_VERSION,
+    activePreset: snapshot.activePreset, // carry through if present (always undefined for v1)
+  };
 }
 
 function isValidEvent(value: unknown): value is SessionEvent {
@@ -294,6 +334,12 @@ function isValidEvent(value: unknown): value is SessionEvent {
       return typeof v.toolCallId === 'string' && typeof v.error === 'string';
     case 'tool_cancelled':
       return typeof v.toolCallId === 'string' && typeof v.reason === 'string';
+    case 'preset_changed':
+      // preset is optional string (undefined when cleared); presence is fine
+      // either way so long as it's serializable.
+      return v.preset === undefined
+        || v.preset === null
+        || typeof v.preset === 'string';
     default:
       return false;
   }

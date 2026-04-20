@@ -33,7 +33,7 @@ describe('SessionStore', () => {
   });
 
   const baseSnapshot = (overrides: Partial<SessionSnapshot> = {}): SessionSnapshot => ({
-    schemaVersion: 1,
+    schemaVersion: 2,
     messages: [],
     startedAt: '2026-04-19T00:00:00.000Z',
     ...overrides,
@@ -51,6 +51,63 @@ describe('SessionStore', () => {
     store.writeSession(snap);
     const loaded = store.loadSession();
     expect(loaded).toEqual(snap);
+  });
+
+  it('roundtrips a v2 snapshot with activePreset (M5-4)', () => {
+    const snap = baseSnapshot({
+      activePreset: 'thorough-review',
+      messages: [
+        { role: 'user', text: 'hi', timestamp: '2026-04-19T00:00:00.000Z' },
+      ],
+    });
+    store.writeSession(snap);
+    const loaded = store.loadSession();
+    expect(loaded?.schemaVersion).toBe(2);
+    expect(loaded?.activePreset).toBe('thorough-review');
+  });
+
+  it('reads v1 snapshots cleanly (back-compat; M5-4)', () => {
+    // Write a literal v1 JSON onto disk — the v1 shape never carried
+    // `activePreset`. Without the M5-4 reader rewrite this case would be
+    // treated as "shape unrecognized → start fresh", silently losing the
+    // user's message history.
+    const dir = ensureCaptainDir(root);
+    writeFileSync(
+      join(dir, 'session.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        messages: [
+          { role: 'user', text: 'v1 message', timestamp: '2026-04-19T00:00:00.000Z' },
+        ],
+        startedAt: '2026-04-19T00:00:00.000Z',
+      }),
+      'utf-8',
+    );
+    const loaded = store.loadSession();
+    expect(loaded).not.toBeNull();
+    // Upgraded in memory to v2, with activePreset undefined.
+    expect(loaded?.schemaVersion).toBe(2);
+    expect(loaded?.activePreset).toBeUndefined();
+    expect(loaded?.messages.length).toBe(1);
+  });
+
+  it('upgrades v1 on next write (the on-disk version tag flips to 2)', () => {
+    const dir = ensureCaptainDir(root);
+    writeFileSync(
+      join(dir, 'session.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        messages: [],
+        startedAt: '2026-04-19T00:00:00.000Z',
+      }),
+      'utf-8',
+    );
+    // Load → normalize → write: the write path stamps v2.
+    const loaded = store.loadSession();
+    expect(loaded).not.toBeNull();
+    store.writeSession(loaded!);
+    const onDisk = JSON.parse(readFileSync(join(dir, 'session.json'), 'utf-8'));
+    expect(onDisk.schemaVersion).toBe(2);
   });
 
   it('returns null when no session.json exists', () => {

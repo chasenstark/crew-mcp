@@ -70,6 +70,7 @@ export class CaptainSession {
       this._toolSchemaHash = init.snapshot.toolSchemaHash;
       this.startedAt = init.snapshot.startedAt;
       this.lastTurnAt = init.snapshot.lastTurnAt;
+      this._activePreset = init.snapshot.activePreset;
     } else {
       this._cliVersionTag = init.defaultCliVersionTag;
       this._toolSchemaHash = init.defaultToolSchemaHash;
@@ -131,20 +132,51 @@ export class CaptainSession {
     return this._toolSchemaHash;
   }
 
+  private _activePreset: string | undefined;
+
   /**
    * M5-4: the session's currently-active preset override (set via
    * `/preset <name>`). When non-empty, beats `config.captain.preset` at
    * per-turn resolution. Storing just the NAME (not the resolved config)
    * means a hint edit in workflow.yaml between turns takes effect without
    * a session-side migration — the resolver reads the live presets map each
-   * turn. M5-1 wires the getter so judgment-runner can consult it; the
-   * setter + durable persistence ship in M5-4.
+   * turn.
    */
   get activePreset(): string | undefined {
     return this._activePreset;
   }
 
-  private _activePreset: string | undefined;
+  /**
+   * Set (or clear, when passed `undefined`) the session's active preset.
+   *
+   * **Atomicity contract:** mutates the in-memory field, emits a
+   * `preset_changed` event, AND persists the session snapshot — all in the
+   * same tick. A crash between the mutation and the next turn therefore
+   * cannot leave the session half-updated: either the write landed (next
+   * load sees the new value) or it didn't (next load sees the old one).
+   *
+   * Preset swaps are NOT tool-schema material — providerSessionRef is
+   * intentionally preserved (a mid-run preset switch should not invalidate
+   * native-resume). See `docs/architecture/presets.md` for the invariant.
+   */
+  setActivePreset(name: string | undefined): void {
+    const normalized = typeof name === 'string' && name.length > 0 ? name : undefined;
+    if (normalized === this._activePreset) {
+      // No-op: avoids churning the event log on redundant calls.
+      return;
+    }
+    this._activePreset = normalized;
+    // Persist FIRST so the event below reflects committed state; if persist
+    // throws, the in-memory mutation is still there for the current process
+    // (which matches the documented best-effort write semantics), but no
+    // event fires to mislead the log reader.
+    this.persist();
+    this.store.appendEvent({
+      kind: 'preset_changed',
+      preset: normalized,
+      ts: new Date().toISOString(),
+    });
+  }
 
   /**
    * Re-probe the CLI version and update the cached tag. Used as the one-turn
@@ -465,13 +497,14 @@ export class CaptainSession {
 
   private toSnapshot(): SessionSnapshot {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       messages: this.messages,
       providerSessionRef: this._providerSessionRef,
       cliVersionTag: this._cliVersionTag,
       toolSchemaHash: this._toolSchemaHash,
       startedAt: this.startedAt,
       lastTurnAt: this.lastTurnAt,
+      activePreset: this._activePreset,
     };
   }
 }

@@ -34,10 +34,26 @@ export interface ToolCancelledEvent {
   ts: string;
 }
 
+/**
+ * M5-4: emitted when the session's active preset changes via
+ * `setActivePreset()` (driven by `/preset <name>` or `/preset clear`).
+ * Observability-only — the session-loop does NOT react to this event;
+ * per-turn preset resolution reads the session's current `activePreset`
+ * directly at turn start. The event log lets a human debugger see when
+ * the switch happened and what the captain's system prompt reflected
+ * from that point on.
+ */
+export interface PresetChangedEvent {
+  kind: 'preset_changed';
+  preset: string | undefined;
+  ts: string;
+}
+
 export type SessionEvent =
   | UserMessageEvent
   | ToolCompletedEvent
   | ToolFailedEvent
-  | ToolCancelledEvent;
+  | ToolCancelledEvent
+  | PresetChangedEvent;
 
 export type SessionEventKind = SessionEvent['kind'];
