@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter, HealthCheckResult } from '../../../src/adapters/types.js';
 import type { FullConfig } from '../../../src/workflow/types.js';
 import {
+  __resetCaptainPresetWarnLatchForTest,
   __resetPreflightWarningLatchForTest,
   assertRequiredAgentsReady,
+  checkCaptainPresetReference,
   checkCrewCodexConfigDeprecation,
   collectRequiredAgentNames,
   enforceCaptainModelCompatibility,
@@ -196,6 +198,62 @@ describe('enforceCaptainModelCompatibility', () => {
     const result = enforceCaptainModelCompatibility(config, adapter);
     expect(result.warnedModel).toBeUndefined();
     expect(config.captain.model).toBe('anything');
+  });
+});
+
+describe('checkCaptainPresetReference (M5-1)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    __resetCaptainPresetWarnLatchForTest();
+    warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('is silent when captain.preset is absent', () => {
+    const config = buildConfig();
+    checkCaptainPresetReference(config);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('is silent when captain.preset is declared in presets', () => {
+    const config = buildConfig();
+    config.captain.preset = 'default';
+    config.presets = {
+      default: { name: 'default', hint: 'hi' },
+    };
+    checkCaptainPresetReference(config);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('warns once when captain.preset references an unknown name', () => {
+    const config = buildConfig();
+    config.captain.preset = 'nonexistent';
+    config.presets = { default: { name: 'default', hint: 'hi' } };
+    checkCaptainPresetReference(config);
+    checkCaptainPresetReference(config);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/captain\.preset "nonexistent"/);
+  });
+
+  it('warns separately for the empty-string case (treated as "no preset")', () => {
+    const config = buildConfig();
+    config.captain.preset = '';
+    config.presets = { default: { name: 'default' } };
+    checkCaptainPresetReference(config);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/empty string/);
+  });
+
+  it('does not throw when presets is undefined', () => {
+    const config = buildConfig();
+    config.captain.preset = 'default';
+    config.presets = undefined;
+    expect(() => checkCaptainPresetReference(config)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -132,6 +132,21 @@ export class CaptainSession {
   }
 
   /**
+   * M5-4: the session's currently-active preset override (set via
+   * `/preset <name>`). When non-empty, beats `config.captain.preset` at
+   * per-turn resolution. Storing just the NAME (not the resolved config)
+   * means a hint edit in workflow.yaml between turns takes effect without
+   * a session-side migration — the resolver reads the live presets map each
+   * turn. M5-1 wires the getter so judgment-runner can consult it; the
+   * setter + durable persistence ship in M5-4.
+   */
+  get activePreset(): string | undefined {
+    return this._activePreset;
+  }
+
+  private _activePreset: string | undefined;
+
+  /**
    * Re-probe the CLI version and update the cached tag. Used as the one-turn
    * self-heal after an adapter reports a resume rejection: a prior turn's
    * cliVersionTag read may be stale (e.g., user upgraded the CLI between

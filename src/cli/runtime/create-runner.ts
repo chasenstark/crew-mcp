@@ -9,6 +9,7 @@ import { loadWorkflowConfig } from '../../workflow/loader.js';
 import { resolveCaptainModel } from '../../workflow/config-codec.js';
 import {
   checkCrewCodexConfigDeprecation,
+  checkCaptainPresetReference,
   enforceCaptainModelCompatibility,
 } from './preflight.js';
 import type { CrewRunner } from '../../captain/runner.js';
@@ -50,6 +51,12 @@ export function createRunner(
   // captainModel. Async health checks still live in assertRequiredAgentsReady.
   checkCrewCodexConfigDeprecation();
   enforceCaptainModelCompatibility(config, captainAdapter);
+  // M5-1: warn if `captain.preset` points at a name not declared under
+  // `presets`, or is the literal empty string (the YAML codec parses that as
+  // `undefined`, but a layered-merge quirk could smuggle it through). The
+  // preset still resolves to `undefined` in both cases — this is observability,
+  // not a throw.
+  checkCaptainPresetReference(config);
 
   // Hydrate the persistent captain session (M1.5-10). JudgmentRunner is the
   // only runner; linear-mode Pipeline was removed in M4. v5 state files
@@ -67,6 +74,10 @@ export function createRunner(
   });
   const dispatcher = new ToolDispatcher();
 
+  // M5-6: the runner resolves the preset per-turn from `presets` +
+  // `defaultPresetName` + the session's `activePreset` override. create-runner
+  // only threads the two static inputs; the per-turn resolution happens
+  // inside JudgmentRunner (see buildM3SessionLoopPair's captain-turn).
   const runner: CrewRunner = new JudgmentRunner(
     captainAdapter,
     toAgentRegistry(registry),
@@ -78,6 +89,8 @@ export function createRunner(
       agentModels,
       session,
       dispatcher,
+      presets: config.presets,
+      defaultPresetName: config.captain.preset,
     },
   );
 

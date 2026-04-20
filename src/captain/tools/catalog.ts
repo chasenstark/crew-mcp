@@ -61,7 +61,7 @@ function registryAgents(r: AdapterRegistry | RegistryForCatalog): Array<{ name: 
   }
   return [];
 }
-import type { WorkflowConfig, PresetConfig } from '../../workflow/types.js';
+import type { WorkflowConfig } from '../../workflow/types.js';
 import type { ActionCatalogEntry } from '../action-server.js';
 import { CaptainActionServer, DEFAULT_TOOL_NAMESPACE } from '../action-server.js';
 import type { McpServerSpec } from '../mcp-registration.js';
@@ -89,7 +89,6 @@ export type M3ToolName = typeof M3_TOOL_NAMES[number];
 export interface ToolCatalogInit {
   readonly registry: AdapterRegistry | RegistryForCatalog;
   readonly workflow: WorkflowConfig;
-  readonly preset?: PresetConfig;
   readonly session?: CaptainSession;
   readonly dispatcher?: ToolDispatcher;
   /**
@@ -142,7 +141,6 @@ const INPUT_SCHEMAS: Record<M3ToolName, z.ZodType> = {
 export class ToolCatalog {
   readonly registry: AdapterRegistry | RegistryForCatalog;
   readonly workflow: WorkflowConfig;
-  readonly preset: PresetConfig | undefined;
   readonly session: CaptainSession | undefined;
   readonly dispatcher: ToolDispatcher | undefined;
   private readonly omitOptionalWrappers: boolean;
@@ -151,7 +149,6 @@ export class ToolCatalog {
   constructor(init: ToolCatalogInit) {
     this.registry = init.registry;
     this.workflow = init.workflow;
-    this.preset = init.preset;
     this.session = init.session;
     this.dispatcher = init.dispatcher;
     this.omitOptionalWrappers = init.omitOptionalWrappers ?? false;

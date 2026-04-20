@@ -153,17 +153,35 @@ describe('ToolCatalog + CaptainActionServer integration', () => {
     expect(a.getToolSchemaHash()).toBe(b.getToolSchemaHash());
   });
 
-  it('getToolSchemaHash is stable even when preset hint changes (preset is prompt material, not tool spec)', () => {
-    const a = new ToolCatalog({
-      registry: registry(),
+  it('getToolSchemaHash is independent of prompt-material inputs entirely (M5-6 catalog decoupling)', async () => {
+    // M5-6 removed `preset` from `ToolCatalogInit` — prompt-material inputs
+    // no longer flow through the catalog at all. The invariant is stronger
+    // than the pre-M5 "preset hint changes don't leak into hash" test: the
+    // catalog input surface has no prompt-material fields, so rendering two
+    // different resolved presets through `buildCaptainSystemPrompt` outside
+    // the catalog produces distinct prompts from an identical catalog, and
+    // the catalog's hash is trivially equal.
+    const a = new ToolCatalog({ registry: registry(), workflow });
+    const b = new ToolCatalog({ registry: registry(), workflow });
+    expect(a.getToolSchemaHash()).toBe(b.getToolSchemaHash());
+
+    // And confirm different preset values rendered OUTSIDE the catalog
+    // change the prompt body without touching the hash.
+    const { buildCaptainSystemPrompt } = await import('../../../src/captain/prompts/captain-system.js');
+    const promptOld = buildCaptainSystemPrompt({
       workflow,
+      agents: [{ name: 'codex', capabilities: ['implement'] }],
+      tools: a.toActionCatalog().map((e) => ({ name: e.name, description: e.description })),
       preset: { name: 'x', hint: 'old hint' },
     });
-    const b = new ToolCatalog({
-      registry: registry(),
+    const promptNew = buildCaptainSystemPrompt({
       workflow,
+      agents: [{ name: 'codex', capabilities: ['implement'] }],
+      tools: a.toActionCatalog().map((e) => ({ name: e.name, description: e.description })),
       preset: { name: 'x', hint: 'new hint' },
     });
+    expect(promptOld).not.toBe(promptNew);
+    // Hash is unchanged by prompt-body shifts.
     expect(a.getToolSchemaHash()).toBe(b.getToolSchemaHash());
   });
 

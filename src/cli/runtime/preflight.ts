@@ -69,6 +69,63 @@ export function checkCrewCodexConfigDeprecation(): void {
   crewCodexConfigWarned = true;
 }
 
+let captainPresetWarnedFor: string | null = null;
+
+/**
+ * Exported for tests only; clears the "warned once" latch so each test case
+ * can observe the warn path cleanly.
+ */
+export function __resetCaptainPresetWarnLatchForTest(): void {
+  captainPresetWarnedFor = null;
+}
+
+/**
+ * M5-1: log a single advisory warn when `captain.preset` names a preset
+ * that isn't declared under `config.presets`, or is the literal empty
+ * string. In either case the preset resolves to `undefined` at runtime
+ * (the renderer falls back to `(none)` and the captain runs with no hint).
+ *
+ * The warn is a "heads-up, you probably meant something"; it's not a
+ * throw because config-merge layering can legitimately land a reference
+ * that resolves in one scope but not another, and we don't want a merge
+ * anomaly to break a run.
+ *
+ * Throttled per process + per target name so repeated calls (e.g.,
+ * createRunner + assertRequiredAgentsReady in the same process) don't warn
+ * twice.
+ */
+export function checkCaptainPresetReference(config: FullConfig): void {
+  const name = config.captain.preset;
+  if (name === undefined || name === null) return;
+  const trimmed = String(name).trim();
+  const hasPresets = config.presets && typeof config.presets === 'object';
+  const presetExists = trimmed.length > 0
+    && hasPresets
+    && Object.prototype.hasOwnProperty.call(config.presets as object, trimmed);
+  if (presetExists) return;
+
+  // Warning-key: the literal value we saw, so "" and "bogus" both warn once
+  // on their own track without suppressing each other.
+  const latchKey = trimmed.length === 0 ? '<blank>' : trimmed;
+  if (captainPresetWarnedFor === latchKey) return;
+  captainPresetWarnedFor = latchKey;
+
+  const available = config.presets
+    ? Object.keys(config.presets).sort().join(', ')
+    : '(none declared)';
+  if (trimmed.length === 0) {
+    logger.warn(
+      '[preflight] captain.preset is set to the empty string — treating as "no preset". ' +
+        `Declared presets: ${available}. Remove the key or pick a name to silence this warning.`,
+    );
+  } else {
+    logger.warn(
+      `[preflight] captain.preset "${trimmed}" is not declared in presets. ` +
+        `Declared presets: ${available}. Falling back to no hint for this session.`,
+    );
+  }
+}
+
 /**
  * If the resolved captain model is set but the captain adapter doesn't
  * recognize it, log a warning and clear the value so the captain falls back

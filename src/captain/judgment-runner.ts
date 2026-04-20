@@ -30,6 +30,7 @@ import { dispatchAnalyzeOutput } from './tools/analyze-output.js';
 import { dispatchCompressContext } from './tools/compress-context.js';
 import { buildCaptainSystemPrompt } from './prompts/captain-system.js';
 import { resolveCaptainConverter } from './mcp-registration.js';
+import { resolveActivePreset } from './preset-resolver.js';
 import type { WorkflowConfig, PresetConfig } from '../workflow/types.js';
 import type { CaptainActionServer } from './action-server.js';
 import {
@@ -82,9 +83,15 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   private guardrails: Guardrails;
   private session: CaptainSession;
   private dispatcher: ToolDispatcher;
-  private readonly preset: PresetConfig | undefined;
+  // M5-6: preset resolution is per-turn — `presets` + `defaultPresetName` +
+  // `session.activePreset` feed `resolveActivePreset` on each captain turn.
+  // Storing the narrow args (not the full config) keeps the runner decoupled
+  // from unrelated config fields and matches the resolver's contract.
+  private readonly presets: Record<string, PresetConfig> | undefined;
+  private readonly defaultPresetName: string | undefined;
   // Cached so successive turns don't rebuild — the catalog is pure relative
-  // to (registry, workflow, preset) and those don't mutate after construction.
+  // to (registry, workflow) and those don't mutate after construction. The
+  // preset is NO LONGER part of the catalog (M5-6 decoupling).
   private m3Catalog: M3ToolCatalog | undefined;
 
   constructor(
@@ -109,10 +116,17 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
        */
       dispatcher: ToolDispatcher;
       /**
-       * Active preset — consumed by the M3 captain-system prompt. Passed
-       * through from create-runner; absent → no hint injected.
+       * Full map of declared presets (from `config.presets`). M5-6 resolves
+       * the active preset per-turn from this map using the session override
+       * or the config default; absent → no preset is rendered.
        */
-      preset?: PresetConfig;
+      presets?: Record<string, PresetConfig>;
+      /**
+       * Default preset name (from `config.captain.preset`). Used by the
+       * per-turn resolver when the session has no override; absent → no
+       * hint injected.
+       */
+      defaultPresetName?: string;
     },
   ) {
     super(state);
@@ -129,7 +143,8 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     };
     this.session = options.session;
     this.dispatcher = options.dispatcher;
-    this.preset = options.preset;
+    this.presets = options.presets;
+    this.defaultPresetName = options.defaultPresetName;
   }
 
   getSession(): CaptainSession {
@@ -452,15 +467,16 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
 
   /**
    * M3-10a: lazy M3 tool catalog. Cached after first construction — the
-   * inputs (registry, workflow, preset) don't mutate after `new
-   * JudgmentRunner(...)`.
+   * inputs (registry, workflow, session, dispatcher) don't mutate after
+   * `new JudgmentRunner(...)`. M5-6 removed `preset` from the catalog's
+   * inputs: the preset is prompt material, never tool-spec material, so
+   * binding it onto the catalog was a drift hazard.
    */
   private getM3Catalog(): M3ToolCatalog {
     if (!this.m3Catalog) {
       this.m3Catalog = new M3ToolCatalog({
         registry: this.registry,
         workflow: this.workflow,
-        preset: this.preset,
         session: this.session,
         dispatcher: this.dispatcher,
       });
@@ -504,10 +520,18 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
 
         const agents = catalog.toPromptAgentInventory();
         const tools = actionServer.listTools();
+        // M5-6: per-turn preset resolution. session.activePreset (set via
+        // /preset) beats config.captain.preset; an unknown name at either
+        // tier resolves to `undefined`, which renders as `(none)`.
+        const resolvedPreset = resolveActivePreset({
+          presets: this.presets,
+          defaultPresetName: this.defaultPresetName,
+          sessionOverride: this.session?.activePreset,
+        });
         const systemPrompt = buildCaptainSystemPrompt({
           workflow: this.workflow,
           agents,
-          preset: this.preset,
+          preset: resolvedPreset?.preset,
           tools: tools.map((t) => ({
             // strip the mcp__crew__ prefix so the prompt matches how the
             // adapter will present the tool to the model.
