@@ -57,6 +57,43 @@ There are no production users, so we do not have to worry about being backward c
    payload shape for the adapter's `name` field.
 4. Add adapter MCP argv tests under `test/adapters/<name>.mcp.test.ts`.
 
+### Adding a new preset
+A preset is a YAML block under `presets:` in `workflow.yaml`:
+
+```yaml
+presets:
+  my-preset:
+    description: >-
+      One-line summary of what this preset changes.
+    hint: >-
+      Free-form prose nudge — rendered verbatim into the captain's system
+      prompt. Use complete sentences; describe WHEN to apply the nudge.
+    suggested_agent_roles:
+      - reviewer
+      - security
+```
+
+Four fields, all optional but at least one of `hint` /
+`suggested_agent_roles` carries weight. The `hint` is prompt-only soft
+policy — no tool surface changes, no `providerSessionRef` invalidation.
+
+Do NOT add `steps`, `conditions`, `max_passes`, or `max_iterations`
+fields. Those were explicitly rejected in vision §7.5 to prevent the
+preset format from ballooning into a workflow DSL. See
+`docs/architecture/presets.md`.
+
+### Slash-command prefixes (reserved)
+The `/` prefix space is project-owned. Reserved prefixes:
+
+- `/config` — persistent workflow.yaml edits
+- `/cancel` — cancel in-flight tool calls or the whole run
+- `/preset` — session-scoped preset override
+
+When adding a new slash command, ensure the prefix doesn't collide with
+these. Routing in `src/cli/ui/App.tsx` goes `/config` → `/preset` →
+`/cancel` in explicit order; placing a new command outside those
+branches requires updating that order deliberately.
+
 ## Build, Test, and Development Commands
 - `npm run build` — bundle with `tsup` into `dist/`.
 - `npm run dev` — watch mode build during active development.

@@ -43,6 +43,15 @@ if [ "$MATRIX_PROFILE" = "m4" ]; then
     "4:moderate-feature-plan-then-two-run_agents"
   )
   OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m4-exit-smoke-log.md}"
+elif [ "$MATRIX_PROFILE" = "m5" ]; then
+  # M5 scope: preset behavior under live captains. Each scenario uses a
+  # distinct preset via `captain.preset` in the scaffolded workflow.yaml.
+  SCENARIOS=(
+    "1:default-preset-trivial"
+    "2:thorough-review-fan-out"
+    "3:read-only-refuse-write"
+  )
+  OUTPUT_LOG="${OUTPUT_LOG:-docs/plans/active/m5-exit-smoke-log.md}"
 else
   SCENARIOS=(
     "1:trivial-message-finish"
@@ -93,7 +102,20 @@ run_scenario() {
   git add . && git commit -q -m init
 
   # Write a minimal workflow config that pins the captain CLI.
+  # M5 profile additionally pins captain.preset based on scenario name.
   mkdir -p .crew
+  local preset_key=""
+  local preset_block=""
+  if [ "$MATRIX_PROFILE" = "m5" ]; then
+    case "$scenario_name" in
+      default-preset-trivial)    preset_key="default" ;;
+      thorough-review-fan-out)   preset_key="thorough-review" ;;
+      read-only-refuse-write)    preset_key="read-only" ;;
+    esac
+    if [ -n "$preset_key" ]; then
+      preset_block=$'  preset: '"$preset_key"
+    fi
+  fi
   cat > .crew/workflow.yaml <<YAML
 workflow:
   name: smoke
@@ -108,12 +130,21 @@ agents:
     adapter: ${captain}
 captain:
   cli: ${captain}
+${preset_block}
 error_handling:
   default:
     retry: 1
     fallback: null
     on_exhausted: ask_user
 YAML
+  # When M5 preset is pinned, copy in the full presets block from the
+  # repo's defaults/workflow.yaml so the name resolves to real hint text.
+  if [ "$MATRIX_PROFILE" = "m5" ] && [ -n "$preset_key" ]; then
+    local repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+    local presets_block
+    presets_block="$(awk '/^presets:/{flag=1} flag' "$repo_root/defaults/workflow.yaml")"
+    printf '\n%s\n' "$presets_block" >> .crew/workflow.yaml
+  fi
 
   local start_ms; start_ms="$(date +%s%3N)"
   # Dispatch the scenario. For most scenarios a single `crew run` invocation
@@ -158,6 +189,14 @@ scenario_prompt() {
     esac
     return
   fi
+  if [ "$MATRIX_PROFILE" = "m5" ]; then
+    case "$1" in
+      1) echo "What is this repo?";;
+      2) echo "Add a helper function greet(name) in src/util/greet.ts and test it.";;
+      3) echo "Fix the typo on line 10 of README.md.";;
+    esac
+    return
+  fi
   case "$1" in
     1) echo "Say hello";;
     2) echo "List three things we might work on";;
@@ -176,6 +215,8 @@ write_exit_log() {
   local heading
   if [ "$MATRIX_PROFILE" = "m4" ]; then
     heading="M4 exit smoke log"
+  elif [ "$MATRIX_PROFILE" = "m5" ]; then
+    heading="M5 exit smoke log"
   else
     heading="M1.5 / M3 exit smoke log"
   fi
@@ -210,6 +251,11 @@ write_exit_log() {
     echo "- \`fail-N9-replay-count-N\` = exit gate tripped; captain required ≥2 automatic replays for one scenario."
     if [ "$MATRIX_PROFILE" = "m4" ]; then
       echo "- \`pass-one-replay\` = expected on the first M4 turn against an existing M3 session (M4-3 description-refresh bumps the tool-schema hash exactly once)."
+    elif [ "$MATRIX_PROFILE" = "m5" ]; then
+      echo "- \`pass-one-replay\` = unexpected — M5 did NOT bump the tool-schema hash. Investigate if seen."
+      echo "- Scenario 1 (default-preset-trivial): expect zero run_agent dispatches."
+      echo "- Scenario 2 (thorough-review-fan-out): expect ≥2 run_agent dispatches (coder + reviewer)."
+      echo "- Scenario 3 (read-only-refuse-write): expect zero run_agent dispatches; captain replies inline with a diff."
     else
       echo "- \`pass-one-replay\` = gemini-cli 0.20+ acceptable under N9 semantics for scenarios 4–8."
     fi

@@ -67,6 +67,37 @@ turn. Drift sources:
 session-loop retries ONCE automatically (N9 semantics): a second
 consecutive rejection is a hard failure.
 
+**Preset changes are explicitly NOT drift sources.** A preset is prompt
+material, so switching presets via `/preset` or `/config set
+captain.preset` does NOT invalidate `providerSessionRef` — native
+session resume continues as normal. See `docs/architecture/presets.md`
+for the invariant.
+
+## Session snapshot schema (M5-4)
+
+`session.json` carries `schemaVersion: 2` as of M5. v1 snapshots load
+cleanly — the reader accepts either version and normalizes in memory,
+so existing sessions on disk survive the bump. Writes always stamp v2.
+
+Fields added at v2:
+
+- `activePreset?: string` — the name of the session's active preset
+  override (set via `/preset <name>`). Storing the name (not the
+  resolved `PresetConfig`) means a hint edit in `workflow.yaml` between
+  sessions takes effect on the next turn without a session-side
+  migration.
+
+`CaptainSession.setActivePreset(name | undefined)` is synchronous +
+atomic: the in-memory field, the persisted snapshot, and the
+`preset_changed` SessionEvent all land in the same tick. A crash
+between the mutation and the next turn cannot leave the session
+half-updated — either the write landed and the next load sees the new
+value, or it didn't and the next load sees the old one.
+
+The `preset_changed` event is observability-only. The session loop does
+NOT react to it; per-turn resolution reads `session.activePreset`
+directly at turn start.
+
 ## Config lockfile (Gemini)
 
 Claude + Codex pass MCP config per-invocation (inline JSON / argv

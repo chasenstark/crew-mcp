@@ -497,6 +497,26 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     changes.push({ path: 'captain.model', before, after: draft.captain.model });
   }
 
+  // M5: persistent preset selection. Only offer the prompt when the user
+  // has at least one preset declared — the wizard loaded config.presets
+  // either from the defaults YAML (which ships the three built-ins) or
+  // from the user's own workflow.yaml.
+  const presetOptions = getConfigValueOptions(draft, 'captain.preset');
+  if (presetOptions.length > 0) {
+    const captainPresetValue = await askFieldValue({
+      label: 'captain.preset',
+      currentValue: draft.captain.preset,
+      defaultValue: defaults.captain.preset,
+      description: 'Preset (hint bundle) the captain loads by default.',
+      options: presetOptions,
+    });
+    if (captainPresetValue) {
+      const before = draft.captain.preset;
+      draft = applyConfigPatch(draft, { path: 'captain.preset', value: captainPresetValue });
+      changes.push({ path: 'captain.preset', before, after: draft.captain.preset });
+    }
+  }
+
   // M4-4 retired `workflow.execution.mode: 'linear'` — `'judgment'` is the
   // only supported path, and the v4→v5 migration reader rejects legacy
   // state files. Skip the interactive prompt entirely; advanced users can

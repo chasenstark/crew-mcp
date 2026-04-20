@@ -35,11 +35,29 @@ Each `run_agent` call spawns the subagent in its own **per-run git worktree** at
 
 See `docs/architecture/tools.md` for the tool surface, `docs/architecture/session.md` for how the session + dispatcher + ToolCatalog fit together, and `docs/architecture/captain-portability.md` for the captain support matrix.
 
+## Presets
+
+A preset is a named bundle of soft-policy nudges rendered into the captain's system prompt. Three ship out of the box:
+
+- **`default`** — balanced captain behavior (the shipping default).
+- **`thorough-review`** — fans out to a second reviewer before `finish`.
+- **`read-only`** — refuses write dispatches; replies with diffs + asks confirmation.
+
+Switch mid-conversation with `/preset <name>`; persist with `crew config set captain.preset <name>`. See `docs/architecture/presets.md` for details.
+
+```bash
+/preset thorough-review     # next turn: captain fans out to multiple reviewers
+/preset read-only           # next turn: captain refuses to modify files
+/preset clear               # next turn: revert to captain.preset default
+/preset list                # list declared presets
+```
+
 ## Architecture Notes
 
 - Runner core and policy split: `docs/architecture/runners.md`
 - Adapter tool-loop abstraction: `docs/architecture/adapters.md`
 - Declarative config path registry: `docs/architecture/config-registry.md`
+- Preset system: `docs/architecture/presets.md`
 
 ## Requirements
 
@@ -136,6 +154,7 @@ crew config show
 crew config set captain.cli codex
 crew config set captain.model claude-sonnet-4-6
 crew config set captain.model next
+crew config set captain.preset thorough-review
 crew config set workflow.execution.mode judgment
 crew config set workflow.roleModels.reviewer gpt-5.4
 crew config set workflow.roleModels.fix_review_issues claude-opus-4-6

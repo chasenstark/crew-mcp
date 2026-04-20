@@ -34,3 +34,23 @@ Each descriptor defines:
 2. Add path-specific validation/options
 - Implement in descriptor `parse` and `options`
 - No service-level branching required
+
+## `captain.preset` (M5-5a)
+
+`captain.preset` is a registered path. Examples:
+
+```text
+/config set captain.preset default
+/config set captain.preset thorough-review
+```
+
+- **Parse:** `parseNonEmptyString` — the empty string is rejected so
+  `/config set captain.preset ""` fails fast instead of silently being
+  merged as "fall back to base preset" at a later tier.
+- **Options:** enumerates the current declared presets
+  (`Object.keys(config.presets ?? {})`), plus the current value if it
+  isn't already in the list (covers the case where the user renamed a
+  preset but the old name is still active on the session).
+- The session-scoped `/preset <name>` slash command is an independent
+  path — it overrides `captain.preset` at turn-resolution time without
+  persisting to `workflow.yaml`. See `docs/architecture/presets.md`.
