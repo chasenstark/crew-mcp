@@ -266,6 +266,7 @@ export class CodexAdapter implements AgentAdapter {
     const versionResult = await execa(AgentId.CODEX, ['--version'], {
       timeout: 10_000,
       reject: false,
+      stdin: 'ignore',
     });
     if (versionResult.exitCode !== 0) return undefined;
     const match = `${versionResult.stdout ?? ''} ${versionResult.stderr ?? ''}`
@@ -308,6 +309,7 @@ export class CodexAdapter implements AgentAdapter {
           timeout,
           cancelSignal: task.constraints?.signal,
           reject: false,
+          stdin: 'ignore',
         });
 
         if (task.onOutput && subprocess.stdout) {
@@ -531,6 +533,7 @@ export class CodexAdapter implements AgentAdapter {
           timeout,
           cancelSignal: options?.signal,
           reject: false,
+          stdin: 'ignore',
         });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown execution error';
@@ -731,6 +734,13 @@ export class CodexAdapter implements AgentAdapter {
         cwd: context.workingDirectory,
         cancelSignal: context.signal,
         reject: false,
+        // Explicitly close stdin — execa defaults to 'pipe', which gives
+        // codex a connected-but-idle stdin pipe it blocks on waiting for
+        // EOF. Reproduced as a full hang on `crew run` with codex captain;
+        // the direct-TTY invocation `codex exec "..."` works because TTY
+        // stdin isn't a pipe. Same reason we pass `stdin: 'ignore'` on
+        // every other codex call in this file.
+        stdin: 'ignore',
       });
 
       if (result.exitCode !== 0 && !result.stdout) {
@@ -954,6 +964,7 @@ export class CodexAdapter implements AgentAdapter {
       const result = await execa(AgentId.CODEX, ['--version'], {
         timeout: 10_000,
         reject: false,
+        stdin: 'ignore',
       });
 
       if (result.exitCode === 0) {
