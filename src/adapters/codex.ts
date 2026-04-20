@@ -717,6 +717,16 @@ export class CodexAdapter implements AgentAdapter {
 
     for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
       const args = this.buildResumeArgs(providerSession, pendingPrompt, configFlags);
+      // Log parity with the claude-code stream path so users can see the
+      // captain is actually making progress — codex `exec` buffers output
+      // until the API responds, so without this signal the terminal +
+      // log file both look hung for the whole first-turn API latency.
+      logger.info('[adapter:codex] resume turn start', {
+        turn,
+        resumedSessionId: providerSession.sessionId,
+        promptPreview: preview(pendingPrompt, 200),
+      });
+      const turnStartedAt = Date.now();
       const result = await execa(AgentId.CODEX, args, {
         cwd: context.workingDirectory,
         cancelSignal: context.signal,
@@ -724,6 +734,11 @@ export class CodexAdapter implements AgentAdapter {
       });
 
       if (result.exitCode !== 0 && !result.stdout) {
+        logger.warn('[adapter:codex] resume turn failed with no stdout', {
+          turn,
+          exitCode: result.exitCode,
+          stderrPreview: preview(result.stderr),
+        });
         throw new Error(result.stderr || `codex exited with code ${result.exitCode}`);
       }
 
@@ -757,6 +772,12 @@ export class CodexAdapter implements AgentAdapter {
       if (!assistantMessage) {
         throw new Error('Codex did not emit an agent message for controller decision.');
       }
+      logger.info('[adapter:codex] resume turn end', {
+        turn,
+        elapsedMs: Date.now() - turnStartedAt,
+        threadId,
+        assistantPreview: preview(assistantMessage, 200),
+      });
 
       const parsedDecision = this.parseToolDecisionFromAssistant(assistantMessage);
       if (parsedDecision.reasoning) {
