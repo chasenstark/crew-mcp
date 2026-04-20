@@ -264,6 +264,26 @@ error_handling:
     expect(config.presets?.default).toBeDefined();
     expect(config.presets?.default?.hint).toBeTruthy();
   });
+
+  it('defaults/workflow.yaml ships thorough-review + read-only built-ins (M5-3)', () => {
+    const config = getDefaultConfig();
+    expect(config.presets?.['thorough-review']).toBeDefined();
+    expect(config.presets?.['thorough-review']?.hint).toBeTruthy();
+    expect(config.presets?.['thorough-review']?.suggestedAgentRoles).toEqual([
+      'reviewer',
+      'security',
+      'tests',
+    ]);
+    expect(config.presets?.['read-only']).toBeDefined();
+    expect(config.presets?.['read-only']?.hint).toBeTruthy();
+    expect(config.presets?.['read-only']?.suggestedAgentRoles).toEqual([
+      'analyst',
+      'reviewer',
+    ]);
+    // The active preset is still the `default` one; M5-3 ships the built-ins
+    // but doesn't flip the default.
+    expect(config.captain.preset).toBe('default');
+  });
 });
 
 describe('serializeWorkflowYaml preset roundtrip', () => {

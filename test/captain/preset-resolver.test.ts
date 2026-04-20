@@ -132,4 +132,23 @@ describe('resolveActivePreset', () => {
     });
     expect(warnSpy).not.toHaveBeenCalled();
   });
+
+  describe('against defaults/workflow.yaml (M5-3 integration)', () => {
+    it('resolves default, thorough-review, and read-only from the defaults', async () => {
+      const { getDefaultConfig } = await import('../../src/workflow/config-codec.js');
+      const config = getDefaultConfig();
+      expect(resolveActivePreset({
+        presets: config.presets,
+        defaultPresetName: 'default',
+      })?.name).toBe('default');
+      expect(resolveActivePreset({
+        presets: config.presets,
+        defaultPresetName: 'thorough-review',
+      })?.name).toBe('thorough-review');
+      expect(resolveActivePreset({
+        presets: config.presets,
+        defaultPresetName: 'read-only',
+      })?.name).toBe('read-only');
+    });
+  });
 });

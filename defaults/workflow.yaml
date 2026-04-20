@@ -81,6 +81,35 @@ presets:
       that require no user input, answer inline and continue. Budget warnings
       arrive on tool results; treat them as advisory and decide whether to stop.
 
+  thorough-review:
+    description: >-
+      Fan out to multiple reviewers before calling finish. Prioritize catching
+      regressions over shipping quickly.
+    hint: >-
+      After any implementation `run_agent` call, dispatch a second reviewer with
+      a distinct perspective (a different agent where available, or a clearly
+      different review angle). Only call `finish` after at least one review pass
+      has landed. Prefer explicit reasoning about review findings inline over
+      calling `analyze_output` — reviewers return structured feedback already.
+    suggested_agent_roles:
+      - reviewer
+      - security
+      - tests
+
+  read-only:
+    description: >-
+      Analyze and suggest; do not modify files. Good for exploratory work or
+      when the user has not yet agreed to edits.
+    hint: >-
+      Do not dispatch `run_agent` calls that write files. When the user asks for
+      a change, reply inline with a diff or a prose description of the proposed
+      edit and ask the user to confirm before proceeding. If a `run_agent` call
+      is the right tool, scope its prompt to read-only analysis (inspect code,
+      produce a report) — never "make the change".
+    suggested_agent_roles:
+      - analyst
+      - reviewer
+
 error_handling:
   default:
     retry: 1
