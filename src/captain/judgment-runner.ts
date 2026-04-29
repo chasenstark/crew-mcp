@@ -578,6 +578,14 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           runtime.providerSession = result.providerSession;
         }
 
+        const providerSessionRejected =
+          result.status === 'failed' &&
+          typeof result.error === 'string' &&
+          /session id|invalid session|rejected/i.test(result.error);
+        if (result.status === 'failed' && !providerSessionRejected) {
+          throw new Error(`Captain adapter failed: ${result.error ?? 'unknown error'}`);
+        }
+
         const toolCalls = [...pendingDispatched.values()];
         return {
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -585,10 +593,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
           // (invoked inside dispatchFinish) — not by the turn-result.
           // Having one canonical exit path avoids the "which path won"
           // confusion during debugging.
-          providerSessionRejected:
-            result.status === 'failed' &&
-            typeof result.error === 'string' &&
-            /session id|invalid session|rejected/i.test(result.error),
+          providerSessionRejected,
         };
       },
       refreshCliVersionTag: async () => {

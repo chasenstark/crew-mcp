@@ -352,6 +352,69 @@ describe('JudgmentRunner M3 tool surface', () => {
     expect(turn).toBe(2);
   });
 
+  it('fails the workflow when the captain adapter returns a non-replay failure', async () => {
+    const captain = makeCaptain(async () => ({
+      status: 'failed',
+      transcript: [],
+      error: 'decision subprocess exited 1',
+    }));
+    const session = CaptainSession.create({ projectRoot });
+    session.appendUserMessage('trigger failure');
+    const dispatcher = new ToolDispatcher();
+    const runner = new JudgmentRunner(
+      captain,
+      makeRegistry([captain]),
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    await expect(runner.run('trigger failure')).rejects.toThrow(
+      'Captain adapter failed: decision subprocess exited 1',
+    );
+    expect(stateStore.loadState()?.status).toBe('failed');
+    expect(
+      session.getMessages().some((m) => m.role === 'assistant' && m.text.includes('Workflow Report')),
+    ).toBe(false);
+  });
+
+  it('persists synchronous tool side effects before surfacing a captain failure', async () => {
+    const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
+      await onToolCall({
+        name: 'mcp__crew__message_user',
+        input: { text: 'The implementation agent failed.' },
+      });
+      return {
+        status: 'failed',
+        transcript: [],
+        error: 'decision subprocess exited 1',
+      };
+    });
+    const session = CaptainSession.create({ projectRoot });
+    session.appendUserMessage('status?');
+    const dispatcher = new ToolDispatcher();
+    const runner = new JudgmentRunner(
+      captain,
+      makeRegistry([captain]),
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    await expect(runner.run('status?')).rejects.toThrow(
+      'Captain adapter failed: decision subprocess exited 1',
+    );
+
+    const reloaded = CaptainSession.load({ projectRoot });
+    expect(
+      reloaded?.getMessages().some(
+        (m) => m.role === 'assistant' && m.text === 'The implementation agent failed.',
+      ),
+    ).toBe(true);
+  });
+
   it('flags providerSessionRejected when the adapter returns a session-id error (M3-10a regex plumbing)', async () => {
     // Regression for review Finding 7: the regex /session id|invalid session|rejected/i
     // in the M3 captain-turn converts a failed executeWithTools result into

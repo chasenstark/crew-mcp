@@ -34,7 +34,13 @@ export interface DispatcherEvents {
   'run:start': (info: { toolCallId: string; toolName: string; runId?: string }) => void;
   'run:stream': (info: { toolCallId: string; chunk: string }) => void;
   'run:complete': (info: { toolCallId: string; toolName: string; result: unknown; runId?: string }) => void;
-  'run:failed': (info: { toolCallId: string; toolName: string; error: string; runId?: string }) => void;
+  'run:failed': (info: {
+    toolCallId: string;
+    toolName: string;
+    error: string;
+    result?: unknown;
+    runId?: string;
+  }) => void;
   'run:cancelled': (info: { toolCallId: string; toolName: string; reason: string; runId?: string }) => void;
 }
 
@@ -139,6 +145,16 @@ export class ToolDispatcher {
       });
       return;
     }
+    if (isErrorTaskResult(result)) {
+      this.emitter.emit('run:failed', {
+        toolCallId: task.toolCallId,
+        toolName: task.toolName,
+        error: readTaskResultError(result),
+        result,
+        runId: task.runId,
+      });
+      return;
+    }
     this.emitter.emit('run:complete', {
       toolCallId: task.toolCallId,
       toolName: task.toolName,
@@ -180,4 +196,20 @@ function readAbortReason(reason: unknown): string {
   if (reason instanceof Error) return reason.message;
   if (typeof reason === 'string') return reason;
   return 'cancelled';
+}
+
+function isErrorTaskResult(result: unknown): result is { status: 'error'; output?: unknown } {
+  return Boolean(
+    result &&
+      typeof result === 'object' &&
+      'status' in result &&
+      (result as { status?: unknown }).status === 'error',
+  );
+}
+
+function readTaskResultError(result: { output?: unknown }): string {
+  if (typeof result.output === 'string' && result.output.trim().length > 0) {
+    return result.output;
+  }
+  return 'Task returned status=error';
 }

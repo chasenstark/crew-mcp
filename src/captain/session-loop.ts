@@ -283,7 +283,7 @@ export class SessionLoop {
       this.dispatcher.onEvent('run:failed', (info) => {
         this.session.appendToolResult({
           toolCallId: info.toolCallId,
-          output: info.error,
+          output: info.result ?? info.error,
           status: 'error',
         });
       }),
@@ -404,6 +404,13 @@ export class SessionLoop {
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error(String(err));
       logger.warn('[session-loop] captain turn threw', { error: error.message });
+      try {
+        this.session.persist();
+      } catch (persistErr: unknown) {
+        logger.warn('[session-loop] failed to persist session after captain turn error', {
+          error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+        });
+      }
       this.turnError = error;
       return null;
     } finally {

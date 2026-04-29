@@ -291,6 +291,66 @@ describe('SessionLoop (M1.5-6a scaffold)', () => {
     expect(toolResults[1].role === 'tool_result' && toolResults[1].toolCallId).toBe('slow');
   });
 
+  it('persists resolved agent error results as failed tool_results', async () => {
+    const session = CaptainSession.create({ projectRoot: root });
+    const dispatcher = new ToolDispatcher();
+    session.appendUserMessage('run failing agent', '2026-04-19T00:00:00.000Z');
+
+    let turnCount = 0;
+    let sawFailedToolResult = false;
+    const captain: SessionLoopTurn = {
+      execute: async ({ messages }) => {
+        turnCount++;
+        if (turnCount === 1) {
+          return {
+            toolCalls: [
+              { toolCallId: 'agent-error', toolName: 'run_agent', input: { id: 'agent-error' } },
+            ],
+          };
+        }
+        sawFailedToolResult = messages.some((m) => {
+          if (m.role !== 'tool') return false;
+          try {
+            const parsed = JSON.parse(m.content) as {
+              status?: string;
+              output?: { status?: string; output?: string };
+            };
+            return parsed.status === 'error' && parsed.output?.status === 'error';
+          } catch {
+            return false;
+          }
+        });
+        return { assistantText: 'noted failure', done: true, finalReport: 'failed' };
+      },
+    };
+
+    const scheduler = makeFakeScheduler(async (call) => ({
+      kind: 'dispatched',
+      task: {
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        run: async () => ({
+          output: 'agent timed out',
+          filesModified: [],
+          status: 'error',
+          metadata: {},
+        }),
+      },
+    }));
+
+    await new SessionLoop({ session, dispatcher, captain, scheduler }).run();
+
+    expect(sawFailedToolResult).toBe(true);
+    const toolResult = session.getMessages().find(
+      (m) => m.role === 'tool_result' && m.toolCallId === 'agent-error',
+    );
+    expect(toolResult).toMatchObject({
+      role: 'tool_result',
+      status: 'error',
+      output: { status: 'error', output: 'agent timed out' },
+    });
+  });
+
   it('run:stream events do not persist and are not written to the session', async () => {
     const session = CaptainSession.create({ projectRoot: root });
     const dispatcher = new ToolDispatcher();

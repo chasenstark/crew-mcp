@@ -35,6 +35,40 @@ Current verification after this pass:
 Remaining highest-priority items are now real provider smoke evidence and the
 architecture-doc refresh, followed by the real `crew-mcp` design/implementation.
 
+## Update - 2026-04-29 Agent Failure Handling Follow-Up
+
+The latest real captain run after the implementation pass exposed a failure
+classification bug:
+
+- A `claude-code` `run_agent` task hit its 300s timeout and returned a resolved
+  `TaskResult` with `status: "error"`.
+- `ToolDispatcher` treated the resolved promise as `run:complete`, so
+  `SessionLoop` persisted the tool result as outer `status: "success"`.
+- A subsequent non-replay captain adapter failure returned an empty turn to the
+  session loop, which triggered the quiet-turn safety net and marked the
+  workflow completed even though no final report was produced.
+
+Fix shipped in the current worktree:
+
+- Resolved dispatched results with `status: "error"` now emit `run:failed`
+  and persist as `tool_result` status `error`.
+- `SessionLoop` preserves any synchronous tool side effects before surfacing a
+  captain turn error.
+- `JudgmentRunner` now throws on non-session-rejection `executeWithTools`
+  failures instead of returning an empty turn that can quiet-complete.
+- Regression coverage now locks the failed-dispatch path, the session-loop
+  failed tool result, non-replay captain adapter failures, and persistence of
+  `message_user` side effects before adapter failure.
+
+Current verification after this follow-up:
+
+- `npm run lint`: passed.
+- `npm run test:run`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 708 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

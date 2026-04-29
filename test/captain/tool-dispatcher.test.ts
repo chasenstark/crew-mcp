@@ -59,6 +59,24 @@ describe('ToolDispatcher', () => {
     expect(d.inFlightCount()).toBe(0);
   });
 
+  it('emits run:failed when a resolved task result has status=error', async () => {
+    const d = new ToolDispatcher();
+    d.start(makeTask('c1', async () => ({
+      output: 'agent timed out',
+      filesModified: [],
+      status: 'error',
+      metadata: {},
+    })));
+
+    const info = (await waitForEvent(d, 'run:failed')) as {
+      error: string;
+      result?: { status?: string; output?: string };
+    };
+    expect(info.error).toBe('agent timed out');
+    expect(info.result).toMatchObject({ status: 'error', output: 'agent timed out' });
+    expect(d.inFlightCount()).toBe(0);
+  });
+
   it('cancel() aborts only the target task', async () => {
     const d = new ToolDispatcher();
     let aAborted = false;
