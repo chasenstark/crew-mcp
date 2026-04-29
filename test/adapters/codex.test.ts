@@ -348,6 +348,7 @@ describe('CodexAdapter', () => {
         'resume',
         '--json',
         '--skip-git-repo-check',
+        '--ignore-rules',
         '--output-last-message',
         '/tmp/codex-mock/output.json',
         'thread-1',
@@ -357,6 +358,51 @@ describe('CodexAdapter', () => {
       expect(result.decision).toMatchObject({
         type: 'finish',
         output: 'done',
+      });
+      expect(result.threadId).toBe('thread-1');
+    });
+
+    it('uses read-only isolated flags on structured seed decision turns', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: '{"type":"thread.started","thread_id":"thread-1"}',
+        stderr: '',
+        exitCode: 0,
+      } as any);
+      mockExistsSync.mockReturnValue(true);
+      mockAdapterReadFileSync.mockReturnValueOnce('{"type":"finish","output":"done"}');
+
+      await (adapter as any).executeDecisionTurn('Choose next step.', {
+        workingDirectory: '/tmp/project',
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      expect(cliArgs).toContain('--output-schema');
+      expect(cliArgs).toContain('--ignore-rules');
+      expect(cliArgs.slice(cliArgs.indexOf('--sandbox'), cliArgs.indexOf('--sandbox') + 2)).toEqual([
+        '--sandbox',
+        'read-only',
+      ]);
+      expect(cliArgs).not.toContain('resume');
+    });
+
+    it('falls back to JSONL assistant decision when Codex skips the output file', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"thread-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"type\\":\\"finish\\",\\"output\\":\\"done from jsonl\\"}"}}',
+        ].join('\n'),
+        stderr: 'Reading additional input from stdin...',
+        exitCode: 0,
+      } as any);
+      mockExistsSync.mockReturnValue(false);
+
+      const result = await (adapter as any).executeDecisionTurn('Choose next step.', {
+        workingDirectory: '/tmp/project',
+      });
+
+      expect(result.decision).toMatchObject({
+        type: 'finish',
+        output: 'done from jsonl',
       });
       expect(result.threadId).toBe('thread-1');
     });

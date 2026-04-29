@@ -103,6 +103,45 @@ Current verification after this follow-up:
   - 709 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-04-29 Codex Decision Output Hardening Follow-Up
+
+The next real run got past the `exec resume --output-schema` failure, but
+exposed a second Codex decision fragility:
+
+- After two implementation-agent passes, a seed captain decision turn exited
+  with code `0` but did not write the requested decision output file.
+- The captured stderr showed Codex behaving like a coding agent and attempting
+  an `apply_patch`, which failed because the target file had already changed.
+- This made the session fail with "Codex did not produce output file" even
+  though the JSONL stream may still contain a usable final assistant message.
+
+Fix shipped in the current worktree:
+
+- Codex captain decision seed turns now run with `--ignore-rules` and
+  `--sandbox read-only` so they are less likely to pick up repo editing policy
+  or mutate files while only a decision JSON is expected.
+- Codex resumed decision turns also pass `--ignore-rules`; `exec resume` does
+  not expose the seed command's `--sandbox` flag.
+- If Codex exits without the output file, the adapter now falls back to the
+  JSONL last assistant message only when it parses as a valid tool-loop
+  decision envelope. Otherwise it still fails loudly, now with stderr and last
+  assistant-message previews.
+- Regression coverage locks the isolated seed flags, the resumed argv shape,
+  and the missing-output-file JSONL fallback.
+
+Current targeted verification after this follow-up:
+
+- `npm run test:run -- test/adapters/codex.test.ts test/adapters/codex.resume.test.ts test/cli/commands/config.test.ts test/cli/ui/config/command-parser.test.ts test/cli/ui/config/command-handler.test.ts`:
+  passed.
+  - 5 test files passed.
+  - 68 tests passed.
+- `npm run lint`: passed.
+- `npm run test:run`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 714 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

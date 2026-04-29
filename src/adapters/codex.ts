@@ -711,6 +711,7 @@ export class CodexAdapter implements AgentAdapter {
             'resume',
             '--json',
             '--skip-git-repo-check',
+            '--ignore-rules',
             '--output-last-message',
             outputFile,
             options.threadId,
@@ -747,13 +748,24 @@ export class CodexAdapter implements AgentAdapter {
         throw new Error(`Codex returned an error: ${errorMessage}`);
       }
 
-      if (!existsSync(outputFile)) {
+      const outputText = existsSync(outputFile)
+        ? readFileSync(outputFile, 'utf-8')
+        : this.resolveDecisionOutputFromEvents(events, {
+            exitCode: result.exitCode ?? -1,
+            stderr: result.stderr,
+          });
+
+      if (!outputText) {
+        const lastAssistantMessage = getLastAgentMessage(events);
         throw new Error(
-          `Codex did not produce output file (exit ${result.exitCode}): ${result.stderr}`,
+          [
+            `Codex did not produce decision output (exit ${result.exitCode}).`,
+            result.stderr ? `stderr: ${preview(result.stderr)}` : undefined,
+            lastAssistantMessage ? `last assistant message: ${preview(lastAssistantMessage)}` : undefined,
+          ].filter(Boolean).join(' '),
         );
       }
 
-      const outputText = readFileSync(outputFile, 'utf-8');
       const decision = this.parseDecisionOutput(outputText);
 
       // thread_id appears on the `thread.started` event of the first
@@ -1052,6 +1064,9 @@ export class CodexAdapter implements AgentAdapter {
       'exec',
       '--json',
       '--skip-git-repo-check',
+      '--ignore-rules',
+      '--sandbox',
+      'read-only',
       '--output-schema',
       schemaFile,
       '--output-last-message',
@@ -1065,6 +1080,26 @@ export class CodexAdapter implements AgentAdapter {
       return ToolLoopDecisionSchema.parse(JSON.parse(text)) as ToolLoopDecision;
     } catch {
       return this.parseToolDecisionFromAssistant(text);
+    }
+  }
+
+  private resolveDecisionOutputFromEvents(
+    events: CodexEvent[],
+    result: { exitCode: number; stderr?: string },
+  ): string | undefined {
+    const lastAssistantMessage = getLastAgentMessage(events);
+    if (!lastAssistantMessage) return undefined;
+
+    try {
+      this.parseDecisionOutput(lastAssistantMessage);
+      logger.warn('[adapter:codex] decision output file missing; using JSONL assistant message fallback', {
+        exitCode: result.exitCode,
+        stderrPreview: preview(result.stderr),
+        assistantPreview: preview(lastAssistantMessage),
+      });
+      return lastAssistantMessage;
+    } catch {
+      return undefined;
     }
   }
 
