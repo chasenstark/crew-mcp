@@ -252,6 +252,12 @@ export class SessionLoop {
    */
   requestExit(finalReport?: string): void {
     if (this.done) return;
+    if (this.dispatcher.inFlightCount() > 0) {
+      logger.warn('[session-loop] finish requested while dispatched tools are still in flight', {
+        inFlight: this.dispatcher.listInFlight(),
+      });
+      return;
+    }
     this.done = true;
     if (finalReport !== undefined) this.finalReport = finalReport;
     // Resolve the exit promise if no turn is currently running; otherwise the
@@ -259,6 +265,10 @@ export class SessionLoop {
     if (!this.turnInFlight) {
       this.exitResolver();
     }
+  }
+
+  listPendingDispatches(): Array<{ toolCallId: string; toolName: string; runId?: string }> {
+    return this.dispatcher.listInFlight();
   }
 
   private wireDispatcherEvents(): void {
@@ -363,7 +373,12 @@ export class SessionLoop {
       !result.done &&
       !result.assistantText &&
       (!result.toolCalls || result.toolCalls.length === 0);
-    if (quietTurn && !this.done && this.dispatcher.inFlightCount() === 0) {
+    if (
+      quietTurn &&
+      !this.done &&
+      !this.pendingTurn &&
+      this.dispatcher.inFlightCount() === 0
+    ) {
       logger.warn('[session-loop] captain turn produced no output and no tool calls; exiting');
       this.done = true;
     }

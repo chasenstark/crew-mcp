@@ -2,6 +2,36 @@ import { describe, expect, it, vi } from 'vitest';
 import { executePromptToolLoop } from '../../../src/adapters/tool-loop/controller.js';
 
 describe('executePromptToolLoop', () => {
+  it('stops immediately when a tool result is terminal', async () => {
+    const decide = vi
+      .fn()
+      .mockResolvedValueOnce({
+        type: 'tool_call',
+        tool: 'finish',
+        input: { summary: 'done' },
+        reasoning: null,
+        output: null,
+        error: null,
+      });
+    const onToolCall = vi.fn().mockResolvedValue({
+      output: { status: 'ok', summary: 'done' },
+      terminal: true,
+      terminalOutput: 'done',
+    });
+
+    const result = await executePromptToolLoop(
+      [{ name: 'finish', description: 'finish', inputSchema: { type: 'object' } }],
+      [{ role: 'system', content: 'start' }],
+      onToolCall,
+      decide,
+    );
+
+    expect(result.status).toBe('completed');
+    expect(result.output).toBe('done');
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+  });
+
   it('maps aborts during controller decisions to interrupted status', async () => {
     const controller = new AbortController();
 

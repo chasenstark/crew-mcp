@@ -73,6 +73,42 @@ describe('dispatchFinish', () => {
     expect(assistantSummary).toBeDefined();
   });
 
+  it('blocks finish while dispatched work is still in flight', async () => {
+    const session = CaptainSession.create({ projectRoot: root });
+    const dispatcher = new ToolDispatcher();
+    session.appendUserMessage('do a slow thing');
+
+    const turn: SessionLoopTurn = {
+      execute: async () => ({
+        toolCalls: [{ toolCallId: 'slow', toolName: 'run_agent', input: {} }],
+      }),
+    };
+    const scheduler = makeScheduler(async (call) => ({
+      kind: 'dispatched',
+      task: {
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        run: async (ctx) => {
+          return new Promise((_resolve, reject) => {
+            ctx.signal.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        },
+      },
+    }));
+    const loop = new SessionLoop({ session, dispatcher, captain: turn, scheduler });
+    const run = loop.run();
+
+    await new Promise((r) => setImmediate(r));
+    const result = dispatchFinish(session, loop, { summary: 'too soon' });
+
+    expect(result.status).toBe('blocked');
+    expect(result.reason).toContain('still in flight');
+    expect(session.getMessages().some((m) => m.role === 'assistant' && m.text === 'too soon')).toBe(false);
+
+    loop.cancel('test cleanup');
+    await run;
+  });
+
   it('ignores subsequent events after finish is called', async () => {
     const session = CaptainSession.create({ projectRoot: root });
     const dispatcher = new ToolDispatcher();

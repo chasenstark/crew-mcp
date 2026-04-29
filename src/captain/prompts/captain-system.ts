@@ -149,6 +149,7 @@ function renderGuardrails(advisory?: string): string {
   const lines = [
     '## Operating guardrails',
     '- Call `finish` when the user\'s request is addressed.',
+    '- Do not call `finish` while `run_agent` or `ask_user` work is queued or in flight; wait for the tool result first.',
     '- If you are uncertain or genuinely blocked, call `ask_user`.',
     '- Budgets apply — exceeded budgets arrive as `warning` on tool results; you may continue or stop.',
     '- Prefer inline reasoning over wrapper tools. `analyze_output` and `compress_context` exist for long-context or structured-extraction cases; skip them when you can reason about the tool_result directly.',

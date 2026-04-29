@@ -1,10 +1,14 @@
 /**
  * finish — terminate the session loop with a final report.
  *
- * Appends the summary as an assistant message so the report is part of the
- * durable session log, then calls SessionLoop.requestExit(finalReport) which
- * flips the loop's `done` flag. The captain's turn completes normally; the
- * loop's outer while observes `done === true` and exits.
+ * If no dispatched work is still in flight, appends the summary as an
+ * assistant message so the report is part of the durable session log, then
+ * calls SessionLoop.requestExit(finalReport) which flips the loop's `done`
+ * flag. The captain's turn completes normally; the loop's outer while
+ * observes `done === true` and exits.
+ *
+ * If dispatched work is still in flight, finish is blocked and no summary is
+ * appended. The captain must wait for the tool result before finalizing.
  *
  * No timestamp/ordering concerns: the summary lands in the message log
  * before the tool_result (which itself is written by the scheduler after
@@ -32,8 +36,14 @@ export const FINISH_DESCRIPTION =
   'Emit the final report and terminate the session. Call this as soon as the user\'s request is addressed. Do NOT wait for a structured review unless the request explicitly asked for one.';
 
 export interface FinishResult {
-  readonly status: 'finished';
+  readonly status: 'finished' | 'blocked';
   readonly outcome: FinishInput['outcome'];
+  readonly reason?: string;
+  readonly pendingDispatches?: readonly {
+    readonly toolCallId: string;
+    readonly toolName: string;
+    readonly runId?: string;
+  }[];
 }
 
 export function dispatchFinish(
@@ -41,6 +51,15 @@ export function dispatchFinish(
   loop: SessionLoop,
   input: FinishInput,
 ): FinishResult {
+  const pendingDispatches = loop.listPendingDispatches();
+  if (pendingDispatches.length > 0) {
+    return {
+      status: 'blocked',
+      outcome: input.outcome,
+      reason: `Cannot finish while ${pendingDispatches.length} dispatched tool call${pendingDispatches.length === 1 ? '' : 's'} are still in flight.`,
+      pendingDispatches,
+    };
+  }
   session.appendAssistantMessage(input.summary);
   loop.requestExit(input.summary);
   return { status: 'finished', outcome: input.outcome };

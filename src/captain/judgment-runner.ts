@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type {
   AgentAdapter,
+  ToolResult,
 } from '../adapters/types.js';
 import type {
   DecomposeOutputRef,
@@ -687,7 +688,7 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     actionServer: CaptainActionServer,
     pendingDispatched: Map<string, SessionLoopToolCall>,
     loopHolder: { loop?: SessionLoop },
-  ): Promise<{ output: unknown }> {
+  ): Promise<ToolResult> {
     const normalized = actionServer.resolveToolCall(call);
     const toolCallId = randomUUID();
 
@@ -713,6 +714,16 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       if (!summary) {
         return { output: { status: 'error', error: 'finish requires a non-empty summary' } };
       }
+      const finishBlock = this.describeFinishBlock(pendingDispatched);
+      if (finishBlock) {
+        return {
+          output: {
+            status: 'blocked',
+            error: finishBlock,
+            note: 'Wait for dispatched tool results before calling finish.',
+          },
+        };
+      }
       if (!this.session || !loopHolder.loop) {
         // Invariant: executeSessionLoop populates loopHolder.loop synchronously
         // before loop.run() starts, so this branch is unreachable in
@@ -733,8 +744,21 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
       // Canonical exit path (review NEW-A/B): dispatchFinish appends the
       // assistant summary AND calls loop.requestExit. The loop's
       // `finalReport` is what surfaces to executeSessionLoop.
-      dispatchFinish(this.session, loopHolder.loop, { summary, outcome });
-      return { output: { status: 'ok', outcome: 'finished', summary } };
+      const result = dispatchFinish(this.session, loopHolder.loop, { summary, outcome });
+      if (result.status === 'blocked') {
+        return {
+          output: {
+            status: 'blocked',
+            error: result.reason ?? 'Cannot finish while dispatched tools are still in flight.',
+            pendingDispatches: result.pendingDispatches,
+          },
+        };
+      }
+      return {
+        output: { status: 'ok', outcome: 'finished', summary },
+        terminal: true,
+        terminalOutput: summary,
+      };
     }
 
     if (normalized.name === 'message_user') {
@@ -821,6 +845,23 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
     return {
       output: { status: 'error', error: `Unknown tool: ${call.name}` },
     };
+  }
+
+  private describeFinishBlock(
+    pendingDispatched: Map<string, SessionLoopToolCall>,
+  ): string | undefined {
+    if (pendingDispatched.size > 0) {
+      const names = Array.from(pendingDispatched.values())
+        .map((call) => `${call.toolName}(${call.toolCallId})`)
+        .join(', ');
+      return `Cannot finish while ${pendingDispatched.size} dispatched tool call${pendingDispatched.size === 1 ? '' : 's'} are queued in this turn: ${names}.`;
+    }
+    const inFlight = this.dispatcher.listInFlight();
+    if (inFlight.length === 0) return undefined;
+    const names = inFlight
+      .map((call) => `${call.toolName}(${call.toolCallId})`)
+      .join(', ');
+    return `Cannot finish while ${inFlight.length} dispatched tool call${inFlight.length === 1 ? '' : 's'} are still in flight: ${names}.`;
   }
 
   private resolveTaskWorkingDirectory(taskWorktree: string, requested?: string): string {

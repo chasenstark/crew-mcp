@@ -20,6 +20,17 @@ export interface ToolCall {
 
 export interface ToolResult {
   output: unknown;
+  /**
+   * Control signal from a tool handler to the adapter loop. When true, the
+   * tool result has already completed the surrounding workflow and the adapter
+   * must return without asking the model for another decision.
+   */
+  terminal?: boolean;
+  /**
+   * Optional user-facing output to surface on terminal results. Falls back to
+   * `output` when omitted.
+   */
+  terminalOutput?: string;
 }
 
 export interface ToolLoopMessage {

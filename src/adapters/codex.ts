@@ -30,6 +30,7 @@ import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
 import { toCodexConfigOverrides, type ToolCatalog } from '../captain/mcp-registration.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
+import { resolveTerminalOutput } from './tool-loop/result.js';
 import {
   parseToolInput,
   ToolLoopDecisionSchema,
@@ -959,6 +960,22 @@ export class CodexAdapter implements AgentAdapter {
         content: JSON.stringify(toolResult.output),
       });
       publishTranscript();
+
+      if (toolResult.terminal) {
+        return {
+          status: 'completed',
+          transcript,
+          output: resolveTerminalOutput(toolResult),
+          pathTaken: 'stateful-resume',
+          providerSession,
+          telemetry: {
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cachedInputTokens: totalCachedInputTokens,
+            totalTurns: turnCount,
+          },
+        };
+      }
 
       pendingPrompt = [
         `Tool ${toolName} returned:`,

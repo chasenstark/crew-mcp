@@ -4,6 +4,7 @@ import { logger } from '../utils/logger.js';
 import { ModelId } from '../workflow/models.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
 import { parseToolInput, ToolLoopDecisionSchema } from './tool-loop/decision.js';
+import { resolveTerminalOutput } from './tool-loop/result.js';
 import type {
   AgentAdapter,
   AgentCapability,
@@ -210,6 +211,16 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
             content: toolContent,
           });
           publishTranscript();
+
+          if (toolResult.terminal) {
+            return {
+              status: 'completed',
+              transcript,
+              output: resolveTerminalOutput(toolResult),
+              pathTaken: 'prefix-cached',
+              providerSession,
+            };
+          }
         }
 
         providerSession.lastTurnAt = new Date().toISOString();
@@ -318,6 +329,15 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
         content: toolContent,
       });
       publishTranscript();
+      if (toolResult.terminal) {
+        return {
+          status: 'completed',
+          transcript,
+          output: resolveTerminalOutput(toolResult),
+          pathTaken: 'prefix-cached',
+          providerSession,
+        };
+      }
       providerSession.lastTurnAt = new Date().toISOString();
       context?.onProviderSession?.(providerSession);
     }

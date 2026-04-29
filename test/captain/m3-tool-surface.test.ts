@@ -207,12 +207,13 @@ describe('JudgmentRunner M3 tool surface', () => {
   });
 
   it('finish tool ends the loop with the summary as finalReport', async () => {
+    let finishResult: ToolResult | undefined;
     const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
       await onToolCall({
         name: 'mcp__crew__message_user',
         input: { text: 'this is a quick answer' },
       });
-      await onToolCall({
+      finishResult = await onToolCall({
         name: 'mcp__crew__finish',
         input: { summary: 'done!' },
       });
@@ -241,20 +242,26 @@ describe('JudgmentRunner M3 tool surface', () => {
     expect(
       session.getMessages().some((m) => m.role === 'assistant' && m.text === 'done!'),
     ).toBe(true);
+    expect(finishResult).toMatchObject({ terminal: true, terminalOutput: 'done!' });
   });
 
-  it('routes multiple run_agent calls without gating via legacy budgets', async () => {
+  it('routes multiple run_agent calls without gating via legacy budgets, then finishes after results', async () => {
     // Post-M4-5 behavioral invariant: the M3 path goes directly through
     // handleM3ToolCallFromAdapter. Legacy 11-verb budgets
     // (maxDeterministicFallbacks, etc.) are gone — each tool's zod schema
     // is the only gate.
+    let turn = 0;
     const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
-      // Call run_agent multiple times in a single adapter turn.
-      for (let i = 0; i < 3; i++) {
-        await onToolCall({
-          name: 'mcp__crew__run_agent',
-          input: { agent_id: 'codex', prompt: `task ${i + 1}` },
-        });
+      turn++;
+      if (turn === 1) {
+        // Call run_agent multiple times in a single adapter turn.
+        for (let i = 0; i < 3; i++) {
+          await onToolCall({
+            name: 'mcp__crew__run_agent',
+            input: { agent_id: 'codex', prompt: `task ${i + 1}` },
+          });
+        }
+        return { status: 'completed', transcript: [] };
       }
       await onToolCall({
         name: 'mcp__crew__finish',
@@ -281,6 +288,68 @@ describe('JudgmentRunner M3 tool surface', () => {
       (m) => m.role === 'tool_call' && m.toolName === 'run_agent',
     );
     expect(runAgentCalls).toHaveLength(3);
+  });
+
+  it('blocks finish in the same turn as a dispatched tool and allows it after the result', async () => {
+    let releaseSubagent!: () => void;
+    const subagentDone = new Promise<void>((resolve) => {
+      releaseSubagent = resolve;
+    });
+    let finishBeforeResult: ToolResult | undefined;
+    let turn = 0;
+    const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
+      turn++;
+      if (turn === 1) {
+        await onToolCall({
+          name: 'mcp__crew__run_agent',
+          input: { agent_id: 'codex', prompt: 'slow task' },
+        });
+        finishBeforeResult = await onToolCall({
+          name: 'mcp__crew__finish',
+          input: { summary: 'too early' },
+        });
+        return { status: 'completed', transcript: [] };
+      }
+      await onToolCall({
+        name: 'mcp__crew__finish',
+        input: { summary: 'finished after result' },
+      });
+      return { status: 'completed', transcript: [] };
+    });
+    const codex: AgentAdapter = {
+      ...makeSubagent('codex'),
+      execute: async () => {
+        await subagentDone;
+        return {
+          output: 'slow task complete',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    };
+    const session = CaptainSession.create({ projectRoot });
+    session.appendUserMessage('slow');
+    const dispatcher = new ToolDispatcher();
+    const runner = new JudgmentRunner(
+      captain,
+      makeRegistry([captain, codex]),
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    const run = runner.run('slow');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(finishBeforeResult?.output).toMatchObject({ status: 'blocked' });
+    expect(
+      session.getMessages().some((m) => m.role === 'assistant' && m.text === 'too early'),
+    ).toBe(false);
+
+    releaseSubagent();
+    await expect(run).resolves.toBe('finished after result');
+    expect(turn).toBe(2);
   });
 
   it('flags providerSessionRejected when the adapter returns a session-id error (M3-10a regex plumbing)', async () => {

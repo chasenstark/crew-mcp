@@ -8,6 +8,7 @@ import type {
 import { TOOL_LOOP_MAX_TURNS } from './constants.js';
 import type { ToolLoopDecision } from './decision.js';
 import { parseToolInput } from './decision.js';
+import { resolveTerminalOutput } from './result.js';
 import { buildDecisionPrompt } from './transcript.js';
 
 function cloneTranscript(transcript: ToolLoopMessage[]): ToolLoopMessage[] {
@@ -162,6 +163,15 @@ export async function executePromptToolLoop(
       content: JSON.stringify(toolResult.output),
     });
     publishTranscript();
+
+    if (toolResult.terminal) {
+      return {
+        status: 'completed',
+        transcript,
+        output: resolveTerminalOutput(toolResult),
+        pathTaken: options.pathTaken,
+      };
+    }
   }
 
   return {
