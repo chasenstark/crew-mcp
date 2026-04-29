@@ -28,6 +28,7 @@ function helpText(): string {
     '  /config',
     '  /config help',
     '  /config show',
+    '  /config setup',
     '  /config scope',
     '  /config scope project',
     '  /config scope global',
@@ -69,10 +70,11 @@ export function handleConfigSlashCommand(
     return sessionBusyMutationBlocked();
   }
 
-  if (parsed.kind === 'edit') {
+  if (parsed.kind === 'setup' || parsed.kind === 'edit') {
     return [
-      'Interactive editing is available in the dedicated config command.',
-      'Run: crew config edit',
+      'Guided config setup is available in the dedicated terminal command.',
+      'Run: crew config setup',
+      'It asks questions about the captain, models, presets, agents, review passes, and retries before writing workflow.yaml.',
     ].join('\n');
   }
 

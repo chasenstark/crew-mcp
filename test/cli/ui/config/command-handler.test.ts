@@ -35,10 +35,17 @@ describe('handleConfigSlashCommand', () => {
   it('returns help text', () => {
     const response = handleConfigSlashCommand('/config', { cwd, sessionBusy: false });
     expect(response).toContain('/config help');
+    expect(response).toContain('/config setup');
     expect(response).toContain('/config set captain.cli codex');
     expect(response).toContain('/config set workflow.roleModels.reviewer gpt-5.4');
     expect(response).toContain('/config profile <name>');
     expect(response).toContain('/config add-agent <name> [adapter] [command]');
+  });
+
+  it('points setup to the guided terminal command', () => {
+    const response = handleConfigSlashCommand('/config setup', { cwd, sessionBusy: false });
+    expect(response).toContain('Guided config setup');
+    expect(response).toContain('crew config setup');
   });
 
   it('gets and sets active profile', () => {

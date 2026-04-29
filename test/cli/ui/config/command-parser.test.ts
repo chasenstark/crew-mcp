@@ -14,6 +14,11 @@ describe('parseConfigSlashCommand', () => {
     expect(parseConfigSlashCommand('/config show')).toEqual({ kind: 'show' });
   });
 
+  it('parses setup and edit commands', () => {
+    expect(parseConfigSlashCommand('/config setup')).toEqual({ kind: 'setup' });
+    expect(parseConfigSlashCommand('/config edit')).toEqual({ kind: 'edit' });
+  });
+
   it('parses scope get/set commands', () => {
     expect(parseConfigSlashCommand('/config scope')).toEqual({ kind: 'scope:get' });
     expect(parseConfigSlashCommand('/config scope project')).toEqual({

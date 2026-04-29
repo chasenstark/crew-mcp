@@ -4,6 +4,7 @@ import { resolveConfigPath } from '../../../workflow/config-path-registry.js';
 export type ConfigSlashCommand =
   | { kind: 'help' }
   | { kind: 'show' }
+  | { kind: 'setup' }
   | { kind: 'edit' }
   | { kind: 'reset' }
   | { kind: 'profile:get' }
@@ -26,6 +27,7 @@ export function parseConfigSlashCommand(input: string): ConfigSlashCommand | nul
 
   if (subcommand === 'help') return { kind: 'help' };
   if (subcommand === 'show') return { kind: 'show' };
+  if (subcommand === 'setup') return { kind: 'setup' };
   if (subcommand === 'edit') return { kind: 'edit' };
   if (subcommand === 'reset') return { kind: 'reset' };
 

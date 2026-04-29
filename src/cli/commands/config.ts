@@ -4,7 +4,7 @@ import { stdin as input, stdout as output } from 'process';
 import chalk from 'chalk';
 import type { Command } from 'commander';
 import type { ConfigScope } from '../../workflow/config-repository.js';
-import { getDefaultConfig } from '../../workflow/config-codec.js';
+import { getDefaultConfig, resolveCaptainModel } from '../../workflow/config-codec.js';
 import { saveConfigByScope } from '../../workflow/config-repository.js';
 import { validateConfig } from '../../workflow/config-validation.js';
 import { AdapterId } from '../../workflow/agents.js';
@@ -106,9 +106,33 @@ function workflowRoles(config: { workflow: { steps: Array<{ role: string; action
   return [...keys].sort();
 }
 
-interface SelectOption {
+export interface SelectOption {
   label: string;
   value: string;
+}
+
+export interface ConfigWizardIo {
+  askQuestion?: (question: string) => Promise<string>;
+  selectOptionMenu?: (
+    title: string,
+    contextLines: string[],
+    options: SelectOption[],
+    initialIndex?: number,
+  ) => Promise<SelectOption>;
+  supportsInteractiveSelection?: () => boolean;
+  log?: (message?: string) => void;
+}
+
+interface ResolvedConfigWizardIo {
+  askQuestion: (question: string) => Promise<string>;
+  selectOptionMenu: (
+    title: string,
+    contextLines: string[],
+    options: SelectOption[],
+    initialIndex?: number,
+  ) => Promise<SelectOption>;
+  supportsInteractiveSelection: () => boolean;
+  log: (message?: string) => void;
 }
 
 function supportsInteractiveSelection(): boolean {
@@ -210,8 +234,18 @@ async function selectOptionMenu(
   });
 }
 
+function friendlyValue(value: unknown): string {
+  const rendered = formatChangedValue(value);
+  return rendered === undefined ? 'undefined' : rendered;
+}
+
+function configPathLine(configPath: string): string {
+  return `${chalk.dim('config path:')} ${configPath}`;
+}
+
 function promptWithCurrent(
-  label: string,
+  question: string,
+  configPath: string,
   currentValue: unknown,
   defaultValue: unknown,
   description: string,
@@ -219,16 +253,17 @@ function promptWithCurrent(
 ): string {
   const optionLines = options.length > 0
     ? options.map((option, index) => `  ${index + 1}. ${option}`).join('\n')
-    : '  (no presets available)';
+    : '  (enter a custom value, or leave blank to keep current)';
 
   return [
-    `${chalk.bold(label)}`,
-    `  current: ${formatChangedValue(currentValue)}`,
-    `  default: ${formatChangedValue(defaultValue)}`,
+    `${chalk.bold(question)}`,
+    `  ${configPathLine(configPath)}`,
+    `  current: ${friendlyValue(currentValue)}`,
+    `  default: ${friendlyValue(defaultValue)}`,
     `  ${chalk.dim(description)}`,
     '  options:',
     optionLines,
-    '  choose number | next | prev | custom value (blank keeps current): ',
+    '  choose number | next | prev | custom value | Enter keeps current: ',
   ].join('\n');
 }
 
@@ -260,27 +295,38 @@ async function askQuestion(question: string): Promise<string> {
   }
 }
 
+function resolveConfigWizardIo(io: ConfigWizardIo = {}): ResolvedConfigWizardIo {
+  return {
+    askQuestion: io.askQuestion ?? askQuestion,
+    selectOptionMenu: io.selectOptionMenu ?? selectOptionMenu,
+    supportsInteractiveSelection: io.supportsInteractiveSelection ?? supportsInteractiveSelection,
+    log: io.log ?? ((message?: string) => console.log(message)),
+  };
+}
+
 async function askFieldValue(args: {
-  label: string;
+  question: string;
+  configPath: string;
   currentValue: unknown;
   defaultValue: unknown;
   description: string;
   options: string[];
-}): Promise<string | undefined> {
-  const { label, currentValue, defaultValue, description, options } = args;
+}, io: ResolvedConfigWizardIo): Promise<string | undefined> {
+  const { question, configPath, currentValue, defaultValue, description, options } = args;
 
-  if (supportsInteractiveSelection() && options.length > 0) {
+  if (io.supportsInteractiveSelection() && options.length > 0) {
     const menuOptions: SelectOption[] = [
       ...options.map((option) => ({ label: option, value: option })),
       { label: '[Custom value...]', value: '__custom__' },
       { label: '[Keep current value]', value: '__keep__' },
     ];
     const currentIndex = options.indexOf(String(currentValue ?? ''));
-    const selected = await selectOptionMenu(
-      label,
+    const selected = await io.selectOptionMenu(
+      question,
       [
-        `current: ${formatChangedValue(currentValue)}`,
-        `default: ${formatChangedValue(defaultValue)}`,
+        configPathLine(configPath),
+        `current: ${friendlyValue(currentValue)}`,
+        `default: ${friendlyValue(defaultValue)}`,
         description,
       ],
       menuOptions,
@@ -289,14 +335,14 @@ async function askFieldValue(args: {
 
     if (selected.value === '__keep__') return undefined;
     if (selected.value === '__custom__') {
-      const custom = (await askQuestion('Custom value (blank keeps current): ')).trim();
+      const custom = (await io.askQuestion('Custom value (blank keeps current): ')).trim();
       return custom || undefined;
     }
     return selected.value;
   }
 
-  const raw = (await askQuestion(
-    promptWithCurrent(label, currentValue, defaultValue, description, options),
+  const raw = (await io.askQuestion(
+    promptWithCurrent(question, configPath, currentValue, defaultValue, description, options),
   )).trim();
   return normalizeWizardValue(raw, options);
 }
@@ -435,8 +481,9 @@ export async function configResetCommand(options: {
   console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
 }
 
-export async function configWizardCommand(options: { cwd?: string } = {}): Promise<void> {
+export async function configWizardCommand(options: { cwd?: string; io?: ConfigWizardIo } = {}): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
+  const io = resolveConfigWizardIo(options.io);
   const snapshot = showConfig(cwd);
   const defaults = getDefaultConfig();
   const originalConfig = snapshot.effectiveConfig;
@@ -445,13 +492,14 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   const selectedProfile = snapshot.activeProfile;
   const changes: Array<{ path: string; before: unknown; after: unknown }> = [];
 
-  console.log(chalk.bold('\nInteractive Config Wizard\n'));
-  console.log(`${chalk.dim('Active profile:')} ${selectedProfile}\n`);
+  io.log(chalk.bold('\nGuided Config Setup\n'));
+  io.log(chalk.dim('Answer the questions below. Press Enter to keep the current value.'));
+  io.log(`${chalk.dim('Active profile:')} ${selectedProfile}\n`);
 
-  if (supportsInteractiveSelection()) {
-    const selected = await selectOptionMenu(
-      'Write scope',
-      [`current: ${snapshot.activeScope}`],
+  if (io.supportsInteractiveSelection()) {
+    const selected = await io.selectOptionMenu(
+      'Where should Crew save these answers?',
+      [`current write scope: ${snapshot.activeScope}`],
       [
         { label: 'project', value: 'project' },
         { label: 'global', value: 'global' },
@@ -460,8 +508,8 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     );
     selectedScope = selected.value as ConfigScope;
   } else {
-    const enteredScope = (await askQuestion(
-      `Write scope [project/global] (current: ${snapshot.activeScope}): `,
+    const enteredScope = (await io.askQuestion(
+      `Where should Crew save these answers? [project/global] (current: ${snapshot.activeScope}): `,
     )).trim();
     if (enteredScope) {
       if (enteredScope !== 'project' && enteredScope !== 'global') {
@@ -472,12 +520,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   }
 
   const captainCliValue = await askFieldValue({
-    label: 'captain.cli',
+    question: 'Which CLI should coordinate the crew?',
+    configPath: 'captain.cli',
     currentValue: draft.captain.cli,
     defaultValue: defaults.captain.cli,
-    description: 'Which configured adapter acts as the captain.',
+    description: 'The captain reads the request, delegates work, and decides when the run is done.',
     options: getConfigValueOptions(draft, 'captain.cli'),
-  });
+  }, io);
   if (captainCliValue) {
     const before = draft.captain.cli;
     draft = applyConfigPatch(draft, { path: 'captain.cli', value: captainCliValue });
@@ -485,12 +534,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   }
 
   const captainModelValue = await askFieldValue({
-    label: 'captain.model',
-    currentValue: draft.captain.model,
-    defaultValue: defaults.captain.model,
-    description: 'Model used by the captain adapter.',
+    question: 'Which model should the captain use?',
+    configPath: 'captain.model',
+    currentValue: resolveCaptainModel(draft.captain),
+    defaultValue: resolveCaptainModel(defaults.captain),
+    description: 'Choose the model for planning, delegation, and final decisions.',
     options: getConfigValueOptions(draft, 'captain.model'),
-  });
+  }, io);
   if (captainModelValue) {
     const before = draft.captain.model;
     draft = applyConfigPatch(draft, { path: 'captain.model', value: captainModelValue });
@@ -504,12 +554,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   const presetOptions = getConfigValueOptions(draft, 'captain.preset');
   if (presetOptions.length > 0) {
     const captainPresetValue = await askFieldValue({
-      label: 'captain.preset',
+      question: 'What default behavior should the captain follow?',
+      configPath: 'captain.preset',
       currentValue: draft.captain.preset,
       defaultValue: defaults.captain.preset,
-      description: 'Preset (hint bundle) the captain loads by default.',
+      description: 'Presets tune the captain toward balanced, stricter-review, or read-only behavior.',
       options: presetOptions,
-    });
+    }, io);
     if (captainPresetValue) {
       const before = draft.captain.preset;
       draft = applyConfigPatch(draft, { path: 'captain.preset', value: captainPresetValue });
@@ -526,12 +577,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   for (const role of workflowRoles(draft)) {
     const rolePath = `workflow.roleModels.${role}`;
     const roleModelValue = await askFieldValue({
-      label: rolePath,
+      question: `Which model should the "${role}" workflow role use?`,
+      configPath: rolePath,
       currentValue: draft.workflow.roleModels?.[role],
       defaultValue: defaults.workflow.roleModels?.[role],
-      description: `Optional model override for workflow role/action "${role}".`,
+      description: 'Leave this blank to use the agent or captain default for that role.',
       options: getConfigValueOptions(draft, rolePath),
-    });
+    }, io);
     if (!roleModelValue) continue;
 
     const before = draft.workflow.roleModels?.[role];
@@ -544,12 +596,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   for (const agentName of agentNames) {
     const adapterPath = `agents.${agentName}.adapter`;
     const adapterValue = await askFieldValue({
-      label: adapterPath,
+      question: `Which backend should the "${agentName}" agent use?`,
+      configPath: adapterPath,
       currentValue: draft.agents[agentName].adapter ?? agentName,
       defaultValue: defaults.agents[agentName]?.adapter ?? agentName,
-      description: 'Adapter backend for this agent (claude-code, codex, generic).',
+      description: 'The backend controls which CLI or provider launches when this agent is delegated work.',
       options: getConfigValueOptions(draft, adapterPath),
-    });
+    }, io);
     if (adapterValue) {
       const before = draft.agents[agentName].adapter ?? agentName;
       draft = applyConfigPatch(draft, { path: adapterPath, value: adapterValue });
@@ -558,12 +611,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
 
     const modelPath = `agents.${agentName}.model`;
     const modelValue = await askFieldValue({
-      label: modelPath,
+      question: `Which model should the "${agentName}" agent use?`,
+      configPath: modelPath,
       currentValue: draft.agents[agentName].model,
       defaultValue: defaults.agents[agentName]?.model,
-      description: 'Model used when this agent runs.',
+      description: 'Leave this blank to keep the current model for this agent.',
       options: getConfigValueOptions(draft, modelPath),
-    });
+    }, io);
     if (modelValue) {
       const before = draft.agents[agentName].model;
       draft = applyConfigPatch(draft, { path: modelPath, value: modelValue });
@@ -578,12 +632,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     if (shouldConfigureGenericFields) {
       const commandPath = `agents.${agentName}.command`;
       const commandValue = await askFieldValue({
-        label: commandPath,
+        question: `What command should launch the "${agentName}" agent?`,
+        configPath: commandPath,
         currentValue: draft.agents[agentName].command,
         defaultValue: defaults.agents[agentName]?.command,
-        description: 'CLI command used by generic adapters (for example: ollama).',
+        description: 'Used only for generic or custom CLI agents, for example: ollama.',
         options: [],
-      });
+      }, io);
       if (commandValue) {
         const before = draft.agents[agentName].command;
         draft = applyConfigPatch(draft, { path: commandPath, value: commandValue });
@@ -592,12 +647,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
 
       const argsPath = `agents.${agentName}.args`;
       const argsValue = await askFieldValue({
-        label: argsPath,
+        question: `What arguments should Crew pass to the "${agentName}" command?`,
+        configPath: argsPath,
         currentValue: draft.agents[agentName].args,
         defaultValue: defaults.agents[agentName]?.args,
-        description: 'Comma list or JSON array. Use {{prompt}} where prompt should be injected.',
+        description: 'Use a comma list or JSON array. Include {{prompt}} where the task prompt should be injected.',
         options: [],
-      });
+      }, io);
       if (argsValue) {
         const before = draft.agents[agentName].args;
         draft = applyConfigPatch(draft, { path: argsPath, value: argsValue });
@@ -607,12 +663,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
 
     const capabilitiesPath = `agents.${agentName}.capabilities`;
     const capabilitiesValue = await askFieldValue({
-      label: capabilitiesPath,
+      question: `What work should the "${agentName}" agent be allowed to do?`,
+      configPath: capabilitiesPath,
       currentValue: draft.agents[agentName].capabilities,
       defaultValue: defaults.agents[agentName]?.capabilities,
-      description: 'Comma list or JSON array of capabilities (implement, review, etc.).',
+      description: 'Use a comma list or JSON array, for example: implement,review,test.',
       options: getConfigValueOptions(draft, capabilitiesPath),
-    });
+    }, io);
     if (capabilitiesValue) {
       const before = draft.agents[agentName].capabilities;
       draft = applyConfigPatch(draft, { path: capabilitiesPath, value: capabilitiesValue });
@@ -622,7 +679,7 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
 
   const reviewerOptions = getConfigValueOptions(draft, 'workflow.reviewer.maxPasses');
   if (reviewerOptions.length === 0) {
-    console.log(
+    io.log(
       chalk.yellow(
         'Skipping workflow.reviewer.maxPasses: no review step found (role includes "reviewer" or action is "review").',
       ),
@@ -635,12 +692,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
       s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
     )?.maxPasses;
     const reviewerMaxPassesValue = await askFieldValue({
-      label: 'workflow.reviewer.maxPasses',
+      question: 'How many review/fix passes should run before Crew stops trying?',
+      configPath: 'workflow.reviewer.maxPasses',
       currentValue: reviewerCurrent,
       defaultValue: reviewerDefault,
-      description: 'Maximum review/fix cycles before fallback.',
+      description: 'Higher values can catch more issues but may take longer.',
       options: reviewerOptions,
-    });
+    }, io);
     if (reviewerMaxPassesValue) {
       const before = reviewerCurrent;
       draft = applyConfigPatch(draft, { path: 'workflow.reviewer.maxPasses', value: reviewerMaxPassesValue });
@@ -652,12 +710,13 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
   }
 
   const retryCountValue = await askFieldValue({
-    label: 'errorHandling.default.retry',
+    question: 'How many times should Crew retry a failed step?',
+    configPath: 'errorHandling.default.retry',
     currentValue: draft.errorHandling.default.retry,
     defaultValue: defaults.errorHandling.default.retry,
-    description: 'Retries before fallback handling for failed steps.',
+    description: 'This applies before fallback handling asks the user or stops.',
     options: getConfigValueOptions(draft, 'errorHandling.default.retry'),
-  });
+  }, io);
   if (retryCountValue) {
     const before = draft.errorHandling.default.retry;
     draft = applyConfigPatch(draft, { path: 'errorHandling.default.retry', value: retryCountValue });
@@ -666,7 +725,7 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
 
   const scopeChanged = selectedScope !== snapshot.activeScope;
   if (!scopeChanged && changes.length === 0) {
-    console.log(chalk.dim('\nNo changes. Exiting without writes.\n'));
+    io.log(chalk.dim('\nNo changes. Exiting without writes.\n'));
     return;
   }
 
@@ -675,19 +734,19 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     throw new Error(diagnostics[0].message);
   }
 
-  console.log(chalk.bold('\nPending Changes'));
+  io.log(chalk.bold('\nPending Changes'));
   if (scopeChanged) {
-    console.log(`  scope: ${snapshot.activeScope} -> ${selectedScope}`);
+    io.log(`  scope: ${snapshot.activeScope} -> ${selectedScope}`);
   }
   for (const change of changes) {
-    console.log(
+    io.log(
       `  ${change.path}: ${formatChangedValue(change.before)} -> ${formatChangedValue(change.after)}`,
     );
   }
 
-  const confirmation = (await askQuestion('\nApply changes? [y/N]: ')).trim().toLowerCase();
+  const confirmation = (await io.askQuestion('\nApply changes? [y/N]: ')).trim().toLowerCase();
   if (confirmation !== 'y' && confirmation !== 'yes') {
-    console.log(chalk.dim('\nCancelled. No writes performed.\n'));
+    io.log(chalk.dim('\nCancelled. No writes performed.\n'));
     return;
   }
 
@@ -695,10 +754,10 @@ export async function configWizardCommand(options: { cwd?: string } = {}): Promi
     setConfigScope(cwd, selectedScope);
   }
   const filePath = saveConfigByScope(selectedScope, cwd, draft, { profile: selectedProfile });
-  console.log(chalk.green('\n\u2713 Configuration saved.'));
-  console.log(`  ${chalk.dim('scope:')} ${selectedScope}`);
-  console.log(`  ${chalk.dim('profile:')} ${selectedProfile}`);
-  console.log(`  ${chalk.dim('file:')}  ${filePath}\n`);
+  io.log(chalk.green('\n\u2713 Configuration saved.'));
+  io.log(`  ${chalk.dim('scope:')} ${selectedScope}`);
+  io.log(`  ${chalk.dim('profile:')} ${selectedProfile}`);
+  io.log(`  ${chalk.dim('file:')}  ${filePath}\n`);
 }
 
 async function runWithExitCode(action: () => Promise<void>): Promise<void> {
@@ -796,7 +855,12 @@ export function registerConfigCommand(program: Command): void {
     );
 
   command
+    .command('setup')
+    .description('Run guided config setup questions')
+    .action(() => runWithExitCode(() => configWizardCommand()));
+
+  command
     .command('edit')
-    .description('Open interactive config editor')
+    .description('Open guided config setup')
     .action(() => runWithExitCode(() => configWizardCommand()));
 }

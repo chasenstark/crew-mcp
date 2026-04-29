@@ -10,6 +10,7 @@ import {
   configScopeCommand,
   configSetCommand,
   configShowCommand,
+  configWizardCommand,
 } from '../../../src/cli/commands/config.js';
 import { loadConfigByScope, readActiveScopePreference } from '../../../src/workflow/config-repository.js';
 import { resolveCaptainModel } from '../../../src/workflow/config-codec.js';
@@ -122,5 +123,30 @@ describe('config command handlers', () => {
     await configRemoveAgentCommand('local-gemma', { cwd });
     projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.agents['local-gemma']).toBeUndefined();
+  });
+
+  it('runs guided setup with user-facing questions and writes selected values', async () => {
+    const prompts: string[] = [];
+    const logs: string[] = [];
+
+    await configWizardCommand({
+      cwd,
+      io: {
+        supportsInteractiveSelection: () => false,
+        askQuestion: async (question) => {
+          prompts.push(question);
+          if (question.includes('Which CLI should coordinate the crew?')) return 'codex';
+          if (question.includes('Apply changes?')) return 'yes';
+          return '';
+        },
+        log: (message = '') => logs.push(message),
+      },
+    });
+
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.captain.cli).toBe('codex');
+    expect(logs.join('\n')).toContain('Guided Config Setup');
+    expect(prompts.some((prompt) => prompt.includes('Which CLI should coordinate the crew?'))).toBe(true);
+    expect(prompts.some((prompt) => prompt.trimStart().startsWith('captain.cli'))).toBe(false);
   });
 });
