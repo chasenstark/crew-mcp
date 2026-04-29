@@ -28,7 +28,7 @@ export async function runCommand(
     console.log(chalk.blue('\n  captain') + chalk.dim(' — starting workflow\n'));
     console.log(chalk.dim(`  log: ${logFile}\n`));
 
-    attachRunnerEvents(
+    const runnerEvents = attachRunnerEvents(
       runner,
       {
         agentStartSymbol: '●',
@@ -39,6 +39,7 @@ export async function runCommand(
       () => {
         sawPipelineError = true;
       },
+      dispatcher,
     );
     attachAskUserHandler({
       runner,
@@ -58,6 +59,7 @@ export async function runCommand(
       await runner.run(prompt);
     } finally {
       process.off('SIGINT', handleSigint);
+      runnerEvents.dispose();
     }
 
     const finalState = stateStore.loadState();

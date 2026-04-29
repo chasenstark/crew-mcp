@@ -40,6 +40,7 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
   // accepts user_message events at any time, so the PromptInput is never
   // disabled regardless of in-flight tool calls.
   const [inFlightToolCalls, setInFlightToolCalls] = useState<Map<string, InFlightToolCall>>(new Map());
+  const inFlightToolCallsRef = useRef<Map<string, InFlightToolCall>>(new Map());
 
   // `runnerActive` tracks whether pipeline.run() is currently executing — i.e.,
   // whether the session-loop is consuming events. Decoupled from session
@@ -87,14 +88,6 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
       setCurrentStep(null);
     });
 
-    pipeline.on('agent:output', (name, taskId, chunk) => {
-      appendStreamChunk(name, taskId, chunk);
-    });
-
-    pipeline.on('agent:complete', () => {
-      finalizeStream();
-    });
-
     pipeline.on('report', (message) => {
       addMessage('assistant', message);
       setCurrentStep(null);
@@ -116,54 +109,50 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
   useEffect(() => {
     const handles = [
       dispatcher.onEvent('run:start', (info) => {
-        setInFlightToolCalls((prev) => {
-          const next = new Map(prev);
-          next.set(info.toolCallId, {
-            toolCallId: info.toolCallId,
-            toolName: info.toolName,
-            startedAt: Date.now(),
-          });
-          return next;
+        const next = new Map(inFlightToolCallsRef.current);
+        next.set(info.toolCallId, {
+          toolCallId: info.toolCallId,
+          toolName: info.toolName,
+          startedAt: Date.now(),
         });
+        inFlightToolCallsRef.current = next;
+        setInFlightToolCalls(next);
       }),
       dispatcher.onEvent('run:stream', (info) => {
-        setInFlightToolCalls((prev) => {
-          const existing = prev.get(info.toolCallId);
-          if (!existing) return prev;
-          const next = new Map(prev);
-          next.set(info.toolCallId, { ...existing, latestChunk: info.chunk });
-          return next;
-        });
+        const existing = inFlightToolCallsRef.current.get(info.toolCallId);
+        if (!existing) return;
+        const next = new Map(inFlightToolCallsRef.current);
+        next.set(info.toolCallId, { ...existing, latestChunk: info.chunk });
+        inFlightToolCallsRef.current = next;
+        setInFlightToolCalls(next);
+        appendStreamChunk(existing.toolName, info.toolCallId, info.chunk);
       }),
       dispatcher.onEvent('run:complete', (info) => {
-        setInFlightToolCalls((prev) => {
-          if (!prev.has(info.toolCallId)) return prev;
-          const next = new Map(prev);
-          next.delete(info.toolCallId);
-          return next;
-        });
+        const next = new Map(inFlightToolCallsRef.current);
+        next.delete(info.toolCallId);
+        inFlightToolCallsRef.current = next;
+        setInFlightToolCalls(next);
+        finalizeStream();
       }),
       dispatcher.onEvent('run:failed', (info) => {
-        setInFlightToolCalls((prev) => {
-          if (!prev.has(info.toolCallId)) return prev;
-          const next = new Map(prev);
-          next.delete(info.toolCallId);
-          return next;
-        });
+        const next = new Map(inFlightToolCallsRef.current);
+        next.delete(info.toolCallId);
+        inFlightToolCallsRef.current = next;
+        setInFlightToolCalls(next);
+        finalizeStream();
       }),
       dispatcher.onEvent('run:cancelled', (info) => {
-        setInFlightToolCalls((prev) => {
-          if (!prev.has(info.toolCallId)) return prev;
-          const next = new Map(prev);
-          next.delete(info.toolCallId);
-          return next;
-        });
+        const next = new Map(inFlightToolCallsRef.current);
+        next.delete(info.toolCallId);
+        inFlightToolCallsRef.current = next;
+        setInFlightToolCalls(next);
+        finalizeStream();
       }),
     ];
     return () => {
       for (const h of handles) h.dispose();
     };
-  }, [dispatcher]);
+  }, [dispatcher, appendStreamChunk, finalizeStream]);
 
   const sessionBusy = inFlightToolCalls.size > 0;
 

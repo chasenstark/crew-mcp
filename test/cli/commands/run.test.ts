@@ -10,7 +10,7 @@ const {
 } = vi.hoisted(() => ({
   mockCreateRunner: vi.fn(),
   mockAssertRequiredAgentsReady: vi.fn(),
-  mockAttachRunnerEvents: vi.fn(),
+  mockAttachRunnerEvents: vi.fn(() => ({ dispose: vi.fn() })),
   mockAttachAskUserHandler: vi.fn(),
   mockEnableFileLogging: vi.fn(() => '/tmp/run.log'),
 }));

@@ -299,6 +299,29 @@ describe('App (M1.5 post-rewrite)', () => {
     expect(frame).toContain('beta');
   });
 
+  it('renders dispatcher stream chunks in the conversation view', async () => {
+    const { runner } = createFakeRunner();
+    const { lastFrame } = renderApp(
+      <App pipeline={runner} session={session} dispatcher={dispatcher} />,
+    );
+    await flush();
+
+    dispatcher.start({
+      toolCallId: 'streaming-call',
+      toolName: 'run_agent',
+      run: async (ctx) => {
+        ctx.onStream?.('working on it');
+        return new Promise((_r, reject) => {
+          ctx.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    });
+    await flush();
+
+    expect(lastFrame()).toContain('run_agent (streaming)');
+    expect(lastFrame()).toContain('working on it');
+  });
+
   it('/config set blocked when tool calls are in flight (sessionBusy)', async () => {
     const { runner } = createFakeRunner();
     const { lastFrame } = renderApp(
