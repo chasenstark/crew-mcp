@@ -682,8 +682,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   /**
-   * Codex-private wrapper around the `codex exec [resume <id>] --output-schema`
-   * invocation used as the primary decision-making path for captain turns.
+   * Codex-private wrapper around the `codex exec` structured-output invocation
+   * used as the primary decision-making path for captain turns.
    * Differs from the public `executeWithSchema` in three ways:
    *
    *   1. Accepts an optional `threadId`; emits `exec resume <id>` when set
@@ -704,28 +704,24 @@ export class CodexAdapter implements AgentAdapter {
   ): Promise<{ decision: ToolLoopDecision; threadId: string | undefined }> {
     const tmpDir = mkdtempSync(join(tmpdir(), 'codex-decision-'));
     try {
-      const schemaFile = join(tmpDir, 'schema.json');
       const outputFile = join(tmpDir, 'output.json');
-      const jsonSchema = z.toJSONSchema(ToolLoopDecisionSchema);
-      writeFileSync(schemaFile, JSON.stringify(jsonSchema, null, 2), 'utf-8');
-
-      const base = options.threadId
-        ? ['exec', 'resume', options.threadId]
-        : ['exec'];
-      const args = [
-        ...base,
-        prompt,
-        '--json',
-        '--skip-git-repo-check',
-        '--output-schema',
-        schemaFile,
-        '-o',
-        outputFile,
-      ];
+      const args = options.threadId
+        ? [
+            'exec',
+            'resume',
+            '--json',
+            '--skip-git-repo-check',
+            '--output-last-message',
+            outputFile,
+            options.threadId,
+            prompt,
+          ]
+        : this.buildStructuredDecisionArgs(prompt, tmpDir, outputFile);
 
       const turnStartedAt = Date.now();
       logger.info('[adapter:codex] decision turn start', {
         resumedThreadId: options.threadId,
+        structuredSchema: !options.threadId,
         promptChars: prompt.length,
         promptPreview: preview(prompt, 200),
       });
@@ -757,8 +753,8 @@ export class CodexAdapter implements AgentAdapter {
         );
       }
 
-      const raw: unknown = JSON.parse(readFileSync(outputFile, 'utf-8'));
-      const decision = ToolLoopDecisionSchema.parse(raw) as ToolLoopDecision;
+      const outputText = readFileSync(outputFile, 'utf-8');
+      const decision = this.parseDecisionOutput(outputText);
 
       // thread_id appears on the `thread.started` event of the first
       // turn; subsequent resume turns reuse the same thread so the
@@ -1041,6 +1037,35 @@ export class CodexAdapter implements AgentAdapter {
 
   private parseToolDecisionFromAssistant(text: string): ToolLoopDecision {
     return ToolLoopDecisionSchema.parse(extractJson(text));
+  }
+
+  private buildStructuredDecisionArgs(
+    prompt: string,
+    tmpDir: string,
+    outputFile: string,
+  ): string[] {
+    const schemaFile = join(tmpDir, 'schema.json');
+    const jsonSchema = z.toJSONSchema(ToolLoopDecisionSchema);
+    writeFileSync(schemaFile, JSON.stringify(jsonSchema, null, 2), 'utf-8');
+
+    return [
+      'exec',
+      '--json',
+      '--skip-git-repo-check',
+      '--output-schema',
+      schemaFile,
+      '--output-last-message',
+      outputFile,
+      prompt,
+    ];
+  }
+
+  private parseDecisionOutput(text: string): ToolLoopDecision {
+    try {
+      return ToolLoopDecisionSchema.parse(JSON.parse(text)) as ToolLoopDecision;
+    } catch {
+      return this.parseToolDecisionFromAssistant(text);
+    }
   }
 
   private extractResumeUsage(events: CodexEvent[]): {

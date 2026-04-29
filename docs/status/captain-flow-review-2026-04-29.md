@@ -69,6 +69,40 @@ Current verification after this follow-up:
   - 708 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-04-29 Codex Resume Schema Compatibility Follow-Up
+
+The next real captain run exposed a Codex CLI compatibility issue on resumed
+decision turns:
+
+- The seed captain decision used `codex exec --output-schema` successfully.
+- The follow-up decision reused the thread with `codex exec resume`, but Codex
+  CLI `0.125.0` rejects `--output-schema` on the `resume` subcommand.
+- The adapter surfaced the CLI error correctly after the agent-failure fix, so
+  the workflow failed instead of quiet-completing.
+
+Fix shipped in the current worktree:
+
+- Codex seed decision turns still use `--output-schema` for strict structured
+  output.
+- Codex resumed decision turns now omit `--output-schema`, write the final
+  assistant message via `--output-last-message`, and parse it through the
+  existing JSON-envelope decision parser.
+- Regression coverage locks the resumed decision argv shape so
+  `--output-schema` is not reintroduced on `codex exec resume`.
+
+Current verification after this follow-up:
+
+- `npm run test:run -- test/adapters/codex.test.ts test/adapters/codex.resume.test.ts`:
+  passed.
+  - 2 test files passed.
+  - 33 tests passed.
+- `npm run lint`: passed.
+- `npm run test:run`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 709 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).
@@ -231,12 +265,15 @@ vision:
 
 The active Codex performance plan records two shipped wins:
 
-- Structured-schema execution is now the primary Codex captain path.
+- Structured-schema execution is now the seed Codex captain decision path.
 - Codex provider session continuity is threaded through `exec resume <id>`.
 
-This removed avoidable full-context restarts inside the adapter loop. The
-remaining Codex slowness is mostly the fixed cost of process startup and model
-decision latency per inner turn.
+Codex CLI `0.125.0` does not expose `--output-schema` on `exec resume`, so
+resumed decisions keep thread continuity and parse the final assistant message
+through the adapter's JSON-envelope fallback. This still removes avoidable
+full-context restarts inside the adapter loop. The remaining Codex slowness is
+mostly the fixed cost of process startup and model decision latency per inner
+turn.
 
 ### Test Coverage Is Broad for Scripted Behavior
 
@@ -505,7 +542,7 @@ The recent performance work made Codex materially better, but each Codex inner
 turn still involves:
 
 - process startup
-- schema-constrained execution
+- schema-constrained seed execution or JSON-envelope resume parsing
 - JSON output parsing
 - optional resume-thread handoff
 

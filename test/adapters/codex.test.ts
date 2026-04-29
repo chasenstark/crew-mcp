@@ -324,6 +324,42 @@ describe('CodexAdapter', () => {
       expect(result.status).toBe('interrupted');
       expect(executeWithSchemaSpy).not.toHaveBeenCalled();
     });
+
+    it('omits --output-schema on resumed decision turns', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"thread-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"type\\":\\"finish\\",\\"output\\":\\"done\\"}"}}',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+      mockExistsSync.mockReturnValue(true);
+      mockAdapterReadFileSync.mockReturnValueOnce('{"type":"finish","output":"done"}');
+
+      const result = await (adapter as any).executeDecisionTurn('Choose next step.', {
+        threadId: 'thread-1',
+        workingDirectory: '/tmp/project',
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      expect(cliArgs).toEqual([
+        'exec',
+        'resume',
+        '--json',
+        '--skip-git-repo-check',
+        '--output-last-message',
+        '/tmp/codex-mock/output.json',
+        'thread-1',
+        'Choose next step.',
+      ]);
+      expect(cliArgs).not.toContain('--output-schema');
+      expect(result.decision).toMatchObject({
+        type: 'finish',
+        output: 'done',
+      });
+      expect(result.threadId).toBe('thread-1');
+    });
   });
 
   describe('execute', () => {
