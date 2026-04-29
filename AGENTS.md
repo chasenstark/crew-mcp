@@ -3,6 +3,21 @@
 ## General Practices
 There are no production users, so we do not have to worry about being backward compatible.
 
+## Status Baseline Maintenance
+- Keep `docs/status/captain-flow-review-2026-04-29.md` current as the durable
+  baseline for captain-flow state, responsiveness work, smoke evidence, and
+  next priorities.
+- Before starting substantial work on the captain runtime, adapters, CLI/UI
+  responsiveness, progress reporting, MCP/tool-loop behavior, or related
+  architecture docs, read that status file and reconcile the work against its
+  current findings.
+- Update the status file in the same change when work materially changes any of
+  its claims, priority ordering, verification snapshot, smoke-test evidence, or
+  documented risks. Prefer dated notes or clearly labeled replacements so old
+  context remains distinguishable from the current state.
+- If a change intentionally leaves the status file stale, call that out in the
+  PR or handoff with the reason and the follow-up needed.
+
 ## Project Structure & Module Organization
 - `src/` contains production TypeScript code.
 - `src/cli/` holds terminal entrypoints and Ink UI (`commands/` and `ui/`).
