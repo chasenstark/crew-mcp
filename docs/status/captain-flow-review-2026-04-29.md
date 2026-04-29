@@ -5,6 +5,36 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-04-29 Implementation Pass
+
+The first four priority items from this report have now shipped in the current
+worktree:
+
+- `finish` tool results carry a terminal adapter-loop signal, and the shared
+  prompt-loop controller plus Claude, Codex, Gemini, and OpenAI-compatible
+  adapter-specific loops stop immediately on that signal.
+- `finish` is blocked while dispatched `run_agent` / `ask_user` work is queued
+  in the current adapter turn or still in flight on the dispatcher. The captain
+  prompt now states this enforced policy.
+- `crew run "<prompt>"` subscribes to dispatcher progress directly and prints
+  dispatched start, stream, complete, failed, and cancelled events. The
+  interactive UI also renders dispatcher stream chunks in the conversation view
+  while retaining the in-flight status strip.
+- `test/cli/ui/PromptInput.test.tsx` now has a stable harness: Ink renders are
+  unmounted between cases and typed input is written in one stdin chunk.
+
+Current verification after this pass:
+
+- `npm run test:run`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 704 tests passed.
+  - 3 tests skipped.
+- `npm run lint`: passed.
+
+Remaining highest-priority items are now real provider smoke evidence and the
+architecture-doc refresh, followed by the real `crew-mcp` design/implementation.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).
@@ -31,6 +61,10 @@ logs, and source code each time.
   - `test/cli/*`
 
 ## Verification Snapshot
+
+Current snapshot after the 2026-04-29 implementation pass is recorded in the
+update section above. The original review snapshot is kept below for historical
+context because it explains why PromptInput was prioritized.
 
 Commands run after creating this report:
 
@@ -67,22 +101,18 @@ runtime. The current product is built around a durable captain conversation,
 the `SessionLoop`, the 8-tool captain surface, provider adapters, and a
 dispatcher for long-running tool calls.
 
-The main remaining problems are not broad architectural confusion. They are
-specific control-flow and responsiveness issues:
+The main remaining problems are not broad architectural confusion. The first
+round of control-flow and responsiveness issues has shipped; the remaining
+work is validation, documentation, and provider-native tool integration:
 
-1. The captain still pays an avoidable extra model turn after `finish`.
-2. `finish` semantics are underspecified when dispatched tools are pending or
-   in flight.
-3. The CLI and UI do not expose dispatcher progress consistently.
-4. Real smoke evidence is weaker than the implementation state suggests.
-5. Some architecture docs now lag behind the actual code.
-6. Native MCP is still deferred, so the current tool loop is an adapter-level
+1. Real smoke evidence is weaker than the implementation state suggests.
+2. Some architecture docs now lag behind the actual code.
+3. Native MCP is still deferred, so the current tool loop is an adapter-level
    JSON/schema loop rather than a true provider-native tool surface.
 
-Recommended immediate focus: ship a terminal tool-result path for `finish`,
-define and enforce finish-with-pending-work semantics, bridge dispatcher events
-into both interactive and non-interactive progress output, and replace template
-smoke logs with real run evidence.
+Recommended immediate focus: replace template smoke logs with real run
+evidence, refresh architecture docs that still describe pre-M4 concepts, then
+plan the real `crew-mcp` stdio server.
 
 ## Current Architecture
 
@@ -192,9 +222,9 @@ for real provider smoke evidence.
 
 ## Key Findings
 
-### P0 - `finish` Still Costs an Avoidable Extra Model Turn
+### Resolved 2026-04-29 - `finish` Terminal Tool Results
 
-The latest local log shows the current pattern:
+Original finding: the latest local log showed this pattern:
 
 1. User asks a trivial question.
 2. Codex decision turn takes about 20 seconds.
@@ -233,18 +263,23 @@ Recommended fix:
 - Apply the same contract to native/resume loops in Claude, Gemini, and
   OpenAI-compatible adapters where they bypass the shared controller.
 
-### P0/P1 - Finish-With-Pending-Dispatch Semantics Are Underspecified
+Status: shipped. `ToolResult` now has `terminal` / `terminalOutput`,
+`finish` returns that signal, `executePromptToolLoop` short-circuits on it,
+and adapter-specific Claude, Codex, Gemini, and OpenAI-compatible loops do the
+same.
+
+### Resolved 2026-04-29 - Finish-With-Pending-Dispatch Policy
 
 `run_agent` and `ask_user` are dispatched tools. `finish` is synchronous and
 requests loop exit.
 
-The current code allows an adapter turn to contain multiple tool calls. That
-means a single assistant decision can theoretically include:
+The original code allowed an adapter turn to contain multiple tool calls. That
+meant a single assistant decision could include:
 
 - one or more `run_agent` calls
 - then `finish`
 
-`SessionLoop` applies the calls, starts dispatched work, and exits because
+`SessionLoop` applied the calls, started dispatched work, and exited because
 `finish` requested completion. After exit it only drains in-flight work for a
 short bounded period. That is okay for fast fakes in tests, but it is not a
 clear production policy for real long-running agents.
@@ -271,6 +306,11 @@ Pragmatic recommendation: block or defer `finish` while there are pending or
 in-flight dispatched tools unless the captain explicitly cancels them first.
 That matches the user's expectation that the final report includes the work the
 captain launched.
+
+Status: shipped. The runner blocks `finish` while dispatched work is queued in
+the current adapter turn, `dispatchFinish` blocks it while dispatcher work is
+in flight, the prompt states the enforced policy, and regression tests cover a
+slow `run_agent` followed by same-turn `finish`.
 
 ### P1 - Native MCP Is Still Deferred
 
@@ -302,21 +342,20 @@ Recommended fix:
 - Re-enable MCP registration only when a provider can start the server and call
   the actual tools reliably.
 
-### P1 - Progress/Streaming Output Is Split Across Event Systems
+### Resolved 2026-04-29 - Progress/Streaming Output Split
 
 `ToolDispatcher` emits useful events:
 
 - `run:start`
 - `run:stream`
 - `run:complete`
-- `run:error`
-- `ask:start`
-- `ask:complete`
+- `run:failed`
+- `run:cancelled`
 
-The interactive UI subscribes to these and shows in-flight tool calls. The
-non-interactive `crew run` path primarily attaches to runner-level events such
-as `agent:start`, `agent:output`, and `agent:complete`, but the current
-`JudgmentRunner` no longer emits those legacy agent events.
+The original interactive UI subscribed to these and showed in-flight tool
+calls. The non-interactive `crew run` path primarily attached to runner-level
+events such as `agent:start`, `agent:output`, and `agent:complete`, but the
+current `JudgmentRunner` no longer emits those legacy agent events.
 
 Impact:
 
@@ -336,12 +375,17 @@ Recommended fix:
 - Remove or replace stale legacy runner event listeners.
 - Add tests around progress events for a fake long-running agent.
 
-### P1 - PromptInput Test Baseline Is Currently Failing
+Status: shipped for the current adapter-loop architecture. Command/UI layers
+subscribe to `ToolDispatcher` directly. Non-interactive `crew run` prints
+dispatcher lifecycle and stream events, and the interactive UI renders stream
+chunks in the conversation view while keeping the in-flight strip.
 
-The full Vitest run currently times out in four
+### Resolved 2026-04-29 - PromptInput Test Baseline
+
+The original full Vitest run timed out in four
 `test/cli/ui/PromptInput.test.tsx` cases that exercise text entry, submit, and
-history behavior. The static render tests pass, but the tests that drive stdin
-do not complete within the default timeout.
+history behavior. The static render tests passed, but the tests that drove
+stdin did not complete within the default timeout.
 
 Impact:
 
@@ -358,6 +402,9 @@ Recommended fix:
   dependency versions.
 - Ensure tests unmount rendered Ink apps and do not leave active input handlers.
 - Add a small regression test for submit and history once the harness is stable.
+
+Status: shipped. The PromptInput tests now unmount each rendered Ink app and
+write typed input in one stdin chunk. `npm run test:run` passes.
 
 ### P1 - Smoke Evidence Is Incomplete
 
@@ -450,7 +497,7 @@ finish/progress/smoke issues are addressed.
 
 ## Recommended Next Work
 
-### 1. Ship Terminal Tool Results
+### Completed 2026-04-29. Ship Terminal Tool Results
 
 Goal: remove the extra post-`finish` model turn and make terminal tool behavior
 explicit across adapters.
@@ -466,7 +513,7 @@ Suggested scope:
 
 This is the best immediate responsiveness win.
 
-### 2. Define Finish/Pending-Work Policy
+### Completed 2026-04-29. Define Finish/Pending-Work Policy
 
 Goal: prevent completed sessions from racing or discarding long-running work
 they started.
@@ -483,7 +530,7 @@ Suggested scope:
 This should be done with or immediately after terminal tool results because
 both touch the meaning of `finish`.
 
-### 3. Unify Progress Events
+### Completed 2026-04-29. Unify Progress Events
 
 Goal: make responsiveness visible to users, especially during long subagent
 runs.
@@ -500,7 +547,7 @@ Suggested scope:
 - Remove stale listeners for legacy `agent:*` events if they are no longer
   emitted.
 
-### 4. Populate Real Smoke Evidence
+### 1. Populate Real Smoke Evidence
 
 Goal: make the validation record match the code's real state.
 
@@ -512,7 +559,7 @@ Suggested scope:
 - Store smoke results in a durable status document and link them from active
   plans.
 
-### 5. Refresh Architecture Docs
+### 2. Refresh Architecture Docs
 
 Goal: make docs a reliable starting point for future work.
 
@@ -523,7 +570,7 @@ Suggested scope:
 - Add status banners to stale completed-plan notes.
 - Preserve useful old analysis, but label it historical.
 
-### 6. Plan Real MCP
+### 3. Plan Real MCP
 
 Goal: replace adapter-emulated tool use with a provider-native path where it
 actually works.
@@ -567,14 +614,10 @@ current state is clearly labeled.
 
 ## Proposed Priority Order
 
-1. Terminal tool-result short-circuit for `finish`.
-2. Enforced finish/pending-dispatch policy.
-3. Unified dispatcher progress for CLI and UI.
-4. Repair the `PromptInput` test baseline.
-5. Real smoke matrix and populated run logs.
-6. Architecture-doc refresh.
-7. Real `crew-mcp` implementation.
-8. Usage-aware routing decision.
+1. Real smoke matrix and populated run logs.
+2. Architecture-doc refresh.
+3. Real `crew-mcp` implementation.
+4. Usage-aware routing decision.
 
-This order targets responsiveness first, then correctness of the captain flow,
-then documentation and larger portability work.
+Terminal `finish`, finish/pending-dispatch policy, dispatcher progress, and
+the PromptInput test baseline were completed on 2026-04-29.
