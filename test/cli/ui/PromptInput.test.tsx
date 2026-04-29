@@ -1,25 +1,36 @@
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import { PromptInput } from '../../../src/cli/ui/PromptInput.js';
 
 const flush = () => new Promise((r) => setTimeout(r, 20));
+let activeUnmount: (() => void) | null = null;
+
+function renderPrompt(element: React.ReactElement): ReturnType<typeof render> {
+  activeUnmount?.();
+  const result = render(element);
+  activeUnmount = result.unmount;
+  return result;
+}
 
 async function typeText(stdin: { write: (value: string) => void }, text: string) {
-  for (const ch of text) {
-    stdin.write(ch);
-    await flush();
-  }
+  stdin.write(text);
+  await flush();
 }
 
 describe('PromptInput', () => {
+  afterEach(() => {
+    activeUnmount?.();
+    activeUnmount = null;
+  });
+
   it('shows placeholder when enabled', () => {
-    const { lastFrame } = render(<PromptInput onSubmit={() => {}} placeholder="Say something" />);
+    const { lastFrame } = renderPrompt(<PromptInput onSubmit={() => {}} placeholder="Say something" />);
     expect(lastFrame()).toContain('Say something');
   });
 
   it('shows status text when disabled', () => {
-    const { lastFrame } = render(
+    const { lastFrame } = renderPrompt(
       <PromptInput onSubmit={() => {}} disabled statusText="Running..." />,
     );
     expect(lastFrame()).toContain('Running...');
@@ -27,7 +38,7 @@ describe('PromptInput', () => {
 
   it('calls onSubmit with typed value on enter', async () => {
     const onSubmit = vi.fn();
-    const { stdin } = render(<PromptInput onSubmit={onSubmit} />);
+    const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);
     await typeText(stdin, 'hello');
     stdin.write('\r');
     await flush();
@@ -36,7 +47,7 @@ describe('PromptInput', () => {
 
   it('trims whitespace before submit', async () => {
     const onSubmit = vi.fn();
-    const { stdin } = render(<PromptInput onSubmit={onSubmit} />);
+    const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);
     await typeText(stdin, '  hi  ');
     stdin.write('\r');
     await flush();
@@ -45,7 +56,7 @@ describe('PromptInput', () => {
 
   it('does not submit empty input', async () => {
     const onSubmit = vi.fn();
-    const { stdin } = render(<PromptInput onSubmit={onSubmit} />);
+    const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);
     stdin.write('\r');
     await flush();
     expect(onSubmit).not.toHaveBeenCalled();
@@ -53,7 +64,7 @@ describe('PromptInput', () => {
 
   it('recalls submitted history with up arrow', async () => {
     const onSubmit = vi.fn();
-    const { stdin } = render(<PromptInput onSubmit={onSubmit} />);
+    const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);
 
     await typeText(stdin, 'first');
     stdin.write('\r');
@@ -75,7 +86,7 @@ describe('PromptInput', () => {
 
   it('navigates down through history and restores draft at newest', async () => {
     const onSubmit = vi.fn();
-    const { stdin } = render(<PromptInput onSubmit={onSubmit} />);
+    const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);
 
     await typeText(stdin, 'first');
     stdin.write('\r');
@@ -100,7 +111,7 @@ describe('PromptInput', () => {
 
   it('does not add consecutive duplicate history entries', async () => {
     const onSubmit = vi.fn();
-    const { stdin } = render(<PromptInput onSubmit={onSubmit} />);
+    const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);
 
     await typeText(stdin, 'same');
     stdin.write('\r');
@@ -130,7 +141,7 @@ describe('PromptInput', () => {
   });
 
   it('keeps current draft when pressing up with empty history', async () => {
-    const { stdin, lastFrame } = render(<PromptInput onSubmit={() => {}} />);
+    const { stdin, lastFrame } = renderPrompt(<PromptInput onSubmit={() => {}} />);
     await typeText(stdin, 'draft');
     stdin.write('\u001B[A');
     await flush();
