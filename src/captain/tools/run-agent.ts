@@ -149,7 +149,7 @@ export async function planRunAgent(
       runId,
       input: { ...input },
       run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
-        return adapter.execute({
+        const result = await adapter.execute({
           prompt: input.prompt,
           context: {
             workingDirectory: effectiveWorkingDirectory,
@@ -160,7 +160,74 @@ export async function planRunAgent(
           },
           onOutput: taskCtx.onStream,
         });
+
+        if (result.status === 'error' || effectiveWorkingDirectory !== worktreePath) {
+          return result;
+        }
+
+        return mergeRunWorktreeResult(result, {
+          runId,
+          worktreePath,
+          worktreeManager: ctx.worktreeManager,
+        });
       },
     },
   };
+}
+
+async function mergeRunWorktreeResult(
+  result: TaskResult,
+  ctx: {
+    runId: string;
+    worktreePath: string;
+    worktreeManager: WorktreeManager;
+  },
+): Promise<TaskResult> {
+  let filesModified: string[] = [];
+  try {
+    filesModified = await ctx.worktreeManager.getModifiedFilesByRun(ctx.runId);
+    if (filesModified.length === 0 && result.filesModified.length === 0) {
+      return result;
+    }
+    await ctx.worktreeManager.mergeRunWorktree(ctx.runId);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    const rawEvents = Array.isArray(result.metadata.rawEvents)
+      ? [...result.metadata.rawEvents]
+      : [];
+    rawEvents.push({
+      type: 'crew.merge_run_worktree_failed',
+      runId: ctx.runId,
+      worktreePath: ctx.worktreePath,
+      filesModified,
+      error: message,
+    });
+    return {
+      ...result,
+      output: appendOutput(
+        result.output,
+        `Failed to merge run worktree ${ctx.runId}: ${message}`,
+      ),
+      filesModified: uniqueFiles([...result.filesModified, ...filesModified]),
+      status: 'error',
+      metadata: {
+        ...result.metadata,
+        rawEvents,
+      },
+    };
+  }
+
+  return {
+    ...result,
+    filesModified: uniqueFiles([...result.filesModified, ...filesModified]),
+  };
+}
+
+function uniqueFiles(files: string[]): string[] {
+  return Array.from(new Set(files.filter((file) => file.trim().length > 0)));
+}
+
+function appendOutput(output: string, message: string): string {
+  if (!output.trim()) return message;
+  return `${output}\n\n${message}`;
 }

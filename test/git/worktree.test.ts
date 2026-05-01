@@ -403,5 +403,30 @@ describe('WorktreeManager', () => {
       const { manager } = createManager();
       expect(() => manager.getRunWorktreePath('nope')).toThrow(/No recorded run worktree/);
     });
+
+    it('mergeRunWorktree ignores local .crew runtime metadata in the main checkout', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { root, manager, rootGit } = createManager();
+      await manager.createRunWorktree('run-1');
+      rootGit.status.mockResolvedValueOnce({
+        modified: [],
+        created: [],
+        not_added: ['.crew/runs/.meta/run-1.json'],
+        deleted: [],
+        renamed: [],
+      });
+
+      await manager.mergeRunWorktree('run-1');
+
+      expect(rootGit.merge).toHaveBeenCalledWith([
+        'crew-run/run-1-aaaaaaaa',
+        '--no-ff',
+        '-m',
+        'Merge crew run run-1',
+      ]);
+      expect(existsSync(join(root, '.crew', 'runs', '.meta', 'run-1.json'))).toBe(true);
+    });
   });
 });

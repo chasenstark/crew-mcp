@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -95,7 +95,9 @@ describe('JudgmentRunner M3 tool surface', () => {
     execSync('git init -q', { cwd: projectRoot });
     execSync('git config user.email test@crew.local', { cwd: projectRoot });
     execSync('git config user.name test', { cwd: projectRoot });
-    execSync('git commit -q --allow-empty -m init', { cwd: projectRoot });
+    writeFileSync(join(projectRoot, '.gitignore'), '.crew/\n', 'utf-8');
+    execSync('git add .gitignore', { cwd: projectRoot });
+    execSync('git commit -q -m init', { cwd: projectRoot });
     stateStore = new StateStore(projectRoot);
     worktreeManager = new WorktreeManager(projectRoot);
   });
@@ -204,6 +206,63 @@ describe('JudgmentRunner M3 tool surface', () => {
       (m) => m.role === 'tool_result' && m.toolCallId === toolCallMessage!.toolCallId,
     );
     expect(toolResult).toBeDefined();
+  });
+
+  it('merges successful run_agent worktree changes before finishing', async () => {
+    let turn = 0;
+    const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
+      turn++;
+      if (turn === 1) {
+        await onToolCall({
+          name: 'mcp__crew__run_agent',
+          input: { agent_id: 'codex', prompt: 'create generated file' },
+        });
+        return { status: 'completed', transcript: [] };
+      }
+      await onToolCall({
+        name: 'mcp__crew__finish',
+        input: { summary: 'generated file complete' },
+      });
+      return { status: 'completed', transcript: [] };
+    });
+    const codex: AgentAdapter = {
+      ...makeSubagent('codex'),
+      execute: async (task) => {
+        const srcDir = join(task.context.workingDirectory, 'src');
+        mkdirSync(srcDir, { recursive: true });
+        writeFileSync(join(srcDir, 'generated.ts'), 'export const generated = true;\n', 'utf-8');
+        return {
+          output: 'created generated file',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    };
+    const session = CaptainSession.create({ projectRoot });
+    session.appendUserMessage('generate');
+    const dispatcher = new ToolDispatcher();
+    const runner = new JudgmentRunner(
+      captain,
+      makeRegistry([captain, codex]),
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    const report = await runner.run('generate');
+
+    expect(report).toBe('generated file complete');
+    expect(readFileSync(join(projectRoot, 'src', 'generated.ts'), 'utf-8'))
+      .toBe('export const generated = true;\n');
+    const toolResult = session.getMessages().find(
+      (m) => m.role === 'tool_result' && m.status === 'success',
+    );
+    expect(toolResult?.output).toMatchObject({
+      filesModified: ['src/generated.ts'],
+      status: 'success',
+    });
   });
 
   it('finish tool ends the loop with the summary as finalReport', async () => {

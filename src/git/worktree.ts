@@ -1,4 +1,4 @@
-import simpleGit, { type SimpleGit } from 'simple-git';
+import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -103,12 +103,7 @@ export class WorktreeManager {
     const worktreePath = this.getWorktreePath(taskId);
     const worktreeGit = simpleGit(worktreePath);
     const status = await worktreeGit.status();
-    return [
-      ...status.modified,
-      ...status.created,
-      ...status.not_added,
-      ...status.renamed.map(r => r.to),
-    ];
+    return this.statusChangedFiles(status);
   }
 
   async mergeWorktree(taskId: string, targetBranch?: string): Promise<void> {
@@ -119,14 +114,14 @@ export class WorktreeManager {
     // First, commit any uncommitted changes in the worktree
     const worktreeGit = simpleGit(record.worktreePath);
     const worktreeStatus = await worktreeGit.status();
-    if (worktreeStatus.modified.length > 0 || worktreeStatus.created.length > 0 || worktreeStatus.not_added.length > 0) {
+    if (this.statusChangedFiles(worktreeStatus).length > 0) {
       await worktreeGit.add('.');
       await worktreeGit.commit('crew: auto-commit before merge');
     }
 
     // Refuse to merge if the user's working directory has uncommitted changes
     const mainStatus = await this.git.status();
-    if (mainStatus.modified.length > 0 || mainStatus.not_added.length > 0 || mainStatus.created.length > 0) {
+    if (this.statusChangedFiles(mainStatus, { ignoreRuntimeState: true }).length > 0) {
       throw new Error(
         `Cannot merge crew/${taskId}: working directory has uncommitted changes. ` +
         'Please commit or stash your changes first.'
@@ -278,12 +273,7 @@ export class WorktreeManager {
     const path = this.getRunWorktreePath(runId);
     const wGit = simpleGit(path);
     const status = await wGit.status();
-    return [
-      ...status.modified,
-      ...status.created,
-      ...status.not_added,
-      ...status.renamed.map((r) => r.to),
-    ];
+    return this.statusChangedFiles(status);
   }
 
   async mergeRunWorktree(runId: string, targetBranch?: string): Promise<void> {
@@ -292,21 +282,13 @@ export class WorktreeManager {
 
     const wGit = simpleGit(record.worktreePath);
     const worktreeStatus = await wGit.status();
-    if (
-      worktreeStatus.modified.length > 0
-      || worktreeStatus.created.length > 0
-      || worktreeStatus.not_added.length > 0
-    ) {
+    if (this.statusChangedFiles(worktreeStatus).length > 0) {
       await wGit.add('.');
       await wGit.commit('crew: auto-commit before merge');
     }
 
     const mainStatus = await this.git.status();
-    if (
-      mainStatus.modified.length > 0
-      || mainStatus.not_added.length > 0
-      || mainStatus.created.length > 0
-    ) {
+    if (this.statusChangedFiles(mainStatus, { ignoreRuntimeState: true }).length > 0) {
       throw new Error(
         `Cannot merge run ${runId}: working directory has uncommitted changes. `
         + 'Please commit or stash your changes first.',
@@ -533,6 +515,26 @@ export class WorktreeManager {
       && 'code' in error
       && (error as { code?: string }).code === 'EEXIST'
     );
+  }
+
+  private statusChangedFiles(
+    status: StatusResult,
+    options?: { ignoreRuntimeState?: boolean },
+  ): string[] {
+    const files = [
+      ...status.modified,
+      ...status.created,
+      ...status.not_added,
+      ...(status.deleted ?? []),
+      ...(status.renamed ?? []).map((r) => r.to),
+    ];
+
+    if (!options?.ignoreRuntimeState) return files;
+    return files.filter((file) => !this.isRuntimeStatePath(file));
+  }
+
+  private isRuntimeStatePath(pathValue: string): boolean {
+    return pathValue === '.crew' || pathValue.startsWith('.crew/');
   }
 
   private writeTaskLockRecord(lockDir: string, record: TaskLockRecord): void {

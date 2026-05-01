@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -60,7 +60,9 @@ describe('planRunAgent', () => {
     execSync('git init -q', { cwd: root });
     execSync('git config user.email test@crew.local', { cwd: root });
     execSync('git config user.name test', { cwd: root });
-    execSync('git commit -q --allow-empty -m init', { cwd: root });
+    writeFileSync(join(root, '.gitignore'), '.crew/\n', 'utf-8');
+    execSync('git add .gitignore', { cwd: root });
+    execSync('git commit -q -m init', { cwd: root });
     worktreeManager = new WorktreeManager(root);
   });
 
@@ -145,6 +147,42 @@ describe('planRunAgent', () => {
     expect(args.prompt).toBe('fix the typo');
     expect(args.context.workingDirectory).toBe(plan.worktreePath);
     expect(args.constraints.model).toBe('preferred-model');
+  });
+
+  it('merges successful default worktree edits into the project root', async () => {
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
+      const typedTask = task as { context: { workingDirectory: string } };
+      const srcDir = join(typedTask.context.workingDirectory, 'src');
+      mkdirSync(srcDir, { recursive: true });
+      writeFileSync(join(srcDir, 'generated.ts'), 'export const value = 1;\n', 'utf-8');
+      return {
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      };
+    });
+    const adapter = makeMockAdapter({ name: 'codex', execute: executeMock });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'create a file' },
+      'call-x',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.task.run({ signal: makeAbortSignal() });
+
+    expect(result).toMatchObject({
+      output: 'done',
+      filesModified: ['src/generated.ts'],
+      status: 'success',
+    });
+    expect(readFileSync(join(root, 'src', 'generated.ts'), 'utf-8'))
+      .toBe('export const value = 1;\n');
   });
 
   it('overrides resolveModel when the caller supplies model in the input', async () => {

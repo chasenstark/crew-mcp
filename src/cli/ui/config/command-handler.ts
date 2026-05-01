@@ -66,16 +66,16 @@ export function handleConfigSlashCommand(
     return `${parsed.reason}\nTry /config help`;
   }
 
-  if (options.sessionBusy) {
-    return sessionBusyMutationBlocked();
-  }
-
   if (parsed.kind === 'setup' || parsed.kind === 'edit') {
     return [
       'Guided config setup is available in the dedicated terminal command.',
       'Run: crew config setup',
       'It asks questions about the captain, models, presets, agents, review passes, and retries before writing workflow.yaml.',
     ].join('\n');
+  }
+
+  if (options.sessionBusy) {
+    return sessionBusyMutationBlocked();
   }
 
   if (parsed.kind === 'scope:set') {

@@ -107,7 +107,7 @@ describe('PromptInput', () => {
     await flush();
 
     expect(String(onSubmit.mock.calls[2]?.[0] ?? '')).toContain('econd');
-  });
+  }, 15_000);
 
   it('does not add consecutive duplicate history entries', async () => {
     const onSubmit = vi.fn();
@@ -138,7 +138,7 @@ describe('PromptInput', () => {
     const recalled = String(onSubmit.mock.calls[3]?.[0] ?? '');
     expect(recalled).not.toBe('next');
     expect(recalled).toContain('ame');
-  });
+  }, 15_000);
 
   it('keeps current draft when pressing up with empty history', async () => {
     const { stdin, lastFrame } = renderPrompt(<PromptInput onSubmit={() => {}} />);

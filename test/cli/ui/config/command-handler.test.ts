@@ -64,6 +64,14 @@ describe('handleConfigSlashCommand', () => {
     expect(response).toContain('Effective Config');
   });
 
+  it('allows setup and edit guidance while session is busy', () => {
+    const setupResponse = handleConfigSlashCommand('/config setup', { cwd, sessionBusy: true });
+    const editResponse = handleConfigSlashCommand('/config edit', { cwd, sessionBusy: true });
+
+    expect(setupResponse).toContain('Guided config setup');
+    expect(editResponse).toContain('Guided config setup');
+  });
+
   it('blocks mutating commands while session is busy', () => {
     const response = handleConfigSlashCommand('/config set captain.cli codex', { cwd, sessionBusy: true });
     expect(response).toContain('Cannot mutate config while subagent tool calls are in flight');

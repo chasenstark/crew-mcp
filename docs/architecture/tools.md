@@ -59,10 +59,13 @@ waypoints. Rules of thumb:
   input schema) per tool. Preset hint edits and agent-inventory shifts do
   NOT bump the hash — the hash gates `providerSessionRef` invalidation,
   so preserving it across those deltas keeps native-resume sticky.
-- `run_agent` mints a fresh `runId = randomUUID()` per call. The
-  dispatcher's `run:complete` / `run:failed` / `run:cancelled` events
-  fire `worktreeManager.cleanupByRunId(runId)` exactly once. No finally
-  blocks inside the tool's `run()` to avoid double-cleanup.
+- `run_agent` mints a fresh `runId = randomUUID()` per call. Successful
+  default-worktree executions with reported or git-detected edits merge via
+  `WorktreeManager.mergeRunWorktree` before the dispatcher emits the
+  terminal event; then the dispatcher's `run:complete` / `run:failed` /
+  `run:cancelled` listeners fire
+  `worktreeManager.cleanupByRunId(runId)` exactly once. No finally blocks
+  inside the tool's `run()` to avoid double-cleanup.
 
 ## Adding a tool
 

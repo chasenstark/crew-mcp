@@ -142,6 +142,64 @@ Current targeted verification after this follow-up:
   - 714 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-04-29 Run Worktree Merge Follow-Up
+
+The next real run appeared successful but left the main checkout unchanged:
+
+- The implementation agent ran in
+  `.crew/runs/1bd4f9a5-aff2-4032-ba0d-295941c764cf/worktree`.
+- The agent's final report linked changed files under that isolated run
+  worktree, but returned `filesModified: []`.
+- `JudgmentRunner` then handled the dispatcher terminal event by calling
+  `worktreeManager.cleanupByRunId(runId)`, which removed the only copy of the
+  edits without merging them back to the project checkout.
+
+Fix shipped in the current worktree:
+
+- Successful `run_agent` calls that use the default run worktree now inspect
+  git status, backfill `TaskResult.filesModified`, and call
+  `WorktreeManager.mergeRunWorktree(runId)` when git status or the adapter
+  reports changed files. This happens before the dispatcher emits
+  `run:complete` and before the cleanup listener removes the run worktree.
+- Run/task worktree file detection and auto-commit now include deleted and
+  renamed paths, not just modified/created/untracked paths.
+- Merge safety ignores local `.crew/` runtime metadata when checking whether
+  the main checkout has user changes, and async cleanup failures are logged
+  instead of escaping as unhandled rejections.
+- The two remaining `PromptInput` history tests now use the same 15s
+  case-level timeout as the existing history recall test; this keeps the full
+  parallel suite stable under load without changing UI behavior.
+- The lost run's concrete config UI behavior was reapplied: `/config setup`
+  and `/config edit` now show guided-setup guidance even while subagent work is
+  in flight; mutating `/config` commands remain blocked while busy.
+- Architecture notes now describe successful run worktrees as
+  merge-before-cleanup instead of cleanup-only.
+
+Current verification after this follow-up:
+
+- `npm run test:run -- --configLoader runner test/captain/tools/run-agent.test.ts test/captain/m3-tool-surface.test.ts test/git/worktree.test.ts`:
+  passed.
+  - 3 test files passed.
+  - 33 tests passed.
+- `npm run test:run -- --configLoader runner test/captain/end-to-end-code-review.test.ts test/captain/end-to-end-moderate-feature.test.ts test/captain/end-to-end-trivial-fix.test.ts test/captain/end-to-end-preset-thorough-review.test.ts test/captain/end-to-end-preset-default-regression.test.ts test/captain/m3-tool-surface.test.ts test/git/worktree.test.ts`:
+  passed.
+  - 7 test files passed.
+  - 34 tests passed.
+- `npm run test:run -- --configLoader runner test/cli/ui/PromptInput.test.tsx`:
+  passed.
+  - 1 test file passed.
+  - 9 tests passed.
+- `npm run test:run -- --configLoader runner test/cli/ui/config/command-handler.test.ts test/cli/ui/config/command-parser.test.ts test/cli/commands/config.test.ts test/cli/ui/App.test.tsx`:
+  passed.
+  - 4 test files passed.
+  - 51 tests passed.
+- `npm run lint`: passed.
+- `npm run test:run -- --configLoader runner`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 718 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

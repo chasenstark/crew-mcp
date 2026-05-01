@@ -229,15 +229,24 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
 
     // Wire dispatcher cleanup: terminal dispatcher events with a runId should
     // release the per-run worktree (M1.5-14 integration).
+    const cleanupRunWorktree = (runId: string, event: string) => {
+      void this.worktreeManager.cleanupByRunId(runId).catch((err: unknown) => {
+        logger.warn('[judgment-runner] failed to cleanup run worktree', {
+          runId,
+          event,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    };
     const cleanupListeners = [
       this.dispatcher.onEvent('run:complete', (info) => {
-        if (info.runId) void this.worktreeManager.cleanupByRunId(info.runId);
+        if (info.runId) cleanupRunWorktree(info.runId, 'run:complete');
       }),
       this.dispatcher.onEvent('run:failed', (info) => {
-        if (info.runId) void this.worktreeManager.cleanupByRunId(info.runId);
+        if (info.runId) cleanupRunWorktree(info.runId, 'run:failed');
       }),
       this.dispatcher.onEvent('run:cancelled', (info) => {
-        if (info.runId) void this.worktreeManager.cleanupByRunId(info.runId);
+        if (info.runId) cleanupRunWorktree(info.runId, 'run:cancelled');
       }),
     ];
 

@@ -43,13 +43,20 @@ The M3 captain runtime is event-driven. Three modules anchor it:
   `SessionLoop.requestExit(summary)`.
 - **Scheduler** — handles the two dispatched-kind tools. `run_agent`
   calls `planRunAgent` to mint a runId, allocate a worktree, and return
-  a `DispatchedToolCall` whose `run()` invokes `adapter.execute`.
+  a `DispatchedToolCall` whose `run()` invokes `adapter.execute` and
+  merges successful default-worktree edits when git status or the adapter
+  reports changed files before the dispatcher publishes the terminal result.
   `ask_user` wraps `waitForUserResponse`.
 
 ## Worktree lifecycle (M1.5-14 + M3-5)
 
 - Each `run_agent` call allocates `.crew/runs/<runId>/worktree/` via
   `WorktreeManager.createRunWorktree(runId)`.
+- Successful `run_agent` calls that used the default run worktree inspect git
+  status before returning their `TaskResult`; when git status or the adapter
+  reports changed files, the run worktree merges through
+  `WorktreeManager.mergeRunWorktree(runId)`, and `filesModified` is
+  backfilled from git status when the adapter did not report file changes.
 - The session-loop wires dispatcher listeners that call
   `worktreeManager.cleanupByRunId(runId)` on terminal events.
 - `run_agent`'s `task.run()` does NOT add a finally hook — single-owner
