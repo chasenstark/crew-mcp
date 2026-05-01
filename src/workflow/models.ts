@@ -2,9 +2,9 @@ import { toAliasToken } from './alias-token.js';
 import { AdapterId } from './agents.js';
 
 export enum ModelId {
-  CLAUDE_SONNET = 'claude-sonnet-4-7',
-  CLAUDE_OPUS = 'claude-opus-4-7',
-  GPT = 'gpt-5.4',
+  CLAUDE_SONNET = 'sonnet',
+  CLAUDE_OPUS = 'opus',
+  GPT = 'gpt-5.5',
   GPT_CODEX = 'gpt-5.3-codex',
   GPT_MINI = 'gpt-5.4-mini',
   QWEN = 'qwen3:32b',
@@ -76,10 +76,13 @@ export function isModelCompatibleWithAdapter(adapterType: string | undefined, mo
   const normalized = model?.trim();
   if (!normalized) return true;
   if (adapterType === AdapterId.CLAUDE_CODE) {
-    return CLAUDE_MODEL_PRESETS.includes(normalized as ModelId);
+    return CLAUDE_MODEL_PRESETS.includes(normalized as ModelId)
+      || normalized.startsWith('claude-');
   }
   if (adapterType === AdapterId.CODEX) {
-    return CODEX_MODEL_PRESETS.includes(normalized as ModelId);
+    return CODEX_MODEL_PRESETS.includes(normalized as ModelId)
+      || normalized.startsWith('gpt-')
+      || /^o\d/.test(normalized);
   }
   return true;
 }

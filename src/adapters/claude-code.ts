@@ -249,7 +249,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   };
 
   recognizesModel(modelId: string): boolean {
-    return typeof modelId === 'string' && /^claude-/.test(modelId);
+    return typeof modelId === 'string'
+      && (/^claude-/.test(modelId) || modelId === 'sonnet' || modelId === 'opus');
   }
 
   async getCliVersionTag(): Promise<string | undefined> {

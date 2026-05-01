@@ -31,7 +31,7 @@ workflow:
 agents: {}
 captain:
   cli: claude-code
-  model: claude-sonnet-4-7
+  model: CLAUDE_SONNET
 error_handling:
   default:
     retry: 1

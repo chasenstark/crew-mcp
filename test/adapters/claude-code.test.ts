@@ -49,6 +49,13 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
+    it('recognizes Claude CLI model aliases and full model IDs', () => {
+      expect(adapter.recognizesModel(ModelId.CLAUDE_SONNET)).toBe(true);
+      expect(adapter.recognizesModel(ModelId.CLAUDE_OPUS)).toBe(true);
+      expect(adapter.recognizesModel('claude-sonnet-4-7')).toBe(true);
+      expect(adapter.recognizesModel(ModelId.GPT)).toBe(false);
+    });
+
     it('exposes captain capabilities (structured decisions and native tool-loop support)', () => {
       expect(adapter.captainCapabilities?.supportsToolLoop).toBe(true);
       expect(adapter.captainCapabilities?.supportsStructuredDecisions).toBe(true);

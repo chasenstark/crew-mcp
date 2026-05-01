@@ -283,6 +283,56 @@ Current targeted verification after this follow-up:
   - 720 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-05-01 Config Wizard Refactor and Model Alias Follow-Up
+
+The config setup flow has now been reworked from a mostly linear prompt block
+into a replayable question-by-question wizard:
+
+- Each question is displayed on its own cleared terminal screen.
+- Users can go back with `back` / `b` in text mode or the `[Back]` menu item in
+  TTY selection mode. The wizard replays prior answers into a draft config, so
+  changing an earlier answer updates later defaults/options.
+- Quick mode still skips role-model and per-agent internals.
+- Advanced mode no longer asks obvious built-in backend questions such as which
+  backend the `codex` agent should use. Backend/command/args/capability prompts
+  are limited to custom or generic agents.
+- Model prompts now explain that custom/newer model IDs can be entered when the
+  underlying CLI supports them.
+
+Model defaults and compatibility were also updated:
+
+- Claude presets now use the Claude CLI's latest-model aliases (`sonnet` and
+  `opus`) instead of pinned full model IDs.
+- The default general OpenAI/Codex model alias now resolves to `gpt-5.5`.
+- Claude model validation still accepts full `claude-*` IDs, and Codex model
+  validation accepts newer `gpt-*` and `o*` IDs instead of only the built-in
+  preset strings.
+- The wizard has an injectable model-option discovery hook and a conservative
+  CLI-backed default. The installed Codex/Gemini CLIs do not expose reliable
+  model-listing subcommands; Claude help does expose latest aliases, so those
+  are offered when available.
+
+Current verification after this follow-up:
+
+- TTY smoke in a temporary project:
+  - `npm run build`: passed.
+  - `node dist/index.js config setup`: passed; selected `codex`, observed
+    cleared one-question screens, and saved the temporary project config.
+- `npm run test:run -- --configLoader runner test/cli/commands/config.test.ts test/cli/ui/config/command-handler.test.ts test/workflow/config-validation.test.ts test/workflow/config-service.test.ts test/workflow/loader.test.ts test/workflow/config-codec.test.ts test/workflow/config-path-registry.test.ts`:
+  passed.
+  - 7 test files passed.
+  - 139 tests passed.
+- `npm run test:run -- --configLoader runner test/adapters/claude-code.test.ts test/cli/runtime/preflight.test.ts test/cli/runtime/create-runner.test.ts`:
+  passed.
+  - 3 test files passed.
+  - 54 tests passed.
+- `npm run lint`: passed.
+- `npm run test:run -- --configLoader runner`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 723 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

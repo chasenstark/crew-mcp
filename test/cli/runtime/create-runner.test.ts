@@ -11,6 +11,7 @@ import {
 } from '../../../src/cli/runtime/preflight.js';
 import { __resetPresetWarnLatchForTest } from '../../../src/captain/preset-resolver.js';
 import { logger } from '../../../src/utils/logger.js';
+import { ModelId } from '../../../src/workflow/models.js';
 
 function writeProjectWorkflow(projectRoot: string, yaml: string): void {
   const crewDir = join(projectRoot, '.crew');
@@ -143,7 +144,7 @@ describe('createRunner', () => {
 
       const map = config.captain.model as Record<string, string>;
       expect(map.codex).toBeUndefined();
-      expect(map['claude-code']).toBe('claude-sonnet-4-7');
+      expect(map['claude-code']).toBe(ModelId.CLAUDE_SONNET);
 
       const captured = (runner as unknown as { captainModel?: string }).captainModel;
       expect(captured).toBeUndefined();

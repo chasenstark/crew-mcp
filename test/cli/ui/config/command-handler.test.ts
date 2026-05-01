@@ -37,7 +37,7 @@ describe('handleConfigSlashCommand', () => {
     expect(response).toContain('/config help');
     expect(response).toContain('/config setup');
     expect(response).toContain('/config set captain.cli codex');
-    expect(response).toContain('/config set workflow.roleModels.reviewer gpt-5.4');
+    expect(response).toContain(`/config set workflow.roleModels.reviewer ${ModelId.GPT}`);
     expect(response).toContain('/config profile <name>');
     expect(response).toContain('/config add-agent <name> [adapter] [command]');
   });

@@ -128,11 +128,15 @@ describe('config command handlers', () => {
   it('runs guided setup with user-facing questions and writes selected values', async () => {
     const prompts: string[] = [];
     const logs: string[] = [];
+    let clearCount = 0;
 
     await configWizardCommand({
       cwd,
       io: {
         supportsInteractiveSelection: () => false,
+        clearScreen: () => {
+          clearCount += 1;
+        },
         askQuestion: async (question) => {
           prompts.push(question);
           if (question.includes('Which CLI should coordinate the crew?')) return 'codex';
@@ -152,6 +156,62 @@ describe('config command handlers', () => {
     expect(prompts.some((prompt) => prompt.includes('workflow.roleModels.'))).toBe(false);
     expect(prompts.some((prompt) => prompt.includes('agents.'))).toBe(false);
     expect(logs.join('\n')).toContain('Quick setup skips workflow role-model and per-agent internals');
+    expect(clearCount).toBeGreaterThan(1);
+  });
+
+  it('supports going back to revise an earlier setup answer', async () => {
+    const captainCliAnswers = ['codex', 'gemini-cli'];
+    let captainModelPrompts = 0;
+
+    await configWizardCommand({
+      cwd,
+      io: {
+        supportsInteractiveSelection: () => false,
+        askQuestion: async (question) => {
+          if (question.includes('Which CLI should coordinate the crew?')) {
+            return captainCliAnswers.shift() ?? '';
+          }
+          if (question.includes('Which model should the captain use?')) {
+            captainModelPrompts += 1;
+            return captainModelPrompts === 1 ? 'back' : '';
+          }
+          if (question.includes('Apply changes?')) return 'yes';
+          return '';
+        },
+        log: () => {},
+        clearScreen: () => {},
+      },
+    });
+
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.captain.cli).toBe('gemini-cli');
+  });
+
+  it('offers discovered model options when the CLI can provide them', async () => {
+    const prompts: string[] = [];
+
+    await configWizardCommand({
+      cwd,
+      io: {
+        supportsInteractiveSelection: () => false,
+        getModelOptions: async (context) =>
+          context.configPath === 'captain.model' ? ['gpt-9-preview'] : [],
+        askQuestion: async (question) => {
+          prompts.push(question);
+          if (question.includes('Which CLI should coordinate the crew?')) return 'codex';
+          if (question.includes('Which model should the captain use?')) return '1';
+          if (question.includes('Apply changes?')) return 'yes';
+          return '';
+        },
+        log: () => {},
+        clearScreen: () => {},
+      },
+    });
+
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(resolveCaptainModel(projectConfig!.captain)).toBe('gpt-9-preview');
+    expect(prompts.find((prompt) => prompt.includes('Which model should the captain use?')))
+      .toContain('gpt-9-preview');
   });
 
   it('runs advanced setup and asks role/agent internals', async () => {
@@ -173,5 +233,6 @@ describe('config command handlers', () => {
 
     expect(prompts.some((prompt) => prompt.includes('workflow role use?'))).toBe(true);
     expect(prompts.some((prompt) => prompt.includes('agent use?'))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes('Which backend should the "codex" agent use?'))).toBe(false);
   });
 });

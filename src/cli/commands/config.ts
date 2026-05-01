@@ -1,13 +1,16 @@
 import { createInterface } from 'node:readline/promises';
 import { clearScreenDown, emitKeypressEvents, moveCursor } from 'node:readline';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { stdin as input, stdout as output } from 'process';
 import chalk from 'chalk';
 import type { Command } from 'commander';
 import type { ConfigScope } from '../../workflow/config-repository.js';
+import type { FullConfig } from '../../workflow/types.js';
 import { getDefaultConfig, resolveCaptainModel } from '../../workflow/config-codec.js';
 import { saveConfigByScope } from '../../workflow/config-repository.js';
 import { validateConfig } from '../../workflow/config-validation.js';
-import { AdapterId } from '../../workflow/agents.js';
+import { AdapterId, BUILTIN_WORKER_AGENTS } from '../../workflow/agents.js';
 import { normalizeProfileName, parseConfigScope } from '../../workflow/config-normalization.js';
 import {
   addAgent,
@@ -22,6 +25,8 @@ import {
   setConfigValue,
   showConfig,
 } from '../../workflow/config-service.js';
+
+const execFileAsync = promisify(execFile);
 
 function renderJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
@@ -111,6 +116,13 @@ export interface SelectOption {
   value: string;
 }
 
+export interface ModelOptionsContext {
+  configPath: string;
+  adapterType?: string;
+  currentConfig: FullConfig;
+  fallbackOptions: string[];
+}
+
 export interface ConfigWizardIo {
   askQuestion?: (question: string) => Promise<string>;
   selectOptionMenu?: (
@@ -120,6 +132,8 @@ export interface ConfigWizardIo {
     initialIndex?: number,
   ) => Promise<SelectOption>;
   supportsInteractiveSelection?: () => boolean;
+  clearScreen?: () => void;
+  getModelOptions?: (context: ModelOptionsContext) => Promise<string[]>;
   log?: (message?: string) => void;
 }
 
@@ -132,13 +146,65 @@ interface ResolvedConfigWizardIo {
     initialIndex?: number,
   ) => Promise<SelectOption>;
   supportsInteractiveSelection: () => boolean;
+  clearScreen: () => void;
+  getModelOptions: (context: ModelOptionsContext) => Promise<string[]>;
   log: (message?: string) => void;
 }
 
 type SetupDepth = 'quick' | 'advanced';
+const BACK_VALUE = '__crew_back__' as const;
+type WizardValue = string | undefined | typeof BACK_VALUE;
 
 function supportsInteractiveSelection(): boolean {
   return Boolean(input.isTTY && output.isTTY && typeof input.setRawMode === 'function');
+}
+
+function clearWizardScreen(): void {
+  if (!output.isTTY) return;
+  output.write('\x1B[2J\x1B[H');
+}
+
+const cliModelOptionCache = new Map<string, Promise<string[]>>();
+
+async function readCliHelp(command: string): Promise<string> {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, ['--help'], {
+      timeout: 1500,
+      maxBuffer: 128 * 1024,
+    });
+    return `${stdout}\n${stderr}`;
+  } catch {
+    return '';
+  }
+}
+
+async function discoverModelOptionsFromCli(context: ModelOptionsContext): Promise<string[]> {
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+    return [];
+  }
+
+  const adapterType = context.adapterType;
+  if (!adapterType) return [];
+
+  if (!cliModelOptionCache.has(adapterType)) {
+    cliModelOptionCache.set(adapterType, (async () => {
+      if (adapterType === AdapterId.CLAUDE_CODE) {
+        const help = await readCliHelp('claude');
+        return help.includes('--model') ? ['sonnet', 'opus'] : [];
+      }
+      if (adapterType === AdapterId.CODEX) {
+        await readCliHelp('codex');
+        return [];
+      }
+      if (adapterType === AdapterId.GEMINI_CLI) {
+        await readCliHelp('gemini');
+        return [];
+      }
+      return [];
+    })());
+  }
+
+  return cliModelOptionCache.get(adapterType)!;
 }
 
 async function selectOptionMenu(
@@ -252,32 +318,38 @@ function promptWithCurrent(
   defaultValue: unknown,
   description: string,
   options: string[] = [],
+  allowBack = false,
+  progressLabel?: string,
 ): string {
   const optionLines = options.length > 0
     ? options.map((option, index) => `  ${index + 1}. ${option}`).join('\n')
     : '  (enter a custom value, or leave blank to keep current)';
+  const backLine = allowBack ? '  type "back" to return to the previous question' : undefined;
 
   return [
+    progressLabel ? chalk.dim(progressLabel) : undefined,
     `${chalk.bold(question)}`,
     `  current answer: ${friendlyValue(currentValue)}`,
     `  suggested default: ${friendlyValue(defaultValue)}`,
     `  why this matters: ${description}`,
     '  options:',
     optionLines,
+    backLine,
     `  ${configPathLine(configPath)}`,
     '  your answer (or Enter to keep current): ',
-  ].join('\n');
+  ].filter((line): line is string => line !== undefined).join('\n');
 }
 
-function normalizeWizardValue(rawInput: string, options: string[]): string | undefined {
+function normalizeWizardValue(rawInput: string, options: string[], allowBack = false): WizardValue {
   const trimmed = rawInput.trim();
   if (!trimmed) return undefined;
 
   const lowered = trimmed.toLowerCase();
+  if (allowBack && (lowered === 'back' || lowered === 'b')) return BACK_VALUE;
   if (lowered === 'next' || lowered === 'n') return 'next';
   if (lowered === 'prev' || lowered === 'previous' || lowered === 'p') return 'prev';
 
-  if (/^\d+$/.test(trimmed)) {
+  if (options.length > 0 && /^\d+$/.test(trimmed)) {
     const selected = Number.parseInt(trimmed, 10);
     if (selected < 1 || selected > options.length) {
       throw new Error(`Invalid option "${trimmed}". Choose a number between 1 and ${options.length}.`);
@@ -302,6 +374,8 @@ function resolveConfigWizardIo(io: ConfigWizardIo = {}): ResolvedConfigWizardIo 
     askQuestion: io.askQuestion ?? askQuestion,
     selectOptionMenu: io.selectOptionMenu ?? selectOptionMenu,
     supportsInteractiveSelection: io.supportsInteractiveSelection ?? supportsInteractiveSelection,
+    clearScreen: io.clearScreen ?? clearWizardScreen,
+    getModelOptions: io.getModelOptions ?? discoverModelOptionsFromCli,
     log: io.log ?? ((message?: string) => console.log(message)),
   };
 }
@@ -313,22 +387,36 @@ async function askFieldValue(args: {
   defaultValue: unknown;
   description: string;
   options: string[];
-}, io: ResolvedConfigWizardIo): Promise<string | undefined> {
-  const { question, configPath, currentValue, defaultValue, description, options } = args;
+  allowBack?: boolean;
+  progressLabel?: string;
+}, io: ResolvedConfigWizardIo): Promise<WizardValue> {
+  const {
+    question,
+    configPath,
+    currentValue,
+    defaultValue,
+    description,
+    options,
+    allowBack = false,
+    progressLabel,
+  } = args;
 
   if (io.supportsInteractiveSelection() && options.length > 0) {
     const menuOptions: SelectOption[] = [
       ...options.map((option) => ({ label: option, value: option })),
       { label: '[Custom value...]', value: '__custom__' },
       { label: '[Keep current value]', value: '__keep__' },
+      ...(allowBack ? [{ label: '[Back]', value: BACK_VALUE }] : []),
     ];
     const currentIndex = options.indexOf(String(currentValue ?? ''));
     const selected = await io.selectOptionMenu(
       question,
       [
+        ...(progressLabel ? [progressLabel] : []),
         `Current answer: ${friendlyValue(currentValue)}`,
         `Suggested default: ${friendlyValue(defaultValue)}`,
         `Why this matters: ${description}`,
+        ...(allowBack ? ['Back returns to the previous question.'] : []),
         configPathLine(configPath),
       ],
       menuOptions,
@@ -336,6 +424,7 @@ async function askFieldValue(args: {
     );
 
     if (selected.value === '__keep__') return undefined;
+    if (selected.value === BACK_VALUE) return BACK_VALUE;
     if (selected.value === '__custom__') {
       const custom = (await io.askQuestion('Custom value (blank keeps current): ')).trim();
       return custom || undefined;
@@ -344,31 +433,54 @@ async function askFieldValue(args: {
   }
 
   const raw = (await io.askQuestion(
-    promptWithCurrent(question, configPath, currentValue, defaultValue, description, options),
+    promptWithCurrent(
+      question,
+      configPath,
+      currentValue,
+      defaultValue,
+      description,
+      options,
+      allowBack,
+      progressLabel,
+    ),
   )).trim();
-  return normalizeWizardValue(raw, options);
+  return normalizeWizardValue(raw, options, allowBack);
 }
 
-async function askSetupDepth(io: ResolvedConfigWizardIo): Promise<SetupDepth> {
+async function askSetupDepth(
+  io: ResolvedConfigWizardIo,
+  allowBack = false,
+  progressLabel?: string,
+): Promise<SetupDepth | typeof BACK_VALUE> {
   if (io.supportsInteractiveSelection()) {
     const selected = await io.selectOptionMenu(
       'How detailed should setup be?',
       [
+        ...(progressLabel ? [progressLabel] : []),
         'Quick setup asks only the most common decisions.',
         'Advanced setup walks through role and agent internals.',
+        ...(allowBack ? ['Back returns to the previous question.'] : []),
       ],
       [
         { label: 'quick (recommended)', value: 'quick' },
         { label: 'advanced', value: 'advanced' },
+        ...(allowBack ? [{ label: '[Back]', value: BACK_VALUE }] : []),
       ],
       0,
     );
+    if (selected.value === BACK_VALUE) return BACK_VALUE;
     return selected.value === 'advanced' ? 'advanced' : 'quick';
   }
 
   const answer = (await io.askQuestion(
-    'How detailed should setup be? [quick/advanced] (default: quick): ',
+    [
+      progressLabel ? `${chalk.dim(progressLabel)}\n` : '',
+      'How detailed should setup be? [quick/advanced] (default: quick)',
+      allowBack ? ' or "back"' : '',
+      ': ',
+    ].join(''),
   )).trim().toLowerCase();
+  if (allowBack && (answer === 'back' || answer === 'b')) return BACK_VALUE;
   if (!answer || answer === 'quick' || answer === 'q') return 'quick';
   if (answer === 'advanced' || answer === 'a') return 'advanced';
   throw new Error(`Invalid setup mode "${answer}". Expected "quick" or "advanced".`);
@@ -508,206 +620,477 @@ export async function configResetCommand(options: {
   console.log(`  ${chalk.dim('file:')}  ${result.filePath}`);
 }
 
+interface WizardState {
+  selectedScope: ConfigScope;
+  setupDepth: SetupDepth;
+  draft: FullConfig;
+}
+
+interface WizardStep {
+  id: string;
+  include?: (state: WizardState) => boolean;
+  ask: (
+    state: WizardState,
+    io: ResolvedConfigWizardIo,
+    allowBack: boolean,
+    progressLabel: string,
+  ) => Promise<WizardValue>;
+  apply: (state: WizardState, value: WizardValue) => WizardState;
+  change?: {
+    path: string;
+    read: (config: FullConfig) => unknown;
+  };
+}
+
+function uniqueWizardOptions(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function resolveCaptainAdapterTypeForWizard(config: FullConfig): string | undefined {
+  const captainAgent = config.agents[config.captain.cli];
+  return captainAgent?.adapter ?? config.captain.cli;
+}
+
+function shouldAskAgentAdapter(config: FullConfig, agentName: string): boolean {
+  const agent = config.agents[agentName];
+  if (!agent) return false;
+  const adapterType = agent.adapter ?? agentName;
+  return !BUILTIN_WORKER_AGENTS.includes(agentName as typeof BUILTIN_WORKER_AGENTS[number])
+    || !BUILTIN_WORKER_AGENTS.includes(adapterType as typeof BUILTIN_WORKER_AGENTS[number]);
+}
+
+function shouldAskGenericAgentFields(config: FullConfig, agentName: string): boolean {
+  const agent = config.agents[agentName];
+  if (!agent) return false;
+  const adapterType = agent.adapter ?? agentName;
+  return adapterType === AdapterId.GENERIC
+    || agent.command !== undefined
+    || agent.args !== undefined;
+}
+
+function shouldAskAgentCapabilities(config: FullConfig, defaults: FullConfig, agentName: string): boolean {
+  const agent = config.agents[agentName];
+  const defaultAgent = defaults.agents[agentName];
+  return Boolean(
+    shouldAskGenericAgentFields(config, agentName)
+    || agent?.capabilities?.length
+    || defaultAgent?.capabilities?.length,
+  );
+}
+
+async function modelOptionsForWizardField(args: {
+  io: ResolvedConfigWizardIo;
+  configPath: string;
+  adapterType?: string;
+  currentConfig: FullConfig;
+  fallbackOptions: string[];
+}): Promise<string[]> {
+  const fallbackOptions = uniqueWizardOptions(args.fallbackOptions);
+  let discoveredOptions: string[] = [];
+  try {
+    discoveredOptions = await args.io.getModelOptions({
+      configPath: args.configPath,
+      adapterType: args.adapterType,
+      currentConfig: args.currentConfig,
+      fallbackOptions,
+    });
+  } catch {
+    discoveredOptions = [];
+  }
+  return uniqueWizardOptions([...discoveredOptions, ...fallbackOptions]);
+}
+
+function readReviewerMaxPasses(config: FullConfig): number | undefined {
+  return config.workflow.steps.find((s) =>
+    s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
+  )?.maxPasses;
+}
+
+function sameConfigValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+async function askScopeStep(
+  currentScope: ConfigScope,
+  io: ResolvedConfigWizardIo,
+  allowBack: boolean,
+  progressLabel: string,
+): Promise<WizardValue> {
+  if (io.supportsInteractiveSelection()) {
+    const selected = await io.selectOptionMenu(
+      'Where should Crew save these answers?',
+      [
+        progressLabel,
+        `Current write scope: ${currentScope}`,
+        ...(allowBack ? ['Back returns to the previous question.'] : []),
+      ],
+      [
+        { label: 'project', value: 'project' },
+        { label: 'global', value: 'global' },
+        ...(allowBack ? [{ label: '[Back]', value: BACK_VALUE }] : []),
+      ],
+      currentScope === 'global' ? 1 : 0,
+    );
+    return selected.value === BACK_VALUE ? BACK_VALUE : selected.value;
+  }
+
+  const enteredScope = (await io.askQuestion(
+    [
+      `${chalk.dim(progressLabel)}\n`,
+      `Where should Crew save these answers? [project/global] (current: ${currentScope})`,
+      allowBack ? ' or "back"' : '',
+      ': ',
+    ].join(''),
+  )).trim().toLowerCase();
+  if (allowBack && (enteredScope === 'back' || enteredScope === 'b')) return BACK_VALUE;
+  if (!enteredScope) return undefined;
+  if (enteredScope !== 'project' && enteredScope !== 'global') {
+    throw new Error(`Invalid scope "${enteredScope}". Expected "project" or "global".`);
+  }
+  return enteredScope;
+}
+
+function fieldStep(args: {
+  id: string;
+  path: string;
+  question: string;
+  description: string;
+  currentValue: (config: FullConfig) => unknown;
+  defaultValue: (defaults: FullConfig, state: WizardState) => unknown;
+  options: (state: WizardState, io: ResolvedConfigWizardIo) => Promise<string[]> | string[];
+  defaults: FullConfig;
+  include?: (state: WizardState) => boolean;
+}): WizardStep {
+  return {
+    id: args.id,
+    include: args.include,
+    change: {
+      path: args.path,
+      read: args.currentValue,
+    },
+    ask: async (state, io, allowBack, progressLabel) => askFieldValue({
+      question: args.question,
+      configPath: args.path,
+      currentValue: args.currentValue(state.draft),
+      defaultValue: args.defaultValue(args.defaults, state),
+      description: args.description,
+      options: await args.options(state, io),
+      allowBack,
+      progressLabel,
+    }, io),
+    apply: (state, value) => {
+      if (value === undefined || value === BACK_VALUE) return state;
+      return {
+        ...state,
+        draft: applyConfigPatch(state.draft, { path: args.path, value }),
+      };
+    },
+  };
+}
+
+function buildWizardSteps(originalConfig: FullConfig, defaults: FullConfig): WizardStep[] {
+  const steps: WizardStep[] = [
+    {
+      id: 'scope',
+      ask: (state, io, allowBack, progressLabel) =>
+        askScopeStep(state.selectedScope, io, allowBack, progressLabel),
+      apply: (state, value) => {
+        if (value !== 'project' && value !== 'global') return state;
+        return { ...state, selectedScope: value };
+      },
+    },
+    {
+      id: 'setup-depth',
+      ask: (state, io, allowBack, progressLabel) =>
+        askSetupDepth(io, allowBack, progressLabel),
+      apply: (state, value) => {
+        if (value !== 'quick' && value !== 'advanced') return state;
+        return { ...state, setupDepth: value };
+      },
+    },
+    fieldStep({
+      id: 'captain-cli',
+      path: 'captain.cli',
+      question: 'Which CLI should coordinate the crew?',
+      description: 'The captain reads the request, delegates work, and decides when the run is done.',
+      currentValue: (config) => config.captain.cli,
+      defaultValue: (config) => config.captain.cli,
+      options: (state) => getConfigValueOptions(state.draft, 'captain.cli'),
+      defaults,
+    }),
+    fieldStep({
+      id: 'captain-model',
+      path: 'captain.model',
+      question: 'Which model should the captain use?',
+      description: 'Choose the model for planning, delegation, and final decisions. You can enter a newer model ID if your CLI supports it.',
+      currentValue: (config) => resolveCaptainModel(config.captain),
+      defaultValue: (config, state) => resolveCaptainModel({
+        ...config.captain,
+        cli: state.draft.captain.cli,
+      }),
+      options: (state, io) => modelOptionsForWizardField({
+        io,
+        configPath: 'captain.model',
+        adapterType: resolveCaptainAdapterTypeForWizard(state.draft),
+        currentConfig: state.draft,
+        fallbackOptions: getConfigValueOptions(state.draft, 'captain.model'),
+      }),
+      defaults,
+    }),
+    fieldStep({
+      id: 'captain-preset',
+      path: 'captain.preset',
+      question: 'What default behavior should the captain follow?',
+      description: 'Presets tune the captain toward balanced, stricter-review, or read-only behavior.',
+      currentValue: (config) => config.captain.preset,
+      defaultValue: (config) => config.captain.preset,
+      options: (state) => getConfigValueOptions(state.draft, 'captain.preset'),
+      defaults,
+      include: (state) => getConfigValueOptions(state.draft, 'captain.preset').length > 0,
+    }),
+  ];
+
+  for (const role of workflowRoles(originalConfig)) {
+    const rolePath = `workflow.roleModels.${role}`;
+    steps.push(fieldStep({
+      id: `role-model:${role}`,
+      path: rolePath,
+      question: `Which model should the "${role}" workflow role use?`,
+      description: 'Leave this blank to use the agent or captain default for that role.',
+      currentValue: (config) => config.workflow.roleModels?.[role],
+      defaultValue: (config) => config.workflow.roleModels?.[role],
+      options: (state, io) => modelOptionsForWizardField({
+        io,
+        configPath: rolePath,
+        currentConfig: state.draft,
+        fallbackOptions: getConfigValueOptions(state.draft, rolePath),
+      }),
+      defaults,
+      include: (state) => state.setupDepth === 'advanced',
+    }));
+  }
+
+  const agentNames = Object.keys(originalConfig.agents).sort();
+  for (const agentName of agentNames) {
+    const adapterPath = `agents.${agentName}.adapter`;
+    steps.push(fieldStep({
+      id: `agent-adapter:${agentName}`,
+      path: adapterPath,
+      question: `Which backend should the "${agentName}" custom agent use?`,
+      description: 'Used for custom agents that do not map directly to a built-in Crew CLI.',
+      currentValue: (config) => config.agents[agentName]?.adapter ?? agentName,
+      defaultValue: (config) => config.agents[agentName]?.adapter ?? agentName,
+      options: (state) => getConfigValueOptions(state.draft, adapterPath),
+      defaults,
+      include: (state) => state.setupDepth === 'advanced' && shouldAskAgentAdapter(state.draft, agentName),
+    }));
+
+    const modelPath = `agents.${agentName}.model`;
+    steps.push(fieldStep({
+      id: `agent-model:${agentName}`,
+      path: modelPath,
+      question: `Which model should the "${agentName}" agent use?`,
+      description: 'Leave this blank to keep the current model for this agent. You can enter a newer model ID if the agent CLI supports it.',
+      currentValue: (config) => config.agents[agentName]?.model,
+      defaultValue: (config) => config.agents[agentName]?.model,
+      options: (state, io) => modelOptionsForWizardField({
+        io,
+        configPath: modelPath,
+        adapterType: state.draft.agents[agentName]?.adapter ?? agentName,
+        currentConfig: state.draft,
+        fallbackOptions: getConfigValueOptions(state.draft, modelPath),
+      }),
+      defaults,
+      include: (state) => state.setupDepth === 'advanced',
+    }));
+
+    const commandPath = `agents.${agentName}.command`;
+    steps.push(fieldStep({
+      id: `agent-command:${agentName}`,
+      path: commandPath,
+      question: `What command should launch the "${agentName}" agent?`,
+      description: 'Used only for generic or custom CLI agents, for example: ollama.',
+      currentValue: (config) => config.agents[agentName]?.command,
+      defaultValue: (config) => config.agents[agentName]?.command,
+      options: () => [],
+      defaults,
+      include: (state) => state.setupDepth === 'advanced' && shouldAskGenericAgentFields(state.draft, agentName),
+    }));
+
+    const argsPath = `agents.${agentName}.args`;
+    steps.push(fieldStep({
+      id: `agent-args:${agentName}`,
+      path: argsPath,
+      question: `What arguments should Crew pass to the "${agentName}" command?`,
+      description: 'Use a comma list or JSON array. Include {{prompt}} where the task prompt should be injected.',
+      currentValue: (config) => config.agents[agentName]?.args,
+      defaultValue: (config) => config.agents[agentName]?.args,
+      options: () => [],
+      defaults,
+      include: (state) => state.setupDepth === 'advanced' && shouldAskGenericAgentFields(state.draft, agentName),
+    }));
+
+    const capabilitiesPath = `agents.${agentName}.capabilities`;
+    steps.push(fieldStep({
+      id: `agent-capabilities:${agentName}`,
+      path: capabilitiesPath,
+      question: `What work should the "${agentName}" agent be allowed to do?`,
+      description: 'Use a comma list or JSON array, for example: implement,review,test.',
+      currentValue: (config) => config.agents[agentName]?.capabilities,
+      defaultValue: (config) => config.agents[agentName]?.capabilities,
+      options: (state) => getConfigValueOptions(state.draft, capabilitiesPath),
+      defaults,
+      include: (state) =>
+        state.setupDepth === 'advanced' && shouldAskAgentCapabilities(state.draft, defaults, agentName),
+    }));
+  }
+
+  steps.push(fieldStep({
+    id: 'reviewer-max-passes',
+    path: 'workflow.reviewer.maxPasses',
+    question: 'How many review/fix passes should run before Crew stops trying?',
+    description: 'Higher values can catch more issues but may take longer.',
+    currentValue: readReviewerMaxPasses,
+    defaultValue: readReviewerMaxPasses,
+    options: (state) => getConfigValueOptions(state.draft, 'workflow.reviewer.maxPasses'),
+    defaults,
+    include: (state) => getConfigValueOptions(state.draft, 'workflow.reviewer.maxPasses').length > 0,
+  }));
+
+  steps.push(fieldStep({
+    id: 'retry-count',
+    path: 'errorHandling.default.retry',
+    question: 'How many times should Crew retry a failed step?',
+    description: 'This applies before fallback handling asks the user or stops.',
+    currentValue: (config) => config.errorHandling.default.retry,
+    defaultValue: (config) => config.errorHandling.default.retry,
+    options: (state) => getConfigValueOptions(state.draft, 'errorHandling.default.retry'),
+    defaults,
+  }));
+
+  return steps;
+}
+
+async function runWizardSteps(args: {
+  steps: WizardStep[];
+  initialState: WizardState;
+  io: ResolvedConfigWizardIo;
+}): Promise<{ state: WizardState; answers: Map<string, WizardValue> }> {
+  const { steps, initialState, io } = args;
+  const answers = new Map<string, WizardValue>();
+
+  const isIncluded = (step: WizardStep, state: WizardState): boolean =>
+    step.include ? step.include(state) : true;
+
+  const buildStateBefore = (targetIndex: number): WizardState => {
+    let state = structuredClone(initialState);
+    for (let index = 0; index < targetIndex; index += 1) {
+      const step = steps[index];
+      if (!isIncluded(step, state)) continue;
+      if (!answers.has(step.id)) continue;
+      state = step.apply(state, answers.get(step.id));
+    }
+    return state;
+  };
+
+  const previousIncludedIndex = (currentIndex: number): number => {
+    for (let index = currentIndex - 1; index >= 0; index -= 1) {
+      const state = buildStateBefore(index);
+      if (isIncluded(steps[index], state)) return index;
+    }
+    return currentIndex;
+  };
+
+  const questionNumber = (currentIndex: number): number => {
+    let count = 0;
+    for (let index = 0; index <= currentIndex; index += 1) {
+      const state = buildStateBefore(index);
+      if (isIncluded(steps[index], state)) count += 1;
+    }
+    return count;
+  };
+
+  let index = 0;
+  while (index < steps.length) {
+    const step = steps[index];
+    const state = buildStateBefore(index);
+    if (!isIncluded(step, state)) {
+      answers.delete(step.id);
+      index += 1;
+      continue;
+    }
+
+    const allowBack = previousIncludedIndex(index) !== index;
+    io.clearScreen();
+    const value = await step.ask(state, io, allowBack, `Question ${questionNumber(index)}`);
+    if (value === BACK_VALUE) {
+      answers.delete(step.id);
+      index = previousIncludedIndex(index);
+      continue;
+    }
+
+    answers.set(step.id, value);
+    index += 1;
+  }
+
+  return {
+    state: buildStateBefore(steps.length),
+    answers,
+  };
+}
+
+function collectWizardChanges(
+  steps: WizardStep[],
+  originalConfig: FullConfig,
+  finalConfig: FullConfig,
+): Array<{ path: string; before: unknown; after: unknown }> {
+  const changes: Array<{ path: string; before: unknown; after: unknown }> = [];
+  const seen = new Set<string>();
+  for (const step of steps) {
+    if (!step.change || seen.has(step.change.path)) continue;
+    seen.add(step.change.path);
+    const before = step.change.read(originalConfig);
+    const after = step.change.read(finalConfig);
+    if (!sameConfigValue(before, after)) {
+      changes.push({ path: step.change.path, before, after });
+    }
+  }
+  return changes;
+}
+
 export async function configWizardCommand(options: { cwd?: string; io?: ConfigWizardIo } = {}): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const io = resolveConfigWizardIo(options.io);
   const snapshot = showConfig(cwd);
   const defaults = getDefaultConfig();
   const originalConfig = snapshot.effectiveConfig;
-  let draft = structuredClone(originalConfig);
-  let selectedScope = snapshot.activeScope;
   const selectedProfile = snapshot.activeProfile;
-  const changes: Array<{ path: string; before: unknown; after: unknown }> = [];
 
   io.log(chalk.bold('\nGuided Config Setup\n'));
-  io.log(chalk.dim('Answer a few plain-language questions. Press Enter any time to keep the current value.'));
+  io.log(chalk.dim('Answer one question at a time. Press Enter to keep the current value, or type "back" after the first question.'));
   io.log(`${chalk.dim('Active profile:')} ${selectedProfile}\n`);
 
-  if (io.supportsInteractiveSelection()) {
-    const selected = await io.selectOptionMenu(
-      'Where should Crew save these answers?',
-      [`current write scope: ${snapshot.activeScope}`],
-      [
-        { label: 'project', value: 'project' },
-        { label: 'global', value: 'global' },
-      ],
-      snapshot.activeScope === 'global' ? 1 : 0,
-    );
-    selectedScope = selected.value as ConfigScope;
-  } else {
-    const enteredScope = (await io.askQuestion(
-      `Where should Crew save these answers? [project/global] (current: ${snapshot.activeScope}): `,
-    )).trim();
-    if (enteredScope) {
-      if (enteredScope !== 'project' && enteredScope !== 'global') {
-        throw new Error(`Invalid scope "${enteredScope}". Expected "project" or "global".`);
-      }
-      selectedScope = enteredScope;
-    }
-  }
+  const steps = buildWizardSteps(originalConfig, defaults);
+  const initialState: WizardState = {
+    selectedScope: snapshot.activeScope,
+    setupDepth: 'quick',
+    draft: structuredClone(originalConfig),
+  };
+  const { state: finalState } = await runWizardSteps({ steps, initialState, io });
+  const { selectedScope, setupDepth, draft } = finalState;
+  const changes = collectWizardChanges(steps, originalConfig, draft);
 
-  const setupDepth = await askSetupDepth(io);
+  io.clearScreen();
   io.log(chalk.dim(`Setup mode: ${setupDepth}\n`));
-
-  const captainCliValue = await askFieldValue({
-    question: 'Which CLI should coordinate the crew?',
-    configPath: 'captain.cli',
-    currentValue: draft.captain.cli,
-    defaultValue: defaults.captain.cli,
-    description: 'The captain reads the request, delegates work, and decides when the run is done.',
-    options: getConfigValueOptions(draft, 'captain.cli'),
-  }, io);
-  if (captainCliValue) {
-    const before = draft.captain.cli;
-    draft = applyConfigPatch(draft, { path: 'captain.cli', value: captainCliValue });
-    changes.push({ path: 'captain.cli', before, after: draft.captain.cli });
-  }
-
-  const captainModelValue = await askFieldValue({
-    question: 'Which model should the captain use?',
-    configPath: 'captain.model',
-    currentValue: resolveCaptainModel(draft.captain),
-    defaultValue: resolveCaptainModel(defaults.captain),
-    description: 'Choose the model for planning, delegation, and final decisions.',
-    options: getConfigValueOptions(draft, 'captain.model'),
-  }, io);
-  if (captainModelValue) {
-    const before = draft.captain.model;
-    draft = applyConfigPatch(draft, { path: 'captain.model', value: captainModelValue });
-    changes.push({ path: 'captain.model', before, after: draft.captain.model });
-  }
-
-  // M5: persistent preset selection. Only offer the prompt when the user
-  // has at least one preset declared — the wizard loaded config.presets
-  // either from the defaults YAML (which ships the three built-ins) or
-  // from the user's own workflow.yaml.
-  const presetOptions = getConfigValueOptions(draft, 'captain.preset');
-  if (presetOptions.length > 0) {
-    const captainPresetValue = await askFieldValue({
-      question: 'What default behavior should the captain follow?',
-      configPath: 'captain.preset',
-      currentValue: draft.captain.preset,
-      defaultValue: defaults.captain.preset,
-      description: 'Presets tune the captain toward balanced, stricter-review, or read-only behavior.',
-      options: presetOptions,
-    }, io);
-    if (captainPresetValue) {
-      const before = draft.captain.preset;
-      draft = applyConfigPatch(draft, { path: 'captain.preset', value: captainPresetValue });
-      changes.push({ path: 'captain.preset', before, after: draft.captain.preset });
-    }
-  }
-
-  // M4-4 retired `workflow.execution.mode: 'linear'` — `'judgment'` is the
-  // only supported path, and the v4→v5 migration reader rejects legacy
-  // state files. Skip the interactive prompt entirely; advanced users can
-  // still set the field via `/config set workflow.execution.mode judgment`
-  // if they need to pin it explicitly.
-
-  if (setupDepth === 'advanced') {
-    for (const role of workflowRoles(draft)) {
-      const rolePath = `workflow.roleModels.${role}`;
-      const roleModelValue = await askFieldValue({
-        question: `Which model should the "${role}" workflow role use?`,
-        configPath: rolePath,
-        currentValue: draft.workflow.roleModels?.[role],
-        defaultValue: defaults.workflow.roleModels?.[role],
-        description: 'Leave this blank to use the agent or captain default for that role.',
-        options: getConfigValueOptions(draft, rolePath),
-      }, io);
-      if (!roleModelValue) continue;
-
-      const before = draft.workflow.roleModels?.[role];
-      draft = applyConfigPatch(draft, { path: rolePath, value: roleModelValue });
-      const after = draft.workflow.roleModels?.[role];
-      changes.push({ path: rolePath, before, after });
-    }
-
-    const agentNames = Object.keys(draft.agents).sort();
-    for (const agentName of agentNames) {
-      const adapterPath = `agents.${agentName}.adapter`;
-      const adapterValue = await askFieldValue({
-        question: `Which backend should the "${agentName}" agent use?`,
-        configPath: adapterPath,
-        currentValue: draft.agents[agentName].adapter ?? agentName,
-        defaultValue: defaults.agents[agentName]?.adapter ?? agentName,
-        description: 'The backend controls which CLI or provider launches when this agent is delegated work.',
-        options: getConfigValueOptions(draft, adapterPath),
-      }, io);
-      if (adapterValue) {
-        const before = draft.agents[agentName].adapter ?? agentName;
-        draft = applyConfigPatch(draft, { path: adapterPath, value: adapterValue });
-        changes.push({ path: adapterPath, before, after: draft.agents[agentName].adapter ?? agentName });
-      }
-
-      const modelPath = `agents.${agentName}.model`;
-      const modelValue = await askFieldValue({
-        question: `Which model should the "${agentName}" agent use?`,
-        configPath: modelPath,
-        currentValue: draft.agents[agentName].model,
-        defaultValue: defaults.agents[agentName]?.model,
-        description: 'Leave this blank to keep the current model for this agent.',
-        options: getConfigValueOptions(draft, modelPath),
-      }, io);
-      if (modelValue) {
-        const before = draft.agents[agentName].model;
-        draft = applyConfigPatch(draft, { path: modelPath, value: modelValue });
-        changes.push({ path: modelPath, before, after: draft.agents[agentName].model });
-      }
-
-      const adapterType = draft.agents[agentName].adapter ?? agentName;
-      const shouldConfigureGenericFields = adapterType === AdapterId.GENERIC
-        || draft.agents[agentName].command !== undefined
-        || draft.agents[agentName].args !== undefined;
-
-      if (shouldConfigureGenericFields) {
-        const commandPath = `agents.${agentName}.command`;
-        const commandValue = await askFieldValue({
-          question: `What command should launch the "${agentName}" agent?`,
-          configPath: commandPath,
-          currentValue: draft.agents[agentName].command,
-          defaultValue: defaults.agents[agentName]?.command,
-          description: 'Used only for generic or custom CLI agents, for example: ollama.',
-          options: [],
-        }, io);
-        if (commandValue) {
-          const before = draft.agents[agentName].command;
-          draft = applyConfigPatch(draft, { path: commandPath, value: commandValue });
-          changes.push({ path: commandPath, before, after: draft.agents[agentName].command });
-        }
-
-        const argsPath = `agents.${agentName}.args`;
-        const argsValue = await askFieldValue({
-          question: `What arguments should Crew pass to the "${agentName}" command?`,
-          configPath: argsPath,
-          currentValue: draft.agents[agentName].args,
-          defaultValue: defaults.agents[agentName]?.args,
-          description: 'Use a comma list or JSON array. Include {{prompt}} where the task prompt should be injected.',
-          options: [],
-        }, io);
-        if (argsValue) {
-          const before = draft.agents[agentName].args;
-          draft = applyConfigPatch(draft, { path: argsPath, value: argsValue });
-          changes.push({ path: argsPath, before, after: draft.agents[agentName].args });
-        }
-      }
-
-      const capabilitiesPath = `agents.${agentName}.capabilities`;
-      const capabilitiesValue = await askFieldValue({
-        question: `What work should the "${agentName}" agent be allowed to do?`,
-        configPath: capabilitiesPath,
-        currentValue: draft.agents[agentName].capabilities,
-        defaultValue: defaults.agents[agentName]?.capabilities,
-        description: 'Use a comma list or JSON array, for example: implement,review,test.',
-        options: getConfigValueOptions(draft, capabilitiesPath),
-      }, io);
-      if (capabilitiesValue) {
-        const before = draft.agents[agentName].capabilities;
-        draft = applyConfigPatch(draft, { path: capabilitiesPath, value: capabilitiesValue });
-        changes.push({ path: capabilitiesPath, before, after: draft.agents[agentName].capabilities });
-      }
-    }
-  } else {
+  if (setupDepth === 'quick') {
     io.log(
       chalk.dim(
         'Quick setup skips workflow role-model and per-agent internals. Use "advanced" mode (or /config set) to tune those later.\n',
@@ -715,50 +1098,12 @@ export async function configWizardCommand(options: { cwd?: string; io?: ConfigWi
     );
   }
 
-  const reviewerOptions = getConfigValueOptions(draft, 'workflow.reviewer.maxPasses');
-  if (reviewerOptions.length === 0) {
+  if (getConfigValueOptions(draft, 'workflow.reviewer.maxPasses').length === 0) {
     io.log(
       chalk.yellow(
         'Skipping workflow.reviewer.maxPasses: no review step found (role includes "reviewer" or action is "review").',
       ),
     );
-  } else {
-    const reviewerCurrent = draft.workflow.steps.find((s) =>
-      s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
-    )?.maxPasses;
-    const reviewerDefault = defaults.workflow.steps.find((s) =>
-      s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
-    )?.maxPasses;
-    const reviewerMaxPassesValue = await askFieldValue({
-      question: 'How many review/fix passes should run before Crew stops trying?',
-      configPath: 'workflow.reviewer.maxPasses',
-      currentValue: reviewerCurrent,
-      defaultValue: reviewerDefault,
-      description: 'Higher values can catch more issues but may take longer.',
-      options: reviewerOptions,
-    }, io);
-    if (reviewerMaxPassesValue) {
-      const before = reviewerCurrent;
-      draft = applyConfigPatch(draft, { path: 'workflow.reviewer.maxPasses', value: reviewerMaxPassesValue });
-      const after = draft.workflow.steps.find((s) =>
-        s.role === 'reviewer' || s.action === 'review' || s.role.toLowerCase().includes('review'),
-      )?.maxPasses;
-      changes.push({ path: 'workflow.reviewer.maxPasses', before, after });
-    }
-  }
-
-  const retryCountValue = await askFieldValue({
-    question: 'How many times should Crew retry a failed step?',
-    configPath: 'errorHandling.default.retry',
-    currentValue: draft.errorHandling.default.retry,
-    defaultValue: defaults.errorHandling.default.retry,
-    description: 'This applies before fallback handling asks the user or stops.',
-    options: getConfigValueOptions(draft, 'errorHandling.default.retry'),
-  }, io);
-  if (retryCountValue) {
-    const before = draft.errorHandling.default.retry;
-    draft = applyConfigPatch(draft, { path: 'errorHandling.default.retry', value: retryCountValue });
-    changes.push({ path: 'errorHandling.default.retry', before, after: draft.errorHandling.default.retry });
   }
 
   const scopeChanged = selectedScope !== snapshot.activeScope;

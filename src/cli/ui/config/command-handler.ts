@@ -70,7 +70,7 @@ export function handleConfigSlashCommand(
     return [
       'Guided config setup runs in the dedicated terminal command.',
       'Run: crew config setup',
-      'It asks plain-language questions first (quick mode), with optional advanced prompts for role/agent internals.',
+      'It asks plain-language questions one at a time, supports back, and keeps advanced role/agent internals optional.',
     ].join('\n');
   }
 
