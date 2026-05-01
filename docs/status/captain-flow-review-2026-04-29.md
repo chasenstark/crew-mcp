@@ -262,6 +262,12 @@ The current worktree now ships a simpler, question-driven setup flow for
 
 Current targeted verification after this follow-up:
 
+- Real smoke:
+  - `npm run build`: passed.
+  - `crew run "I'm not super happy with the way our config setup works. Right now, it's very complicated, and I want to make it more interactive, ask
+    more questions rather than just presenting the config keys."`: passed.
+  - The run dispatched `run_agent`, merged the run worktree back into `main`,
+    and completed with `.crew/state.json` status `completed`.
 - `npm run test:run -- --configLoader runner test/cli/commands/config.test.ts test/cli/ui/config/command-handler.test.ts test/cli/ui/config/command-parser.test.ts`:
   passed.
   - 3 test files passed.
@@ -271,6 +277,11 @@ Current targeted verification after this follow-up:
   - 1 test file passed.
   - 17 tests passed.
 - `npm run lint`: passed.
+- `npm run test:run -- --configLoader runner`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 720 tests passed.
+  - 3 tests skipped.
 
 ## Baseline
 
