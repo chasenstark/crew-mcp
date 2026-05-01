@@ -68,9 +68,9 @@ export function handleConfigSlashCommand(
 
   if (parsed.kind === 'setup' || parsed.kind === 'edit') {
     return [
-      'Guided config setup is available in the dedicated terminal command.',
+      'Guided config setup runs in the dedicated terminal command.',
       'Run: crew config setup',
-      'It asks questions about the captain, models, presets, agents, review passes, and retries before writing workflow.yaml.',
+      'It asks plain-language questions first (quick mode), with optional advanced prompts for role/agent internals.',
     ].join('\n');
   }
 

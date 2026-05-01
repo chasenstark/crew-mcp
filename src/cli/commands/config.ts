@@ -135,6 +135,8 @@ interface ResolvedConfigWizardIo {
   log: (message?: string) => void;
 }
 
+type SetupDepth = 'quick' | 'advanced';
+
 function supportsInteractiveSelection(): boolean {
   return Boolean(input.isTTY && output.isTTY && typeof input.setRawMode === 'function');
 }
@@ -240,7 +242,7 @@ function friendlyValue(value: unknown): string {
 }
 
 function configPathLine(configPath: string): string {
-  return `${chalk.dim('config path:')} ${configPath}`;
+  return `${chalk.dim('internal setting:')} ${configPath}`;
 }
 
 function promptWithCurrent(
@@ -257,13 +259,13 @@ function promptWithCurrent(
 
   return [
     `${chalk.bold(question)}`,
-    `  ${configPathLine(configPath)}`,
-    `  current: ${friendlyValue(currentValue)}`,
-    `  default: ${friendlyValue(defaultValue)}`,
-    `  ${chalk.dim(description)}`,
+    `  current answer: ${friendlyValue(currentValue)}`,
+    `  suggested default: ${friendlyValue(defaultValue)}`,
+    `  why this matters: ${description}`,
     '  options:',
     optionLines,
-    '  choose number | next | prev | custom value | Enter keeps current: ',
+    `  ${configPathLine(configPath)}`,
+    '  your answer (or Enter to keep current): ',
   ].join('\n');
 }
 
@@ -324,10 +326,10 @@ async function askFieldValue(args: {
     const selected = await io.selectOptionMenu(
       question,
       [
+        `Current answer: ${friendlyValue(currentValue)}`,
+        `Suggested default: ${friendlyValue(defaultValue)}`,
+        `Why this matters: ${description}`,
         configPathLine(configPath),
-        `current: ${friendlyValue(currentValue)}`,
-        `default: ${friendlyValue(defaultValue)}`,
-        description,
       ],
       menuOptions,
       currentIndex >= 0 ? currentIndex : 0,
@@ -345,6 +347,31 @@ async function askFieldValue(args: {
     promptWithCurrent(question, configPath, currentValue, defaultValue, description, options),
   )).trim();
   return normalizeWizardValue(raw, options);
+}
+
+async function askSetupDepth(io: ResolvedConfigWizardIo): Promise<SetupDepth> {
+  if (io.supportsInteractiveSelection()) {
+    const selected = await io.selectOptionMenu(
+      'How detailed should setup be?',
+      [
+        'Quick setup asks only the most common decisions.',
+        'Advanced setup walks through role and agent internals.',
+      ],
+      [
+        { label: 'quick (recommended)', value: 'quick' },
+        { label: 'advanced', value: 'advanced' },
+      ],
+      0,
+    );
+    return selected.value === 'advanced' ? 'advanced' : 'quick';
+  }
+
+  const answer = (await io.askQuestion(
+    'How detailed should setup be? [quick/advanced] (default: quick): ',
+  )).trim().toLowerCase();
+  if (!answer || answer === 'quick' || answer === 'q') return 'quick';
+  if (answer === 'advanced' || answer === 'a') return 'advanced';
+  throw new Error(`Invalid setup mode "${answer}". Expected "quick" or "advanced".`);
 }
 
 export async function configShowCommand(options: {
@@ -493,7 +520,7 @@ export async function configWizardCommand(options: { cwd?: string; io?: ConfigWi
   const changes: Array<{ path: string; before: unknown; after: unknown }> = [];
 
   io.log(chalk.bold('\nGuided Config Setup\n'));
-  io.log(chalk.dim('Answer the questions below. Press Enter to keep the current value.'));
+  io.log(chalk.dim('Answer a few plain-language questions. Press Enter any time to keep the current value.'));
   io.log(`${chalk.dim('Active profile:')} ${selectedProfile}\n`);
 
   if (io.supportsInteractiveSelection()) {
@@ -518,6 +545,9 @@ export async function configWizardCommand(options: { cwd?: string; io?: ConfigWi
       selectedScope = enteredScope;
     }
   }
+
+  const setupDepth = await askSetupDepth(io);
+  io.log(chalk.dim(`Setup mode: ${setupDepth}\n`));
 
   const captainCliValue = await askFieldValue({
     question: 'Which CLI should coordinate the crew?',
@@ -574,107 +604,115 @@ export async function configWizardCommand(options: { cwd?: string; io?: ConfigWi
   // still set the field via `/config set workflow.execution.mode judgment`
   // if they need to pin it explicitly.
 
-  for (const role of workflowRoles(draft)) {
-    const rolePath = `workflow.roleModels.${role}`;
-    const roleModelValue = await askFieldValue({
-      question: `Which model should the "${role}" workflow role use?`,
-      configPath: rolePath,
-      currentValue: draft.workflow.roleModels?.[role],
-      defaultValue: defaults.workflow.roleModels?.[role],
-      description: 'Leave this blank to use the agent or captain default for that role.',
-      options: getConfigValueOptions(draft, rolePath),
-    }, io);
-    if (!roleModelValue) continue;
-
-    const before = draft.workflow.roleModels?.[role];
-    draft = applyConfigPatch(draft, { path: rolePath, value: roleModelValue });
-    const after = draft.workflow.roleModels?.[role];
-    changes.push({ path: rolePath, before, after });
-  }
-
-  const agentNames = Object.keys(draft.agents).sort();
-  for (const agentName of agentNames) {
-    const adapterPath = `agents.${agentName}.adapter`;
-    const adapterValue = await askFieldValue({
-      question: `Which backend should the "${agentName}" agent use?`,
-      configPath: adapterPath,
-      currentValue: draft.agents[agentName].adapter ?? agentName,
-      defaultValue: defaults.agents[agentName]?.adapter ?? agentName,
-      description: 'The backend controls which CLI or provider launches when this agent is delegated work.',
-      options: getConfigValueOptions(draft, adapterPath),
-    }, io);
-    if (adapterValue) {
-      const before = draft.agents[agentName].adapter ?? agentName;
-      draft = applyConfigPatch(draft, { path: adapterPath, value: adapterValue });
-      changes.push({ path: adapterPath, before, after: draft.agents[agentName].adapter ?? agentName });
-    }
-
-    const modelPath = `agents.${agentName}.model`;
-    const modelValue = await askFieldValue({
-      question: `Which model should the "${agentName}" agent use?`,
-      configPath: modelPath,
-      currentValue: draft.agents[agentName].model,
-      defaultValue: defaults.agents[agentName]?.model,
-      description: 'Leave this blank to keep the current model for this agent.',
-      options: getConfigValueOptions(draft, modelPath),
-    }, io);
-    if (modelValue) {
-      const before = draft.agents[agentName].model;
-      draft = applyConfigPatch(draft, { path: modelPath, value: modelValue });
-      changes.push({ path: modelPath, before, after: draft.agents[agentName].model });
-    }
-
-    const adapterType = draft.agents[agentName].adapter ?? agentName;
-    const shouldConfigureGenericFields = adapterType === AdapterId.GENERIC
-      || draft.agents[agentName].command !== undefined
-      || draft.agents[agentName].args !== undefined;
-
-    if (shouldConfigureGenericFields) {
-      const commandPath = `agents.${agentName}.command`;
-      const commandValue = await askFieldValue({
-        question: `What command should launch the "${agentName}" agent?`,
-        configPath: commandPath,
-        currentValue: draft.agents[agentName].command,
-        defaultValue: defaults.agents[agentName]?.command,
-        description: 'Used only for generic or custom CLI agents, for example: ollama.',
-        options: [],
+  if (setupDepth === 'advanced') {
+    for (const role of workflowRoles(draft)) {
+      const rolePath = `workflow.roleModels.${role}`;
+      const roleModelValue = await askFieldValue({
+        question: `Which model should the "${role}" workflow role use?`,
+        configPath: rolePath,
+        currentValue: draft.workflow.roleModels?.[role],
+        defaultValue: defaults.workflow.roleModels?.[role],
+        description: 'Leave this blank to use the agent or captain default for that role.',
+        options: getConfigValueOptions(draft, rolePath),
       }, io);
-      if (commandValue) {
-        const before = draft.agents[agentName].command;
-        draft = applyConfigPatch(draft, { path: commandPath, value: commandValue });
-        changes.push({ path: commandPath, before, after: draft.agents[agentName].command });
+      if (!roleModelValue) continue;
+
+      const before = draft.workflow.roleModels?.[role];
+      draft = applyConfigPatch(draft, { path: rolePath, value: roleModelValue });
+      const after = draft.workflow.roleModels?.[role];
+      changes.push({ path: rolePath, before, after });
+    }
+
+    const agentNames = Object.keys(draft.agents).sort();
+    for (const agentName of agentNames) {
+      const adapterPath = `agents.${agentName}.adapter`;
+      const adapterValue = await askFieldValue({
+        question: `Which backend should the "${agentName}" agent use?`,
+        configPath: adapterPath,
+        currentValue: draft.agents[agentName].adapter ?? agentName,
+        defaultValue: defaults.agents[agentName]?.adapter ?? agentName,
+        description: 'The backend controls which CLI or provider launches when this agent is delegated work.',
+        options: getConfigValueOptions(draft, adapterPath),
+      }, io);
+      if (adapterValue) {
+        const before = draft.agents[agentName].adapter ?? agentName;
+        draft = applyConfigPatch(draft, { path: adapterPath, value: adapterValue });
+        changes.push({ path: adapterPath, before, after: draft.agents[agentName].adapter ?? agentName });
       }
 
-      const argsPath = `agents.${agentName}.args`;
-      const argsValue = await askFieldValue({
-        question: `What arguments should Crew pass to the "${agentName}" command?`,
-        configPath: argsPath,
-        currentValue: draft.agents[agentName].args,
-        defaultValue: defaults.agents[agentName]?.args,
-        description: 'Use a comma list or JSON array. Include {{prompt}} where the task prompt should be injected.',
-        options: [],
+      const modelPath = `agents.${agentName}.model`;
+      const modelValue = await askFieldValue({
+        question: `Which model should the "${agentName}" agent use?`,
+        configPath: modelPath,
+        currentValue: draft.agents[agentName].model,
+        defaultValue: defaults.agents[agentName]?.model,
+        description: 'Leave this blank to keep the current model for this agent.',
+        options: getConfigValueOptions(draft, modelPath),
       }, io);
-      if (argsValue) {
-        const before = draft.agents[agentName].args;
-        draft = applyConfigPatch(draft, { path: argsPath, value: argsValue });
-        changes.push({ path: argsPath, before, after: draft.agents[agentName].args });
+      if (modelValue) {
+        const before = draft.agents[agentName].model;
+        draft = applyConfigPatch(draft, { path: modelPath, value: modelValue });
+        changes.push({ path: modelPath, before, after: draft.agents[agentName].model });
+      }
+
+      const adapterType = draft.agents[agentName].adapter ?? agentName;
+      const shouldConfigureGenericFields = adapterType === AdapterId.GENERIC
+        || draft.agents[agentName].command !== undefined
+        || draft.agents[agentName].args !== undefined;
+
+      if (shouldConfigureGenericFields) {
+        const commandPath = `agents.${agentName}.command`;
+        const commandValue = await askFieldValue({
+          question: `What command should launch the "${agentName}" agent?`,
+          configPath: commandPath,
+          currentValue: draft.agents[agentName].command,
+          defaultValue: defaults.agents[agentName]?.command,
+          description: 'Used only for generic or custom CLI agents, for example: ollama.',
+          options: [],
+        }, io);
+        if (commandValue) {
+          const before = draft.agents[agentName].command;
+          draft = applyConfigPatch(draft, { path: commandPath, value: commandValue });
+          changes.push({ path: commandPath, before, after: draft.agents[agentName].command });
+        }
+
+        const argsPath = `agents.${agentName}.args`;
+        const argsValue = await askFieldValue({
+          question: `What arguments should Crew pass to the "${agentName}" command?`,
+          configPath: argsPath,
+          currentValue: draft.agents[agentName].args,
+          defaultValue: defaults.agents[agentName]?.args,
+          description: 'Use a comma list or JSON array. Include {{prompt}} where the task prompt should be injected.',
+          options: [],
+        }, io);
+        if (argsValue) {
+          const before = draft.agents[agentName].args;
+          draft = applyConfigPatch(draft, { path: argsPath, value: argsValue });
+          changes.push({ path: argsPath, before, after: draft.agents[agentName].args });
+        }
+      }
+
+      const capabilitiesPath = `agents.${agentName}.capabilities`;
+      const capabilitiesValue = await askFieldValue({
+        question: `What work should the "${agentName}" agent be allowed to do?`,
+        configPath: capabilitiesPath,
+        currentValue: draft.agents[agentName].capabilities,
+        defaultValue: defaults.agents[agentName]?.capabilities,
+        description: 'Use a comma list or JSON array, for example: implement,review,test.',
+        options: getConfigValueOptions(draft, capabilitiesPath),
+      }, io);
+      if (capabilitiesValue) {
+        const before = draft.agents[agentName].capabilities;
+        draft = applyConfigPatch(draft, { path: capabilitiesPath, value: capabilitiesValue });
+        changes.push({ path: capabilitiesPath, before, after: draft.agents[agentName].capabilities });
       }
     }
-
-    const capabilitiesPath = `agents.${agentName}.capabilities`;
-    const capabilitiesValue = await askFieldValue({
-      question: `What work should the "${agentName}" agent be allowed to do?`,
-      configPath: capabilitiesPath,
-      currentValue: draft.agents[agentName].capabilities,
-      defaultValue: defaults.agents[agentName]?.capabilities,
-      description: 'Use a comma list or JSON array, for example: implement,review,test.',
-      options: getConfigValueOptions(draft, capabilitiesPath),
-    }, io);
-    if (capabilitiesValue) {
-      const before = draft.agents[agentName].capabilities;
-      draft = applyConfigPatch(draft, { path: capabilitiesPath, value: capabilitiesValue });
-      changes.push({ path: capabilitiesPath, before, after: draft.agents[agentName].capabilities });
-    }
+  } else {
+    io.log(
+      chalk.dim(
+        'Quick setup skips workflow role-model and per-agent internals. Use "advanced" mode (or /config set) to tune those later.\n',
+      ),
+    );
   }
 
   const reviewerOptions = getConfigValueOptions(draft, 'workflow.reviewer.maxPasses');

@@ -242,6 +242,36 @@ Current targeted verification after this follow-up:
   - 719 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-05-01 Guided Config Setup UX Follow-Up
+
+The current worktree now ships a simpler, question-driven setup flow for
+`crew config setup` / `crew config edit`:
+
+- The wizard now asks one early depth question: `quick` (recommended) or
+  `advanced`.
+- `quick` mode focuses on common decisions (scope, captain CLI/model/preset,
+  review passes, retry count) and skips role/agent internals.
+- `advanced` mode preserves the full per-role and per-agent walkthrough.
+- Prompt text now leads with user-facing context (`current answer`, `suggested
+  default`, `why this matters`); raw config keys are demoted to
+  `internal setting` metadata instead of being the primary prompt line.
+- Interactive `/config setup` and `/config edit` guidance copy now advertises
+  the plain-language quick flow plus optional advanced prompts.
+- Direct mutation commands (`/config set ...`, `crew config set ...`) remain
+  unchanged.
+
+Current targeted verification after this follow-up:
+
+- `npm run test:run -- --configLoader runner test/cli/commands/config.test.ts test/cli/ui/config/command-handler.test.ts test/cli/ui/config/command-parser.test.ts`:
+  passed.
+  - 3 test files passed.
+  - 35 tests passed.
+- `npm run test:run -- --configLoader runner test/cli/ui/App.test.tsx`:
+  passed.
+  - 1 test file passed.
+  - 17 tests passed.
+- `npm run lint`: passed.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

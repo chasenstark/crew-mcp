@@ -46,6 +46,7 @@ describe('handleConfigSlashCommand', () => {
     const response = handleConfigSlashCommand('/config setup', { cwd, sessionBusy: false });
     expect(response).toContain('Guided config setup');
     expect(response).toContain('crew config setup');
+    expect(response).toContain('plain-language questions');
   });
 
   it('gets and sets active profile', () => {
