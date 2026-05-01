@@ -214,8 +214,12 @@ export class JudgmentRunner extends RunnerBase implements CrewRunner {
   async executeSessionLoop(runtime: RuntimeState): Promise<string> {
     this.activeAbortController = new AbortController();
 
-    // Seed the session with the initial user message so the loop has work.
-    if (this.session.getMessages().length === 0) {
+    // Seed the session with the current user message so the loop has work.
+    // Interactive UI paths append before calling runner.run(); non-interactive
+    // `crew run "<prompt>"` relies on the runner to append, including when a
+    // durable session already has earlier assistant/tool history.
+    const lastMessage = this.session.getMessages().at(-1);
+    if (!(lastMessage?.role === 'user' && lastMessage.text === runtime.userRequest)) {
       this.session.appendUserMessage(runtime.userRequest);
     }
 

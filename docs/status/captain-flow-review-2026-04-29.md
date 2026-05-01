@@ -200,6 +200,48 @@ Current verification after this follow-up:
   - 718 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-05-01 Non-Interactive Run Seed Follow-Up
+
+The first real smoke after the run-worktree merge fix used:
+
+```bash
+crew run "I'm not super happy with the way our config setup works. Right now, it's very complicated, and I want to make it more interactive, ask
+  more questions rather than just presenting the config keys."
+```
+
+It exposed a non-interactive resume bug:
+
+- `crew run "<prompt>"` printed the startup banner and wrote `.crew/state.json`
+  as `status: "running"`, but exited before any captain decision turn.
+- The durable captain session already contained older assistant/tool history.
+- `JudgmentRunner.executeSessionLoop` only appended the new user prompt when
+  the session was empty, so `SessionLoop.hasPendingCaptainWork()` was false.
+- With no pending event and no active handles, Node exited even though the
+  runner had persisted a running workflow state.
+
+Fix shipped in the current worktree:
+
+- `JudgmentRunner.executeSessionLoop` now seeds the current user request unless
+  the last session message is already the same user message. This preserves the
+  interactive UI path, which appends before `runner.run()`, while making
+  non-interactive `crew run "<prompt>"` wake the session loop even with durable
+  history.
+- Regression coverage now starts a runner with a non-empty session ending in an
+  assistant message and proves the next captain turn sees the new prompt.
+
+Current targeted verification after this follow-up:
+
+- `npm run test:run -- --configLoader runner test/captain/m3-tool-surface.test.ts`:
+  passed.
+  - 1 test file passed.
+  - 11 tests passed.
+- `npm run lint`: passed.
+- `npm run test:run -- --configLoader runner`: passed.
+  - 82 test files passed.
+  - 1 test file skipped.
+  - 719 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

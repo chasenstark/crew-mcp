@@ -208,6 +208,37 @@ describe('JudgmentRunner M3 tool surface', () => {
     expect(toolResult).toBeDefined();
   });
 
+  it('seeds a new non-interactive run when durable session history already exists', async () => {
+    let sawNewPrompt = false;
+    const captain = makeCaptain(async (_tools, messages, onToolCall) => {
+      sawNewPrompt = messages.some(
+        (message) => message.role === 'user' && message.content === 'new non-interactive prompt',
+      );
+      await onToolCall({
+        name: 'mcp__crew__finish',
+        input: { summary: 'new prompt handled' },
+      });
+      return { status: 'completed', transcript: [] };
+    });
+    const session = CaptainSession.create({ projectRoot });
+    session.appendAssistantMessage('previous run already finished');
+    session.persist();
+    const dispatcher = new ToolDispatcher();
+    const runner = new JudgmentRunner(
+      captain,
+      makeRegistry([captain]),
+      workflow,
+      stateStore,
+      worktreeManager,
+      { session, dispatcher },
+    );
+
+    const report = await runner.run('new non-interactive prompt');
+
+    expect(report).toBe('new prompt handled');
+    expect(sawNewPrompt).toBe(true);
+  });
+
   it('merges successful run_agent worktree changes before finishing', async () => {
     let turn = 0;
     const captain = makeCaptain(async (_tools, _msgs, onToolCall) => {
