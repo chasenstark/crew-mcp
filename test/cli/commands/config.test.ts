@@ -146,7 +146,32 @@ describe('config command handlers', () => {
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.captain.cli).toBe('codex');
     expect(logs.join('\n')).toContain('Guided Config Setup');
+    expect(prompts.some((prompt) => prompt.includes('How detailed should setup be?'))).toBe(true);
     expect(prompts.some((prompt) => prompt.includes('Which CLI should coordinate the crew?'))).toBe(true);
     expect(prompts.some((prompt) => prompt.trimStart().startsWith('captain.cli'))).toBe(false);
+    expect(prompts.some((prompt) => prompt.includes('workflow.roleModels.'))).toBe(false);
+    expect(prompts.some((prompt) => prompt.includes('agents.'))).toBe(false);
+    expect(logs.join('\n')).toContain('Quick setup skips workflow role-model and per-agent internals');
+  });
+
+  it('runs advanced setup and asks role/agent internals', async () => {
+    const prompts: string[] = [];
+
+    await configWizardCommand({
+      cwd,
+      io: {
+        supportsInteractiveSelection: () => false,
+        askQuestion: async (question) => {
+          prompts.push(question);
+          if (question.includes('How detailed should setup be?')) return 'advanced';
+          if (question.includes('Apply changes?')) return 'no';
+          return '';
+        },
+        log: () => {},
+      },
+    });
+
+    expect(prompts.some((prompt) => prompt.includes('workflow role use?'))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes('agent use?'))).toBe(true);
   });
 });
