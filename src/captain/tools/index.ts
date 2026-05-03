@@ -1,20 +1,10 @@
-export {
-  ToolCatalog,
-  M3_TOOL_NAMES,
-  promptAgentInventoryFromRegistry,
-  type M3ToolName,
-  type ToolCatalogInit,
-} from './catalog.js';
-export {
-  dispatchAskUser,
-  waitForUserResponse,
-  AskUserAbortError,
-  askUserInputSchema,
-  ASK_USER_DESCRIPTION,
-  type AskUserInput,
-  type AskUserResult,
-  type DispatchAskUserArgs,
-} from './ask-user.js';
+// v2 tool barrel — surviving 2 of v0.1's 8 tools.
+//
+// run_agent and list_agents are the only v0.1 tools that survive into v2's
+// hosted-MCP model. M2 will add lifecycle tools (continue_run, merge_run,
+// discard_run, get_run_status) on top. The retired tools (ask_user,
+// message_user, finish, plan_tasks, analyze_output, compress_context) move
+// to the host CLI's responsibility — see HISTORICAL_CONTEXT.md.
 export {
   planRunAgent,
   runAgentInputSchema,
@@ -34,38 +24,3 @@ export {
   type ListAgentsInput,
   type ListAgentsOutput,
 } from './list-agents.js';
-export {
-  dispatchMessageUser,
-  messageUserInputSchema,
-  MESSAGE_USER_DESCRIPTION,
-  type MessageUserInput,
-  type MessageUserResult,
-} from './message-user.js';
-export {
-  dispatchFinish,
-  finishInputSchema,
-  FINISH_DESCRIPTION,
-  type FinishInput,
-  type FinishResult,
-} from './finish.js';
-export {
-  dispatchPlanTasks,
-  planTasksInputSchema,
-  PLAN_TASKS_DESCRIPTION,
-  type PlanTasksInput,
-  type PlanTasksContext,
-} from './plan-tasks.js';
-export {
-  dispatchAnalyzeOutput,
-  analyzeOutputInputSchema,
-  ANALYZE_OUTPUT_DESCRIPTION,
-  type AnalyzeOutputInput,
-  type AnalyzeOutputContext,
-} from './analyze-output.js';
-export {
-  dispatchCompressContext,
-  compressContextInputSchema,
-  COMPRESS_CONTEXT_DESCRIPTION,
-  type CompressContextInput,
-  type CompressContextContext,
-} from './compress-context.js';
