@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { listAgents } from '../../../src/captain/tools/list-agents.js';
+import { listAgents } from '../../../src/orchestrator/tools/list-agents.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter } from '../../../src/adapters/types.js';
 

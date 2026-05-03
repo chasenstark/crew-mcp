@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { CatalogLock, CATALOG_LOCK_FILE } from '../../src/captain/catalog-lock.js';
+import { CatalogLock, CATALOG_LOCK_FILE } from '../../src/orchestrator/catalog-lock.js';
 
 describe('CatalogLock', () => {
   let root: string;

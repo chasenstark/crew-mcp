@@ -7,7 +7,7 @@ import { execSync } from 'child_process';
 import {
   planRunAgent,
   type RunAgentHandlerContext,
-} from '../../../src/captain/tools/run-agent.js';
+} from '../../../src/orchestrator/tools/run-agent.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';

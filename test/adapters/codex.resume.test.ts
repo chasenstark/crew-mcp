@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildCodexResumeArgs } from '../../src/adapters/codex.js';
-import { toCodexConfigOverrides } from '../../src/captain/mcp-registration.js';
+import { toCodexConfigOverrides } from '../../src/orchestrator/mcp-registration.js';
 
 describe('buildCodexResumeArgs', () => {
   const prompt = 'Say hi.';

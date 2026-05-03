@@ -28,7 +28,7 @@ import type {
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
-import { toCodexConfigOverrides, type ToolCatalog } from '../captain/mcp-registration.js';
+import { toCodexConfigOverrides, type ToolCatalog } from '../orchestrator/mcp-registration.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
 import { resolveTerminalOutput } from './tool-loop/result.js';
 import {

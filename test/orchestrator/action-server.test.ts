@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { CaptainActionServer } from '../../src/captain/action-server.js';
+import { CaptainActionServer } from '../../src/orchestrator/action-server.js';
 
 describe('CaptainActionServer', () => {
   it('namespaces tools and resolves namespaced calls', () => {

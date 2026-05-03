@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ToolDispatcher, type DispatchTask } from '../../src/captain/tool-dispatcher.js';
+import { ToolDispatcher, type DispatchTask } from '../../src/orchestrator/tool-dispatcher.js';
 
 function makeTask(
   id: string,

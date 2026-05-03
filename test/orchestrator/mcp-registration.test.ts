@@ -5,7 +5,7 @@ import {
   toGeminiMcpSettings,
   resolveCaptainConverter,
   type ToolCatalog,
-} from '../../src/captain/mcp-registration.js';
+} from '../../src/orchestrator/mcp-registration.js';
 
 // The 3-server fixture is forward-looking regression coverage for M5's real
 // multi-server catalog. M3 production ships ONE server entry (the `crew`
