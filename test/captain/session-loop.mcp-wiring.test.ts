@@ -38,12 +38,13 @@ describe('session-loop mcp wiring (M3-8)', () => {
     });
     const mcpCatalog = catalog.toMcpRegistrationCatalog();
 
-    // Claude: empty `{}` inline config.
+    // Claude: empty catalog → inlineConfigJson is undefined so the adapter
+    // omits `--mcp-config` entirely. Recent claude-code CLI versions reject
+    // an empty MCP config as invalid schema, so we must not pass the flag.
     const claude = resolveCaptainConverter('claude-code', mcpCatalog);
     expect(claude?.kind).toBe('claude-code');
     if (claude?.kind === 'claude-code') {
-      const parsed = JSON.parse(claude.inlineConfigJson);
-      expect(parsed).toEqual({});
+      expect(claude.inlineConfigJson).toBeUndefined();
     }
 
     // Gemini: empty allowed-server list.
@@ -74,8 +75,8 @@ describe('session-loop mcp wiring (M3-8)', () => {
       mcpServers: [{ name: 'crew', command: 'crew-mcp' }],
     };
 
-    const fatClaude = JSON.parse(toClaudeMcpConfigJson(fat));
-    const thinClaude = JSON.parse(toClaudeMcpConfigJson(thin));
+    const fatClaude = JSON.parse(toClaudeMcpConfigJson(fat)!);
+    const thinClaude = JSON.parse(toClaudeMcpConfigJson(thin)!);
     expect(fatClaude.mcpServers.extra).toBeDefined();
     expect(thinClaude.mcpServers.extra).toBeUndefined();
 

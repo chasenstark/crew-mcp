@@ -61,7 +61,10 @@ export interface ToolLoopResult {
  * `resolveCaptainConverter` (M3-8 wiring) and attaches the result here so the
  * adapter can extract what it needs.
  *
- * - `claude-code`: `inlineConfigJson` goes to `--mcp-config <json>`.
+ * - `claude-code`: `inlineConfigJson` goes to `--mcp-config <json>`. Omitted
+ *   when the catalog has no MCP servers — recent claude-code CLI versions
+ *   reject `--mcp-config '{}'` as an invalid schema, so we skip the flag
+ *   entirely rather than send an empty config.
  * - `gemini-cli`: `allowedServerNames` goes to `--allowed-mcp-server-names <csv>`.
  * - `codex`: `configOverrideArgv` is the ready-to-spread `-c mcp_servers.*=...` argv.
  *
@@ -72,7 +75,7 @@ export interface ToolLoopResult {
 export type McpRegistrationPayload =
   | {
       readonly kind: 'claude-code';
-      readonly inlineConfigJson: string;
+      readonly inlineConfigJson?: string;
     }
   | {
       readonly kind: 'gemini-cli';

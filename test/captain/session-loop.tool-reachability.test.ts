@@ -104,9 +104,10 @@ describe('session-loop tool reachability (M3-13, closes S11)', () => {
       const payload = probe.lastMcpPayload as McpRegistrationPayload | undefined;
       expect(payload?.kind).toBe(captainName);
       if (payload?.kind === 'claude-code') {
-        const parsed = JSON.parse(payload.inlineConfigJson);
-        // Empty mcpServers is what claude-code receives post-cleanup.
-        expect(parsed).toEqual({});
+        // inlineConfigJson is undefined when there are no MCP servers — the
+        // adapter omits `--mcp-config` entirely so claude-code doesn't
+        // reject the empty config as invalid schema.
+        expect(payload.inlineConfigJson).toBeUndefined();
       }
       if (payload?.kind === 'gemini-cli') {
         // Gemini's allowed-server list is empty; no `-c mcp_servers.*`

@@ -90,15 +90,16 @@ function toTomlStringArray(values: readonly string[]): string {
  *
  *   { "mcpServers": { "<name>": { "command": ..., "args": ..., ... } } }
  *
- * Returns `"{}"` (valid, empty JSON object) when the catalog has no servers
- * so the adapter can always pass the flag unconditionally. Claude treats
- * `{}` as "no servers" — the flag itself is harmless.
+ * Returns `undefined` when the catalog has no servers so the adapter omits
+ * the `--mcp-config` flag entirely. Recent claude-code CLI versions reject
+ * `--mcp-config '{}'` and `--mcp-config '{"mcpServers":{}}'` as invalid
+ * schema, so the flag must be absent rather than empty.
  *
  * M3-8 threads this through claude-code.ts' argv assembly.
  */
-export function toClaudeMcpConfigJson(catalog: ToolCatalog): string {
+export function toClaudeMcpConfigJson(catalog: ToolCatalog): string | undefined {
   const servers = catalog.mcpServers ?? [];
-  if (servers.length === 0) return '{}';
+  if (servers.length === 0) return undefined;
   const mcpServers: Record<string, {
     command: string;
     args?: string[];

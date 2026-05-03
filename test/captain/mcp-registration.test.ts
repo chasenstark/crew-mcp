@@ -116,23 +116,28 @@ describe('toCodexConfigOverrides', () => {
 });
 
 describe('toClaudeMcpConfigJson', () => {
-  it('returns "{}" for an empty catalog', () => {
-    expect(toClaudeMcpConfigJson({})).toBe('{}');
-    expect(toClaudeMcpConfigJson({ mcpServers: [] })).toBe('{}');
+  it('returns undefined for an empty catalog so the adapter omits --mcp-config', () => {
+    // Recent claude-code CLI versions reject empty MCP configs as invalid
+    // schema, so the flag must be absent (not `'{}'`) when there are no
+    // servers. See adapter types.ts for the contract.
+    expect(toClaudeMcpConfigJson({})).toBeUndefined();
+    expect(toClaudeMcpConfigJson({ mcpServers: [] })).toBeUndefined();
   });
 
   it('serializes a single server with only command', () => {
     const json = toClaudeMcpConfigJson({
       mcpServers: [{ name: 'crew', command: '/bin/crew-mcp' }],
     });
-    expect(JSON.parse(json)).toEqual({
+    expect(json).toBeDefined();
+    expect(JSON.parse(json!)).toEqual({
       mcpServers: { crew: { command: '/bin/crew-mcp' } },
     });
   });
 
   it('serializes args / cwd / env per server', () => {
     const json = toClaudeMcpConfigJson(threeServerCatalog);
-    const parsed = JSON.parse(json);
+    expect(json).toBeDefined();
+    const parsed = JSON.parse(json!);
     expect(parsed.mcpServers.alpha).toEqual({ command: '/bin/a', args: ['--verbose'] });
     expect(parsed.mcpServers.bravo).toEqual({ command: '/bin/b', cwd: '/tmp/b' });
     expect(parsed.mcpServers.charlie).toEqual({
@@ -145,7 +150,8 @@ describe('toClaudeMcpConfigJson', () => {
     const json = toClaudeMcpConfigJson({
       mcpServers: [{ name: 'x', command: '/bin/x', args: [] }],
     });
-    expect(JSON.parse(json).mcpServers.x).toEqual({ command: '/bin/x' });
+    expect(json).toBeDefined();
+    expect(JSON.parse(json!).mcpServers.x).toEqual({ command: '/bin/x' });
   });
 });
 
@@ -204,7 +210,7 @@ describe('toGeminiMcpSettings', () => {
 describe('three-way converter parity', () => {
   it('every server appears exactly once in each projection', () => {
     const codexArgv = toCodexConfigOverrides(threeServerCatalog);
-    const claudeJson = JSON.parse(toClaudeMcpConfigJson(threeServerCatalog));
+    const claudeJson = JSON.parse(toClaudeMcpConfigJson(threeServerCatalog)!);
     const geminiSettings = toGeminiMcpSettings(threeServerCatalog);
 
     for (const server of threeServerCatalog.mcpServers!) {
@@ -233,7 +239,7 @@ describe('three-way converter parity', () => {
     expect(codexArgv.some((a) => a === 'mcp_servers.delta.command="/bin/d"')).toBe(true);
 
     // Claude
-    const claudeJson = JSON.parse(toClaudeMcpConfigJson(extended));
+    const claudeJson = JSON.parse(toClaudeMcpConfigJson(extended)!);
     expect(claudeJson.mcpServers.delta).toEqual({ command: '/bin/d' });
 
     // Gemini
@@ -246,7 +252,8 @@ describe('three-way converter parity', () => {
     const claude = resolveCaptainConverter('claude-code', threeServerCatalog);
     expect(claude?.kind).toBe('claude-code');
     if (claude?.kind === 'claude-code') {
-      const parsed = JSON.parse(claude.inlineConfigJson);
+      expect(claude.inlineConfigJson).toBeDefined();
+      const parsed = JSON.parse(claude.inlineConfigJson!);
       expect(Object.keys(parsed.mcpServers)).toContain('alpha');
     }
 
@@ -273,7 +280,7 @@ describe('three-way converter parity', () => {
     const codex = toCodexConfigOverrides(reduced);
     expect(codex.some((e) => e.includes('mcp_servers.bravo'))).toBe(false);
 
-    const claude = JSON.parse(toClaudeMcpConfigJson(reduced));
+    const claude = JSON.parse(toClaudeMcpConfigJson(reduced)!);
     expect(claude.mcpServers.bravo).toBeUndefined();
 
     const gemini = toGeminiMcpSettings(reduced);
