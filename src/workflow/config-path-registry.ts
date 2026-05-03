@@ -446,6 +446,81 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     },
   },
   {
+    // Per-role candidate-agents list. The captain treats `agents:` as a hint
+    // (preference order) so this descriptor lets the user retune the
+    // candidate list for a role from `/config set` and the setup wizard
+    // alike. Setting applies to EVERY step whose role or action matches —
+    // the default workflow has the "coder" role on two steps (implement +
+    // fix_review_issues) and we want them to stay in sync.
+    path: 'workflow.steps.<role>.agents',
+    examples: [
+      '/config set workflow.steps.coder.agents codex,claude-code',
+      '/config set workflow.steps.reviewer.agents claude-code',
+    ],
+    match: (path) => {
+      const m = path.match(/^workflow\.steps\.([\w-]+)\.agents$/);
+      return m ? { role: m[1] } : null;
+    },
+    read: (config, params) => {
+      const step = config.workflow.steps.find(
+        (s) => s.role === params.role || s.action === params.role,
+      );
+      return step?.agents;
+    },
+    parse: (raw, config, params, path) => {
+      const matching = config.workflow.steps.filter(
+        (s) => s.role === params.role || s.action === params.role,
+      );
+      if (matching.length === 0) {
+        throw new Error(
+          `Cannot set ${path}: no step with role or action "${params.role}". ` +
+            'Update workflow.steps first.',
+        );
+      }
+      const example = '/config set workflow.steps.coder.agents codex,claude-code';
+      const list = parseDelimitedStringList(path, raw, example);
+      if (list.length === 0) {
+        throw new Error(
+          `${path} must contain at least one agent name (preference order). Got an empty list.`,
+        );
+      }
+      const resolved = list.map((name) => resolveAgentAlias(name));
+      const known = new Set<string>([
+        ...Object.keys(config.agents),
+        ...BUILTIN_WORKER_AGENTS,
+        AgentId.CAPTAIN,
+      ]);
+      for (const name of resolved) {
+        if (!known.has(name)) {
+          throw new Error(
+            `${path} references unknown agent "${name}". ` +
+              'Add an `agents:` entry for it first or use a built-in agent name.',
+          );
+        }
+      }
+      return uniqueOrdered(resolved);
+    },
+    write: (config, params, value) => {
+      const list = value as string[];
+      for (const step of config.workflow.steps) {
+        if (step.role === params.role || step.action === params.role) {
+          step.agents = [...list];
+        }
+      }
+    },
+    options: (config, params) => {
+      const step = config.workflow.steps.find(
+        (s) => s.role === params.role || s.action === params.role,
+      );
+      const current = step?.agents ?? [];
+      const known = [
+        ...Object.keys(config.agents),
+        AgentId.CAPTAIN,
+      ].sort();
+      return withCurrentOption(known, current.join(','));
+    },
+  },
+  {
     path: 'workflow.reviewer.maxPasses',
     examples: ['/config set workflow.reviewer.maxPasses 3'],
     match: exactPath('workflow.reviewer.maxPasses'),

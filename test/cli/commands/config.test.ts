@@ -235,4 +235,61 @@ describe('config command handlers', () => {
     expect(prompts.some((prompt) => prompt.includes('agent use?'))).toBe(true);
     expect(prompts.some((prompt) => prompt.includes('Which backend should the "codex" agent use?'))).toBe(false);
   });
+
+  it('advanced setup prompts for the "agents:" candidate list per workflow role', async () => {
+    // The new soft-candidate schema (`agents: [...]` per step) is only
+    // useful if the wizard surfaces it. Quick mode keeps the smart
+    // defaults; advanced mode lets the user retune the candidate list per
+    // role. One prompt per unique role — coder and reviewer here.
+    const prompts: string[] = [];
+
+    await configWizardCommand({
+      cwd,
+      io: {
+        supportsInteractiveSelection: () => false,
+        askQuestion: async (question) => {
+          prompts.push(question);
+          if (question.includes('How detailed should setup be?')) return 'advanced';
+          if (question.includes('Apply changes?')) return 'no';
+          return '';
+        },
+        log: () => {},
+      },
+    });
+
+    expect(prompts.some((prompt) =>
+      prompt.includes('Which agents should the "coder" role accept?'),
+    )).toBe(true);
+    expect(prompts.some((prompt) =>
+      prompt.includes('Which agents should the "reviewer" role accept?'),
+    )).toBe(true);
+    // Judge step uses [captain] in the default and ALSO appears as a step
+    // role — must be prompted too so users who restructure don't miss it.
+    expect(prompts.some((prompt) =>
+      prompt.includes('Which agents should the "judge" role accept?'),
+    )).toBe(true);
+  });
+
+  it('quick setup does NOT prompt for the agents: candidate list', async () => {
+    // Same calibration as the role-model prompts: quick is fast, advanced
+    // is for tuning. Quick mode users get the smart default candidate
+    // lists from defaults/workflow.yaml.
+    const prompts: string[] = [];
+
+    await configWizardCommand({
+      cwd,
+      io: {
+        supportsInteractiveSelection: () => false,
+        askQuestion: async (question) => {
+          prompts.push(question);
+          if (question.includes('How detailed should setup be?')) return 'quick';
+          if (question.includes('Apply changes?')) return 'no';
+          return '';
+        },
+        log: () => {},
+      },
+    });
+
+    expect(prompts.some((prompt) => prompt.includes('role accept?'))).toBe(false);
+  });
 });

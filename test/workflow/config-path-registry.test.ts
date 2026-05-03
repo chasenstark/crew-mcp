@@ -19,6 +19,7 @@ describe('config path registry', () => {
       'agents.<name>.command',
       'agents.<name>.args',
       'agents.<name>.capabilities',
+      'workflow.steps.<role>.agents',
       'workflow.reviewer.maxPasses',
       'errorHandling.default.retry',
     ]);
@@ -158,6 +159,108 @@ describe('config path registry', () => {
       expect(map['claude-code']).toBe(ModelId.CLAUDE_OPUS);
       expect(map.codex).toBe(ModelId.GPT);
       expect(map['gemini-cli']).toBe('qwen3:32b');
+    });
+  });
+
+  describe('workflow.steps.<role>.agents', () => {
+    it('parses + writes a comma-list, applying to every step matching the role', () => {
+      // The default workflow has the "coder" role on TWO steps (implement +
+      // fix_review_issues). A single descriptor write should update both so
+      // they don't drift; the wizard relies on this to ask one question per
+      // role, not per step.
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.steps.coder.agents');
+      expect(resolved).not.toBeNull();
+      const descriptor = resolved!.descriptor;
+      expect(resolved!.params.role).toBe('coder');
+
+      const parsed = descriptor.parse(
+        'claude-code,codex',
+        config,
+        resolved!.params,
+        'workflow.steps.coder.agents',
+      );
+      descriptor.write(config, resolved!.params, parsed, 'workflow.steps.coder.agents');
+
+      const coderSteps = config.workflow.steps.filter((s) => s.role === 'coder');
+      expect(coderSteps.length).toBeGreaterThan(1); // sanity: both implement + fix steps exist
+      for (const step of coderSteps) {
+        expect(step.agents).toEqual(['claude-code', 'codex']);
+      }
+    });
+
+    it('matches by action as well as role (e.g. `review` resolves to the reviewer step)', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.steps.review.agents');
+      expect(resolved).not.toBeNull();
+      const reviewerStep = config.workflow.steps.find((s) => s.action === 'review');
+      expect(reviewerStep).toBeDefined();
+      expect(resolved!.descriptor.read(config, resolved!.params)).toEqual(reviewerStep!.agents);
+    });
+
+    it('rejects an empty list — every step must keep at least one candidate', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.steps.coder.agents');
+      expect(() =>
+        resolved!.descriptor.parse('[]', config, resolved!.params, 'workflow.steps.coder.agents'),
+      ).toThrow(/at least one agent name/);
+    });
+
+    it('rejects unknown agent names so the wizard cannot persist a broken reference', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.steps.coder.agents');
+      expect(() =>
+        resolved!.descriptor.parse(
+          'codex,bogus-agent',
+          config,
+          resolved!.params,
+          'workflow.steps.coder.agents',
+        ),
+      ).toThrow(/unknown agent "bogus-agent"/);
+    });
+
+    it('rejects roles that no step uses (parse-time error, not silent persist)', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.steps.gardener.agents');
+      expect(() =>
+        resolved!.descriptor.parse(
+          'codex',
+          config,
+          resolved!.params,
+          'workflow.steps.gardener.agents',
+        ),
+      ).toThrow(/no step with role or action "gardener"/);
+    });
+
+    it('options() lists registered agents plus the captain pseudo-agent', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.steps.coder.agents');
+      const opts = resolved!.descriptor.options(config, resolved!.params);
+      expect(opts).toContain('claude-code');
+      expect(opts).toContain('codex');
+      expect(opts).toContain('captain');
+    });
+
+    it('write does not mutate steps for other roles', () => {
+      const config = getDefaultConfig();
+      const reviewerBefore = config.workflow.steps
+        .find((s) => s.role === 'reviewer')!.agents.slice();
+      const resolved = resolveConfigPath('workflow.steps.coder.agents');
+      const parsed = resolved!.descriptor.parse(
+        'claude-code',
+        config,
+        resolved!.params,
+        'workflow.steps.coder.agents',
+      );
+      resolved!.descriptor.write(
+        config,
+        resolved!.params,
+        parsed,
+        'workflow.steps.coder.agents',
+      );
+      const reviewerAfter = config.workflow.steps
+        .find((s) => s.role === 'reviewer')!.agents;
+      expect(reviewerAfter).toEqual(reviewerBefore);
     });
   });
 });

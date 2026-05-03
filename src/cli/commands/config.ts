@@ -111,6 +111,37 @@ function workflowRoles(config: { workflow: { steps: Array<{ role: string; action
   return [...keys].sort();
 }
 
+/**
+ * Distinct step *roles* (not actions) — the keys we ask the wizard about
+ * for `workflow.steps.<role>.agents`. Returns roles in the original step
+ * order so the wizard prompts in the same order the workflow actually runs
+ * (coder → reviewer → judge), with duplicates collapsed.
+ */
+function workflowStepRoles(config: { workflow: { steps: Array<{ role: string }> } }): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const step of config.workflow.steps) {
+    if (seen.has(step.role)) continue;
+    seen.add(step.role);
+    ordered.push(step.role);
+  }
+  return ordered;
+}
+
+/**
+ * Render a step's `agents:[]` as a comma-separated string for the wizard
+ * input. Returns the FIRST matching step's list (matching steps must agree
+ * post-write since the path-registry write applies to all matches at once).
+ */
+function formatStepAgents(
+  config: { workflow: { steps: Array<{ role: string; action: string; agents: string[] }> } },
+  role: string,
+): string | undefined {
+  const step = config.workflow.steps.find((s) => s.role === role || s.action === role);
+  if (!step || step.agents.length === 0) return undefined;
+  return step.agents.join(',');
+}
+
 export interface SelectOption {
   label: string;
   value: string;
@@ -857,6 +888,26 @@ function buildWizardSteps(originalConfig: FullConfig, defaults: FullConfig): Wiz
       include: (state) => getConfigValueOptions(state.draft, 'captain.preset').length > 0,
     }),
   ];
+
+  // Per-step `agents:` candidate list — one prompt per unique role/action so
+  // the user can retune which CLIs each role can use without writing YAML.
+  // Lives under advanced setup; quick mode keeps the smart defaults from
+  // defaults/workflow.yaml. Applied to every step matching the role/action
+  // (default workflow has "coder" twice — implement + fix_review_issues).
+  for (const role of workflowStepRoles(originalConfig)) {
+    const stepAgentsPath = `workflow.steps.${role}.agents`;
+    steps.push(fieldStep({
+      id: `role-agents:${role}`,
+      path: stepAgentsPath,
+      question: `Which agents should the "${role}" role accept? (preference order)`,
+      description: 'Comma-separated list — first agent is the preferred pick, others are fallbacks. Listing multiple gives the captain flexibility when one is busy or unavailable.',
+      currentValue: (config) => formatStepAgents(config, role),
+      defaultValue: (config) => formatStepAgents(config, role),
+      options: (state) => getConfigValueOptions(state.draft, stepAgentsPath),
+      defaults,
+      include: (state) => state.setupDepth === 'advanced',
+    }));
+  }
 
   for (const role of workflowRoles(originalConfig)) {
     const rolePath = `workflow.roleModels.${role}`;
