@@ -1,5 +1,4 @@
 import { program } from 'commander';
-import { runCommand } from './cli/commands/run.js';
 import { statusCommand } from './cli/commands/status.js';
 import { initCommand } from './cli/commands/init.js';
 import { registerConfigCommand } from './cli/commands/config.js';
@@ -9,31 +8,12 @@ import { setLogLevel } from './utils/logger.js';
 
 program
   .name('crew')
-  .description('Provider-agnostic multi-agent coding crew through conversation')
-  .version('0.1.0')
+  .description('MCP server + skill for multi-agent coding orchestration')
+  .version('0.2.0-dev')
   .option('--debug', 'Enable debug logging');
 
-program
-  .command('run')
-  .description('Start a new workflow or enter conversation mode')
-  .argument('[prompt]', 'Initial prompt (or enter interactive mode)')
-  .option('--on-ask-user <policy>', 'Behavior when human input is required in non-interactive mode: fail or prompt')
-  .option('--skip-preflight', 'Skip adapter readiness/authentication checks before running')
-  .option('--profile <profile>', 'Use a saved crew profile for this run without changing the active profile')
-  .action(async (prompt: string | undefined, opts: {
-    onAskUser?: string;
-    skipPreflight?: boolean;
-    profile?: string;
-  }) => {
-    if (program.opts<{ debug?: boolean }>().debug) {
-      setLogLevel('debug');
-    }
-    await runCommand(prompt, {
-      onAskUser: opts.onAskUser,
-      skipPreflight: opts.skipPreflight,
-      profile: opts.profile,
-    });
-  });
+// `crew run` (the v0.1 TUI entry point) is removed in v2. The host CLI is
+// the user-facing UI; v2 ships `crew serve` (M1) and `crew install` (M3).
 
 program
   .command('init')
