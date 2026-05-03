@@ -106,4 +106,14 @@ describe('runCommand preflight behavior', () => {
     expect(mockAssertRequiredAgentsReady).not.toHaveBeenCalled();
     expect(runner.run).toHaveBeenCalledWith('ship it');
   });
+
+  it('threads an explicit profile into runner creation', async () => {
+    const runner = createMockRunner();
+    mockCreateRunner.mockReturnValue({ runner, config, registry, stateStore });
+
+    await runCommand('ship it', { profile: 'codex-first', skipPreflight: true });
+
+    expect(mockCreateRunner).toHaveBeenCalledWith(expect.any(String), { profile: 'codex-first' });
+    expect(runner.run).toHaveBeenCalledWith('ship it');
+  });
 });

@@ -333,6 +333,52 @@ Current verification after this follow-up:
   - 723 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-05-01 Crew Profile Management Follow-Up
+
+Crew config profiles have been promoted from hidden storage plumbing to a
+first-class CLI surface:
+
+- `crew profile` / `crew profile list` lists saved profiles, the active marker,
+  scope, captain CLI/model, agent count, and backing file.
+- `crew profile show [name]` displays profile details.
+- `crew profile create <name> --from current|default|<profile>` snapshots an
+  effective config into a project/global profile file.
+- `crew profile use <name>` validates and persists the active profile.
+- `crew profile copy <source> <target>` and `crew profile delete <name>` manage
+  saved profile files.
+- `crew profile setup <name>` creates a profile when needed and runs the guided
+  config wizard against that profile.
+- `crew run --profile <name>` loads a profile for one run without changing the
+  active profile.
+- `crew config setup/edit --profile <name>` can target a specific profile.
+
+Runtime note: profiles currently select config only. Captain session/runtime
+state remains project-scoped, not profile-scoped. If cross-profile conversation
+carryover becomes confusing, the next follow-up should move captain session
+storage under the selected profile.
+
+Current verification after this follow-up:
+
+- Built CLI smoke in a temporary project:
+  - `node dist/index.js profile list`: passed.
+  - `node dist/index.js profile create codex-first --from default --select`:
+    passed.
+  - `node dist/index.js config set captain.cli codex --profile codex-first`:
+    passed.
+  - `node dist/index.js profile show codex-first`: passed and showed
+    `captain: codex`, `model: gpt-5.5`.
+  - `node dist/index.js profile copy codex-first codex-copy`: passed.
+  - `node dist/index.js profile show codex-copy`: passed and showed the copied
+    Codex captain settings.
+  - `node dist/index.js profile delete codex-copy --yes`: passed.
+- `npm run build`: passed.
+- `npm run lint`: passed.
+- `npm run test:run -- --configLoader runner`: passed.
+  - 83 test files passed.
+  - 1 test file skipped.
+  - 732 tests passed.
+  - 3 tests skipped.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

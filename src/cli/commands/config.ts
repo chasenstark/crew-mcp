@@ -1066,10 +1066,16 @@ function collectWizardChanges(
   return changes;
 }
 
-export async function configWizardCommand(options: { cwd?: string; io?: ConfigWizardIo } = {}): Promise<void> {
+export async function configWizardCommand(options: {
+  cwd?: string;
+  io?: ConfigWizardIo;
+  profile?: string;
+  scope?: ConfigScope;
+} = {}): Promise<void> {
   const cwd = options.cwd ?? process.cwd();
   const io = resolveConfigWizardIo(options.io);
-  const snapshot = showConfig(cwd);
+  const profile = options.profile ? parseProfileOption(options.profile) : undefined;
+  const snapshot = showConfig(cwd, profile ? { profile } : {});
   const defaults = getDefaultConfig();
   const originalConfig = snapshot.effectiveConfig;
   const selectedProfile = snapshot.activeProfile;
@@ -1080,7 +1086,7 @@ export async function configWizardCommand(options: { cwd?: string; io?: ConfigWi
 
   const steps = buildWizardSteps(originalConfig, defaults);
   const initialState: WizardState = {
-    selectedScope: snapshot.activeScope,
+    selectedScope: options.scope ?? snapshot.activeScope,
     setupDepth: 'quick',
     draft: structuredClone(originalConfig),
   };
@@ -1240,10 +1246,26 @@ export function registerConfigCommand(program: Command): void {
   command
     .command('setup')
     .description('Run guided config setup questions')
-    .action(() => runWithExitCode(() => configWizardCommand()));
+    .option('--profile <profile>', 'Edit a specific profile')
+    .option('--scope <scope>', 'Initial write scope: project|global')
+    .action((options: { profile?: string; scope?: string }) =>
+      runWithExitCode(() =>
+        configWizardCommand({
+          profile: options.profile,
+          scope: parseScopeOption(options.scope),
+        }),
+      ));
 
   command
     .command('edit')
     .description('Open guided config setup')
-    .action(() => runWithExitCode(() => configWizardCommand()));
+    .option('--profile <profile>', 'Edit a specific profile')
+    .option('--scope <scope>', 'Initial write scope: project|global')
+    .action((options: { profile?: string; scope?: string }) =>
+      runWithExitCode(() =>
+        configWizardCommand({
+          profile: options.profile,
+          scope: parseScopeOption(options.scope),
+        }),
+      ));
 }

@@ -10,13 +10,15 @@ import { assertRequiredAgentsReady } from '../runtime/preflight.js';
 
 export async function runCommand(
   prompt?: string,
-  options: { onAskUser?: string; skipPreflight?: boolean } = {},
+  options: { onAskUser?: string; skipPreflight?: boolean; profile?: string } = {},
 ): Promise<void> {
   const projectRoot = process.cwd();
   const logFile = enableFileLogging(projectRoot);
   logger.info(`Run log file: ${logFile}`);
 
-  const { runner, stateStore, config, registry, session, dispatcher } = createRunner(projectRoot);
+  const { runner, stateStore, config, registry, session, dispatcher } = createRunner(projectRoot, {
+    profile: options.profile,
+  });
   if (!options.skipPreflight) {
     await assertRequiredAgentsReady(registry, config);
   }
@@ -27,6 +29,9 @@ export async function runCommand(
 
     console.log(chalk.blue('\n  captain') + chalk.dim(' — starting workflow\n'));
     console.log(chalk.dim(`  log: ${logFile}\n`));
+    if (options.profile) {
+      console.log(chalk.dim(`  profile: ${options.profile}\n`));
+    }
 
     const runnerEvents = attachRunnerEvents(
       runner,

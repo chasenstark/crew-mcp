@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import type { FullConfig } from './types.js';
@@ -28,16 +28,24 @@ export function getGlobalConfigPath(): string {
   return join(homedir(), '.crew', 'workflow.yaml');
 }
 
+export function getProjectProfilesRoot(cwd: string): string {
+  return join(cwd, '.crew', 'profiles');
+}
+
+export function getGlobalProfilesRoot(): string {
+  return join(homedir(), '.crew', 'profiles');
+}
+
 export function getProjectProfileConfigPath(cwd: string, profile: string): string {
   const normalized = normalizeProfileName(profile);
   if (normalized === DEFAULT_CONFIG_PROFILE) return getProjectConfigPath(cwd);
-  return join(cwd, '.crew', 'profiles', normalized, 'workflow.yaml');
+  return join(getProjectProfilesRoot(cwd), normalized, 'workflow.yaml');
 }
 
 export function getGlobalProfileConfigPath(profile: string): string {
   const normalized = normalizeProfileName(profile);
   if (normalized === DEFAULT_CONFIG_PROFILE) return getGlobalConfigPath();
-  return join(homedir(), '.crew', 'profiles', normalized, 'workflow.yaml');
+  return join(getGlobalProfilesRoot(), normalized, 'workflow.yaml');
 }
 
 export function getScopePreferencePath(cwd: string): string {
@@ -110,6 +118,73 @@ export function saveConfigByScope(
   const paths = getConfigPaths(cwd, { profile });
   const targetPath = scope === 'project' ? paths.project : paths.global;
   atomicWrite(targetPath, serializeWorkflowYaml(config));
+  return targetPath;
+}
+
+function listProfilesFromRoot(root: string): string[] {
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => {
+      try {
+        normalizeProfileName(name);
+      } catch {
+        return false;
+      }
+      return existsSync(join(root, name, 'workflow.yaml'));
+    });
+}
+
+export function listConfigProfileNames(cwd: string): string[] {
+  const names = new Set<string>([DEFAULT_CONFIG_PROFILE]);
+  for (const profile of listProfilesFromRoot(getProjectProfilesRoot(cwd))) {
+    names.add(profile);
+  }
+  for (const profile of listProfilesFromRoot(getGlobalProfilesRoot())) {
+    names.add(profile);
+  }
+  return [...names].sort((a, b) => {
+    if (a === DEFAULT_CONFIG_PROFILE) return -1;
+    if (b === DEFAULT_CONFIG_PROFILE) return 1;
+    return a.localeCompare(b);
+  });
+}
+
+export function configProfileExists(cwd: string, profile: string): boolean {
+  const normalized = normalizeProfileName(profile);
+  if (normalized === DEFAULT_CONFIG_PROFILE) return true;
+  return existsSync(getProjectProfileConfigPath(cwd, normalized))
+    || existsSync(getGlobalProfileConfigPath(normalized));
+}
+
+export function configProfileExistsInScope(scope: ConfigScope, cwd: string, profile: string): boolean {
+  const normalized = normalizeProfileName(profile);
+  const path = scope === 'project'
+    ? getProjectProfileConfigPath(cwd, normalized)
+    : getGlobalProfileConfigPath(normalized);
+  return existsSync(path);
+}
+
+export function deleteConfigProfileByScope(scope: ConfigScope, cwd: string, profile: string): string {
+  const normalized = normalizeProfileName(profile);
+  if (normalized === DEFAULT_CONFIG_PROFILE) {
+    throw new Error('The default profile cannot be deleted.');
+  }
+
+  const targetPath = scope === 'project'
+    ? getProjectProfileConfigPath(cwd, normalized)
+    : getGlobalProfileConfigPath(normalized);
+  if (!existsSync(targetPath)) {
+    throw new Error(`Profile "${normalized}" does not exist in ${scope} scope.`);
+  }
+
+  rmSync(targetPath, { force: true });
+  try {
+    rmSync(dirname(targetPath));
+  } catch {
+    // Leave the profile directory when it contains user-managed files.
+  }
   return targetPath;
 }
 

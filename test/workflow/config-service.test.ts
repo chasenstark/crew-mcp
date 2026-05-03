@@ -5,15 +5,21 @@ import { homedir, tmpdir } from 'os';
 import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { getDefaultConfig, resolveCaptainModel } from '../../src/workflow/config-codec.js';
 import { ModelId } from '../../src/workflow/models.js';
-import { loadConfigByScope } from '../../src/workflow/config-repository.js';
+import { loadConfigByScope, readActiveProfilePreference } from '../../src/workflow/config-repository.js';
 import {
   addAgent,
   applyConfigPatch,
+  copyConfigProfile,
+  createConfigProfile,
+  deleteConfigProfile,
   getConfigProfile,
+  getConfigProfileSummary,
   getConfigValueOptions,
   getConfigScope,
+  listConfigProfiles,
   removeAgent,
   resetConfig,
+  selectConfigProfile,
   setConfigProfile,
   setConfigScope,
   setConfigValue,
@@ -63,6 +69,50 @@ describe('config-service', () => {
     const result = setConfigProfile(cwd, 'codex-first');
     expect(result.profile).toBe('codex-first');
     expect(getConfigProfile(cwd)).toBe('codex-first');
+  });
+
+  it('creates, lists, selects, copies, and deletes crew profiles', () => {
+    setConfigValue(cwd, 'captain.cli', 'codex');
+    setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);
+
+    const created = createConfigProfile(cwd, 'codex-first', { from: 'current' });
+    expect(created.profile).toBe('codex-first');
+    expect(created.scope).toBe('project');
+
+    let profiles = listConfigProfiles(cwd);
+    expect(profiles.map((profile) => profile.name)).toEqual(['default', 'codex-first']);
+    expect(profiles.find((profile) => profile.name === 'codex-first')?.captainCli).toBe('codex');
+
+    const selected = selectConfigProfile(cwd, 'codex-first');
+    expect(selected.profile).toBe('codex-first');
+    expect(readActiveProfilePreference(cwd)).toBe('codex-first');
+
+    const copied = copyConfigProfile(cwd, 'codex-first', 'codex-copy');
+    expect(copied.profile).toBe('codex-copy');
+    expect(loadConfigByScope('project', cwd, { profile: 'codex-copy' })?.captain.cli).toBe('codex');
+
+    const deleted = deleteConfigProfile(cwd, 'codex-first');
+    expect(deleted.activeProfile).toBe('default');
+    expect(readActiveProfilePreference(cwd)).toBe('default');
+    profiles = listConfigProfiles(cwd);
+    expect(profiles.map((profile) => profile.name)).toEqual(['default', 'codex-copy']);
+  });
+
+  it('rejects selecting or copying missing profiles', () => {
+    expect(() => selectConfigProfile(cwd, 'missing')).toThrow(/does not exist/);
+    expect(() => copyConfigProfile(cwd, 'missing', 'copy')).toThrow(/does not exist/);
+  });
+
+  it('rejects deleting the default profile', () => {
+    expect(() => deleteConfigProfile(cwd, 'default')).toThrow(/default profile cannot be deleted/);
+  });
+
+  it('shows profile details for a saved crew profile', () => {
+    createConfigProfile(cwd, 'review-heavy', { from: 'default' });
+    const summary = getConfigProfileSummary(cwd, 'review-heavy');
+    expect(summary.name).toBe('review-heavy');
+    expect(summary.projectExists).toBe(true);
+    expect(summary.captainCli).toBe(AgentId.CLAUDE_CODE);
   });
 
   it('applies patch for workflow reviewer max passes', () => {

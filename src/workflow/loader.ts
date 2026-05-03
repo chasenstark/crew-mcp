@@ -11,6 +11,6 @@ export {
 
 export { getGlobalConfigPath };
 
-export function loadWorkflowConfig(projectRoot: string): FullConfig {
-  return loadEffectiveConfig(projectRoot);
+export function loadWorkflowConfig(projectRoot: string, options: { profile?: string } = {}): FullConfig {
+  return loadEffectiveConfig(projectRoot, options);
 }

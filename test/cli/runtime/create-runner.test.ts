@@ -12,6 +12,8 @@ import {
 import { __resetPresetWarnLatchForTest } from '../../../src/captain/preset-resolver.js';
 import { logger } from '../../../src/utils/logger.js';
 import { ModelId } from '../../../src/workflow/models.js';
+import { getDefaultConfig } from '../../../src/workflow/config-codec.js';
+import { readActiveProfilePreference, saveConfigByScope } from '../../../src/workflow/config-repository.js';
 
 function writeProjectWorkflow(projectRoot: string, yaml: string): void {
   const crewDir = join(projectRoot, '.crew');
@@ -59,6 +61,19 @@ describe('createRunner', () => {
     s.persist();
     const { session } = createRunner(projectRoot);
     expect(session.getMessages().length).toBeGreaterThan(0);
+  });
+
+  it('loads an explicit crew profile without changing the active profile', () => {
+    const profileConfig = getDefaultConfig();
+    profileConfig.captain.cli = 'codex';
+    profileConfig.captain.model = ModelId.GPT_CODEX;
+    saveConfigByScope('project', projectRoot, profileConfig, { profile: 'codex-first' });
+
+    const { config } = createRunner(projectRoot, { profile: 'codex-first' });
+
+    expect(config.captain.cli).toBe('codex');
+    expect(config.captain.model).toBe(ModelId.GPT_CODEX);
+    expect(readActiveProfilePreference(projectRoot)).toBeNull();
   });
 
   it('clears an incompatible captain.model scalar before the runner captures it', () => {

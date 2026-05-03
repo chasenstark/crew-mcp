@@ -3,6 +3,7 @@ import { runCommand } from './cli/commands/run.js';
 import { statusCommand } from './cli/commands/status.js';
 import { initCommand } from './cli/commands/init.js';
 import { registerConfigCommand } from './cli/commands/config.js';
+import { registerProfileCommand } from './cli/commands/profile.js';
 import { stateResetCommand } from './cli/commands/state-reset.js';
 import { setLogLevel } from './utils/logger.js';
 
@@ -18,13 +19,19 @@ program
   .argument('[prompt]', 'Initial prompt (or enter interactive mode)')
   .option('--on-ask-user <policy>', 'Behavior when human input is required in non-interactive mode: fail or prompt')
   .option('--skip-preflight', 'Skip adapter readiness/authentication checks before running')
-  .action(async (prompt: string | undefined, opts: { onAskUser?: string; skipPreflight?: boolean }) => {
+  .option('--profile <profile>', 'Use a saved crew profile for this run without changing the active profile')
+  .action(async (prompt: string | undefined, opts: {
+    onAskUser?: string;
+    skipPreflight?: boolean;
+    profile?: string;
+  }) => {
     if (program.opts<{ debug?: boolean }>().debug) {
       setLogLevel('debug');
     }
     await runCommand(prompt, {
       onAskUser: opts.onAskUser,
       skipPreflight: opts.skipPreflight,
+      profile: opts.profile,
     });
   });
 
@@ -55,6 +62,7 @@ program
   });
 
 registerConfigCommand(program);
+registerProfileCommand(program);
 
 const stateCommand = program
   .command('state')

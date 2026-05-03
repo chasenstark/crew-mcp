@@ -3,7 +3,11 @@ import type { AgentConfig, FullConfig } from './types.js';
 import type { ConfigScope } from './config-repository.js';
 import {
   DEFAULT_CONFIG_PROFILE,
+  configProfileExists,
+  configProfileExistsInScope,
+  deleteConfigProfileByScope,
   getConfigPaths,
+  listConfigProfileNames,
   loadEffectiveConfig,
   readActiveProfilePreference,
   readActiveScopePreference,
@@ -66,6 +70,41 @@ export interface ConfigRemoveAgentResult {
   name: string;
   removedAgent: AgentConfig;
   config: FullConfig;
+}
+
+export type ConfigProfileSource = ConfigScope | 'defaults';
+
+export interface ConfigProfileSummary {
+  name: string;
+  active: boolean;
+  projectExists: boolean;
+  globalExists: boolean;
+  effectiveSource: ConfigProfileSource;
+  filePath: string | null;
+  workflowName: string;
+  captainCli: string;
+  captainModel?: string;
+  agentCount: number;
+}
+
+export interface ConfigProfileWriteResult {
+  profile: string;
+  scope: ConfigScope;
+  filePath: string;
+  config: FullConfig;
+}
+
+export interface ConfigProfileSelectResult {
+  profile: string;
+  profilePath: string;
+}
+
+export interface ConfigProfileDeleteResult {
+  profile: string;
+  scope: ConfigScope;
+  filePath: string;
+  activeProfile: string;
+  profilePath?: string;
 }
 
 export { SUPPORTED_CONFIG_SET_PATHS };
@@ -241,6 +280,142 @@ export function getConfigScope(cwd: string): ConfigScope {
 
 export function getConfigProfile(cwd: string): string {
   return readActiveProfilePreference(cwd) ?? DEFAULT_CONFIG_PROFILE;
+}
+
+function effectiveProfileSource(paths: ReturnType<typeof getConfigPaths>): ConfigProfileSource {
+  if (paths.effective === paths.project || paths.effective === paths.defaultProject) return 'project';
+  if (paths.effective === paths.global || paths.effective === paths.defaultGlobal) return 'global';
+  return 'defaults';
+}
+
+function profileSummary(cwd: string, profile: string, activeProfile: string): ConfigProfileSummary {
+  const normalizedProfile = parseProfile(profile);
+  const paths = getConfigPaths(cwd, { profile: normalizedProfile });
+  const config = loadEffectiveConfig(cwd, { profile: normalizedProfile });
+  return {
+    name: normalizedProfile,
+    active: normalizedProfile === activeProfile,
+    projectExists: configProfileExistsInScope('project', cwd, normalizedProfile),
+    globalExists: configProfileExistsInScope('global', cwd, normalizedProfile),
+    effectiveSource: effectiveProfileSource(paths),
+    filePath: paths.effective,
+    workflowName: config.workflow.name,
+    captainCli: config.captain.cli,
+    captainModel: resolveCaptainModel(config.captain),
+    agentCount: Object.keys(config.agents).length,
+  };
+}
+
+export function listConfigProfiles(cwd: string): ConfigProfileSummary[] {
+  const activeProfile = getConfigProfile(cwd);
+  return listConfigProfileNames(cwd)
+    .map((profile) => profileSummary(cwd, profile, activeProfile));
+}
+
+export function getConfigProfileSummary(cwd: string, profile: string): ConfigProfileSummary {
+  const normalizedProfile = parseProfile(profile);
+  if (!configProfileExists(cwd, normalizedProfile)) {
+    throw new Error(`Profile "${normalizedProfile}" does not exist.`);
+  }
+  return profileSummary(cwd, normalizedProfile, getConfigProfile(cwd));
+}
+
+function resolveSourceProfileConfig(cwd: string, from: string | undefined): FullConfig {
+  const normalizedFrom = from?.trim();
+  if (!normalizedFrom || normalizedFrom === 'current') {
+    return loadEffectiveConfig(cwd);
+  }
+  const profile = parseProfile(normalizedFrom);
+  if (!configProfileExists(cwd, profile)) {
+    throw new Error(`Source profile "${profile}" does not exist.`);
+  }
+  return loadEffectiveConfig(cwd, { profile });
+}
+
+export function createConfigProfile(
+  cwd: string,
+  profile: string,
+  options: { from?: string; scope?: ConfigScope } = {},
+): ConfigProfileWriteResult {
+  const normalizedProfile = parseProfile(profile);
+  if (normalizedProfile === DEFAULT_CONFIG_PROFILE) {
+    throw new Error('The default profile already exists.');
+  }
+  if (configProfileExists(cwd, normalizedProfile)) {
+    throw new Error(`Profile "${normalizedProfile}" already exists.`);
+  }
+
+  const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
+  const config = resolveSourceProfileConfig(cwd, options.from);
+  validateConfigOrThrow(config);
+  const filePath = saveConfigByScope(scope, cwd, config, { profile: normalizedProfile });
+  return { profile: normalizedProfile, scope, filePath, config };
+}
+
+export function copyConfigProfile(
+  cwd: string,
+  sourceProfile: string,
+  targetProfile: string,
+  options: { scope?: ConfigScope } = {},
+): ConfigProfileWriteResult {
+  const source = parseProfile(sourceProfile);
+  if (!configProfileExists(cwd, source)) {
+    throw new Error(`Source profile "${source}" does not exist.`);
+  }
+  return createConfigProfile(cwd, targetProfile, {
+    from: source,
+    scope: options.scope,
+  });
+}
+
+export function selectConfigProfile(cwd: string, profile: string): ConfigProfileSelectResult {
+  const normalizedProfile = parseProfile(profile);
+  if (!configProfileExists(cwd, normalizedProfile)) {
+    throw new Error(`Profile "${normalizedProfile}" does not exist.`);
+  }
+  const profilePath = saveActiveProfilePreference(cwd, normalizedProfile);
+  return { profile: normalizedProfile, profilePath };
+}
+
+function resolveDeleteScope(cwd: string, profile: string, scope: ConfigScope | undefined): ConfigScope {
+  if (scope) return parseScope(scope);
+  const scopes: ConfigScope[] = [];
+  if (configProfileExistsInScope('project', cwd, profile)) scopes.push('project');
+  if (configProfileExistsInScope('global', cwd, profile)) scopes.push('global');
+  if (scopes.length === 0) {
+    throw new Error(`Profile "${profile}" does not exist.`);
+  }
+  if (scopes.length === 1) return scopes[0];
+  const activeScope = getConfigScope(cwd);
+  return scopes.includes(activeScope) ? activeScope : scopes[0];
+}
+
+export function deleteConfigProfile(
+  cwd: string,
+  profile: string,
+  options: { scope?: ConfigScope } = {},
+): ConfigProfileDeleteResult {
+  const normalizedProfile = parseProfile(profile);
+  if (normalizedProfile === DEFAULT_CONFIG_PROFILE) {
+    throw new Error('The default profile cannot be deleted.');
+  }
+  const scope = resolveDeleteScope(cwd, normalizedProfile, options.scope);
+  const filePath = deleteConfigProfileByScope(scope, cwd, normalizedProfile);
+
+  let activeProfile = getConfigProfile(cwd);
+  let profilePath: string | undefined;
+  if (activeProfile === normalizedProfile && !configProfileExists(cwd, normalizedProfile)) {
+    profilePath = saveActiveProfilePreference(cwd, DEFAULT_CONFIG_PROFILE);
+    activeProfile = DEFAULT_CONFIG_PROFILE;
+  }
+
+  return {
+    profile: normalizedProfile,
+    scope,
+    filePath,
+    activeProfile,
+    profilePath,
+  };
 }
 
 export function setConfigScope(cwd: string, scope: ConfigScope): { scope: ConfigScope; scopePath: string } {

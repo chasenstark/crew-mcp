@@ -38,9 +38,10 @@ export function createRunner(
   projectRoot: string,
   options: {
     stateStore?: StateStore;
+    profile?: string;
   } = {},
 ): CreateRunnerResult {
-  const config = loadWorkflowConfig(projectRoot);
+  const config = loadWorkflowConfig(projectRoot, { profile: options.profile });
   const registry = createRegistryFromConfig(config.agents);
   const stateStore = options.stateStore ?? new StateStore(projectRoot);
   const worktreeManager = new WorktreeManager(projectRoot);
