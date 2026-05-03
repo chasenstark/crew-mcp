@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { formatStepComplete, formatStepStart } from '../step-status.js';
 import type { CrewRunner } from '../../captain/runner.js';
 import type { ToolDispatcher } from '../../captain/tool-dispatcher.js';
+import { logger } from '../../utils/logger.js';
 
 interface RunnerEventStyle {
   agentStartSymbol: string;
@@ -17,11 +18,11 @@ export function attachRunnerEvents(
   dispatcher?: ToolDispatcher,
 ): { dispose: () => void } {
   runner.on('step:start', (step, data) => {
-    console.log(chalk.dim(`  [${step}] ${formatStepStart(step, data)}`));
+    logger.info(`[${step}] ${formatStepStart(step, data)}`);
   });
 
   runner.on('step:complete', (step, data) => {
-    console.log(chalk.dim(`    -> ${formatStepComplete(step, data)}`));
+    logger.info(`[${step}] ${formatStepComplete(step, data)}`);
   });
 
   runner.on('report', (message) => {
@@ -37,25 +38,21 @@ export function attachRunnerEvents(
     ? [
         dispatcher.onEvent('run:start', (info) => {
           const id = info.runId ?? info.toolCallId;
-          console.log(chalk.green(`  ${style.agentStartSymbol} ${info.toolName}`) + chalk.dim(` ${id}`));
+          logger.info(`${style.agentStartSymbol} ${info.toolName} ${id}`);
         }),
         dispatcher.onEvent('run:stream', (info) => {
           const chunk = info.chunk.trimEnd();
-          if (chunk) console.log(chalk.dim(`    ${info.toolCallId} ${style.separator} ${chunk}`));
+          if (chunk) logger.debug(`${info.toolCallId} ${style.separator} ${chunk}`);
         }),
         dispatcher.onEvent('run:complete', (info) => {
           const id = info.runId ?? info.toolCallId;
-          console.log(`  ${chalk.green(style.successSymbol)} ${info.toolName} ${style.separator} ${id}`);
+          logger.info(`${style.successSymbol} ${info.toolName} ${style.separator} ${id}`);
         }),
         dispatcher.onEvent('run:failed', (info) => {
-          console.log(
-            `  ${chalk.red(style.errorSymbol)} ${info.toolName} ${style.separator} ${info.error}`,
-          );
+          logger.error(`${style.errorSymbol} ${info.toolName} ${style.separator} ${info.error}`);
         }),
         dispatcher.onEvent('run:cancelled', (info) => {
-          console.log(
-            `  ${chalk.yellow(style.errorSymbol)} ${info.toolName} ${style.separator} ${info.reason}`,
-          );
+          logger.warn(`${style.errorSymbol} ${info.toolName} ${style.separator} ${info.reason}`);
         }),
       ]
     : [];

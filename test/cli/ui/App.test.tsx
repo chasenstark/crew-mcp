@@ -299,7 +299,7 @@ describe('App (M1.5 post-rewrite)', () => {
     expect(frame).toContain('beta');
   });
 
-  it('renders dispatcher stream chunks in the conversation view', async () => {
+  it('keeps dispatcher stream chunks out of the conversation view', async () => {
     const { runner } = createFakeRunner();
     const { lastFrame } = renderApp(
       <App pipeline={runner} session={session} dispatcher={dispatcher} />,
@@ -318,8 +318,10 @@ describe('App (M1.5 post-rewrite)', () => {
     });
     await flush();
 
-    expect(lastFrame()).toContain('run_agent (streaming)');
-    expect(lastFrame()).toContain('working on it');
+    expect(lastFrame()).toContain('run_agent');
+    expect(lastFrame()).toContain('streaming-call');
+    expect(lastFrame()).not.toContain('run_agent (streaming)');
+    expect(lastFrame()).not.toContain('working on it');
   });
 
   it('/config set blocked when tool calls are in flight (sessionBusy)', async () => {

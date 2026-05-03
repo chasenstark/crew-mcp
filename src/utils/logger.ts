@@ -22,7 +22,7 @@ function parseLevel(raw: string | undefined): LogLevel | undefined {
 }
 
 function resolveInitialConsoleLevel(): LogLevel {
-  return parseLevel(process.env.CREW_LOG_LEVEL) ?? 'info';
+  return parseLevel(process.env.CREW_LOG_LEVEL) ?? 'error';
 }
 
 function resolveInitialFileLevel(): LogLevel {

@@ -31,7 +31,7 @@ describe('attachRunnerEvents', () => {
     errorSpy.mockRestore();
   });
 
-  it('prints dispatcher progress for non-interactive runs', async () => {
+  it('keeps dispatcher progress out of non-interactive stdout', async () => {
     const dispatcher = new ToolDispatcher();
     const subscription = attachRunnerEvents(
       createRunner(),
@@ -57,8 +57,8 @@ describe('attachRunnerEvents', () => {
     subscription.dispose();
 
     const output = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(output).toContain('run_agent');
-    expect(output).toContain('chunk one');
-    expect(output).toContain('ok');
+    expect(output).not.toContain('run_agent');
+    expect(output).not.toContain('chunk one');
+    expect(output).not.toContain('ok');
   });
 });

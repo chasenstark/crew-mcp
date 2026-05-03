@@ -9,12 +9,12 @@ import type { CaptainSession } from '../../captain/session.js';
 import type { ToolDispatcher } from '../../captain/tool-dispatcher.js';
 import type { FullConfig } from '../../workflow/types.js';
 import { formatStepComplete, formatStepStart, getStepLabel } from '../step-status.js';
+import { logger } from '../../utils/logger.js';
 
 interface InFlightToolCall {
   toolCallId: string;
   toolName: string;
   startedAt: number;
-  latestChunk?: string;
 }
 
 interface Props {
@@ -54,47 +54,26 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
     setMessages((prev) => [...prev, { role, content }]);
   }, []);
 
-  const streamKeyRef = useRef<string | null>(null);
-
-  const appendStreamChunk = useCallback((agentName: string, taskId: string, chunk: string) => {
-    const key = `${agentName}:${taskId}`;
-    setMessages((prev) => {
-      if (streamKeyRef.current === key && prev.length > 0 && prev[prev.length - 1].role === 'stream') {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          ...updated[updated.length - 1],
-          content: updated[updated.length - 1].content + chunk,
-          latestChunk: chunk,
-        };
-        return updated;
-      }
-      streamKeyRef.current = key;
-      return [...prev, { role: 'stream', content: chunk, latestChunk: chunk, agentName }];
-    });
-  }, []);
-
-  const finalizeStream = useCallback(() => {
-    streamKeyRef.current = null;
-  }, []);
-
   useEffect(() => {
     pipeline.on('step:start', (step, data) => {
       setCurrentStep(getStepLabel(step));
-      addMessage('system', `Step start  [${step}]  ${formatStepStart(step, data)}`);
+      logger.info(`Step start [${step}] ${formatStepStart(step, data)}`);
     });
 
     pipeline.on('step:complete', (step, data) => {
-      addMessage('system', `Step done   [${step}]  ${formatStepComplete(step, data)}`);
+      logger.info(`Step done [${step}] ${formatStepComplete(step, data)}`);
       setCurrentStep(null);
     });
 
     pipeline.on('report', (message) => {
+      logger.info('Workflow report emitted');
       addMessage('assistant', message);
       setCurrentStep(null);
       setRunnerActive(false);
     });
 
     pipeline.on('error', (error) => {
+      logger.error('Workflow error', error);
       addMessage('system', `Error: ${error.message}`);
       setCurrentStep(null);
       setRunnerActive(false);
@@ -103,12 +82,13 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
     return () => {
       pipeline.removeAllListeners();
     };
-  }, [pipeline, addMessage, appendStreamChunk, finalizeStream]);
+  }, [pipeline, addMessage]);
 
   // Wire dispatcher events to inFlightToolCalls state.
   useEffect(() => {
     const handles = [
       dispatcher.onEvent('run:start', (info) => {
+        logger.info(`Tool call started: ${info.toolName} ${info.runId ?? info.toolCallId}`);
         const next = new Map(inFlightToolCallsRef.current);
         next.set(info.toolCallId, {
           toolCallId: info.toolCallId,
@@ -119,40 +99,34 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
         setInFlightToolCalls(next);
       }),
       dispatcher.onEvent('run:stream', (info) => {
-        const existing = inFlightToolCallsRef.current.get(info.toolCallId);
-        if (!existing) return;
-        const next = new Map(inFlightToolCallsRef.current);
-        next.set(info.toolCallId, { ...existing, latestChunk: info.chunk });
-        inFlightToolCallsRef.current = next;
-        setInFlightToolCalls(next);
-        appendStreamChunk(existing.toolName, info.toolCallId, info.chunk);
+        logger.debug(`Tool call stream: ${info.toolCallId}`, info.chunk);
       }),
       dispatcher.onEvent('run:complete', (info) => {
+        logger.info(`Tool call completed: ${info.toolName} ${info.runId ?? info.toolCallId}`);
         const next = new Map(inFlightToolCallsRef.current);
         next.delete(info.toolCallId);
         inFlightToolCallsRef.current = next;
         setInFlightToolCalls(next);
-        finalizeStream();
       }),
       dispatcher.onEvent('run:failed', (info) => {
+        logger.error(`Tool call failed: ${info.toolName}`, info.error);
         const next = new Map(inFlightToolCallsRef.current);
         next.delete(info.toolCallId);
         inFlightToolCallsRef.current = next;
         setInFlightToolCalls(next);
-        finalizeStream();
       }),
       dispatcher.onEvent('run:cancelled', (info) => {
+        logger.warn(`Tool call cancelled: ${info.toolName}`, info.reason);
         const next = new Map(inFlightToolCallsRef.current);
         next.delete(info.toolCallId);
         inFlightToolCallsRef.current = next;
         setInFlightToolCalls(next);
-        finalizeStream();
       }),
     ];
     return () => {
       for (const h of handles) h.dispose();
     };
-  }, [dispatcher, appendStreamChunk, finalizeStream]);
+  }, [dispatcher]);
 
   const sessionBusy = inFlightToolCalls.size > 0;
 
@@ -217,7 +191,6 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
         }
         if (!rest || rest === '') {
           pipeline.cancel('Cancelled by user from interactive session');
-          finalizeStream();
           setCurrentStep(null);
           addMessage('system', 'Cancelled. Session terminated; workflow state saved as interrupted.');
           return;
@@ -254,7 +227,7 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
         setRunnerActive(false);
       });
     },
-    [pipeline, session, dispatcher, config, addMessage, finalizeStream, sessionBusy, runnerActive],
+    [pipeline, session, dispatcher, config, addMessage, sessionBusy, runnerActive],
   );
 
   useEffect(() => {
@@ -285,8 +258,7 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
             <Box key={call.toolCallId}>
               <Text color="yellow">{'\u25CF '}</Text>
               <Text dimColor>
-                {call.toolName} ({call.toolCallId}
-                {call.latestChunk ? `): ${call.latestChunk.slice(0, 60)}` : ')'}
+                {call.toolName} ({call.toolCallId})
               </Text>
             </Box>
           ))}

@@ -379,6 +379,30 @@ Current verification after this follow-up:
   - 732 tests passed.
   - 3 tests skipped.
 
+## Update - 2026-05-03 Terminal Log Noise Follow-Up
+
+The terminal UI no longer renders runtime progress logs inline:
+
+- Interactive Ink sessions no longer append step start/done messages to the
+  conversation.
+- Interactive Ink sessions no longer render dispatched agent stream chunks in
+  the conversation view or in the in-flight tool strip. The strip remains as a
+  compact "tool in flight" indicator with tool name and id.
+- Non-interactive `crew run "<prompt>"` no longer prints dispatcher progress
+  lines for run start, stream chunks, completion, failure, or cancellation.
+- Runtime progress details are now written through the shared logger so they
+  still land in `.crew/logs/run-*.log`.
+- The default console log threshold is now `error`; `CREW_LOG_LEVEL=debug` or
+  `--debug` still opt back into terminal log output when needed.
+
+Current verification after this follow-up:
+
+- `npm run test:run -- --configLoader runner test/cli/ui/App.test.tsx test/cli/runtime/attach-runner-events.test.ts test/utils/logger.test.ts test/cli/commands/run.test.ts`:
+  passed.
+  - 4 test files passed.
+  - 22 tests passed.
+- `npm run lint`: passed.
+
 ## Baseline
 
 - Branch state reviewed: `main` at `829385b` (`docs(plans): update codex-captain-performance with shipped state`).

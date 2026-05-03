@@ -20,7 +20,7 @@ describe('logger file logging', () => {
       expect(contents).toContain('"key": "value"');
     } finally {
       rmSync(projectRoot, { recursive: true, force: true });
-      setLogLevel('info');
+      setLogLevel('error');
     }
   });
 });
