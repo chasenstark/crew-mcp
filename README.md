@@ -1,5 +1,12 @@
 # crew
 
+This is v0.1 of crew. It hosted a captain LLM in a TUI and
+dispatched to Claude Code / Codex / Gemini as workers. After
+3 weeks of dogfooding I realized the host CLI was already a
+better captain than I could write. v2 inverts the architecture:
+crew is now an MCP server + skill installed into the host CLI.
+See https://github.com/chasenstark/crew-mcp. This repo is preserved as-is for historical context.
+
 A CLI tool that lets you talk to one AI agent that manages others. You describe what you want built — the captain decomposes the work, dispatches it to coding agents (Claude Code, Codex, or any CLI-based agent), reviews the output, iterates, and reports back.
 
 No API keys required. Uses CLI subscription auth for everything.
@@ -20,16 +27,16 @@ User: "Build a DatePicker component. Claude builds, Codex reviews."
 
 The captain is a CLI-backed LLM that drives the crew through **8 tools**:
 
-| Tool | Purpose |
-|------|---------|
-| **run_agent** | Delegate a bounded task to a named subagent |
-| **list_agents** | Discover available agents + capabilities + health |
-| **ask_user** | Block until the user answers |
-| **message_user** | Narrate without ending the turn |
-| **plan_tasks** | Decompose into structured tasks (optional wrapper) |
-| **analyze_output** | Structured assessment of agent output (optional) |
-| **compress_context** | Terse summary for the next pass (optional) |
-| **finish** | Emit final report and terminate |
+| Tool                 | Purpose                                            |
+| -------------------- | -------------------------------------------------- |
+| **run_agent**        | Delegate a bounded task to a named subagent        |
+| **list_agents**      | Discover available agents + capabilities + health  |
+| **ask_user**         | Block until the user answers                       |
+| **message_user**     | Narrate without ending the turn                    |
+| **plan_tasks**       | Decompose into structured tasks (optional wrapper) |
+| **analyze_output**   | Structured assessment of agent output (optional)   |
+| **compress_context** | Terse summary for the next pass (optional)         |
+| **finish**           | Emit final report and terminate                    |
 
 Each `run_agent` call spawns the subagent in its own **per-run git worktree** at `.crew/runs/<runId>/worktree/` — full repo access, zero interference. The captain's session is durable: messages persist across invocations, and the `providerSessionRef` lets Claude / Codex / Gemini resume natively without replay when the environment hasn't drifted.
 
@@ -231,6 +238,7 @@ Primary path: use `crew config` and `/config` commands.
 
 Profiles let you keep separate config variants (for example, `claude-captain` and `codex-captain`) and switch between them quickly.
 Profile files are stored under:
+
 - Project scope: `.crew/profiles/<profile>/workflow.yaml`
 - Global scope: `~/.crew/profiles/<profile>/workflow.yaml`
 - Default profile (when no named profile is set) continues using `.crew/workflow.yaml` and `~/.crew/workflow.yaml`.
@@ -271,7 +279,8 @@ agents:
   codex:
     adapter: codex
     model: gpt-5.3-codex
-    strengths: [implementation, review, testing, Python, TypeScript, React, security]
+    strengths:
+      [implementation, review, testing, Python, TypeScript, React, security]
 
 captain:
   cli: claude-code
@@ -284,6 +293,7 @@ error_handling:
 ```
 
 Model selection precedence:
+
 1. `workflow.role_models.<task role>`.
 2. If a task role matches a workflow step `action`, then `workflow.role_models.<step role>`.
 3. `agents.<agent>.model`.
