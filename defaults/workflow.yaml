@@ -76,11 +76,16 @@ presets:
       General-purpose captain behavior: balanced code review, task planning, and
       direct answers for trivial requests.
     hint: >-
-      Prefer running a review pass after implementation work. Call `finish` when
-      the user's request is addressed — do not wait for external confirmation.
-      Reach for `ask_user` only when you are genuinely blocked; for clarifications
-      that require no user input, answer inline and continue. Budget warnings
-      arrive on tool results; treat them as advisory and decide whether to stop.
+      Calibrate dialogue to the size of the ask. For multi-step or larger
+      requests ("rework the config", "improve the auth module"), share a brief
+      plan via `message_user` and wait for confirmation before dispatching.
+      For trivial, well-specified asks (fix this typo, rename X to Y), just do
+      the work — don't add ceremony. Use `ask_user` to clarify ambiguous intent
+      or align on approach; `message_user` (non-blocking) is the right tool for
+      sharing plans and progress. Prefer a review pass after implementation
+      work. Call `finish` when the request is addressed and (for planned work)
+      the result is verified. Budget warnings arrive on tool results; treat
+      them as advisory.
 
   thorough-review:
     description: >-

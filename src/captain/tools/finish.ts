@@ -33,7 +33,7 @@ export const finishInputSchema = z.object({
 export type FinishInput = z.infer<typeof finishInputSchema>;
 
 export const FINISH_DESCRIPTION =
-  'Emit the final report and terminate the session. Call this as soon as the user\'s request is addressed. Do NOT wait for a structured review unless the request explicitly asked for one.';
+  'Emit the final report and terminate the session. Call this when the user\'s request is addressed and (for planned work) you\'ve verified the result. Don\'t finish while alignment is still open or a dispatched agent\'s output is unverified. Don\'t wait for an unsolicited review.';
 
 export interface FinishResult {
   readonly status: 'finished' | 'blocked';

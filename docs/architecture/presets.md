@@ -19,9 +19,10 @@ presets:
     description: >-
       General-purpose captain behavior.
     hint: >-
-      Prefer running a review pass after implementation. Call `finish`
-      when the user's request is addressed. Reach for `ask_user` only
-      when you are genuinely blocked.
+      Calibrate dialogue to the size of the ask. Share a brief plan
+      before dispatching for multi-step or larger requests; just do the
+      work for trivial, well-specified asks. Use `ask_user` to clarify
+      ambiguous intent or align on approach.
     suggested_agent_roles:
       - reviewer
       - coder
@@ -49,10 +50,13 @@ inventory.
 
 Three presets ship in `defaults/workflow.yaml`:
 
-- **`default`** — balanced captain behavior. Runs a review pass after
-  implementation work, calls `finish` when the request is addressed,
-  and reaches for `ask_user` only when genuinely blocked. This is the
-  preset `crew run` uses out of the box.
+- **`default`** — balanced captain behavior. Calibrates dialogue to ask
+  size: shares a plan before dispatching for multi-step or larger
+  requests, just does the work for trivial asks, uses `ask_user` for
+  scope/alignment rather than only when blocked. Runs a review pass
+  after implementation work and calls `finish` when the request is
+  addressed (and verified, for planned work). This is the preset
+  `crew run` uses out of the box.
 - **`thorough-review`** — fans out to a second reviewer with a distinct
   perspective after any implementation `run_agent` call. Calls `finish`
   only after at least one review pass. Use when catching regressions

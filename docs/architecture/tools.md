@@ -25,12 +25,12 @@ source of truth.
 |------|---------------|-------------|
 | `run_agent` | dispatched | **Primary work primitive.** Delegate a bounded task to a named subagent. Allocates `.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up. Write the agent's prompt inline — do NOT route through `plan_tasks` for single-task work. Input: `{agent_id, prompt, working_directory?, model?, capabilities_hint?}`. |
 | `list_agents` | synchronous | Return the current agent inventory (name, capabilities, health, optional quota). |
-| `ask_user` | dispatched | Block until the user answers. Schedule via the ask-user coordinator; user_message events resolve in FIFO order. |
+| `ask_user` | dispatched | Block until the user answers. Use to clarify scope, resolve ambiguity, or align on approach — not only when blocked. Schedule via the ask-user coordinator; user_message events resolve in FIFO order. |
 | `message_user` | synchronous | Append an assistant-visible message without ending the turn. |
 | `plan_tasks` | synchronous | **Optional.** Wrapper over the `decompose` step helper. Useful for genuinely multi-step work; for single-task work dispatch directly through `run_agent`. Free-form `role` strings post-M3 (no hard enum). |
 | `analyze_output` | synchronous | **Optional.** Wrapper over `ingest`. Skip for typical cases — reason about the raw `tool_result` inline. |
 | `compress_context` | synchronous | **Optional.** Wrapper over `summarize`. Reach for this when the operating guardrails render the compression advisory (session > 15 messages since last compression AND > 100 KB of log). |
-| `finish` | synchronous | Emit the final report and terminate the session. Call this as soon as the user's request is addressed; do NOT wait for a structured review unless the request explicitly asked for one. Implementation is `dispatchFinish(session, loop, input)` — appends summary as an assistant message and calls `SessionLoop.requestExit(summary)` so the loop exits on its next scheduleNextTurn check. |
+| `finish` | synchronous | Emit the final report and terminate the session. Call this when the user's request is addressed and (for planned work) the result is verified; do not wait for an unsolicited review. Implementation is `dispatchFinish(session, loop, input)` — appends summary as an assistant message and calls `SessionLoop.requestExit(summary)` so the loop exits on its next scheduleNextTurn check. |
 
 ## When to use wrappers
 

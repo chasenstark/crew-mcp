@@ -105,6 +105,32 @@ describe('buildCaptainSystemPrompt', () => {
     );
   });
 
+  it('includes the calibrated-dialogue "Working with the user" section', () => {
+    const prompt = buildCaptainSystemPrompt({
+      workflow,
+      agents,
+      tools: liveCatalogEntries(),
+    });
+    // Section header must exist — the calibrated stance is a default-visible
+    // contract, not an opt-in preset.
+    expect(prompt).toContain('## Working with the user');
+    // The three calibration buckets must all be present so the captain can
+    // pick between them. Don't pin exact prose (it will iterate); pin the
+    // semantic markers.
+    expect(prompt).toMatch(/Small, well-specified asks/);
+    expect(prompt).toMatch(/Multi-step or larger asks/);
+    expect(prompt).toMatch(/Genuinely ambiguous/);
+    // Ordering: Working-with-user must come BEFORE Tools so the captain reads
+    // the conversational stance before seeing the tool inventory.
+    const workingIdx = prompt.indexOf('## Working with the user');
+    const toolsIdx = prompt.indexOf('## Tools');
+    expect(workingIdx).toBeGreaterThan(-1);
+    expect(toolsIdx).toBeGreaterThan(workingIdx);
+    // Guard against regression to the "only when genuinely blocked" framing
+    // anywhere in the prompt.
+    expect(prompt).not.toMatch(/genuinely blocked/);
+  });
+
   it('lists every agent with its capabilities', () => {
     const prompt = buildCaptainSystemPrompt({
       workflow,

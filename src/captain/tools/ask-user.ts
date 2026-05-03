@@ -30,7 +30,7 @@ export const askUserInputSchema = z.object({
 export type AskUserInput = z.infer<typeof askUserInputSchema>;
 
 export const ASK_USER_DESCRIPTION =
-  'Block and wait for a user response. Use only when genuinely blocked.';
+  'Ask the user a question and wait for their response. Use this to clarify scope, resolve ambiguity, or align on approach — not only when blocked. Skip it for trivial, well-specified requests; use `message_user` (non-blocking) when you want to share a plan rather than ask a question.';
 
 export interface DispatchAskUserArgs {
   session: CaptainSession;

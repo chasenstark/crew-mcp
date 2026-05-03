@@ -58,13 +58,23 @@ describe('ToolCatalog.toActionCatalog', () => {
     );
   });
 
-  it('finish tells the captain to end as soon as the request is addressed (M4-3)', () => {
+  it('finish ties termination to addressed-and-verified, not unsolicited review', () => {
     const catalog = new ToolCatalog({ registry: registry(), workflow });
     const finish = catalog.toActionCatalog().find((e) => e.name === 'finish')!;
     expect(finish.description).toContain(
-      'Call this as soon as the user\'s request is addressed',
+      "Call this when the user's request is addressed",
     );
-    expect(finish.description).toContain('Do NOT wait');
+    expect(finish.description).toContain("verified the result");
+    expect(finish.description).toContain("Don't wait for an unsolicited review");
+  });
+
+  it('ask_user is framed for scope/alignment, not only for being blocked', () => {
+    const catalog = new ToolCatalog({ registry: registry(), workflow });
+    const ask = catalog.toActionCatalog().find((e) => e.name === 'ask_user')!;
+    expect(ask.description).toContain('clarify scope');
+    expect(ask.description).toContain('not only when blocked');
+    // Guards against a regression to the old "Use only when genuinely blocked" framing.
+    expect(ask.description).not.toMatch(/genuinely blocked/);
   });
 
   it('run_agent schema requires agent_id + prompt', () => {
