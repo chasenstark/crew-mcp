@@ -6,24 +6,33 @@ workflow:
   execution:
     mode: judgment
   steps:
+    # Each step lists one or more candidate agents in preference order.
+    # The captain treats `agents:` as a hint, not a contract — it picks the
+    # first available candidate by default but may dispatch to an alternate
+    # when there's reason (unhealthy agent, capability mismatch, user
+    # override). Listing multiple candidates is how a role gets "either/or"
+    # flexibility without changing the step itself.
+    # Order in `agents:` is a preference — first listed is the captain's
+    # default pick. Coder defaults to CODEX with CLAUDE_CODE as fallback;
+    # reviewer defaults to CLAUDE_CODE with CODEX as fallback.
     - role: coder
-      agent: CODEX
+      agents: [CODEX, CLAUDE_CODE]
       action: implement
 
     - role: reviewer
-      agent: CLAUDE_CODE
+      agents: [CLAUDE_CODE, CODEX]
       action: review
       max_passes: 3
 
     - role: judge
-      agent: CAPTAIN
+      agents: [CAPTAIN]
       action: evaluate_review
       criteria:
         - "Are the review findings actionable?"
         - "Is the fix complete and correct?"
 
     - role: coder
-      agent: CODEX
+      agents: [CODEX, CLAUDE_CODE]
       action: fix_review_issues
       condition: "judge says fixes needed"
 

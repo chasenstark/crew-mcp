@@ -1,6 +1,13 @@
 export interface WorkflowStep {
   role: string;
-  agent: string;
+  /**
+   * Candidate agents for this step, in preference order. The captain treats
+   * this as a hint, not a contract: it picks the first available candidate by
+   * default but may dispatch to an alternate when there's reason (unhealthy
+   * agent, capability mismatch, user override). Must be non-empty after
+   * parsing.
+   */
+  agents: string[];
   action: string;
   maxPasses?: number;
   condition?: string;

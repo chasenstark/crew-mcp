@@ -182,7 +182,7 @@ function roleTargetsCaptain(config: FullConfig, role: string): boolean {
     return true;
   }
   return config.workflow.steps.some(
-    (step) => (step.role === role || step.action === role) && step.agent === AgentId.CAPTAIN,
+    (step) => (step.role === role || step.action === role) && step.agents.includes(AgentId.CAPTAIN),
   );
 }
 
@@ -543,7 +543,7 @@ export function removeAgent(
       `Cannot remove agent "${name}" because captain.cli is set to it. Set captain.cli first.`,
     );
   }
-  const referencedSteps = current.workflow.steps.filter((step) => step.agent === name);
+  const referencedSteps = current.workflow.steps.filter((step) => step.agents.includes(name));
   if (referencedSteps.length > 0) {
     throw new Error(
       `Cannot remove agent "${name}" because workflow.steps reference it (${referencedSteps.length} step${referencedSteps.length === 1 ? '' : 's'}). Update workflow first.`,

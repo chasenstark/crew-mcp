@@ -32,7 +32,7 @@ function roleTargetsCaptain(config: FullConfig, role: string): boolean {
     return true;
   }
   return config.workflow.steps.some(
-    (step) => (step.role === role || step.action === role) && step.agent === AgentId.CAPTAIN,
+    (step) => (step.role === role || step.action === role) && step.agents.includes(AgentId.CAPTAIN),
   );
 }
 

@@ -35,7 +35,7 @@ ${formatAgents(agents)}
 
 ## Workflow Configuration
 Name: ${workflow.name}
-Steps: ${workflow.steps.map((s) => `${s.role} (${s.agent}) -> ${s.action}`).join(', ')}
+Steps: ${workflow.steps.map((s) => `${s.role} (${s.agents.join('|')}) -> ${s.action}`).join(', ')}
 Completion strategy: ${workflow.completion.strategy} (fallback: ${workflow.completion.fallback})
 
 ## User Request

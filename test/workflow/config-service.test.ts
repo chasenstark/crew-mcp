@@ -301,16 +301,22 @@ describe('config-service', () => {
     expect(projectConfig?.agents['local-llama'].model).toBe('llama3.2');
   });
 
-  it('returns role-model options for a role key and action key', () => {
+  it('returns role-model options spanning every candidate agent on the matching steps', () => {
+    // Steps now declare `agents: [...]` — multiple candidates per role. The
+    // role-model option list surfaces presets from EVERY candidate's adapter
+    // so the user can pick a CODEX-flavored model for a step that accepts
+    // both CLAUDE_CODE and CODEX. Tests that asserted single-adapter scoping
+    // pre-M5 were tracking the old singular `agent:` shape.
     const reviewerOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.reviewer');
     expect(reviewerOptions).toContain(ModelId.CLAUDE_SONNET);
     expect(reviewerOptions).toContain(ModelId.CLAUDE_OPUS);
-    expect(reviewerOptions).not.toContain(ModelId.GPT_CODEX);
+    expect(reviewerOptions).toContain(ModelId.GPT_CODEX); // candidate CODEX surfaces its presets
 
     const judgeOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.judge');
     expect(judgeOptions).toContain(ModelId.CLAUDE_SONNET);
     expect(judgeOptions).toContain(ModelId.CLAUDE_OPUS);
-    expect(judgeOptions).not.toContain(ModelId.GPT);
+    // Judge step has agents: [CAPTAIN] only, so its options stay scoped to
+    // the captain's adapter type — no GPT presets here.
     expect(judgeOptions).not.toContain(ModelId.GPT_CODEX);
 
     const fixOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.fix_review_issues');

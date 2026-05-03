@@ -103,7 +103,7 @@ workflow:
   name: agent-aliases
   steps:
     - role: coder
-      agent: CODEX
+      agents: [CODEX]
       action: implement
 agents:
   CLAUDE_CODE:
@@ -120,7 +120,7 @@ captain:
 `;
 
     const config = parseWorkflowYaml(yaml);
-    expect(config.workflow.steps[0].agent).toBe(AgentId.CODEX);
+    expect(config.workflow.steps[0].agents).toEqual([AgentId.CODEX]);
     expect(config.agents[AgentId.CLAUDE_CODE]?.adapter).toBe(AdapterId.CLAUDE_CODE);
     expect(config.agents[AgentId.CODEX]?.adapter).toBe(AdapterId.CODEX);
     expect(config.agents.local?.adapter).toBe(AdapterId.GENERIC);
@@ -317,7 +317,7 @@ captain:
       ...getDefaultConfig(),
       workflow: {
         name: 'custom',
-        steps: [{ role: 'coder', agent: 'claude-code', action: 'implement' }],
+        steps: [{ role: 'coder', agents: ['claude-code'], action: 'implement' }],
         completion: { strategy: 'simple', fallback: 'none' },
       },
     };
@@ -392,7 +392,7 @@ workflow:
   name: project-workflow
   steps:
     - role: coder
-      agent: claude-code
+      agents: [claude-code]
       action: implement
 `, 'utf-8');
 
@@ -409,7 +409,7 @@ workflow:
   name: global-workflow
   steps:
     - role: coder
-      agent: claude-code
+      agents: [claude-code]
       action: implement
 `, 'utf-8');
 
@@ -430,7 +430,7 @@ workflow:
   name: global
   steps:
     - role: coder
-      agent: claude-code
+      agents: [claude-code]
       action: implement
 agents:
   claude-code:
@@ -454,7 +454,7 @@ workflow:
   name: project-override
   steps:
     - role: reviewer
-      agent: codex
+      agents: [codex]
       action: review
 `, 'utf-8');
 

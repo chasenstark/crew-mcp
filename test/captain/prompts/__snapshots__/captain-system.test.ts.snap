@@ -32,6 +32,11 @@ You may call any of the following tools. Each call is structured; never emit raw
 - **codex**: implement, review
 - **claude-code**: review, refactor
 
+## Workflow hint
+Each role lists candidate agents in preference order — try the first available, deviate when there's reason (unhealthy agent, capability mismatch, the user told you to). This is a hint, not a contract; you have discretion to skip a role for trivial work or add an extra dispatch when warranted.
+- **coder** → implement: try \`codex\`
+- **reviewer** → review: try \`claude-code\`
+
 ## Preset hint
 (none)
 

@@ -40,7 +40,7 @@ describe('initCommand', () => {
 
     expect(parsed.workflow.name).toBe('default');
     expect(parsed.workflow.steps.length).toBeGreaterThan(0);
-    expect(parsed.workflow.steps[0]?.agent).toBe('codex');
+    expect(parsed.workflow.steps[0]?.agents).toEqual(['codex', 'claude-code']);
     expect(parsed.captain.cli).toBe('claude-code');
     expect(parsed.agents['claude-code']).toBeDefined();
     expect(parsed.errorHandling.default.onExhausted).toBe('ask_user');

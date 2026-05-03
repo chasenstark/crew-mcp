@@ -18,8 +18,8 @@ function buildConfig(): FullConfig {
       name: 'default',
       execution: { mode: 'judgment' },
       steps: [
-        { role: 'coder', agent: 'codex', action: 'implement' },
-        { role: 'judge', agent: 'captain', action: 'evaluate_review' },
+        { role: 'coder', agents: ['codex'], action: 'implement' },
+        { role: 'judge', agents: ['captain'], action: 'evaluate_review' },
       ],
       completion: { strategy: 'judge_approval', fallback: 'max_passes' },
     },
@@ -105,7 +105,7 @@ describe('preflight runtime checks', () => {
     const config = buildConfig();
     config.workflow.steps.push({
       role: 'reviewer',
-      agent: 'gemini-cli',
+      agents: ['gemini-cli'],
       action: 'review',
     });
 

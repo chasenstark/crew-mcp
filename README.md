@@ -241,12 +241,15 @@ Advanced/legacy path: edit `.crew/workflow.yaml` manually if needed:
 workflow:
   name: default
   steps:
+    # `agents:` is a list of candidate agents in preference order. The captain
+    # picks the first available, deviating only when there's reason. Listing
+    # multiple gives the captain flexibility without changing the step.
     - role: coder
-      agent: codex
+      agents: [codex, claude-code]
       action: implement
 
     - role: reviewer
-      agent: claude-code
+      agents: [claude-code, codex]
       action: review
       max_passes: 3
 

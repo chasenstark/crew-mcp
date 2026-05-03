@@ -15,8 +15,8 @@ const workflow: WorkflowConfig = {
   name: 'default',
   execution: { mode: 'judgment' },
   steps: [
-    { role: 'coder', agent: 'codex', action: 'implement' },
-    { role: 'reviewer', agent: 'claude-code', action: 'review' },
+    { role: 'coder', agents: ['codex'], action: 'implement' },
+    { role: 'reviewer', agents: ['claude-code'], action: 'review' },
   ],
   completion: { strategy: 'judge_approval', fallback: 'max_passes' },
 };
@@ -103,6 +103,50 @@ describe('buildCaptainSystemPrompt', () => {
     expect(prompt).toContain(
       "Call `run_agent` with a prompt you wrote — the agent sees the prompt verbatim. Don't route through `plan_tasks` for single-task work.",
     );
+  });
+
+  it('renders the workflow hint with role → candidate-agents mapping', () => {
+    const prompt = buildCaptainSystemPrompt({
+      workflow,
+      agents,
+      tools: liveCatalogEntries(),
+    });
+    expect(prompt).toContain('## Workflow hint');
+    // Hint-not-contract framing must be in the section body so the captain
+    // doesn't read the role mapping as a hard rule.
+    expect(prompt).toMatch(/preference order/);
+    expect(prompt).toMatch(/hint, not a contract/);
+    // Role mapping rendered as `role → action: try \`agent\``.
+    expect(prompt).toContain('**coder** → implement: try `codex`');
+    expect(prompt).toContain('**reviewer** → review: try `claude-code`');
+  });
+
+  it('renders multi-candidate steps as a comma-separated preference list', () => {
+    const multiCandidateWorkflow: WorkflowConfig = {
+      ...workflow,
+      steps: [
+        { role: 'coder', agents: ['codex', 'claude-code'], action: 'implement' },
+        { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review', maxPasses: 3 },
+      ],
+    };
+    const prompt = buildCaptainSystemPrompt({
+      workflow: multiCandidateWorkflow,
+      agents,
+      tools: liveCatalogEntries(),
+    });
+    // Order preserved (codex first for coder, claude-code first for reviewer)
+    // — that's the soft preference signal for the captain.
+    expect(prompt).toContain('**coder** → implement: try `codex, claude-code`');
+    expect(prompt).toContain('**reviewer** → review: try `claude-code, codex` (≤3 passes)');
+  });
+
+  it('omits the workflow hint section when there are no steps', () => {
+    const prompt = buildCaptainSystemPrompt({
+      workflow: { ...workflow, steps: [] },
+      agents,
+      tools: liveCatalogEntries(),
+    });
+    expect(prompt).not.toContain('## Workflow hint');
   });
 
   it('includes the calibrated-dialogue "Working with the user" section', () => {

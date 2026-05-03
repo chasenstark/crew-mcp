@@ -34,8 +34,10 @@ export function collectRequiredAgentNames(config: FullConfig): string[] {
   }
 
   for (const step of config.workflow.steps) {
-    if (step.agent && step.agent !== AgentId.CAPTAIN) {
-      required.add(step.agent);
+    for (const agent of step.agents) {
+      if (agent && agent !== AgentId.CAPTAIN) {
+        required.add(agent);
+      }
     }
   }
 

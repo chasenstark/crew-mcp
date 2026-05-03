@@ -243,9 +243,30 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   const toWorkflowStep = (rawStep: unknown): WorkflowConfig['steps'][number] => {
     const step = asObject(rawStep);
 
+    // Steps now declare a list of candidate agents (preference order). The
+    // captain treats this as a hint, not a contract. We accept the new
+    // `agents: [...]` form only — there's no backward-compatible scalar
+    // fallback per the M5 config rework.
+    const rawAgents = step.agents;
+    if (!Array.isArray(rawAgents) || rawAgents.length === 0) {
+      throw new Error(
+        'workflow.steps[*].agents must be a non-empty list of agent names. ' +
+        'The legacy scalar `agent: <name>` form is no longer supported — ' +
+        'use `agents: [<name>]` (one or more candidates).',
+      );
+    }
+    const agents = rawAgents
+      .filter((value): value is string => typeof value === 'string')
+      .map((name) => resolveAgentAlias(name));
+    if (agents.length === 0) {
+      throw new Error(
+        'workflow.steps[*].agents must contain at least one string agent name.',
+      );
+    }
+
     return {
       role: typeof step.role === 'string' ? step.role : 'coder',
-      agent: typeof step.agent === 'string' ? resolveAgentAlias(step.agent) : AgentId.CLAUDE_CODE,
+      agents,
       action: typeof step.action === 'string' ? step.action : 'implement',
       maxPasses: typeof step.max_passes === 'number' ? step.max_passes : undefined,
       condition: typeof step.condition === 'string' ? step.condition : undefined,
@@ -308,7 +329,7 @@ export function serializeWorkflowYaml(config: FullConfig): string {
       },
       steps: config.workflow.steps.map((step) => omitUndefined({
         role: step.role,
-        agent: step.agent,
+        agents: step.agents,
         action: step.action,
         max_passes: step.maxPasses,
         condition: step.condition,

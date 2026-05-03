@@ -60,6 +60,7 @@ export function buildCaptainSystemPrompt(args: BuildCaptainSystemPromptArgs): st
   sections.push(renderWorkingWithUser());
   sections.push(renderTools(args.tools));
   sections.push(renderAgents(args.agents));
+  sections.push(renderWorkflowHint(args.workflow));
   sections.push(renderPreset(args.preset, args.agents));
   sections.push(renderGuardrails(args.advisory));
 
@@ -90,6 +91,29 @@ function renderWorkingWithUser(): string {
     'Narrate when it helps the user track multi-step work — a short `message_user` between dispatches in a planned flow. For a single trivial dispatch, skip the narration; the result is enough.',
     '',
     'Verify before finishing when the work was planned. If you shared a plan upfront, check the dispatched agent\'s output against the plan before `finish`. For trivial asks, skip the verification beat.',
+  ].join('\n');
+}
+
+/**
+ * Render the workflow's role → candidate-agents map as a hint section.
+ * The captain treats this as a preference, not a contract — see the section
+ * body. Steps with no candidates (shouldn't happen post-codec validation)
+ * are skipped silently.
+ */
+function renderWorkflowHint(workflow: WorkflowConfig): string {
+  if (!workflow.steps || workflow.steps.length === 0) return '';
+  const lines = workflow.steps
+    .filter((step) => step.agents && step.agents.length > 0)
+    .map((step) => {
+      const candidates = step.agents.join(', ');
+      const passes = typeof step.maxPasses === 'number' ? ` (≤${step.maxPasses} passes)` : '';
+      return `- **${step.role}** → ${step.action}: try \`${candidates}\`${passes}`;
+    });
+  if (lines.length === 0) return '';
+  return [
+    '## Workflow hint',
+    'Each role lists candidate agents in preference order — try the first available, deviate when there\'s reason (unhealthy agent, capability mismatch, the user told you to). This is a hint, not a contract; you have discretion to skip a role for trivial work or add an extra dispatch when warranted.',
+    ...lines,
   ].join('\n');
 }
 

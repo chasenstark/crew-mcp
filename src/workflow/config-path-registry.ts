@@ -162,11 +162,16 @@ function modelPresetsForRole(config: FullConfig, role: string): string[] {
   const candidates: string[] = [];
   for (const step of config.workflow.steps) {
     if (step.role !== role && step.action !== role) continue;
-    if (step.agent === AgentId.CAPTAIN) {
-      candidates.push(...modelPresetsForCaptain(config));
-      continue;
+    // A step can list multiple candidate agents — surface model presets from
+    // every candidate so the role-model picker isn't artificially scoped to
+    // the first candidate's adapter.
+    for (const agent of step.agents) {
+      if (agent === AgentId.CAPTAIN) {
+        candidates.push(...modelPresetsForCaptain(config));
+        continue;
+      }
+      candidates.push(...modelPresetsForAgent(config, agent));
     }
-    candidates.push(...modelPresetsForAgent(config, step.agent));
   }
 
   if (candidates.length === 0) {
