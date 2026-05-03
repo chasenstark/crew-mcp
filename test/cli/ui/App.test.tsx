@@ -32,6 +32,7 @@ function makeConfig(): FullConfig {
 
 let latestSubmit: ((value: string) => void) | null = null;
 let latestDisabled: boolean | undefined;
+let latestStatus: string | undefined;
 
 const mockHandleConfigSlashCommand = vi.fn((input: string, context: { sessionBusy: boolean }) => {
   if (!input.startsWith('/config')) return null;
@@ -48,6 +49,7 @@ vi.mock('../../../src/cli/ui/PromptInput.js', () => ({
   PromptInput: (props: { onSubmit: (v: string) => void; disabled?: boolean; statusText?: string }) => {
     latestSubmit = props.onSubmit;
     latestDisabled = props.disabled;
+    latestStatus = props.statusText;
     return (
       <Text>[input disabled={String(Boolean(props.disabled))} status="{props.statusText ?? ''}"]</Text>
     );
@@ -115,6 +117,7 @@ describe('App (M1.5 post-rewrite)', () => {
     dispatcher = new ToolDispatcher();
     latestSubmit = null;
     latestDisabled = undefined;
+    latestStatus = undefined;
   });
 
   afterEach(() => {
@@ -139,6 +142,61 @@ describe('App (M1.5 post-rewrite)', () => {
     renderApp(<App pipeline={runner} session={session} dispatcher={dispatcher} />);
     await flush();
     expect(latestDisabled).toBe(false);
+  });
+
+  it('runs startup checks asynchronously and unlocks input when complete', async () => {
+    const { runner } = createFakeRunner();
+    let resolveStartup: (() => void) | null = null;
+    const startupHealthCheck = vi.fn(
+      () => new Promise<void>((resolve) => {
+        resolveStartup = resolve;
+      }),
+    );
+
+    const { lastFrame } = renderApp(
+      <App
+        pipeline={runner}
+        session={session}
+        dispatcher={dispatcher}
+        startupHealthCheck={startupHealthCheck}
+      />,
+    );
+    await flush();
+    expect(startupHealthCheck).toHaveBeenCalledTimes(1);
+    expect(latestDisabled).toBe(true);
+    expect(latestStatus).toContain('Checking adapter status');
+    expect(lastFrame()).toContain('Checking adapter status');
+
+    resolveStartup?.();
+    await flush();
+    await flush();
+    expect(latestDisabled).toBe(false);
+  });
+
+  it('shows startup failure and blocks run submissions until fixed', async () => {
+    const { runner, fake } = createFakeRunner();
+    const startupHealthCheck = vi.fn(async () => {
+      throw new Error('Preflight checks failed. Required adapters are not ready.');
+    });
+
+    const { lastFrame } = renderApp(
+      <App
+        pipeline={runner}
+        session={session}
+        dispatcher={dispatcher}
+        startupHealthCheck={startupHealthCheck}
+      />,
+    );
+    await flush();
+    await flush();
+
+    expect(latestDisabled).toBe(true);
+    expect(lastFrame()).toContain('Preflight checks failed. Required adapters are not ready.');
+    expect(latestStatus).toContain('Startup checks failed');
+
+    submit('attempt run while blocked');
+    await flush();
+    expect(fake.run).not.toHaveBeenCalled();
   });
 
   it('submitting input appends a user_message session event on first submission', async () => {

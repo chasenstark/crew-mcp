@@ -36,6 +36,13 @@ describe('PromptInput', () => {
     expect(lastFrame()).toContain('Running...');
   });
 
+  it('shows status text when enabled', () => {
+    const { lastFrame } = renderPrompt(
+      <PromptInput onSubmit={() => {}} statusText="Waiting for tool output..." />,
+    );
+    expect(lastFrame()).toContain('Waiting for tool output...');
+  });
+
   it('calls onSubmit with typed value on enter', async () => {
     const onSubmit = vi.fn();
     const { stdin } = renderPrompt(<PromptInput onSubmit={onSubmit} />);

@@ -5,6 +5,33 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-03 Interactive Startup Responsiveness + Status UX
+
+Interactive startup now renders Ink immediately and runs required adapter
+readiness checks inside the UI lifecycle:
+
+- `crew run` (interactive) no longer blocks first render on
+  `assertRequiredAgentsReady`.
+- The App mounts first, then runs startup health checks asynchronously.
+- Prompt input is temporarily disabled only while startup checks are active and
+  now shows a visible spinner/status line: `Checking adapter status...`.
+- If startup checks fail, the error is shown in the conversation and the input
+  stays blocked with a clear status hint to run `crew status`.
+
+Status visibility and logging behavior were also tightened:
+
+- Prompt status text now renders even when input is enabled, so step/busy
+  status remains visible during normal interaction.
+- Dispatcher `run:stream` chunk logging was removed from both interactive and
+  non-interactive event wiring to avoid high-volume log noise while preserving
+  start/complete/fail/cancel lifecycle logs.
+
+Current targeted verification after this follow-up:
+
+- `npm run test:run -- test/cli/commands/run.test.ts test/cli/ui/App.test.tsx test/cli/ui/PromptInput.test.tsx`:
+  passed.
+- `npm run lint`: passed.
+
 ## Update - 2026-04-29 Implementation Pass
 
 The first four priority items from this report have now shipped in the current

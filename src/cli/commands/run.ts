@@ -19,7 +19,7 @@ export async function runCommand(
   const { runner, stateStore, config, registry, session, dispatcher } = createRunner(projectRoot, {
     profile: options.profile,
   });
-  if (!options.skipPreflight) {
+  if (prompt && !options.skipPreflight) {
     await assertRequiredAgentsReady(registry, config);
   }
 
@@ -78,7 +78,15 @@ export async function runCommand(
   normalizeAskUserPolicy(options.onAskUser, 'prompt');
 
   const { waitUntilExit } = render(
-    React.createElement(App, { pipeline: runner, session, dispatcher, config }),
+    React.createElement(App, {
+      pipeline: runner,
+      session,
+      dispatcher,
+      config,
+      startupHealthCheck: options.skipPreflight
+        ? undefined
+        : () => assertRequiredAgentsReady(registry, config),
+    }),
   );
   await waitUntilExit();
 }
