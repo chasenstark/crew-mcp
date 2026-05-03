@@ -149,7 +149,7 @@ describe('planRunAgent', () => {
     expect(args.constraints.model).toBe('preferred-model');
   });
 
-  it('merges successful default worktree edits into the project root', async () => {
+  it('leaves successful worktree edits in the worktree (no auto-merge in v2)', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
       const typedTask = task as { context: { workingDirectory: string } };
       const srcDir = join(typedTask.context.workingDirectory, 'src');
@@ -176,13 +176,17 @@ describe('planRunAgent', () => {
 
     const result = await plan.task.run({ signal: makeAbortSignal() });
 
+    // The dispatch enriches filesModified from the worktree status, but does
+    // NOT merge: the file lives only in the worktree, not at project root.
     expect(result).toMatchObject({
       output: 'done',
       filesModified: ['src/generated.ts'],
       status: 'success',
     });
-    expect(readFileSync(join(root, 'src', 'generated.ts'), 'utf-8'))
-      .toBe('export const value = 1;\n');
+    expect(
+      readFileSync(join(plan.worktreePath, 'src', 'generated.ts'), 'utf-8'),
+    ).toBe('export const value = 1;\n');
+    expect(() => readFileSync(join(root, 'src', 'generated.ts'), 'utf-8')).toThrow();
   });
 
   it('overrides resolveModel when the caller supplies model in the input', async () => {

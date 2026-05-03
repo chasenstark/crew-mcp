@@ -1,22 +1,28 @@
 /**
- * run_agent — the new work primitive. Delegates a bounded task to a named
- * subagent and returns the agent's TaskResult.
+ * run_agent — the v2 work primitive. Delegates a bounded task to a named
+ * subagent in an isolated git worktree and returns the agent's TaskResult.
  *
- * Ownership model: this file owns the **schema** + **prompt builder** + a
- * handler-builder closure. The scheduler (judgment-runner.buildM3Scheduler,
- * M3-10a) is what actually translates a `mcp__crew__run_agent` call into a
- * DispatchedToolCall — because the scheduler holds the worktreeManager,
- * dispatcher, and registry refs that the handler needs. Having the schema
- * live in one place (this file + `catalog.ts`) and the scheduler in another
- * keeps the action-catalog stable while the dispatcher lifecycle stays
- * single-owner.
+ * v2 contract (changed from v0.1):
+ * - **No auto-merge.** v0.1 merged the worktree back into HEAD on success
+ *   inside this handler. v2 leaves the worktree alive after the dispatch
+ *   completes; the host CLI explicitly calls `merge_run` (M2) when the
+ *   user approves. This is the safety boundary that keeps crew from
+ *   silently mutating the user's branch.
+ * - **No worktree cleanup here either.** `discard_run` (M2) and
+ *   `merge_run` (M2, conditional on `defaults.cleanup_on_merge`) are the
+ *   two paths that delete worktrees. A run that's neither merged nor
+ *   discarded persists across crew-serve restarts.
  *
- * Worktree lifecycle (Finding 8): mint `runId = randomUUID()` per call,
- * allocate `.crew/runs/<runId>/worktree/` via worktreeManager.createRunWorktree,
- * dispatch the task with that runId, and rely on the existing dispatcher
- * terminal-event listener (judgment-runner.ts:345-355) to call
- * `worktreeManager.cleanupByRunId`. The handler itself must NOT add a finally
- * cleanup — that would double-delete.
+ * Ownership model: this file owns the **schema** + a pure **plan builder**.
+ * The MCP server (`crew serve`, src/cli/commands/serve.ts) calls
+ * `planRunAgent` to validate input + allocate a worktree, then dispatches
+ * the task through `ToolDispatcher` and waits for the terminal event before
+ * shaping the response envelope.
+ *
+ * Worktree lifecycle: mint `runId = randomUUID()` per call, allocate
+ * `.crew/runs/<runId>/worktree/` via worktreeManager.createRunWorktree,
+ * return the dispatch task. The host CLI is responsible for the worktree's
+ * end-of-life through merge_run / discard_run.
  */
 
 import { randomUUID } from 'crypto';
@@ -161,73 +167,24 @@ export async function planRunAgent(
           onOutput: taskCtx.onStream,
         });
 
+        // v2: enrich filesModified from the worktree status only when the
+        // adapter ran in its dedicated worktree AND the run succeeded. We do
+        // NOT merge — host CLI does that explicitly via merge_run (M2).
         if (result.status === 'error' || effectiveWorkingDirectory !== worktreePath) {
           return result;
         }
-
-        return mergeRunWorktreeResult(result, {
-          runId,
-          worktreePath,
-          worktreeManager: ctx.worktreeManager,
-        });
+        try {
+          const fromWorktree = await ctx.worktreeManager.getModifiedFilesByRun(runId);
+          if (fromWorktree.length === 0) return result;
+          const merged = Array.from(
+            new Set([...result.filesModified, ...fromWorktree].filter((f) => f.trim().length > 0)),
+          );
+          return { ...result, filesModified: merged };
+        } catch {
+          // Probing the worktree shouldn't fail the dispatch.
+          return result;
+        }
       },
     },
   };
-}
-
-async function mergeRunWorktreeResult(
-  result: TaskResult,
-  ctx: {
-    runId: string;
-    worktreePath: string;
-    worktreeManager: WorktreeManager;
-  },
-): Promise<TaskResult> {
-  let filesModified: string[] = [];
-  try {
-    filesModified = await ctx.worktreeManager.getModifiedFilesByRun(ctx.runId);
-    if (filesModified.length === 0 && result.filesModified.length === 0) {
-      return result;
-    }
-    await ctx.worktreeManager.mergeRunWorktree(ctx.runId);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    const rawEvents = Array.isArray(result.metadata.rawEvents)
-      ? [...result.metadata.rawEvents]
-      : [];
-    rawEvents.push({
-      type: 'crew.merge_run_worktree_failed',
-      runId: ctx.runId,
-      worktreePath: ctx.worktreePath,
-      filesModified,
-      error: message,
-    });
-    return {
-      ...result,
-      output: appendOutput(
-        result.output,
-        `Failed to merge run worktree ${ctx.runId}: ${message}`,
-      ),
-      filesModified: uniqueFiles([...result.filesModified, ...filesModified]),
-      status: 'error',
-      metadata: {
-        ...result.metadata,
-        rawEvents,
-      },
-    };
-  }
-
-  return {
-    ...result,
-    filesModified: uniqueFiles([...result.filesModified, ...filesModified]),
-  };
-}
-
-function uniqueFiles(files: string[]): string[] {
-  return Array.from(new Set(files.filter((file) => file.trim().length > 0)));
-}
-
-function appendOutput(output: string, message: string): string {
-  if (!output.trim()) return message;
-  return `${output}\n\n${message}`;
 }
