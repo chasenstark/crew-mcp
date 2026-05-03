@@ -115,9 +115,11 @@ export function PromptInput({ onSubmit, placeholder = 'Type a message...', disab
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      {disabled && statusText && (
+      {statusText && (
         <Box marginBottom={0}>
-          <Text color="yellow">{SPINNER_FRAMES[frame]} </Text>
+          <Text color={disabled ? 'yellow' : 'gray'}>
+            {disabled ? SPINNER_FRAMES[frame] : '\u25CF'}{' '}
+          </Text>
           <Text dimColor>{statusText}</Text>
         </Box>
       )}

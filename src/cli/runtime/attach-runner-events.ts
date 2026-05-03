@@ -40,10 +40,6 @@ export function attachRunnerEvents(
           const id = info.runId ?? info.toolCallId;
           logger.info(`${style.agentStartSymbol} ${info.toolName} ${id}`);
         }),
-        dispatcher.onEvent('run:stream', (info) => {
-          const chunk = info.chunk.trimEnd();
-          if (chunk) logger.debug(`${info.toolCallId} ${style.separator} ${chunk}`);
-        }),
         dispatcher.onEvent('run:complete', (info) => {
           const id = info.runId ?? info.toolCallId;
           logger.info(`${style.successSymbol} ${info.toolName} ${style.separator} ${id}`);

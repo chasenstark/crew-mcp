@@ -21,6 +21,7 @@ interface Props {
   pipeline: CrewRunner;
   session: CaptainSession;
   dispatcher: ToolDispatcher;
+  startupHealthCheck?: () => Promise<void>;
   /**
    * Loaded config. Required for `/preset` support (the handler reads
    * `config.presets` + `config.captain.preset`). Optional at the type
@@ -31,10 +32,13 @@ interface Props {
   initialPrompt?: string;
 }
 
-export function App({ pipeline, session, dispatcher, config, initialPrompt }: Props) {
+export function App({ pipeline, session, dispatcher, startupHealthCheck, config, initialPrompt }: Props) {
   useApp();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [currentStep, setCurrentStep] = useState<string | null>(null);
+  const [startupState, setStartupState] = useState<'ready' | 'checking' | 'failed'>(
+    startupHealthCheck ? 'checking' : 'ready',
+  );
 
   // inFlightToolCalls drives the session-busy indicator. The captain turn
   // accepts user_message events at any time, so the PromptInput is never
@@ -53,6 +57,35 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
   const addMessage = useCallback((role: ChatMessage['role'], content: string) => {
     setMessages((prev) => [...prev, { role, content }]);
   }, []);
+
+  useEffect(() => {
+    if (!startupHealthCheck) {
+      setStartupState('ready');
+      return;
+    }
+
+    let disposed = false;
+    logger.info('Interactive startup checks started');
+    setStartupState('checking');
+
+    startupHealthCheck()
+      .then(() => {
+        if (disposed) return;
+        logger.info('Interactive startup checks completed');
+        setStartupState('ready');
+      })
+      .catch((error: unknown) => {
+        if (disposed) return;
+        logger.error('Interactive startup checks failed', error);
+        const message = error instanceof Error ? error.message : String(error);
+        setStartupState('failed');
+        addMessage('system', message);
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [startupHealthCheck, addMessage]);
 
   useEffect(() => {
     pipeline.on('step:start', (step, data) => {
@@ -98,9 +131,6 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
         inFlightToolCallsRef.current = next;
         setInFlightToolCalls(next);
       }),
-      dispatcher.onEvent('run:stream', (info) => {
-        logger.debug(`Tool call stream: ${info.toolCallId}`, info.chunk);
-      }),
       dispatcher.onEvent('run:complete', (info) => {
         logger.info(`Tool call completed: ${info.toolName} ${info.runId ?? info.toolCallId}`);
         const next = new Map(inFlightToolCallsRef.current);
@@ -132,6 +162,10 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
 
   const handleSubmit = useCallback(
     (input: string) => {
+      if (startupState !== 'ready') {
+        return;
+      }
+
       if (input.startsWith('/config')) {
         try {
           const response = handleConfigSlashCommand(input, {
@@ -227,7 +261,7 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
         setRunnerActive(false);
       });
     },
-    [pipeline, session, dispatcher, config, addMessage, sessionBusy, runnerActive],
+    [pipeline, session, dispatcher, config, addMessage, sessionBusy, runnerActive, startupState],
   );
 
   useEffect(() => {
@@ -237,11 +271,17 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPrompt]);
 
-  const statusText = sessionBusy
-    ? `${inFlightToolCalls.size} tool${inFlightToolCalls.size === 1 ? '' : 's'} in flight  —  type to send, /cancel-all to abort`
-    : currentStep
-      ? currentStep
-      : undefined;
+  const startupBusy = startupState === 'checking';
+  const startupFailed = startupState === 'failed';
+  const statusText = startupBusy
+    ? 'Checking adapter status...'
+    : startupFailed
+      ? 'Startup checks failed. Run `crew status` to inspect and authenticate providers.'
+      : sessionBusy
+        ? `${inFlightToolCalls.size} tool${inFlightToolCalls.size === 1 ? '' : 's'} in flight  —  type to send, /cancel-all to abort`
+        : currentStep
+          ? currentStep
+          : undefined;
 
   return (
     <Box flexDirection="column" minHeight={10}>
@@ -268,7 +308,7 @@ export function App({ pipeline, session, dispatcher, config, initialPrompt }: Pr
       <Box marginTop={1}>
         <PromptInput
           onSubmit={handleSubmit}
-          disabled={false}
+          disabled={startupBusy || startupFailed}
           statusText={statusText}
         />
       </Box>

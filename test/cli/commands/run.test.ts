@@ -7,12 +7,18 @@ const {
   mockAttachRunnerEvents,
   mockAttachAskUserHandler,
   mockEnableFileLogging,
+  mockInkRender,
 } = vi.hoisted(() => ({
   mockCreateRunner: vi.fn(),
   mockAssertRequiredAgentsReady: vi.fn(),
   mockAttachRunnerEvents: vi.fn(() => ({ dispose: vi.fn() })),
   mockAttachAskUserHandler: vi.fn(),
   mockEnableFileLogging: vi.fn(() => '/tmp/run.log'),
+  mockInkRender: vi.fn(() => ({ waitUntilExit: () => Promise.resolve() })),
+}));
+
+vi.mock('ink', () => ({
+  render: mockInkRender,
 }));
 
 vi.mock('../../../src/cli/runtime/create-runner.js', () => ({
@@ -115,5 +121,35 @@ describe('runCommand preflight behavior', () => {
 
     expect(mockCreateRunner).toHaveBeenCalledWith(expect.any(String), { profile: 'codex-first' });
     expect(runner.run).toHaveBeenCalledWith('ship it');
+  });
+
+  it('defers interactive preflight checks into App startup lifecycle', async () => {
+    const runner = createMockRunner();
+    const session = { id: 'session' };
+    const dispatcher = { id: 'dispatcher' };
+    mockCreateRunner.mockReturnValue({ runner, config, registry, stateStore, session, dispatcher });
+
+    await runCommand();
+
+    expect(mockAssertRequiredAgentsReady).not.toHaveBeenCalled();
+    expect(mockInkRender).toHaveBeenCalledTimes(1);
+    const renderedApp = mockInkRender.mock.calls[0]?.[0] as { props?: Record<string, unknown> } | undefined;
+    const startupHealthCheck = renderedApp?.props?.startupHealthCheck;
+    expect(typeof startupHealthCheck).toBe('function');
+    await (startupHealthCheck as () => Promise<void>)();
+    expect(mockAssertRequiredAgentsReady).toHaveBeenCalledWith(registry, config);
+  });
+
+  it('omits interactive startup preflight when skipPreflight is true', async () => {
+    const runner = createMockRunner();
+    const session = { id: 'session' };
+    const dispatcher = { id: 'dispatcher' };
+    mockCreateRunner.mockReturnValue({ runner, config, registry, stateStore, session, dispatcher });
+
+    await runCommand(undefined, { skipPreflight: true });
+
+    expect(mockAssertRequiredAgentsReady).not.toHaveBeenCalled();
+    const renderedApp = mockInkRender.mock.calls[0]?.[0] as { props?: Record<string, unknown> } | undefined;
+    expect(renderedApp?.props?.startupHealthCheck).toBeUndefined();
   });
 });
