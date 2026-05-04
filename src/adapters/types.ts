@@ -99,6 +99,15 @@ export interface ToolLoopContext {
 
 export interface AgentAdapter {
   readonly name: string;
+  /**
+   * Alternative ids that resolve to this adapter via the registry. The
+   * captain may use any alias as `agent_id` in `mcp__crew__run_agent` /
+   * `continue_run` calls and the registry will resolve to this adapter.
+   * `list_agents` surfaces the alias array so the captain knows the
+   * shorthand exists. Aliases must NOT collide with any other adapter's
+   * name or alias (registry construction throws on collision).
+   */
+  readonly aliases?: readonly string[];
   readonly capabilities: AgentCapability[];
   readonly supportsJsonSchema: boolean;
   readonly captainCapabilities?: CaptainCapabilities;

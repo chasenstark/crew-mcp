@@ -13,21 +13,48 @@ export interface RegistryHealthReport {
 }
 
 export class AdapterRegistry {
+  /** Maps adapter `name` (canonical id) → adapter. */
   private adapters = new Map<string, AgentAdapter>();
+  /**
+   * Maps alias → canonical adapter name. Lookups via `get` / `getOrThrow`
+   * fall through to this map when the requested key isn't a canonical
+   * name. Kept separate from `adapters` so `listAvailable()` doesn't
+   * surface the same adapter once per alias.
+   */
+  private aliasToName = new Map<string, string>();
 
   register(adapter: AgentAdapter): void {
+    if (this.adapters.has(adapter.name) || this.aliasToName.has(adapter.name)) {
+      throw new Error(
+        `Adapter id "${adapter.name}" collides with an existing registration.`,
+      );
+    }
+    for (const alias of adapter.aliases ?? []) {
+      if (this.adapters.has(alias) || this.aliasToName.has(alias)) {
+        throw new Error(
+          `Alias "${alias}" for adapter "${adapter.name}" collides with an existing registration.`,
+        );
+      }
+    }
     this.adapters.set(adapter.name, adapter);
+    for (const alias of adapter.aliases ?? []) {
+      this.aliasToName.set(alias, adapter.name);
+    }
   }
 
   get(name: string): AgentAdapter | undefined {
-    return this.adapters.get(name);
+    const direct = this.adapters.get(name);
+    if (direct) return direct;
+    const canonical = this.aliasToName.get(name);
+    return canonical ? this.adapters.get(canonical) : undefined;
   }
 
   getOrThrow(name: string): AgentAdapter {
-    const adapter = this.adapters.get(name);
+    const adapter = this.get(name);
     if (!adapter) {
+      const known = [...this.adapters.keys(), ...this.aliasToName.keys()];
       throw new Error(
-        `Adapter "${name}" not found. Available adapters: ${[...this.adapters.keys()].join(', ')}`,
+        `Adapter "${name}" not found. Available adapters: ${known.join(', ')}`,
       );
     }
     return adapter;

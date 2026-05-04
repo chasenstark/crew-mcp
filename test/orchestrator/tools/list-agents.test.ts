@@ -112,4 +112,17 @@ describe('listAgents', () => {
     const out = await promise;
     expect(out.agents.map((a) => a.name).sort()).toEqual(['fast', 'slow']);
   });
+
+  it('surfaces aliases when an adapter declares them', async () => {
+    const registry = makeRegistry([
+      makeAdapter({ name: 'claude-code', aliases: ['claude'], capabilities: ['review'] }),
+      makeAdapter({ name: 'codex', capabilities: ['implement'] }),
+    ]);
+    const out = await listAgents({ registry });
+    const claude = out.agents.find((a) => a.name === 'claude-code');
+    const codex = out.agents.find((a) => a.name === 'codex');
+    expect(claude?.aliases).toEqual(['claude']);
+    // No aliases declared → field omitted entirely (not [] or undefined-explicit).
+    expect('aliases' in (codex ?? {})).toBe(false);
+  });
 });

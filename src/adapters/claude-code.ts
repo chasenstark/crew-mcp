@@ -233,6 +233,9 @@ function extractFilePaths(text: string): string[] {
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly name = AgentId.CLAUDE_CODE;
+  // Captain-facing shorthand. `mcp__crew__run_agent({ agent_id: "claude" })`
+  // resolves to this adapter the same as `agent_id: "claude-code"`.
+  readonly aliases: readonly string[] = ['claude'];
   readonly capabilities: AgentCapability[] = [
     'implement',
     'review',

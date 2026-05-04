@@ -150,7 +150,9 @@ within a crew minor version; if a tool seems to have changed, run
   approval.
 - `agent_id` for `run_agent` and `continue_run` must come from
   `list_agents`. Don't invent agent names — you'll get a clear
-  error and waste a turn.
+  error and waste a turn. Aliases (e.g., `"claude"` for
+  `"claude-code"`) work too; `list_agents` surfaces them per
+  adapter under the `aliases` field.
 - Worktrees persist across crew-serve restarts. A `run_id` you got
   yesterday is still resumable today (until merged or discarded).
 - Prefer inline reasoning over routing through agents for things you

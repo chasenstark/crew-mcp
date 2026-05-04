@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createBuiltinRegistry, createRegistryFromConfig } from '../../src/adapters/registry.js';
+import { AdapterRegistry, createBuiltinRegistry, createRegistryFromConfig } from '../../src/adapters/registry.js';
 import { ModelId } from '../../src/workflow/models.js';
+import type { AgentAdapter } from '../../src/adapters/types.js';
 
 describe('createRegistryFromConfig', () => {
   it('registers built-ins and configured generic adapters', () => {
@@ -122,5 +123,64 @@ describe('capabilities passthrough (M3-2)', () => {
       },
     });
     expect(registry.get('custom')?.capabilities).toEqual(['analyze']);
+  });
+});
+
+describe('AdapterRegistry alias resolution', () => {
+  function makeStub(name: string, aliases?: readonly string[]): AgentAdapter {
+    return {
+      name,
+      aliases,
+      capabilities: ['analyze'],
+      supportsJsonSchema: false,
+      execute: async () => ({ status: 'completed' as const, output: '' }),
+      healthCheck: async () => ({ available: true, authenticated: true }),
+    };
+  }
+
+  it('resolves get/getOrThrow by canonical name AND alias', () => {
+    const registry = new AdapterRegistry();
+    registry.register(makeStub('claude-code', ['claude']));
+    expect(registry.get('claude-code')?.name).toBe('claude-code');
+    expect(registry.get('claude')?.name).toBe('claude-code');
+    expect(registry.getOrThrow('claude').name).toBe('claude-code');
+  });
+
+  it('listAvailable returns each adapter once (not once per alias)', () => {
+    const registry = new AdapterRegistry();
+    registry.register(makeStub('claude-code', ['claude', 'cc']));
+    registry.register(makeStub('codex'));
+    expect(registry.listAvailable().map((a) => a.name)).toEqual(['claude-code', 'codex']);
+  });
+
+  it('throws when an alias collides with another adapter name', () => {
+    const registry = new AdapterRegistry();
+    registry.register(makeStub('codex'));
+    expect(() => registry.register(makeStub('claude-code', ['codex']))).toThrow(/collides/);
+  });
+
+  it('throws when two adapters declare the same alias', () => {
+    const registry = new AdapterRegistry();
+    registry.register(makeStub('a', ['shared']));
+    expect(() => registry.register(makeStub('b', ['shared']))).toThrow(/collides/);
+  });
+
+  it('throws when registering the same canonical name twice', () => {
+    const registry = new AdapterRegistry();
+    registry.register(makeStub('codex'));
+    expect(() => registry.register(makeStub('codex'))).toThrow(/collides/);
+  });
+
+  it('built-in registry resolves "claude" to ClaudeCodeAdapter', () => {
+    const registry = createBuiltinRegistry();
+    expect(registry.get('claude')?.name).toBe('claude-code');
+    expect(registry.get('claude-code')?.name).toBe('claude-code');
+    expect(registry.get('claude')).toBe(registry.get('claude-code'));
+  });
+
+  it('getOrThrow error message lists both names and aliases', () => {
+    const registry = new AdapterRegistry();
+    registry.register(makeStub('claude-code', ['claude']));
+    expect(() => registry.getOrThrow('nope')).toThrow(/claude-code.*claude/);
   });
 });

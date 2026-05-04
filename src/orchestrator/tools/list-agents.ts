@@ -33,6 +33,13 @@ export const LIST_AGENTS_DESCRIPTION =
 
 export interface ListAgentsAgentEntry {
   readonly name: string;
+  /**
+   * Alternative ids the captain can pass as `agent_id` to run_agent /
+   * continue_run; the registry resolves any alias to this adapter.
+   * Empty (or omitted) when the adapter declares no aliases. Surfaced
+   * so the captain knows the shorthand exists.
+   */
+  readonly aliases?: readonly string[];
   readonly capabilities: readonly string[];
   readonly adapter: string;
   readonly available: boolean;
@@ -77,6 +84,11 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
     adapters.map(async (adapter): Promise<ListAgentsAgentEntry> => {
       const base = {
         name: adapter.name,
+        // Only include `aliases` when the adapter declares any — keeps
+        // payload tidy for the common case (most adapters have none).
+        ...(adapter.aliases && adapter.aliases.length > 0
+          ? { aliases: [...adapter.aliases] }
+          : {}),
         capabilities: [...adapter.capabilities],
         adapter: adapter.name,
       } as const;
