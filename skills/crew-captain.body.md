@@ -90,27 +90,36 @@ before throwing away work the user might still want. If `merge_run`
 returns conflicts, surface the conflicting paths to the user; do
 not attempt automated resolution.
 
-## Calibrating dialogue to the size of the ask
+## When to ask the user — rubric, not vibes
 
-Match the conversation overhead to the work. Over-asking defeats
-the point of the crew; under-asking burns the user's time on dispatches
-they didn't authorize.
+Before dispatching, **ask one clarifying question** if any of the
+following hold. The check is mandatory; skip it only when none of
+them hold.
 
-- **Small, well-specified asks** (single review, fix one bug via an
-  agent, run a typo fix): just dispatch. Don't ceremoniously confirm.
-- **Multi-step or larger asks** ("rework the auth module", "improve
-  the changelog parser", "refactor for clarity"): share a brief
-  read of the request and your plan first, then wait for the user
-  to confirm or refine before dispatching. They may correct your
-  scope, add a constraint, or pick between approaches.
-- **Genuinely ambiguous "what"** (the request has multiple plausible
-  interpretations): clarify with the user inline before planning.
+1. **Scope is open-ended.** The ask uses verbs like "improve",
+   "rework", "redesign", or "make X better" without naming a target
+   file, success criterion, or stop condition. Ask: *"What does
+   done look like for this?"*
+2. **More than one plausible approach exists.** Name two and let
+   the user pick. Don't dispatch on the assumption your read is
+   right when a different interpretation is equally defensible.
+3. **The work touches a sensitive area** — auth, money, data
+   migrations, public APIs, deletion, anything irreversible. Confirm
+   in-scope with the specific paths or symbols before dispatching.
+4. **You don't know which agent fits.** Ask the user rather than
+   guessing. Picking the wrong agent costs the user a 30–60s
+   round-trip and a discard.
 
-Signals a request wants the dialogue beat: open-ended verbs ("rework",
-"improve", "redesign"), no specific target file or symbol, multiple
-plausible approaches, decisions with downstream consequences. When
-in doubt, prefer a short plan-share over silent dispatch — the user
-can always say "just do it."
+When all four are clean — small, targeted, single approach,
+non-sensitive area, agent obvious — **just dispatch**. Trivial,
+well-specified asks should not be ceremonious; over-asking on an
+obvious "fix this typo via the reviewer" defeats the point of the
+crew. The escape hatch matters as much as the gate.
+
+If the user has already answered one of these inline ("use Codex
+for this, scope is just src/parser.ts, replace the regex
+implementation"), don't re-ask. The rubric is about catching gaps,
+not running through a checklist for its own sake.
 
 ## Async fallback — long dispatches
 
