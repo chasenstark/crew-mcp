@@ -1,0 +1,306 @@
+/**
+ * Integration tests for install / verify / uninstall.
+ *
+ * Each test gets a fresh tmpdir as $HOME and exercises the real
+ * commands against it: skill files written, host configs merged,
+ * manifest updated, then verify checks parity, uninstall reverses.
+ *
+ * Uses a stub `resolveCrewBinary` so tests don't depend on
+ * process.argv[1] (which under vitest points at vitest itself).
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { installCommand } from '../../../src/cli/commands/install.js';
+import { uninstallCommand } from '../../../src/cli/commands/uninstall.js';
+import { verifyCommand } from '../../../src/cli/commands/verify.js';
+import { HOST_ADAPTERS } from '../../../src/install/hosts/index.js';
+import { manifestPath } from '../../../src/install/install-manifest.js';
+
+const STUB_BIN = {
+  command: '/usr/local/bin/node',
+  args: ['/abs/path/dist/index.js', 'serve'] as const,
+};
+
+describe('install / verify / uninstall — happy path', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'crew-install-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('install --target codex writes skill + config + manifest', async () => {
+    const result = await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    expect(result.installed).toEqual(['codex']);
+    expect(result.skipped).toEqual([]);
+
+    const adapter = HOST_ADAPTERS.codex;
+
+    // Skill file written and contains body content
+    const skill = readFileSync(adapter.skillPath(home), 'utf-8');
+    expect(skill).toContain('## Crew — orchestration playbook');
+    expect(skill).toContain('mcp__crew__run_agent');
+
+    // Config file merged
+    const config = readFileSync(adapter.configPath(home), 'utf-8');
+    expect(config).toContain('[mcp_servers.crew]');
+    expect(config).toContain(`command = "${STUB_BIN.command}"`);
+
+    // Manifest written
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      schemaVersion: number;
+      targets: Record<string, { configPath: string; skillPath: string; version: string }>;
+    };
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.targets.codex).toBeDefined();
+    expect(manifest.targets.codex.configPath).toBe(adapter.configPath(home));
+    expect(manifest.targets.codex.skillPath).toBe(adapter.skillPath(home));
+    expect(manifest.targets.codex.version).toMatch(/0\.2\.0/);
+  });
+
+  it('install --target all installs every host (with forceWithoutBinary)', async () => {
+    const result = await installCommand({
+      target: 'all',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    expect(new Set(result.installed)).toEqual(
+      new Set(['claude-code', 'codex', 'gemini']),
+    );
+    for (const id of ['claude-code', 'codex', 'gemini'] as const) {
+      const adapter = HOST_ADAPTERS[id];
+      expect(existsSync(adapter.skillPath(home))).toBe(true);
+      expect(existsSync(adapter.configPath(home))).toBe(true);
+    }
+  });
+
+  it('install is idempotent — running twice yields the same end state', async () => {
+    const args = {
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    };
+    await installCommand(args);
+    const skill1 = readFileSync(HOST_ADAPTERS.codex.skillPath(home), 'utf-8');
+    const config1 = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+
+    await installCommand(args);
+    const skill2 = readFileSync(HOST_ADAPTERS.codex.skillPath(home), 'utf-8');
+    const config2 = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+
+    expect(skill2).toBe(skill1);
+    expect(config2).toBe(config1);
+  });
+
+  it('install preserves unrelated keys in claude-code config', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    // Pre-existing config with other keys
+    const preExisting = JSON.stringify({
+      preferredModel: 'opus',
+      mcpServers: { other: { command: 'foo', args: [] } },
+    });
+    writeFileSync(adapter.configPath(home), preExisting, 'utf-8');
+
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+
+    const after = JSON.parse(readFileSync(adapter.configPath(home), 'utf-8')) as Record<
+      string,
+      unknown
+    > & { mcpServers: Record<string, unknown> };
+    expect(after.preferredModel).toBe('opus');
+    expect(after.mcpServers.other).toEqual({ command: 'foo', args: [] });
+    expect(after.mcpServers.crew).toBeDefined();
+  });
+
+  it('verify reports ok after a clean install', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(true);
+    expect(report.targets).toHaveLength(1);
+    expect(report.targets[0].host).toBe('codex');
+    expect(report.targets[0].issues).toEqual([]);
+  });
+
+  it('verify with no installed targets returns ok + a note', async () => {
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(true);
+    expect(report.note).toContain('No installed targets');
+    expect(report.targets).toEqual([]);
+  });
+
+  it('verify reports drift when skill file is missing', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    rmSync(HOST_ADAPTERS.codex.skillPath(home));
+
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(false);
+    expect(report.targets[0].issues.some((i) => i.includes('skill file missing'))).toBe(true);
+  });
+
+  it('verify reports drift when skill is missing a tool reference', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const skillPath = HOST_ADAPTERS.codex.skillPath(home);
+    const original = readFileSync(skillPath, 'utf-8');
+    const corrupted = original.replace(/mcp__crew__merge_run/g, 'NUKED');
+    writeFileSync(skillPath, corrupted, 'utf-8');
+
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(false);
+    const issues = report.targets[0].issues.join('\n');
+    expect(issues).toMatch(/missing tool references.*merge_run/);
+  });
+
+  it('verify reports drift when host config has crew block removed', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const configPath = HOST_ADAPTERS.codex.configPath(home);
+    writeFileSync(configPath, '# emptied\n', 'utf-8');
+
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(false);
+    expect(
+      report.targets[0].issues.some((i) => i.includes('crew MCP block')),
+    ).toBe(true);
+  });
+
+  it('uninstall reverses install (skill + config block + manifest)', async () => {
+    const adapter = HOST_ADAPTERS.codex;
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    expect(existsSync(adapter.skillPath(home))).toBe(true);
+
+    const result = await uninstallCommand({ target: 'codex', home });
+    expect(result.removed).toEqual(['codex']);
+    expect(result.skipped).toEqual([]);
+
+    expect(existsSync(adapter.skillPath(home))).toBe(false);
+    const config = readFileSync(adapter.configPath(home), 'utf-8');
+    expect(config).not.toContain('[mcp_servers.crew]');
+
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, unknown>;
+    };
+    expect(manifest.targets.codex).toBeUndefined();
+  });
+
+  it('uninstall is idempotent — repeated calls are no-ops', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const first = await uninstallCommand({ target: 'codex', home });
+    const second = await uninstallCommand({ target: 'codex', home });
+    expect(first.removed).toEqual(['codex']);
+    expect(second.removed).toEqual(['codex']);
+    // No crashes, manifest still has codex deleted
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, unknown>;
+    };
+    expect(manifest.targets.codex).toBeUndefined();
+  });
+
+  it('uninstall preserves unrelated mcpServers entries (claude-code)', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    const preExisting = JSON.stringify({
+      mcpServers: { other: { command: 'foo', args: [] } },
+    });
+    writeFileSync(adapter.configPath(home), preExisting, 'utf-8');
+
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    await uninstallCommand({ target: 'claude-code', home });
+
+    const after = JSON.parse(readFileSync(adapter.configPath(home), 'utf-8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(after.mcpServers.other).toEqual({ command: 'foo', args: [] });
+    expect(after.mcpServers.crew).toBeUndefined();
+  });
+});
+
+describe('resolveTargets', () => {
+  it('parses comma-separated targets', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'crew-install-'));
+    try {
+      const result = await installCommand({
+        target: 'codex,gemini',
+        home,
+        skipRunningCheck: true,
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      });
+      expect(new Set(result.installed)).toEqual(new Set(['codex', 'gemini']));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('throws on unknown target ids', async () => {
+    await expect(
+      installCommand({
+        target: 'no-such-host',
+        home: '/tmp',
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      }),
+    ).rejects.toThrow(/unknown target/);
+  });
+});

@@ -1,6 +1,9 @@
 import { program } from 'commander';
+import { installCommand } from './cli/commands/install.js';
 import { serveCommand } from './cli/commands/serve.js';
 import { statusCommand } from './cli/commands/status.js';
+import { uninstallCommand } from './cli/commands/uninstall.js';
+import { verifyCommand } from './cli/commands/verify.js';
 import { setLogLevel } from './utils/logger.js';
 
 program
@@ -14,13 +17,17 @@ program
 // commands (`run`, `init`, `config`, `profile`, `state reset`, `resume`) are
 // removed — see docs/plans/mcp-pivot/IMPLEMENTATION_PLAN.md.
 
+const applyDebugFlag = (): void => {
+  if (program.opts<{ debug?: boolean }>().debug) {
+    setLogLevel('debug');
+  }
+};
+
 program
   .command('serve')
   .description('Run crew as a stdio MCP server (the host CLI spawns this)')
   .action(async () => {
-    if (program.opts<{ debug?: boolean }>().debug) {
-      setLogLevel('debug');
-    }
+    applyDebugFlag();
     await serveCommand();
   });
 
@@ -28,10 +35,46 @@ program
   .command('status')
   .description('Check status of available agents')
   .action(async () => {
-    if (program.opts<{ debug?: boolean }>().debug) {
-      setLogLevel('debug');
-    }
+    applyDebugFlag();
     await statusCommand();
+  });
+
+program
+  .command('install')
+  .description('Install the crew MCP server + skill into a host CLI')
+  .requiredOption(
+    '-t, --target <host>',
+    'Target host: claude-code | codex | gemini | all',
+  )
+  .action(async (opts: { target: string }) => {
+    applyDebugFlag();
+    const result = await installCommand({ target: opts.target });
+    if (result.installed.length === 0 && result.skipped.length > 0) {
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('verify')
+  .description('Check installed skill ↔ MCP tool catalog parity')
+  .action(async () => {
+    applyDebugFlag();
+    const report = await verifyCommand();
+    if (!report.ok) {
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('uninstall')
+  .description('Remove the crew MCP server + skill from a host CLI')
+  .requiredOption(
+    '-t, --target <host>',
+    'Target host: claude-code | codex | gemini | all',
+  )
+  .action(async (opts: { target: string }) => {
+    applyDebugFlag();
+    await uninstallCommand({ target: opts.target });
   });
 
 program.parseAsync().catch((err) => {

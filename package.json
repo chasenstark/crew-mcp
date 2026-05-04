@@ -1,7 +1,7 @@
 {
-  "name": "crew",
-  "version": "0.1.0",
-  "description": "Provider-agnostic multi-agent coding crew through conversation",
+  "name": "crew-mcp",
+  "version": "0.2.0-dev",
+  "description": "MCP server + portable captain skill that turns any AI coding CLI into the orchestrator of a worktree-isolated multi-agent crew",
   "type": "module",
   "bin": {
     "crew": "./dist/index.js"
@@ -19,15 +19,17 @@
   },
   "files": [
     "dist",
-    "defaults"
+    "skills"
   ],
   "keywords": [
     "ai",
     "agent",
-    "crew",
+    "mcp",
     "claude",
     "codex",
+    "gemini",
     "multi-agent",
+    "orchestration",
     "cli"
   ],
   "dependencies": {
@@ -36,17 +38,12 @@
     "commander": "^14.0.3",
     "eventemitter3": "^5.0.4",
     "execa": "^9.6.1",
-    "ink": "^7.0.0",
-    "ink-text-input": "^6.0.0",
-    "react": "^19.2.5",
     "simple-git": "^3.36.0",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
-    "@types/react": "^19.2.14",
-    "ink-testing-library": "^4.0.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"

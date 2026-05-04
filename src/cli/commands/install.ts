@@ -1,0 +1,215 @@
+/**
+ * `crew install --target <host|all>` — write the MCP block + skill file
+ * for the named host CLI(s).
+ *
+ * Idempotent: re-running with the same args produces the same end state.
+ * Each target step is tolerant of partial prior state — if the skill
+ * file exists, it's overwritten; if the MCP block exists, it's replaced.
+ *
+ * Production flow per target:
+ *   1. Render skill (canonical body + per-host template + tool list)
+ *   2. Write skill file (mkdir -p)
+ *   3. Read host config; merge MCP block; write back (mkdir -p)
+ *   4. Append/update ~/.crew/install.json
+ *   5. If host CLI is detected running, print restart warning
+ *
+ * `--target all` enumerates every registered host. Hosts whose binaries
+ * aren't on PATH are skipped with a note (they can be installed without
+ * the binary present, but most users won't want that).
+ */
+
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname } from 'node:path';
+
+import { SERVE_VERSION } from './serve.js';
+import {
+  ALL_HOST_IDS,
+  HOST_ADAPTERS,
+  type HostAdapter,
+  type HostId,
+} from '../../install/hosts/index.js';
+import {
+  defaultCrewBinaryResolver,
+  type CrewBinaryResolver,
+} from '../../install/crew-binary.js';
+import {
+  recordInstalledTarget,
+  type InstalledTarget,
+} from '../../install/install-manifest.js';
+import {
+  renderSkill,
+  resolvePackageRoot,
+  templatePathForHost,
+} from '../../install/skill-renderer.js';
+import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
+import { logger } from '../../utils/logger.js';
+
+export interface InstallOptions {
+  /** Comma-separated host ids, or 'all'. Required. */
+  target: string;
+  /** Skip "host running, please restart" detection (CI/tests). */
+  skipRunningCheck?: boolean;
+  /** Override $HOME (tests). */
+  home?: string;
+  /** Override the package root (tests; otherwise auto-detected). */
+  packageRoot?: string;
+  /** Override crew binary resolution (tests). */
+  resolveCrewBinary?: CrewBinaryResolver;
+  /**
+   * Force install even if the host CLI binary isn't detected on PATH.
+   * Defaults to true for explicit single-target installs and false for
+   * --target all (which uses detection to decide what to install).
+   */
+  forceWithoutBinary?: boolean;
+}
+
+export interface InstallResult {
+  installed: HostId[];
+  skipped: Array<{ host: HostId; reason: string }>;
+}
+
+export async function installCommand(opts: InstallOptions): Promise<InstallResult> {
+  const home = opts.home ?? homedir();
+  const targets = resolveTargets(opts.target);
+  const packageRoot = resolvePackageRoot(opts.packageRoot);
+  const resolveBin = opts.resolveCrewBinary ?? defaultCrewBinaryResolver;
+  const { command: crewBin, args: crewArgs } = resolveBin();
+
+  // For --target all, we only install where we detect the host. For an
+  // explicit --target codex, we install regardless (the user knows what
+  // they want; they may be installing in advance of the host CLI).
+  const isExplicitAll = opts.target.trim() === 'all';
+  const forceWithoutBinary = opts.forceWithoutBinary ?? !isExplicitAll;
+
+  const result: InstallResult = { installed: [], skipped: [] };
+
+  for (const targetId of targets) {
+    const adapter = HOST_ADAPTERS[targetId];
+    try {
+      // Decide whether to install based on detection vs force flag.
+      if (!forceWithoutBinary) {
+        const detected = await adapter.detectInstalled();
+        if (!detected.installed) {
+          logger.info(`crew install: skipping ${adapter.displayName} (binary not on PATH)`);
+          result.skipped.push({ host: targetId, reason: 'binary-not-found' });
+          continue;
+        }
+      }
+
+      await installSingleTarget({
+        adapter,
+        home,
+        packageRoot,
+        crewBin,
+        crewArgs,
+      });
+
+      if (!opts.skipRunningCheck) {
+        const running = await adapter.detectRunning();
+        if (running) {
+          logger.warn(
+            `${adapter.displayName} appears to be running. Restart any open sessions to pick up the new MCP server.`,
+          );
+        }
+      }
+
+      result.installed.push(targetId);
+      logger.info(`crew install: ${adapter.displayName} ✓`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`crew install: ${adapter.displayName} failed — ${message}`);
+      result.skipped.push({ host: targetId, reason: message });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * One-shot install logic for a single host. Pulled out so tests can
+ * exercise the per-host write path without the higher-level target
+ * resolution and detection logic.
+ */
+export async function installSingleTarget(args: {
+  adapter: HostAdapter;
+  home: string;
+  packageRoot: string;
+  crewBin: string;
+  crewArgs: readonly string[];
+}): Promise<InstalledTarget> {
+  const { adapter, home, packageRoot, crewBin, crewArgs } = args;
+
+  // 1. Render skill.
+  const templatePath = templatePathForHost(packageRoot, adapter.id);
+  const skillContent = await renderSkill({
+    templatePath,
+    tools: CATALOG_TOOLS,
+    packageRoot,
+  });
+
+  // 2. Write skill file.
+  const skillPath = adapter.skillPath(home);
+  mkdirSync(dirname(skillPath), { recursive: true });
+  writeFileSync(skillPath, skillContent, 'utf-8');
+
+  // 3. Merge MCP block into host config.
+  const configPath = adapter.configPath(home);
+  const existing = existsSync(configPath) ? await readFile(configPath, 'utf-8') : '';
+  const merged = adapter.mergeMcpBlock(existing, crewBin, crewArgs);
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, merged, 'utf-8');
+
+  // 4. Update install manifest.
+  const entry: InstalledTarget = {
+    configPath,
+    skillPath,
+    version: SERVE_VERSION,
+    installedAt: new Date().toISOString(),
+    serverCommand: crewBin,
+    serverArgs: [...crewArgs],
+  };
+  await recordInstalledTarget(home, adapter.id, entry);
+
+  return entry;
+}
+
+/**
+ * Resolve the --target arg to a list of host ids. Supports:
+ *   - 'all' → every registered host
+ *   - 'claude-code,codex' → comma-separated list
+ *   - 'codex' → single host
+ *
+ * Throws on unknown ids; throws on empty target string. Deduplicates.
+ */
+export function resolveTargets(input: string): HostId[] {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) {
+    throw new Error('crew install: --target is required (e.g., codex, claude-code, gemini, all)');
+  }
+  if (trimmed === 'all') return [...ALL_HOST_IDS];
+  const parts = trimmed
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  const seen = new Set<HostId>();
+  const out: HostId[] = [];
+  for (const part of parts) {
+    if (!isHostId(part)) {
+      throw new Error(
+        `crew install: unknown target "${part}". Known: ${ALL_HOST_IDS.join(', ')}, all`,
+      );
+    }
+    if (!seen.has(part)) {
+      seen.add(part);
+      out.push(part);
+    }
+  }
+  return out;
+}
+
+function isHostId(value: string): value is HostId {
+  return (ALL_HOST_IDS as readonly string[]).includes(value);
+}
