@@ -46,9 +46,17 @@ program
     '-t, --target <host>',
     'Target host: claude-code | codex | gemini | all',
   )
-  .action(async (opts: { target: string }) => {
+  .option(
+    '--no-auto-approve',
+    'Do not pre-approve mcp__crew__* tools (host CLI will prompt before each call). Default: pre-approve.',
+  )
+  .action(async (opts: { target: string; autoApprove: boolean }) => {
     applyDebugFlag();
-    const result = await installCommand({ target: opts.target });
+    // commander's --no-foo sets opts.foo = false; default is true.
+    const result = await installCommand({
+      target: opts.target,
+      autoApprove: opts.autoApprove,
+    });
     if (result.installed.length === 0 && result.skipped.length > 0) {
       process.exitCode = 1;
     }

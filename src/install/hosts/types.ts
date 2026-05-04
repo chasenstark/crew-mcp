@@ -68,4 +68,42 @@ export interface HostAdapter {
    * always safe (worst case the user sees no warning).
    */
   detectRunning(): Promise<boolean>;
+
+  /**
+   * Path to a SECOND file holding tool-approval state, when the host
+   * stores approval separately from the MCP config. Today only Claude
+   * Code returns a value here (`~/.claude/settings.json`); Codex and
+   * Gemini co-locate approval state inside `configPath` and leave this
+   * undefined. The install command reads the right file based on what
+   * the adapter returns.
+   */
+  permissionsPath?(home: string): string;
+
+  /**
+   * Pre-approve the listed crew tools so the host CLI doesn't prompt
+   * the user before each `mcp__crew__*` call. The user's running
+   * `crew install` is the explicit consent action; per-call prompts
+   * after that point are friction without protection (the captain
+   * skill's "always confirm before merge_run" is the real safety
+   * gate, model-level, unaffected by this).
+   *
+   * `existing` is the current content of `permissionsPath()` if the
+   * adapter defines one, else `configPath()`. `tools` is the catalog
+   * of `mcp__crew__*` tools to pre-approve (server-wide hosts ignore
+   * the list and trust the whole server).
+   *
+   * Idempotent: re-running with the same inputs produces the same
+   * output. Adapters that don't implement this opt out of the
+   * auto-approve flow entirely (their `crew install` will leave per-
+   * call prompts in place).
+   */
+  writeAutoApproval?(existing: string, tools: readonly string[]): string;
+
+  /**
+   * Reverse `writeAutoApproval`. Called on `crew uninstall` and on
+   * `crew install --no-auto-approve` so the end state is predictable
+   * regardless of how the user previously installed. Idempotent: a
+   * no-op if no auto-approval state is present.
+   */
+  clearAutoApproval?(existing: string): string;
 }

@@ -114,3 +114,82 @@ describe('claudeCodeAdapter.hasMcpBlock', () => {
     expect(claudeCodeAdapter.hasMcpBlock('not json')).toBe(false);
   });
 });
+
+describe('claudeCodeAdapter.permissionsPath', () => {
+  it('returns ~/.claude/settings.json (NOT ~/.claude.json)', () => {
+    const home = '/users/test';
+    expect(claudeCodeAdapter.permissionsPath!(home)).toBe('/users/test/.claude/settings.json');
+    // Regression guard: settings.json is a separate file from the MCP config.
+    expect(claudeCodeAdapter.permissionsPath!(home)).not.toBe(claudeCodeAdapter.configPath(home));
+  });
+});
+
+describe('claudeCodeAdapter.writeAutoApproval / clearAutoApproval', () => {
+  // tools array is ignored for Claude Code (single wildcard covers all).
+  const TOOLS = ['list_agents', 'run_agent'];
+
+  it('appends mcp__crew__* to permissions.allow on an empty file', () => {
+    const out = claudeCodeAdapter.writeAutoApproval!('', TOOLS);
+    const parsed = JSON.parse(out) as { permissions: { allow: string[] } };
+    expect(parsed.permissions.allow).toEqual(['mcp__crew__*']);
+  });
+
+  it('preserves existing permissions.allow entries', () => {
+    const existing = JSON.stringify({
+      permissions: {
+        allow: ['Bash(git:*)', 'Read', 'mcp__ide__*'],
+        deny: ['Bash(rm -rf /*)'],
+      },
+      env: { CLAUDE_CODE_EXPERIMENTAL: '1' },
+    });
+    const out = claudeCodeAdapter.writeAutoApproval!(existing, TOOLS);
+    const parsed = JSON.parse(out) as {
+      permissions: { allow: string[]; deny: string[] };
+      env: Record<string, string>;
+    };
+    expect(parsed.permissions.allow).toEqual([
+      'Bash(git:*)',
+      'Read',
+      'mcp__ide__*',
+      'mcp__crew__*',
+    ]);
+    expect(parsed.permissions.deny).toEqual(['Bash(rm -rf /*)']);
+    expect(parsed.env.CLAUDE_CODE_EXPERIMENTAL).toBe('1');
+  });
+
+  it('is idempotent — writing twice does not duplicate the wildcard', () => {
+    const existing = JSON.stringify({ permissions: { allow: ['mcp__crew__*'] } });
+    const out = claudeCodeAdapter.writeAutoApproval!(existing, TOOLS);
+    const parsed = JSON.parse(out) as { permissions: { allow: string[] } };
+    expect(parsed.permissions.allow).toEqual(['mcp__crew__*']);
+  });
+
+  it('clearAutoApproval removes only mcp__crew__* and preserves siblings', () => {
+    const existing = JSON.stringify({
+      permissions: {
+        allow: ['Bash(git:*)', 'mcp__crew__*', 'mcp__ide__*'],
+      },
+    });
+    const out = claudeCodeAdapter.clearAutoApproval!(existing);
+    const parsed = JSON.parse(out) as { permissions: { allow: string[] } };
+    expect(parsed.permissions.allow).toEqual(['Bash(git:*)', 'mcp__ide__*']);
+  });
+
+  it('clearAutoApproval removes the allow array entirely when crew was the only entry', () => {
+    const existing = JSON.stringify({
+      permissions: { allow: ['mcp__crew__*'] },
+    });
+    const out = claudeCodeAdapter.clearAutoApproval!(existing);
+    const parsed = JSON.parse(out) as { permissions?: { allow?: unknown } };
+    expect(parsed.permissions?.allow).toBeUndefined();
+  });
+
+  it('clearAutoApproval is a no-op when crew wildcard is absent', () => {
+    const existing = JSON.stringify({ permissions: { allow: ['Read'] } }) + '\n';
+    expect(claudeCodeAdapter.clearAutoApproval!(existing)).toBe(existing);
+  });
+
+  it('clearAutoApproval is a no-op on an empty file', () => {
+    expect(claudeCodeAdapter.clearAutoApproval!('')).toBe('');
+  });
+});

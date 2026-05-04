@@ -64,6 +64,20 @@ export interface InstallOptions {
    * --target all (which uses detection to decide what to install).
    */
   forceWithoutBinary?: boolean;
+  /**
+   * Pre-approve crew tools so the host CLI doesn't prompt before each
+   * `mcp__crew__*` call. Defaults to true — running `crew install` IS
+   * the explicit consent action; per-call prompts after that are
+   * friction without protection (the captain skill's "always confirm
+   * before merge_run" remains the real safety gate at the model layer).
+   *
+   * Set to false (CLI flag `--no-auto-approve`) to leave host CLIs in
+   * their default per-call-prompt mode. Calling install with
+   * autoApprove: false on a host that already has auto-approval
+   * enabled will REMOVE the auto-approval — the post-install state
+   * always matches the flag.
+   */
+  autoApprove?: boolean;
 }
 
 export interface InstallResult {
@@ -105,6 +119,7 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
         packageRoot,
         crewBin,
         crewArgs,
+        autoApprove: opts.autoApprove ?? true,
       });
 
       if (!opts.skipRunningCheck) {
@@ -139,8 +154,13 @@ export async function installSingleTarget(args: {
   packageRoot: string;
   crewBin: string;
   crewArgs: readonly string[];
+  /**
+   * Whether to pre-approve crew tools so the host CLI doesn't prompt
+   * before each `mcp__crew__*` call. See InstallOptions.autoApprove.
+   */
+  autoApprove: boolean;
 }): Promise<InstalledTarget> {
-  const { adapter, home, packageRoot, crewBin, crewArgs } = args;
+  const { adapter, home, packageRoot, crewBin, crewArgs, autoApprove } = args;
 
   // 1. Render skill.
   const templatePath = templatePathForHost(packageRoot, adapter.id);
@@ -162,7 +182,26 @@ export async function installSingleTarget(args: {
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, merged, 'utf-8');
 
-  // 4. Update install manifest.
+  // 4. Apply auto-approval (or clear it if the user opted out). The
+  // post-install state matches the flag regardless of prior state, so
+  // re-running install with --no-auto-approve removes any pre-approval
+  // from a previous default install. Adapters that don't implement
+  // writeAutoApproval/clearAutoApproval skip this step.
+  if (adapter.writeAutoApproval && adapter.clearAutoApproval) {
+    const approvalFile = adapter.permissionsPath ? adapter.permissionsPath(home) : configPath;
+    const approvalExisting = existsSync(approvalFile)
+      ? await readFile(approvalFile, 'utf-8')
+      : '';
+    const approvalUpdated = autoApprove
+      ? adapter.writeAutoApproval(approvalExisting, CATALOG_TOOLS.map((t) => t.name))
+      : adapter.clearAutoApproval(approvalExisting);
+    if (approvalUpdated !== approvalExisting) {
+      mkdirSync(dirname(approvalFile), { recursive: true });
+      writeFileSync(approvalFile, approvalUpdated, 'utf-8');
+    }
+  }
+
+  // 5. Update install manifest.
   const entry: InstalledTarget = {
     configPath,
     skillPath,
@@ -170,6 +209,7 @@ export async function installSingleTarget(args: {
     installedAt: new Date().toISOString(),
     serverCommand: crewBin,
     serverArgs: [...crewArgs],
+    autoApproved: autoApprove,
   };
   await recordInstalledTarget(home, adapter.id, entry);
 

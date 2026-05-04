@@ -284,6 +284,88 @@ describe('codexAdapter.mergeMcpBlock — preserves user per-tool approval sub-bl
   });
 });
 
+describe('codexAdapter.writeAutoApproval / clearAutoApproval', () => {
+  const TOOLS = ['list_agents', 'run_agent', 'merge_run'];
+
+  it('appends one tools block per tool with approval_mode = "always"', () => {
+    const config = '[mcp_servers.crew]\ncommand = "x"\nargs = []\n';
+    const out = codexAdapter.writeAutoApproval!(config, TOOLS);
+    expect(out).toContain('[mcp_servers.crew]');
+    expect(out).toContain('[mcp_servers.crew.tools.list_agents]\napproval_mode = "always"');
+    expect(out).toContain('[mcp_servers.crew.tools.run_agent]\napproval_mode = "always"');
+    expect(out).toContain('[mcp_servers.crew.tools.merge_run]\napproval_mode = "always"');
+  });
+
+  it('places tools blocks immediately after the parent crew block', () => {
+    const config =
+      '[mcp_servers.other]\nfoo = "bar"\n\n' +
+      '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
+      '[mcp_servers.notion]\nurl = "x"\n';
+    const out = codexAdapter.writeAutoApproval!(config, ['run_agent']);
+    const crewIdx = out.indexOf('[mcp_servers.crew]');
+    const toolsIdx = out.indexOf('[mcp_servers.crew.tools.run_agent]');
+    const notionIdx = out.indexOf('[mcp_servers.notion]');
+    expect(crewIdx).toBeGreaterThanOrEqual(0);
+    expect(toolsIdx).toBeGreaterThan(crewIdx);
+    expect(notionIdx).toBeGreaterThan(toolsIdx);
+  });
+
+  it('overwrites pre-existing per-tool approval state (Finding 9 + auto-approve interaction)', () => {
+    // Codex auto-creates [mcp_servers.crew.tools.X] with approval_mode =
+    // "approve" when the user clicks "approve" in a session. crew install
+    // (with auto-approve) is the explicit "always allow" consent — overwrite.
+    const config =
+      '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
+      '[mcp_servers.crew.tools.list_agents]\napproval_mode = "approve"\n';
+    const out = codexAdapter.writeAutoApproval!(config, ['list_agents', 'run_agent']);
+    expect(out.match(/\[mcp_servers\.crew\.tools\.list_agents\]/g)).toHaveLength(1);
+    expect(out).toContain('[mcp_servers.crew.tools.list_agents]\napproval_mode = "always"');
+    expect(out).not.toContain('approval_mode = "approve"');
+  });
+
+  it('is idempotent — writing twice produces the same output', () => {
+    const config = '[mcp_servers.crew]\ncommand = "x"\nargs = []\n';
+    const once = codexAdapter.writeAutoApproval!(config, TOOLS);
+    const twice = codexAdapter.writeAutoApproval!(once, TOOLS);
+    expect(twice).toBe(once);
+  });
+
+  it('preserves unrelated sections and comments', () => {
+    const config =
+      '# top-level comment\n' +
+      '[mcp_servers.linear]\nurl = "x"\n\n' +
+      '[mcp_servers.crew]\ncommand = "x"\nargs = []\n';
+    const out = codexAdapter.writeAutoApproval!(config, ['run_agent']);
+    expect(out).toContain('# top-level comment');
+    expect(out).toContain('[mcp_servers.linear]');
+  });
+
+  it('clearAutoApproval removes all crew tools blocks but preserves the parent', () => {
+    const config =
+      '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
+      '[mcp_servers.crew.tools.list_agents]\napproval_mode = "always"\n\n' +
+      '[mcp_servers.crew.tools.run_agent]\napproval_mode = "always"\n';
+    const out = codexAdapter.clearAutoApproval!(config);
+    expect(out).toContain('[mcp_servers.crew]');
+    expect(out).not.toContain('[mcp_servers.crew.tools.');
+  });
+
+  it('clearAutoApproval is idempotent — running on cleared config is a no-op', () => {
+    const config = '[mcp_servers.crew]\ncommand = "x"\nargs = []\n';
+    expect(codexAdapter.clearAutoApproval!(config)).toBe(config);
+  });
+
+  it('clearAutoApproval preserves sister namespaces (codex.* but not crew.*)', () => {
+    const config =
+      '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
+      '[mcp_servers.crew.tools.run_agent]\napproval_mode = "always"\n\n' +
+      '[mcp_servers.linear.tools.list_issues]\napproval_mode = "always"\n';
+    const out = codexAdapter.clearAutoApproval!(config);
+    expect(out).not.toContain('[mcp_servers.crew.tools.');
+    expect(out).toContain('[mcp_servers.linear.tools.list_issues]');
+  });
+});
+
 describe('codex internals', () => {
   it('locateCrewBlock spans through trailing newlines up to next section', () => {
     const raw =

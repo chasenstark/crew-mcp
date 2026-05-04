@@ -59,3 +59,64 @@ describe('geminiAdapter.removeMcpBlock', () => {
     expect(geminiAdapter.removeMcpBlock(out)).toBe(out);
   });
 });
+
+describe('geminiAdapter.writeAutoApproval / clearAutoApproval', () => {
+  it('does NOT define permissionsPath (Gemini stores trust in the same file)', () => {
+    expect(geminiAdapter.permissionsPath).toBeUndefined();
+  });
+
+  it('sets mcpServers.crew.trust = true', () => {
+    const merged = geminiAdapter.mergeMcpBlock('', CMD, ARGS);
+    const out = geminiAdapter.writeAutoApproval!(merged, ['run_agent']);
+    const parsed = JSON.parse(out) as {
+      mcpServers: { crew: { command: string; args: string[]; trust: boolean } };
+    };
+    expect(parsed.mcpServers.crew.trust).toBe(true);
+    // Server config preserved.
+    expect(parsed.mcpServers.crew.command).toBe(CMD);
+    expect(parsed.mcpServers.crew.args).toEqual(ARGS);
+  });
+
+  it('preserves unrelated mcpServers entries', () => {
+    const existing = JSON.stringify({
+      mcpServers: {
+        other: { command: 'foo', args: [] },
+        crew: { command: CMD, args: ARGS },
+      },
+    });
+    const out = geminiAdapter.writeAutoApproval!(existing, ['run_agent']);
+    const parsed = JSON.parse(out) as {
+      mcpServers: Record<string, { trust?: boolean; command: string }>;
+    };
+    expect(parsed.mcpServers.other.trust).toBeUndefined();
+    expect(parsed.mcpServers.crew.trust).toBe(true);
+  });
+
+  it('is idempotent', () => {
+    const merged = geminiAdapter.mergeMcpBlock('', CMD, ARGS);
+    const once = geminiAdapter.writeAutoApproval!(merged, ['run_agent']);
+    const twice = geminiAdapter.writeAutoApproval!(once, ['run_agent']);
+    expect(twice).toBe(once);
+  });
+
+  it('clearAutoApproval removes the trust field', () => {
+    const merged = geminiAdapter.mergeMcpBlock('', CMD, ARGS);
+    const trusted = geminiAdapter.writeAutoApproval!(merged, ['run_agent']);
+    const cleared = geminiAdapter.clearAutoApproval!(trusted);
+    const parsed = JSON.parse(cleared) as {
+      mcpServers: { crew: { command: string; args: string[]; trust?: boolean } };
+    };
+    expect(parsed.mcpServers.crew.trust).toBeUndefined();
+    // Server config preserved.
+    expect(parsed.mcpServers.crew.command).toBe(CMD);
+  });
+
+  it('clearAutoApproval is a no-op when trust is absent', () => {
+    const merged = geminiAdapter.mergeMcpBlock('', CMD, ARGS);
+    expect(geminiAdapter.clearAutoApproval!(merged)).toBe(merged);
+  });
+
+  it('clearAutoApproval is a no-op on empty file', () => {
+    expect(geminiAdapter.clearAutoApproval!('')).toBe('');
+  });
+});

@@ -1,12 +1,20 @@
 /**
  * Claude Code host adapter.
  *
- * Config: ~/.claude.json (top-level JSON, mcpServers.<name>).
- * Skill:  ~/.claude/skills/crew/SKILL.md.
+ * Config:      ~/.claude.json          (top-level JSON, mcpServers.<name>).
+ * Skill:       ~/.claude/skills/crew/SKILL.md.
+ * Permissions: ~/.claude/settings.json (top-level JSON,
+ *              permissions.allow array of patterns).
  *
  * The config file may contain unrelated keys we MUST preserve — Claude
  * Code reads many settings from it. We parse, splice in our key, and
  * re-serialize with stable indentation.
+ *
+ * Auto-approval lives in a SEPARATE file from the MCP config (the
+ * settings.json file Claude Code's own permission UI writes to). We
+ * append the wildcard `mcp__crew__*` to `permissions.allow` so the
+ * host doesn't prompt before each `mcp__crew__*` tool call. Single
+ * wildcard covers all six tools and any future additions.
  */
 
 import { execFile } from 'node:child_process';
@@ -18,9 +26,15 @@ import type { HostAdapter } from './types.js';
 const execFileAsync = promisify(execFile);
 
 const MCP_BLOCK_KEY = 'crew';
+const PERMISSION_PATTERN = 'mcp__crew__*';
 
 interface ClaudeConfigShape {
   mcpServers?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+interface ClaudePermissionsShape {
+  permissions?: { allow?: unknown[]; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -74,6 +88,48 @@ export const claudeCodeAdapter: HostAdapter = {
   async detectRunning() {
     return detectProcessRunning(/(?:^|\/)claude(?:-code)?(?:\s|$)/);
   },
+
+  permissionsPath: (home) => join(home, '.claude', 'settings.json'),
+
+  writeAutoApproval(existing, _tools) {
+    // Wildcard covers all 6 tools and any future additions; per-tool
+    // entries would be redundant and would drift from the MCP catalog.
+    const parsed = parsePermissions(existing);
+    const permissions = parsed.permissions ?? {};
+    const allow: unknown[] = Array.isArray(permissions.allow)
+      ? [...permissions.allow]
+      : [];
+    if (!allow.includes(PERMISSION_PATTERN)) {
+      allow.push(PERMISSION_PATTERN);
+    }
+    permissions.allow = allow;
+    parsed.permissions = permissions;
+    return stringifyPermissions(parsed);
+  },
+
+  clearAutoApproval(existing) {
+    if (existing.trim().length === 0) return existing;
+    const parsed = parsePermissions(existing);
+    const permissions = parsed.permissions;
+    if (!permissions || !Array.isArray(permissions.allow)) {
+      return existing; // already absent
+    }
+    const filtered = permissions.allow.filter((p) => p !== PERMISSION_PATTERN);
+    if (filtered.length === permissions.allow.length) {
+      return existing; // pattern wasn't there
+    }
+    if (filtered.length === 0) {
+      delete permissions.allow;
+    } else {
+      permissions.allow = filtered;
+    }
+    if (Object.keys(permissions).length === 0) {
+      delete parsed.permissions;
+    } else {
+      parsed.permissions = permissions;
+    }
+    return stringifyPermissions(parsed);
+  },
 };
 
 function parseClaudeConfig(raw: string): ClaudeConfigShape {
@@ -91,6 +147,24 @@ function parseClaudeConfig(raw: string): ClaudeConfigShape {
 }
 
 function stringifyClaudeConfig(value: ClaudeConfigShape): string {
+  return JSON.stringify(value, null, 2) + '\n';
+}
+
+function parsePermissions(raw: string): ClaudePermissionsShape {
+  if (raw.trim().length === 0) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Claude permissions root is not a JSON object');
+    }
+    return parsed as ClaudePermissionsShape;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse Claude permissions as JSON: ${message}`);
+  }
+}
+
+function stringifyPermissions(value: ClaudePermissionsShape): string {
   return JSON.stringify(value, null, 2) + '\n';
 }
 

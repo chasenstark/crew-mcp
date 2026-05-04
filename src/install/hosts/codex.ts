@@ -60,6 +60,14 @@ const HEADER_RE = /^\[mcp_servers\.crew\][^\S\n]*$/m;
 const NAMESPACE_HEADER_RE = /^\[mcp_servers\.crew(?:\.[^\]]*)?\][^\S\n]*$/gm;
 
 /**
+ * Header line matching ONLY [mcp_servers.crew.tools.<X>] sub-blocks
+ * (not the parent [mcp_servers.crew] block). Used by writeAutoApproval
+ * + clearAutoApproval to manage the per-tool approval blocks without
+ * disturbing the parent.
+ */
+const TOOLS_HEADER_RE = /^\[mcp_servers\.crew\.tools\.[^\]]+\][^\S\n]*$/gm;
+
+/**
  * Any TOML section header — used to detect the END of a crew block
  * during scan-forward.
  */
@@ -113,7 +121,64 @@ export const codexAdapter: HostAdapter = {
   async detectRunning() {
     return detectProcessRunning(/(?:^|\/)codex(?:\s|$)/);
   },
+
+  // Codex stores per-tool approval state alongside the MCP server config in
+  // the same config.toml file (no separate permissions file), so we don't
+  // implement permissionsPath. The auto-approval is N tool blocks adjacent
+  // to the parent [mcp_servers.crew] block.
+
+  writeAutoApproval(existing, tools) {
+    // Strip any pre-existing crew-tools blocks (Codex auto-creates these
+    // when the user clicks "approve" in a session — see Finding 9). The
+    // user's `crew install` is the explicit consent action; we overwrite
+    // session-state with the deliberate auto-approve choice.
+    const cleared = removeCrewToolBlocks(existing);
+    if (tools.length === 0) return cleared;
+    const block = renderCrewToolsBlocks(tools);
+    // Place the tool blocks immediately after the parent [mcp_servers.crew]
+    // block for readability. If the parent isn't present (defensive — should
+    // be impossible since install writes it first), append at end.
+    const parent = locateCrewBlock(cleared);
+    if (parent) {
+      const before = cleared.slice(0, parent.end).replace(/\n*$/, '\n');
+      const after = cleared.slice(parent.end);
+      return before + block + (after.startsWith('\n') ? after : `\n${after}`);
+    }
+    const trimmed = cleared.replace(/\n*$/, '');
+    return trimmed.length === 0 ? block : `${trimmed}\n\n${block}`;
+  },
+
+  clearAutoApproval(existing) {
+    return removeCrewToolBlocks(existing);
+  },
 };
+
+const APPROVAL_MODE_ALWAYS = 'always';
+
+function renderCrewToolsBlocks(tools: readonly string[]): string {
+  return tools
+    .map((tool) =>
+      `[mcp_servers.crew.tools.${tool}]\napproval_mode = ${tomlString(APPROVAL_MODE_ALWAYS)}\n`,
+    )
+    .join('\n');
+}
+
+/**
+ * Remove every `[mcp_servers.crew.tools.<X>]` block from the TOML source.
+ * Distinct from `removeMcpBlock`, which strips the parent + tools blocks
+ * together on uninstall. This helper preserves the parent so install can
+ * re-write the tools blocks during auto-approval setup.
+ */
+function removeCrewToolBlocks(raw: string): string {
+  const spans = locateCrewToolsBlocks(raw);
+  if (spans.length === 0) return raw;
+  let out = raw;
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const { start, end } = spans[i];
+    out = out.slice(0, start) + out.slice(end);
+  }
+  return out.replace(/\n{3,}/g, '\n\n');
+}
 
 interface BlockSpan {
   /** Start byte offset of the `[mcp_servers.crew]` line. */
@@ -162,6 +227,31 @@ function locateCrewBlock(raw: string): BlockSpan | null {
  * crew-namespace blocks naturally end at the next crew header, so
  * splicing them all out leaves no gaps.
  */
+/**
+ * Find every `[mcp_servers.crew.tools.<X>]` sub-block in the TOML
+ * source, sorted by start offset. Each span ends at the next section
+ * header or EOF — same semantics as the namespace locator. Used by
+ * writeAutoApproval / clearAutoApproval to manage just the tools
+ * blocks while leaving the parent [mcp_servers.crew] block untouched.
+ */
+function locateCrewToolsBlocks(raw: string): BlockSpan[] {
+  const spans: BlockSpan[] = [];
+  TOOLS_HEADER_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = TOOLS_HEADER_RE.exec(raw)) !== null) {
+    const start = match.index;
+    const afterHeader = start + match[0].length;
+    const rest = raw.slice(afterHeader);
+    const nextSection = rest.search(SECTION_HEADER_RE);
+    const end = nextSection === -1 ? raw.length : afterHeader + nextSection;
+    spans.push({ start, end });
+    if (TOOLS_HEADER_RE.lastIndex <= start) {
+      TOOLS_HEADER_RE.lastIndex = start + 1;
+    }
+  }
+  return spans;
+}
+
 function locateAllCrewNamespaceBlocks(raw: string): BlockSpan[] {
   const spans: BlockSpan[] = [];
   // Reset the global regex's lastIndex; sharing a /g regex across
@@ -236,6 +326,8 @@ async function detectProcessRunning(pattern: RegExp): Promise<boolean> {
 export const _internals = {
   locateCrewBlock,
   locateAllCrewNamespaceBlocks,
+  locateCrewToolsBlocks,
   renderCodexBlock,
+  renderCrewToolsBlocks,
   tomlString,
 };

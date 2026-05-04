@@ -6,6 +6,11 @@
  *
  * Same MCP block shape as Claude Code. Different config path; different
  * skill location.
+ *
+ * Auto-approval lives inside the same `mcpServers.crew` object as the
+ * MCP config — Gemini supports a server-wide `"trust": true` flag that
+ * bypasses all confirmation dialogs for that server (per Gemini's MCP
+ * docs). No per-tool granularity; the trust is whole-server.
  */
 
 import { execFile } from 'node:child_process';
@@ -72,6 +77,33 @@ export const geminiAdapter: HostAdapter = {
 
   async detectRunning() {
     return detectProcessRunning(/(?:^|\/)gemini(?:\s|$)/);
+  },
+
+  // Gemini stores the trust flag inside the same mcpServers.crew object
+  // as the MCP config — no separate permissions file, so we don't
+  // implement permissionsPath. The `tools` arg is ignored (server-wide).
+
+  writeAutoApproval(existing, _tools) {
+    const parsed = parseGeminiConfig(existing);
+    const mcpServers = (parsed.mcpServers as Record<string, unknown> | undefined) ?? {};
+    const crew = (mcpServers[MCP_BLOCK_KEY] as Record<string, unknown> | undefined) ?? {};
+    crew.trust = true;
+    mcpServers[MCP_BLOCK_KEY] = crew;
+    parsed.mcpServers = mcpServers;
+    return stringifyGeminiConfig(parsed);
+  },
+
+  clearAutoApproval(existing) {
+    if (existing.trim().length === 0) return existing;
+    const parsed = parseGeminiConfig(existing);
+    const mcpServers = parsed.mcpServers as Record<string, unknown> | undefined;
+    const crew = mcpServers?.[MCP_BLOCK_KEY] as Record<string, unknown> | undefined;
+    if (!crew || !('trust' in crew)) {
+      return existing; // already absent
+    }
+    delete crew.trust;
+    mcpServers![MCP_BLOCK_KEY] = crew;
+    return stringifyGeminiConfig(parsed);
   },
 };
 

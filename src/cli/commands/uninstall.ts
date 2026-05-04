@@ -78,7 +78,24 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
         }
       }
 
-      // 3. Remove from install manifest.
+      // 3. Clear auto-approval state — defensively, regardless of whether
+      // the manifest says we wrote it (handles manifest-out-of-sync, and
+      // handles manual approvals the user clicked through during a
+      // session). Idempotent: a no-op if no approval state is present.
+      if (adapter.clearAutoApproval) {
+        const approvalFile = adapter.permissionsPath
+          ? adapter.permissionsPath(home)
+          : configPath;
+        if (existsSync(approvalFile)) {
+          const before = readFileSync(approvalFile, 'utf-8');
+          const after = adapter.clearAutoApproval(before);
+          if (after !== before) {
+            writeFileSync(approvalFile, after, 'utf-8');
+          }
+        }
+      }
+
+      // 4. Remove from install manifest.
       await removeInstalledTarget(home, targetId);
 
       result.removed.push(targetId);

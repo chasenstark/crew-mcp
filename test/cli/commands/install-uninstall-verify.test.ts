@@ -289,6 +289,142 @@ describe('install / verify / uninstall — happy path', () => {
     expect(existsSync(legacySkillPath)).toBe(false);
   });
 
+  it('install (default) writes auto-approval for Codex (per-tool blocks)', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+    // All 6 catalog tools get pre-approval blocks.
+    for (const tool of ['list_agents', 'run_agent', 'continue_run', 'merge_run', 'discard_run', 'get_run_status']) {
+      expect(config).toContain(`[mcp_servers.crew.tools.${tool}]\napproval_mode = "always"`);
+    }
+    // Manifest records that auto-approval was applied.
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { autoApproved?: boolean }>;
+    };
+    expect(manifest.targets.codex.autoApproved).toBe(true);
+  });
+
+  it('install --no-auto-approve skips writing per-tool blocks (Codex)', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      autoApprove: false,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+    expect(config).toContain('[mcp_servers.crew]'); // parent still installed
+    expect(config).not.toContain('[mcp_servers.crew.tools.');
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { autoApproved?: boolean }>;
+    };
+    expect(manifest.targets.codex.autoApproved).toBe(false);
+  });
+
+  it('install --no-auto-approve clears prior auto-approval (post-install state matches flag)', async () => {
+    // First install with auto-approve (default).
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    expect(readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8')).toContain(
+      '[mcp_servers.crew.tools.run_agent]',
+    );
+    // Re-install with --no-auto-approve.
+    await installCommand({
+      target: 'codex',
+      home,
+      autoApprove: false,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+    expect(config).not.toContain('[mcp_servers.crew.tools.');
+  });
+
+  it('install (default) writes mcp__crew__* to permissions.allow (Claude Code)', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const permissions = JSON.parse(readFileSync(adapter.permissionsPath!(home), 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toContain('mcp__crew__*');
+  });
+
+  it('install (default) sets trust:true on Gemini', async () => {
+    const adapter = HOST_ADAPTERS.gemini;
+    await installCommand({
+      target: 'gemini',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const config = JSON.parse(readFileSync(adapter.configPath(home), 'utf-8')) as {
+      mcpServers: { crew: { trust?: boolean } };
+    };
+    expect(config.mcpServers.crew.trust).toBe(true);
+  });
+
+  it('uninstall clears auto-approval (Codex tool blocks gone)', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    await uninstallCommand({ target: 'codex', home });
+    if (existsSync(HOST_ADAPTERS.codex.configPath(home))) {
+      const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+      expect(config).not.toContain('[mcp_servers.crew.tools.');
+      expect(config).not.toContain('[mcp_servers.crew]');
+    }
+  });
+
+  it('uninstall clears mcp__crew__* from Claude Code permissions.allow', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    // Pre-populate the permissions file with the user's own entries.
+    const permissionsPath = adapter.permissionsPath!(home);
+    mkdirSync(dirname(permissionsPath), { recursive: true });
+    writeFileSync(
+      permissionsPath,
+      JSON.stringify({ permissions: { allow: ['Bash(git:*)', 'Read'] } }),
+      'utf-8',
+    );
+
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    await uninstallCommand({ target: 'claude-code', home });
+
+    const permissions = JSON.parse(readFileSync(permissionsPath, 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toEqual(['Bash(git:*)', 'Read']);
+    expect(permissions.permissions.allow).not.toContain('mcp__crew__*');
+  });
+
   it('uninstall preserves unrelated mcpServers entries (claude-code)', async () => {
     const adapter = HOST_ADAPTERS['claude-code'];
     const preExisting = JSON.stringify({

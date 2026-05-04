@@ -27,6 +27,13 @@ export interface InstalledTarget {
   /** The exact command + args the host CLI is configured to spawn. */
   serverCommand: string;
   serverArgs: readonly string[];
+  /**
+   * Whether the install wrote auto-approval state to bypass per-call
+   * tool prompts. Optional for backward-compatibility with v0.2.0-dev
+   * manifests that pre-date the field; absent treated as undefined.
+   * Used by uninstall to know whether to clear approval state.
+   */
+  autoApproved?: boolean;
 }
 
 export interface InstallManifestV1 {
