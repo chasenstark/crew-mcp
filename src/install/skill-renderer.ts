@@ -82,13 +82,34 @@ export function resolvePackageRoot(override?: string): string {
 }
 
 /**
- * Load the canonical body. Trims trailing whitespace; the renderer adds
- * a single trailing newline.
+ * Load the canonical body. Strips HTML comments (intended for repo
+ * readers — provenance notes, editing rules — not for the host CLI's
+ * context window) and trims trailing whitespace; the renderer adds a
+ * single trailing newline.
  */
 export async function loadCanonicalBody(packageRoot: string): Promise<string> {
   const path = join(packageRoot, 'skills', 'crew-captain.body.md');
   const raw = await readFile(path, 'utf-8');
-  return raw.trimEnd();
+  return stripHtmlComments(raw).trimEnd();
+}
+
+/**
+ * Strip `<!-- ... -->` blocks (including multi-line) from markdown.
+ * Used to keep meta-documentation in the body source out of the
+ * rendered skill that ships into the host CLI's context. Squeezes
+ * the resulting blank-line gap so the output doesn't carry a hole
+ * where the comment used to be.
+ */
+export function stripHtmlComments(input: string): string {
+  return input
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // The comment block is typically on its own line(s); after removal,
+    // any chain of 3+ consecutive newlines collapses to 2 so the
+    // markdown stays well-formed.
+    .replace(/\n{3,}/g, '\n\n')
+    // If the comment was at the very top, leading blank lines can hang
+    // around. Trim them.
+    .replace(/^\s*\n+/, '');
 }
 
 /**

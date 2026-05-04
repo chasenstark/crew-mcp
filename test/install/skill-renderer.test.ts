@@ -14,6 +14,7 @@ import {
   renderSkill,
   renderToolList,
   resolvePackageRoot,
+  stripHtmlComments,
   templatePathForHost,
   SKILL_DESCRIPTION,
   type SkillTool,
@@ -58,6 +59,26 @@ describe('resolvePackageRoot', () => {
   });
 });
 
+describe('stripHtmlComments', () => {
+  it('removes single-line comments', () => {
+    expect(stripHtmlComments('a <!-- nope --> b')).toBe('a  b');
+  });
+
+  it('removes multi-line comments and squeezes 3+ newlines to a paragraph break', () => {
+    const input = 'before\n\n<!--\n  meta\n  doc\n-->\n\nafter';
+    expect(stripHtmlComments(input)).toBe('before\n\nafter');
+  });
+
+  it('removes a leading top-of-file comment block cleanly', () => {
+    const input = '<!--\n  provenance\n-->\n\n## Heading\n';
+    expect(stripHtmlComments(input)).toBe('## Heading\n');
+  });
+
+  it('leaves text without comments unchanged', () => {
+    expect(stripHtmlComments('# Hello\nworld\n')).toBe('# Hello\nworld\n');
+  });
+});
+
 describe('renderSkill (claude-code template)', () => {
   it('substitutes BODY, TOOL_LIST, and DESCRIPTION', async () => {
     const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
@@ -84,6 +105,12 @@ describe('renderSkill (claude-code template)', () => {
 
     // No leftover placeholders
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+
+    // No HTML comments leaked from the canonical body — those are
+    // repo-reader provenance notes that shouldn't ship in the rendered
+    // skill (Finding 2 from docs/status/v0.2-smoke-2026-05-04.md).
+    expect(out).not.toContain('<!--');
+    expect(out).not.toContain('-->');
   });
 
   it('ends with exactly one trailing newline', async () => {

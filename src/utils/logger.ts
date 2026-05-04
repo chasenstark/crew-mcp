@@ -22,7 +22,12 @@ function parseLevel(raw: string | undefined): LogLevel | undefined {
 }
 
 function resolveInitialConsoleLevel(): LogLevel {
-  return parseLevel(process.env.CREW_LOG_LEVEL) ?? 'error';
+  // Default to 'info' so the lifecycle CLI commands (install / verify /
+  // uninstall / status) give the user feedback on success. `crew serve`'s
+  // logger output goes to stderr per src/cli/commands/serve.ts; the MCP
+  // wire protocol's stdout discipline is unaffected. Set CREW_LOG_LEVEL=
+  // error to silence (matches v0.1 default).
+  return parseLevel(process.env.CREW_LOG_LEVEL) ?? 'info';
 }
 
 function resolveInitialFileLevel(): LogLevel {
