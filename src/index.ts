@@ -1,4 +1,5 @@
 import { program } from 'commander';
+import { agentsEditCommand } from './cli/commands/agents.js';
 import { installCommand } from './cli/commands/install.js';
 import { serveCommand } from './cli/commands/serve.js';
 import { statusCommand } from './cli/commands/status.js';
@@ -72,6 +73,19 @@ program
     if (!report.ok) {
       process.exitCode = 1;
     }
+  });
+
+const agents = program
+  .command('agents')
+  .description('Manage per-machine agent preferences (strengths + effort)');
+
+agents
+  .command('edit')
+  .description('Open ~/.crew/agents.json in $EDITOR (creates with defaults if missing)')
+  .action(async () => {
+    applyDebugFlag();
+    const code = await agentsEditCommand();
+    if (code !== 0) process.exitCode = code;
   });
 
 program

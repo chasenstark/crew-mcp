@@ -4,7 +4,7 @@ export interface WorkflowStep {
    * Candidate agents for this step, in preference order. The captain treats
    * this as a hint, not a contract: it picks the first available candidate by
    * default but may dispatch to an alternate when there's reason (unhealthy
-   * agent, capability mismatch, user override). Must be non-empty after
+   * agent, strengths mismatch, user override). Must be non-empty after
    * parsing.
    */
   agents: string[];
@@ -21,11 +21,15 @@ export interface WorkflowExecutionConfig {
 export interface AgentConfig {
   adapter?: string;
   auth?: string;
+  /**
+   * Soft routing hints for this agent — surfaced via list_agents so the
+   * captain can use them as nudges. Free-form lowercase strings (kebab-
+   * case convention). Replaces the v1 `capabilities` enum.
+   */
   strengths?: string[];
   model?: string;
   command?: string;
   args?: string[];
-  capabilities?: string[];
   apiBase?: string;
   apiKey?: string;
 }

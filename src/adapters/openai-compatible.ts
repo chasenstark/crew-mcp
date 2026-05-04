@@ -7,7 +7,7 @@ import { parseToolInput, ToolLoopDecisionSchema } from './tool-loop/decision.js'
 import { resolveTerminalOutput } from './tool-loop/result.js';
 import type {
   AgentAdapter,
-  AgentCapability,
+  AgentStrength,
   ExecuteOptions,
   HealthCheckResult,
   Task,
@@ -40,12 +40,12 @@ export interface OpenAiCompatibleAdapterOptions {
   model?: string;
   apiBase?: string;
   apiKey?: string;
-  capabilities?: AgentCapability[];
+  strengths?: AgentStrength[];
 }
 
 export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly name: string;
-  readonly capabilities: AgentCapability[];
+  readonly strengths: AgentStrength[];
   readonly supportsJsonSchema = false;
   readonly captainCapabilities = {
     supportsToolLoop: true,
@@ -63,14 +63,10 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     this.apiBase = (options.apiBase ?? process.env.CREW_OPENAI_BASE_URL ?? 'http://127.0.0.1:11434/v1')
       .replace(/\/+$/, '');
     this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? process.env.CREW_OPENAI_API_KEY;
-    this.capabilities = options.capabilities ?? [
-      'implement',
-      'review',
-      'refactor',
-      'test',
-      'document',
-      'analyze',
-    ];
+    // Empty default — what an OpenAI-compatible endpoint is "good at"
+    // depends entirely on the model wired up. Users declare strengths in
+    // their agent config or via ~/.crew/strengths.json.
+    this.strengths = options.strengths ?? [];
   }
 
   async execute(task: Task): Promise<TaskResult> {

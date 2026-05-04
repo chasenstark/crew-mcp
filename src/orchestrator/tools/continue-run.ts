@@ -18,6 +18,11 @@ export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
   prompt: z.string().min(1),
   model: z.string().optional(),
+  /**
+   * Per-call reasoning effort override. Same precedence as run_agent:
+   * wins over the user's agents.json default + adapter default.
+   */
+  effort: z.enum(['low', 'medium', 'high']).optional(),
 });
 
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;

@@ -36,9 +36,16 @@ export async function statusCommand(): Promise<void> {
     }
 
     if (adapter) {
-      console.log(
-        `    ${chalk.dim('capabilities:')} ${adapter.capabilities.join(', ')}`,
-      );
+      if (adapter.strengths.length > 0) {
+        console.log(
+          `    ${chalk.dim('strengths:')} ${adapter.strengths.join(', ')}`,
+        );
+      }
+      if (adapter.defaultEffort) {
+        console.log(
+          `    ${chalk.dim('default effort:')} ${adapter.defaultEffort}`,
+        );
+      }
     }
 
     if (result.error) {

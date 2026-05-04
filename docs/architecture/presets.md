@@ -40,7 +40,7 @@ Prose role-suggestion hints rendered under the `hint` as
 `Suggested roles: reviewer, security`. These are NOT `agent_id` values —
 the captain still dispatches to the registered agent adapters via
 `list_agents`. Roles that no registered agent claims in its
-`capabilities` are rendered with a qualifier:
+`strengths` are rendered with a qualifier:
 `Suggested roles: reviewer, security (intent — no adapter registered)`.
 This prevents the captain from hallucinating
 `run_agent(agent_id='security')` for a role that doesn't exist in the

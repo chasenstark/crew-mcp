@@ -29,7 +29,7 @@ import { WorktreeManager } from '../../../src/git/worktree.js';
 function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
   return {
     name: overrides?.name ?? 'mock',
-    capabilities: overrides?.capabilities ?? ['implement'],
+    strengths: overrides?.strengths ?? [],
     supportsJsonSchema: false,
     execute:
       overrides?.execute ??
@@ -162,8 +162,8 @@ describe('crew serve — list_agents tool', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await startHarness([
-      makeMockAdapter({ name: 'mock-coder', capabilities: ['implement'] }),
-      makeMockAdapter({ name: 'mock-reviewer', capabilities: ['review'] }),
+      makeMockAdapter({ name: 'mock-coder', strengths: ['code-implementation'] }),
+      makeMockAdapter({ name: 'mock-reviewer', strengths: ['code-review'] }),
     ]);
   });
   afterEach(async () => {
@@ -172,7 +172,7 @@ describe('crew serve — list_agents tool', () => {
 
   it('returns the injected registry as structured content', async () => {
     const res = await h.client.callTool({ name: 'list_agents', arguments: {} });
-    const structured = res.structuredContent as { agents: Array<{ name: string; available: boolean; capabilities: string[] }> };
+    const structured = res.structuredContent as { agents: Array<{ name: string; available: boolean; strengths: string[] }> };
     expect(structured.agents).toHaveLength(2);
     const names = structured.agents.map((a) => a.name).sort();
     expect(names).toEqual(['mock-coder', 'mock-reviewer']);

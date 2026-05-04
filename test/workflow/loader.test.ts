@@ -172,7 +172,7 @@ captain:
     });
   });
 
-  it('parses generic agent command/args/capabilities fields', () => {
+  it('parses generic agent command/args/strengths fields', () => {
     const yaml = `
 workflow:
   name: generic-config
@@ -182,7 +182,7 @@ agents:
     adapter: generic
     command: my-tool
     args: ["--prompt", "{{prompt}}"]
-    capabilities: [analyze, review]
+    strengths: [code-review, fast-iteration]
 captain:
   cli: claude-code
 `;
@@ -191,7 +191,27 @@ captain:
     expect(generic.adapter).toBe('generic');
     expect(generic.command).toBe('my-tool');
     expect(generic.args).toEqual(['--prompt', '{{prompt}}']);
-    expect(generic.capabilities).toEqual(['analyze', 'review']);
+    expect(generic.strengths).toEqual(['code-review', 'fast-iteration']);
+  });
+
+  it('accepts the legacy `capabilities:` key as a strengths alias (v0.1 compat)', () => {
+    // Existing on-disk workflow.yaml configs from v0.1 still use
+    // `capabilities:`; the codec maps them onto `strengths` so users
+    // don't have to migrate by hand. Drop in v0.3.
+    const yaml = `
+workflow:
+  name: legacy-config
+  steps: []
+agents:
+  custom-agent:
+    adapter: generic
+    command: my-tool
+    capabilities: [code-review]
+captain:
+  cli: claude-code
+`;
+    const config = parseWorkflowYaml(yaml);
+    expect(config.agents['custom-agent'].strengths).toEqual(['code-review']);
   });
 
   it('returns default config', () => {

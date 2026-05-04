@@ -474,7 +474,7 @@ export function addAgent(
     model?: string;
     command?: string;
     args?: string[];
-    capabilities?: string[];
+    strengths?: string[];
     scope?: ConfigScope;
     profile?: string;
   } = {},
@@ -494,7 +494,7 @@ export function addAgent(
   const args = options.args
     ?.map((value) => value.trim())
     .filter((value) => value.length > 0);
-  const capabilities = options.capabilities
+  const strengths = options.strengths
     ?.map((value) => value.trim())
     .filter((value) => value.length > 0);
 
@@ -508,7 +508,7 @@ export function addAgent(
     agent.command = name;
   }
   if (args && args.length > 0) agent.args = uniqueOrdered(args);
-  if (capabilities && capabilities.length > 0) agent.capabilities = uniqueOrdered(capabilities);
+  if (strengths && strengths.length > 0) agent.strengths = uniqueOrdered(strengths);
 
   const next = structuredClone(current);
   next.agents[name] = agent;

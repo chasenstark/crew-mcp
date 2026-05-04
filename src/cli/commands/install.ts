@@ -22,9 +22,15 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { SERVE_VERSION } from './serve.js';
+import { createBuiltinRegistry } from '../../adapters/registry.js';
+import {
+  seedAgentPrefsFile,
+  type AgentPrefsMap,
+} from '../../agent-prefs/store.js';
+import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   ALL_HOST_IDS,
   HOST_ADAPTERS,
@@ -72,6 +78,12 @@ export interface InstallOptions {
   skipRunningCheck?: boolean;
   /** Override $HOME (tests). */
   home?: string;
+  /**
+   * Override `<crewHome>` (where `agents.json` is seeded). Tests pass a
+   * tmpdir to avoid touching the real `~/.crew`. Production omits this
+   * and falls through to `resolveCrewHome()`.
+   */
+  crewHome?: string;
   /** Override the package root (tests; otherwise auto-detected). */
   packageRoot?: string;
   /** Override crew binary resolution (tests). */
@@ -189,7 +201,47 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
     }
   }
 
+  // After at least one successful install, seed the per-machine agent
+  // prefs file (`<crewHome>/agents.json`) with every registered
+  // adapter's defaults. Idempotent: existing files are never
+  // overwritten — only the first install creates the file. Done here
+  // (not in installSingleTarget) because the file is per-machine, not
+  // per-host.
+  if (result.installed.length > 0) {
+    // Test seam: when callers override `home` (a tmpdir) but not
+    // `crewHome`, derive crewHome under that tmpdir to keep the seed
+    // off the developer's real `~/.crew`. Production passes neither
+    // and falls through to `resolveCrewHome()`.
+    const crewHome = opts.crewHome
+      ?? (opts.home ? join(opts.home, '.crew') : resolveCrewHome());
+    const seeded = seedAgentPrefsFile(crewHome, collectAdapterDefaults());
+    if (seeded) {
+      logger.info(
+        `crew install: seeded ${crewHome}/agents.json with adapter defaults. `
+        + 'Edit it (or run `crew agents edit`) to tune per-agent strengths/effort.',
+      );
+    }
+  }
+
   return result;
+}
+
+/**
+ * Walk the built-in registry to capture each adapter's default
+ * strengths + effort for the agents.json seed. The registry already
+ * canonicalizes adapter names, so this is the right source for the
+ * seeded keys (matches what list_agents emits).
+ */
+function collectAdapterDefaults(): AgentPrefsMap {
+  const registry = createBuiltinRegistry();
+  const defaults: Record<string, { strengths?: readonly string[]; effort?: 'low' | 'medium' | 'high' }> = {};
+  for (const adapter of registry.listAvailable()) {
+    defaults[adapter.name] = {
+      strengths: [...adapter.strengths],
+      ...(adapter.defaultEffort ? { effort: adapter.defaultEffort } : {}),
+    };
+  }
+  return defaults;
 }
 
 /**

@@ -6,7 +6,7 @@ import type { AgentAdapter } from '../../../src/adapters/types.js';
 function makeAdapter(overrides: Partial<AgentAdapter> & { name: string }): AgentAdapter {
   return {
     supportsJsonSchema: false,
-    capabilities: overrides.capabilities ?? ['analyze'],
+    strengths: overrides.strengths ?? [],
     execute: async () => ({
       output: '',
       filesModified: [],
@@ -36,13 +36,13 @@ function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
 describe('listAgents', () => {
   it('surfaces every registered adapter with health info', async () => {
     const registry = makeRegistry([
-      makeAdapter({ name: 'codex', capabilities: ['implement', 'review'] }),
-      makeAdapter({ name: 'claude-code', capabilities: ['review'] }),
+      makeAdapter({ name: 'codex', strengths: ['fast-iteration'] }),
+      makeAdapter({ name: 'claude-code', strengths: ['code-review'] }),
     ]);
     const out = await listAgents({ registry });
     expect(out.agents).toHaveLength(2);
     const byName = Object.fromEntries(out.agents.map((a) => [a.name, a]));
-    expect(byName.codex.capabilities).toEqual(['implement', 'review']);
+    expect(byName.codex.strengths).toEqual(['fast-iteration']);
     expect(byName.codex.available).toBe(true);
     expect(byName.codex.authenticated).toBe(true);
   });
@@ -115,8 +115,8 @@ describe('listAgents', () => {
 
   it('surfaces aliases when an adapter declares them', async () => {
     const registry = makeRegistry([
-      makeAdapter({ name: 'claude-code', aliases: ['claude'], capabilities: ['review'] }),
-      makeAdapter({ name: 'codex', capabilities: ['implement'] }),
+      makeAdapter({ name: 'claude-code', aliases: ['claude'], strengths: ['code-review'] }),
+      makeAdapter({ name: 'codex', strengths: ['fast-iteration'] }),
     ]);
     const out = await listAgents({ registry });
     const claude = out.agents.find((a) => a.name === 'claude-code');
@@ -124,5 +124,33 @@ describe('listAgents', () => {
     expect(claude?.aliases).toEqual(['claude']);
     // No aliases declared → field omitted entirely (not [] or undefined-explicit).
     expect('aliases' in (codex ?? {})).toBe(false);
+  });
+
+  it('merges agent-prefs file overrides on top of adapter defaults', async () => {
+    const registry = makeRegistry([
+      makeAdapter({ name: 'codex', strengths: ['fast-iteration'], defaultEffort: 'medium' }),
+      makeAdapter({ name: 'claude-code', strengths: ['code-review'] }),
+    ]);
+    const out = await listAgents({
+      registry,
+      agentPrefs: {
+        codex: { strengths: ['user-override'], effort: 'high' },
+        // claude-code untouched → adapter defaults pass through.
+      },
+    });
+    const byName = Object.fromEntries(out.agents.map((a) => [a.name, a]));
+    expect(byName.codex.strengths).toEqual(['user-override']);
+    expect(byName.codex.effort).toBe('high');
+    expect(byName['claude-code'].strengths).toEqual(['code-review']);
+    // claude-code adapter has no defaultEffort and no override → effort omitted.
+    expect('effort' in byName['claude-code']).toBe(false);
+  });
+
+  it('omits effort when adapter has no defaultEffort and no override exists', async () => {
+    const registry = makeRegistry([
+      makeAdapter({ name: 'gemini-cli', strengths: ['long-context'] }),
+    ]);
+    const out = await listAgents({ registry });
+    expect('effort' in out.agents[0]).toBe(false);
   });
 });

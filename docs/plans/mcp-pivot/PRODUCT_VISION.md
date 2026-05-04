@@ -172,7 +172,7 @@ Six tools, exposed by `crew serve`:
 
 | Tool | Returns | Purpose |
 |------|---------|---------|
-| `list_agents` | `[{id, status, capabilities, model}]` | What can be dispatched to |
+| `list_agents` | `[{name, strengths[], effort?, available, version?, ...}]` | What can be dispatched to (strengths = soft routing hints; effort = per-machine default for adapters with a native knob) |
 | `run_agent` | `{run_id, status, diff, summary, files_changed}` | Dispatch a fresh run in a new worktree |
 | `continue_run` | same | Add instructions to an existing worktree run |
 | `merge_run` | `{commit_sha, conflicts}` | Merge worktree → host's HEAD |

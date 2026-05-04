@@ -1,7 +1,7 @@
 import { execa } from 'execa';
 import type {
   AgentAdapter,
-  AgentCapability,
+  AgentStrength,
   HealthCheckResult,
   Task,
   TaskResult,
@@ -32,7 +32,7 @@ export interface GenericAdapterOptions {
   name: string;
   command: string;
   argsTemplate: string[];
-  capabilities: AgentCapability[];
+  strengths: AgentStrength[];
 }
 
 /**
@@ -55,7 +55,7 @@ export interface GenericAdapterOptions {
  */
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;
-  readonly capabilities: AgentCapability[];
+  readonly strengths: AgentStrength[];
   readonly supportsJsonSchema = false;
   readonly captainCapabilities = {
     supportsToolLoop: false,
@@ -70,7 +70,7 @@ export class GenericAdapter implements AgentAdapter {
     this.name = options.name;
     this.command = options.command;
     this.argsTemplate = options.argsTemplate;
-    this.capabilities = options.capabilities;
+    this.strengths = options.strengths;
   }
 
   /**

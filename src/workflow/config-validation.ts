@@ -13,14 +13,6 @@ export interface ConfigDiagnostic {
 }
 
 const SUPPORTED_ADAPTERS = new Set<string>(ADAPTER_PRESETS);
-const SUPPORTED_CAPABILITIES = new Set([
-  'implement',
-  'review',
-  'refactor',
-  'test',
-  'document',
-  'analyze',
-]);
 
 function resolveCaptainAdapterType(config: FullConfig): string | undefined {
   const captainAgent = config.agents[config.captain.cli];
@@ -204,16 +196,19 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
       );
     }
 
+    // Strengths are free-form soft routing hints — no enum gate. Empty
+    // string entries are still a misconfig (whitespace-only is the
+    // typical typo).
     if (
-      agent.capabilities
-      && agent.capabilities.some((capability) => !SUPPORTED_CAPABILITIES.has(capability.trim().toLowerCase()))
+      agent.strengths
+      && agent.strengths.some((s) => typeof s !== 'string' || s.trim().length === 0)
     ) {
       diagnostics.push(
         createDiagnostic(
-          `agents.${name}.capabilities`,
-          'comma-delimited values from implement|review|refactor|test|document|analyze',
-          agent.capabilities,
-          `/config set agents.${name}.capabilities implement,review`,
+          `agents.${name}.strengths`,
+          'array of non-empty strings (free-form routing hints, e.g., code-review, fast-iteration)',
+          agent.strengths,
+          `/config set agents.${name}.strengths code-review,documentation`,
         ),
       );
     }

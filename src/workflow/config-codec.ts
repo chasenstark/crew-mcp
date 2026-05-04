@@ -167,14 +167,19 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
         return acc;
       }
       const raw = value as Record<string, unknown>;
-      const strengths = Array.isArray(raw.strengths)
-        ? raw.strengths.filter((s): s is string => typeof s === 'string')
+      // Accept either `strengths` (canonical) or legacy `capabilities`
+      // for backward-compat with v1 configs already on disk. The legacy
+      // path is removed once we cut v0.3 — see future-direction doc.
+      const strengthsRaw = Array.isArray(raw.strengths)
+        ? raw.strengths
+        : Array.isArray(raw.capabilities)
+          ? raw.capabilities
+          : undefined;
+      const strengths = strengthsRaw
+        ? strengthsRaw.filter((s): s is string => typeof s === 'string')
         : undefined;
       const args = Array.isArray(raw.args)
         ? raw.args.filter((a): a is string => typeof a === 'string')
-        : undefined;
-      const capabilities = Array.isArray(raw.capabilities)
-        ? raw.capabilities.filter((c): c is string => typeof c === 'string')
         : undefined;
 
       acc[name] = {
@@ -188,7 +193,6 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
           : undefined,
         command: typeof raw.command === 'string' ? raw.command : undefined,
         args,
-        capabilities,
         apiBase: typeof raw.api_base === 'string'
           ? raw.api_base
           : typeof raw.apiBase === 'string'
@@ -353,7 +357,6 @@ export function serializeWorkflowYaml(config: FullConfig): string {
           model: agent.model,
           command: agent.command,
           args: agent.args,
-          capabilities: agent.capabilities,
           api_base: agent.apiBase,
           api_key: agent.apiKey,
         }),

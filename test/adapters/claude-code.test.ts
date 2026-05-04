@@ -62,15 +62,20 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.captainCapabilities?.supportsPauseForUserInput).toBe(true);
     });
 
-    it('has all capabilities', () => {
-      expect(adapter.capabilities).toEqual([
-        'implement',
-        'review',
-        'refactor',
-        'test',
-        'document',
-        'analyze',
+    it('declares default strengths', () => {
+      expect(adapter.strengths).toEqual([
+        'careful-reasoning',
+        'code-review',
+        'documentation',
       ]);
+    });
+
+    it('omits defaultEffort (no native reasoning-effort knob today)', () => {
+      // Wiring is staged: the per-machine agents.json still accepts
+      // an effort value for claude-code, but the adapter currently
+      // ignores it. When/if the CLI gains a thinking-budget flag,
+      // declare defaultEffort here and translate in execute().
+      expect(adapter.defaultEffort).toBeUndefined();
     });
   });
 

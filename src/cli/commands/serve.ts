@@ -34,6 +34,7 @@ import {
 import {
   buildAdapterDispatchTask,
   planRunAgent,
+  resolveEffectiveEffort,
   runAgentInputSchema,
   RUN_AGENT_DESCRIPTION,
 } from '../../orchestrator/tools/run-agent.js';
@@ -53,6 +54,7 @@ import {
   getRunStatusInputSchema,
   GET_RUN_STATUS_DESCRIPTION,
 } from '../../orchestrator/tools/get-run-status.js';
+import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 
@@ -168,7 +170,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: LIST_AGENTS_DESCRIPTION,
     },
     async () => {
-      const out = await listAgents({ registry });
+      // Re-read on every call: the file is small and the user may
+      // have edited it between dispatches without restarting serve.
+      const agentPrefs = readAgentPrefsFile(crewHome);
+      const out = await listAgents({ registry, agentPrefs });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
         structuredContent: out as unknown as Record<string, unknown>,
@@ -185,9 +190,11 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     },
     async (args) => {
       const toolCallId = randomUUID();
+      const agentPrefs = readAgentPrefsFile(crewHome);
       const plan = await planRunAgent(args, toolCallId, {
         registry,
         worktreeManager,
+        agentPrefs,
       });
 
       if (plan.kind === 'error') {
@@ -241,6 +248,16 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       }
 
       const toolCallId = randomUUID();
+      // Resolve effort with the same precedence run_agent uses:
+      // per-call > agents.json > adapter default. Re-read prefs each
+      // continue so a user edit between dispatches is honored without
+      // a serve restart.
+      const continueAgentPrefs = readAgentPrefsFile(crewHome);
+      const effectiveEffort = resolveEffectiveEffort(
+        adapter,
+        args.effort,
+        continueAgentPrefs,
+      );
       const task = buildAdapterDispatchTask({
         toolCallId,
         runId: args.run_id,
@@ -249,6 +266,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         effectiveWorkingDirectory: state.worktreePath,
         worktreePath: state.worktreePath,
         effectiveModel: args.model,
+        effectiveEffort,
         worktreeManager,
         input: { ...args },
       });

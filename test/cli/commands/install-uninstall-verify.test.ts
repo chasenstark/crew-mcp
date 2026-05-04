@@ -88,6 +88,60 @@ describe('install / verify / uninstall — happy path', () => {
     }
   });
 
+  it('seeds <crewHome>/agents.json on first install with adapter defaults', async () => {
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-install-prefs-'));
+    try {
+      await installCommand({
+        target: 'codex',
+        home,
+        crewHome,
+        skipRunningCheck: true,
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      });
+      const prefsPath = join(crewHome, 'agents.json');
+      expect(existsSync(prefsPath)).toBe(true);
+      const parsed = JSON.parse(readFileSync(prefsPath, 'utf-8'));
+      // Every built-in adapter is seeded so users see all options when
+      // they open the file.
+      expect(parsed['claude-code']).toBeDefined();
+      expect(parsed.codex).toBeDefined();
+      expect(parsed['gemini-cli']).toBeDefined();
+      expect(parsed.codex.effort).toBe('medium');
+      // Comment field present for first-time users.
+      expect(parsed._readme).toBeDefined();
+    } finally {
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT overwrite an existing agents.json on subsequent installs', async () => {
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-install-prefs-'));
+    try {
+      // Pre-existing user customization.
+      mkdirSync(crewHome, { recursive: true });
+      writeFileSync(
+        join(crewHome, 'agents.json'),
+        JSON.stringify({ codex: { strengths: ['user-edit'] } }, null, 2),
+        'utf-8',
+      );
+      await installCommand({
+        target: 'codex',
+        home,
+        crewHome,
+        skipRunningCheck: true,
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      });
+      const parsed = JSON.parse(readFileSync(join(crewHome, 'agents.json'), 'utf-8'));
+      expect(parsed.codex.strengths).toEqual(['user-edit']);
+      // Other adapters NOT injected — install respects the user file shape.
+      expect(parsed['claude-code']).toBeUndefined();
+    } finally {
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
   it('install is idempotent — running twice yields the same end state', async () => {
     const args = {
       target: 'codex',

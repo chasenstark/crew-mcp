@@ -13,7 +13,7 @@ describe('createRegistryFromConfig', () => {
         adapter: 'generic',
         command: 'my-tool',
         args: ['--prompt', '{{prompt}}'],
-        capabilities: ['analyze', 'review'],
+        strengths: ['code-review', 'fast-iteration'],
       },
     });
 
@@ -23,8 +23,8 @@ describe('createRegistryFromConfig', () => {
     const custom = registry.get('custom');
     expect(custom).toBeDefined();
     expect(custom?.name).toBe('custom');
-    expect(custom?.capabilities).toContain('analyze');
-    expect(custom?.capabilities).toContain('review');
+    expect(custom?.strengths).toContain('code-review');
+    expect(custom?.strengths).toContain('fast-iteration');
   });
 
   it('omits built-in adapters that are not in the user config', () => {
@@ -82,47 +82,50 @@ describe('createBuiltinRegistry', () => {
   });
 });
 
-describe('capabilities passthrough (M3-2)', () => {
-  it('accepts user-defined capability strings verbatim', () => {
+describe('strengths passthrough', () => {
+  it('accepts user-defined strength strings verbatim', () => {
     const registry = createRegistryFromConfig({
       custom: {
         adapter: 'generic',
         command: 'my-tool',
-        capabilities: ['typescript', 'k8s-ops', 'devops'],
+        strengths: ['typescript', 'k8s-ops', 'devops'],
       },
     });
     const custom = registry.get('custom');
-    expect(custom?.capabilities).toEqual(['typescript', 'k8s-ops', 'devops']);
+    expect(custom?.strengths).toEqual(['typescript', 'k8s-ops', 'devops']);
   });
 
-  it('normalizes capabilities: trim, lowercase, dedupe, preserve order', () => {
+  it('normalizes strengths: trim, lowercase, dedupe, preserve order', () => {
     const registry = createRegistryFromConfig({
       custom: {
         adapter: 'generic',
         command: 'my-tool',
-        capabilities: ['  Review  ', 'REVIEW', 'TypeScript', 'typescript'],
+        strengths: ['  Code-Review  ', 'CODE-REVIEW', 'TypeScript', 'typescript'],
       },
     });
-    const caps = registry.get('custom')?.capabilities;
-    expect(caps).toEqual(['review', 'typescript']);
+    const strengths = registry.get('custom')?.strengths;
+    expect(strengths).toEqual(['code-review', 'typescript']);
   });
 
-  it('defaults to ["analyze"] when no capabilities are supplied', () => {
+  it('defaults to [] (empty) when no strengths are supplied', () => {
+    // No silent fallback to any sentinel — empty is honest. The agent
+    // simply has no soft routing hints; the captain picks based on
+    // name and the user's words alone.
     const registry = createRegistryFromConfig({
       custom: { adapter: 'generic', command: 'my-tool' },
     });
-    expect(registry.get('custom')?.capabilities).toEqual(['analyze']);
+    expect(registry.get('custom')?.strengths).toEqual([]);
   });
 
-  it('defaults to ["analyze"] when every provided capability is empty/whitespace', () => {
+  it('returns [] when every provided strength is empty/whitespace', () => {
     const registry = createRegistryFromConfig({
       custom: {
         adapter: 'generic',
         command: 'my-tool',
-        capabilities: ['  ', ''],
+        strengths: ['  ', ''],
       },
     });
-    expect(registry.get('custom')?.capabilities).toEqual(['analyze']);
+    expect(registry.get('custom')?.strengths).toEqual([]);
   });
 });
 
@@ -131,9 +134,9 @@ describe('AdapterRegistry alias resolution', () => {
     return {
       name,
       aliases,
-      capabilities: ['analyze'],
+      strengths: [],
       supportsJsonSchema: false,
-      execute: async () => ({ status: 'completed' as const, output: '' }),
+      execute: async () => ({ status: 'completed' as const, output: '' }) as never,
       healthCheck: async () => ({ available: true, authenticated: true }),
     };
   }

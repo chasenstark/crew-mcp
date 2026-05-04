@@ -153,6 +153,16 @@ within a crew minor version; if a tool seems to have changed, run
   error and waste a turn. Aliases (e.g., `"claude"` for
   `"claude-code"`) work too; `list_agents` surfaces them per
   adapter under the `aliases` field.
+- `list_agents` also returns `strengths[]` (soft routing hints —
+  what each agent is good at) and an optional `effort` default. Use
+  `strengths` as nudges when picking between adapters, not as hard
+  filters. The user tunes both per-machine in `~/.crew/agents.json`,
+  so what you see is what they want.
+- `run_agent`/`continue_run` accept an optional `effort: "low" |
+  "medium" | "high"`. Use it to override the per-machine default
+  when the task demands more (deep refactor → `high`) or less
+  (triage → `low`) reasoning. Adapters without a native knob ignore
+  it gracefully.
 - Worktrees persist across crew-serve restarts. A `run_id` you got
   yesterday is still resumable today (until merged or discarded).
 - Prefer inline reasoning over routing through agents for things you

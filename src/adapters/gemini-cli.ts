@@ -14,7 +14,7 @@ import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
 import { buildDecisionPrompt } from './tool-loop/transcript.js';
 import type {
   AgentAdapter,
-  AgentCapability,
+  AgentStrength,
   ExecuteOptions,
   HealthCheckResult,
   Task,
@@ -245,13 +245,12 @@ export function isVersionBelowFloor(
 
 export class GeminiCliAdapter implements AgentAdapter {
   readonly name = AgentId.GEMINI_CLI;
-  readonly capabilities: AgentCapability[] = [
-    'implement',
-    'review',
-    'refactor',
-    'test',
-    'document',
-    'analyze',
+  // Soft routing hints; users override via ~/.crew/strengths.json.
+  // See AgentStrength docs in src/adapters/types.ts.
+  readonly strengths: AgentStrength[] = [
+    'long-context',
+    'broad-codebase-triage',
+    'multimodal-input',
   ];
   // Gemini CLI has no native schema-enforcement flag; executeWithSchema
   // post-validates with Zod. Reporting false makes downstream code pick the

@@ -25,7 +25,7 @@ describe('GenericAdapter', () => {
       name: 'generic-test',
       command: 'generic-tool',
       argsTemplate: ['--prompt', '{{prompt}}'],
-      capabilities: ['implement'],
+      strengths: [],
     });
 
     const result = await adapter.execute({

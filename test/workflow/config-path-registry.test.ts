@@ -18,7 +18,7 @@ describe('config path registry', () => {
       'agents.<name>.model',
       'agents.<name>.command',
       'agents.<name>.args',
-      'agents.<name>.capabilities',
+      'agents.<name>.strengths',
       'workflow.steps.<role>.agents',
       'workflow.reviewer.maxPasses',
       'errorHandling.default.retry',

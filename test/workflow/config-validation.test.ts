@@ -26,12 +26,23 @@ describe('config-validation', () => {
     expect(diagnostics.some((d) => d.path === 'agents.codex.command')).toBe(true);
   });
 
-  it('rejects invalid capabilities', () => {
+  it('accepts arbitrary strength strings (no enum gate)', () => {
+    // Strengths are free-form soft routing hints — the validator should
+    // accept any non-empty string, including ones that the captain has
+    // never seen before. Used for user-defined hints like "k8s-ops".
     const config = getDefaultConfig();
-    config.agents.codex.capabilities = ['review', 'made-up-capability'];
+    config.agents.codex.strengths = ['code-review', 'made-up-strength'];
 
     const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.codex.capabilities')).toBe(true);
+    expect(diagnostics.some((d) => d.path === 'agents.codex.strengths')).toBe(false);
+  });
+
+  it('rejects empty/whitespace-only strength entries', () => {
+    const config = getDefaultConfig();
+    config.agents.codex.strengths = ['code-review', '   '];
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.some((d) => d.path === 'agents.codex.strengths')).toBe(true);
   });
 
   it('rejects built-in adapters under non-built-in keys', () => {

@@ -108,7 +108,26 @@ export interface AgentAdapter {
    * name or alias (registry construction throws on collision).
    */
   readonly aliases?: readonly string[];
-  readonly capabilities: AgentCapability[];
+  /**
+   * Soft routing hints surfaced via `list_agents`. NOT enforced anywhere
+   * — the captain reads them as nudges ("good for code review", "fast
+   * iteration") when picking between adapters. Free-form strings; users
+   * override per-machine via `~/.crew/strengths.json` (see
+   * src/strengths/store.ts), so adapter defaults are seeds, not contracts.
+   *
+   * Replaced the v1 `capabilities` enum (`implement|review|refactor|...`)
+   * which every adapter declared identically and no code consumed.
+   */
+  readonly strengths: AgentStrength[];
+  /**
+   * Default reasoning effort for dispatches to this adapter. Omitted when
+   * the underlying CLI has no reasoning-effort knob (gemini-cli today,
+   * openai-compatible/generic by definition). Surfaced via `list_agents`
+   * so the captain can see the per-machine default; users override via
+   * `~/.crew/agents.json`. The captain may also pass a per-call `effort`
+   * to `run_agent` / `continue_run`, which wins over both.
+   */
+  readonly defaultEffort?: EffortLevel;
   readonly supportsJsonSchema: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
@@ -135,21 +154,30 @@ export interface AgentAdapter {
 }
 
 /**
- * Named capability strings that show up in first-party configs. Kept as a
- * documentation anchor — downstream code treats capabilities as free-form
- * lowercase strings, since M3 widened the surface to let users declare
- * arbitrary capabilities (e.g., "typescript", "k8s-ops") for their own
- * `run_agent` + `list_agents` discovery. Any string is valid at runtime.
+ * Soft strength tag surfaced via `list_agents` to nudge the captain's
+ * adapter pick. Free-form lowercase string; convention is kebab-case
+ * descriptors of *what the adapter is good at* (e.g., `"code-review"`,
+ * `"long-context"`, `"fast-iteration"`) rather than verbs the adapter
+ * supports — every modern coding agent can implement, review, refactor,
+ * etc., so verb-tags carried no signal.
+ *
+ * No enum; any string is valid at runtime. Users tune per-machine via
+ * `~/.crew/agents.json`.
  */
-export type NamedAgentCapability =
-  | 'implement'
-  | 'review'
-  | 'refactor'
-  | 'test'
-  | 'document'
-  | 'analyze';
+export type AgentStrength = string;
 
-export type AgentCapability = NamedAgentCapability | string;
+/**
+ * Adapter-agnostic reasoning-depth knob threaded through `Task.constraints`
+ * and surfaced as `defaultEffort` on adapters that have a native concept
+ * (codex `model_reasoning_effort`). Adapters with no native knob ignore
+ * the value (and log a debug breadcrumb so the captain's pick isn't
+ * silently swallowed).
+ *
+ * Symmetric three-level scale because every provider that exposes a
+ * reasoning-effort flag uses the same three buckets — keeps the user's
+ * mental model portable across adapters.
+ */
+export type EffortLevel = 'low' | 'medium' | 'high';
 
 export interface Task {
   prompt: string;
@@ -162,6 +190,13 @@ export interface Task {
     timeout?: number;
     maxTurns?: number;
     model?: string;
+    /**
+     * Reasoning effort for this dispatch. Adapters with native support
+     * (codex) translate to their CLI flag; others log + ignore. Resolved
+     * upstream by `planRunAgent`: per-call value > per-machine prefs file
+     * > adapter default > undefined.
+     */
+    effort?: EffortLevel;
     sandbox?: 'read-only' | 'workspace-write' | 'full-access';
     signal?: AbortSignal;
   };

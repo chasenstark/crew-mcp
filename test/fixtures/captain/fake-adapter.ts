@@ -69,7 +69,7 @@ export function createFakeCaptain(
 
   const adapter: AgentAdapter = {
     name: 'fake-captain',
-    capabilities: ['analyze'],
+    strengths: [],
     supportsJsonSchema: true,
     captainCapabilities: {
       supportsToolLoop: true,

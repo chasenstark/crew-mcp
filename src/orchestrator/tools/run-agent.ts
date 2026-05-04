@@ -28,7 +28,9 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
-import type { AgentAdapter, TaskResult } from '../../adapters/types.js';
+import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
+import type { AgentPrefsMap } from '../../agent-prefs/store.js';
+import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
 import type { WorktreeManager } from '../../git/worktree.js';
 
@@ -40,7 +42,7 @@ import type { WorktreeManager } from '../../git/worktree.js';
 export interface RegistryForRunAgent {
   get(name: string): AgentAdapter | undefined;
   listAvailable?(): AgentAdapter[];
-  list?(): { name: string; capabilities: readonly string[] | string[] }[];
+  list?(): { name: string; strengths: readonly string[] | string[] }[];
 }
 
 export const runAgentInputSchema = z.object({
@@ -48,7 +50,13 @@ export const runAgentInputSchema = z.object({
   prompt: z.string().min(1),
   working_directory: z.string().optional(),
   model: z.string().optional(),
-  capabilities_hint: z.array(z.string()).optional(),
+  /**
+   * Per-call reasoning effort override. Wins over the user's
+   * agents.json default + adapter default. Adapters with no native
+   * reasoning-effort knob (gemini-cli, generic) ignore the value and
+   * log a debug breadcrumb.
+   */
+  effort: z.enum(['low', 'medium', 'high']).optional(),
 });
 
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
@@ -66,6 +74,13 @@ export interface RunAgentHandlerContext {
    * the agent adapter then falls back to its own default.
    */
   readonly resolveModel?: (agentName: string) => string | undefined;
+  /**
+   * Snapshot of the per-machine agent prefs (`~/.crew/agents.json`).
+   * Read once per dispatch by the caller (serve.ts) and passed in here
+   * so `planRunAgent` stays pure — no hidden FS reads in a hot path,
+   * tests inject directly. Omitted = no overrides; adapter defaults win.
+   */
+  readonly agentPrefs?: AgentPrefsMap;
   /**
    * Optional hook for tests or future UI. Fires immediately after a
    * runId+worktree is allocated so callers can display "Agent X is running"
@@ -142,6 +157,7 @@ export async function planRunAgent(
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
   const effectiveModel = input.model ?? ctx.resolveModel?.(input.agent_id);
+  const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
   return {
@@ -157,10 +173,35 @@ export async function planRunAgent(
       effectiveWorkingDirectory,
       worktreePath,
       effectiveModel,
+      effectiveEffort,
       worktreeManager: ctx.worktreeManager,
       input: { ...input },
     }),
   };
+}
+
+/**
+ * Resolve the effort that actually goes to the adapter:
+ *   1. per-call override (input.effort)
+ *   2. user's agents.json override for this agent
+ *   3. adapter's defaultEffort
+ *   4. undefined (adapter has no native effort concept)
+ *
+ * Exported for tests that want to verify the precedence without
+ * driving the full dispatch.
+ */
+export function resolveEffectiveEffort(
+  adapter: AgentAdapter,
+  perCall: EffortLevel | undefined,
+  prefs: AgentPrefsMap | undefined,
+): EffortLevel | undefined {
+  if (perCall) return perCall;
+  const merged = effectiveAgentPrefs(
+    adapter.name,
+    { effort: adapter.defaultEffort },
+    prefs ?? {},
+  );
+  return merged.effort;
 }
 
 /**
@@ -179,6 +220,13 @@ export function buildAdapterDispatchTask(args: {
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
   readonly effectiveModel: string | undefined;
+  /**
+   * Effort already resolved upstream via `resolveEffectiveEffort`.
+   * Threading it as a separate field (vs. picking it back out of
+   * `input.effort`) keeps the per-machine prefs override visible to
+   * the adapter.
+   */
+  readonly effectiveEffort?: EffortLevel;
   readonly worktreeManager: WorktreeManager;
   readonly input: Record<string, unknown>;
 }): RunAgentDispatchPlan['task'] {
@@ -196,6 +244,7 @@ export function buildAdapterDispatchTask(args: {
         constraints: {
           signal: taskCtx.signal,
           model: args.effectiveModel,
+          effort: args.effectiveEffort,
         },
         onOutput: taskCtx.onStream,
       });

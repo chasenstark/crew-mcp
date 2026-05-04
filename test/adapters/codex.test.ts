@@ -117,10 +117,14 @@ describe('CodexAdapter', () => {
       expect(adapter.captainCapabilities?.supportsPauseForUserInput).toBe(true);
     });
 
-    it('has expected capabilities', () => {
-      expect(adapter.capabilities).toContain('implement');
-      expect(adapter.capabilities).toContain('review');
-      expect(adapter.capabilities).toContain('refactor');
+    it('declares default strengths', () => {
+      expect(adapter.strengths).toContain('fast-iteration');
+      expect(adapter.strengths).toContain('autonomous-loops');
+      expect(adapter.strengths).toContain('code-implementation');
+    });
+
+    it('declares defaultEffort = "medium" (mirrors codex CLI default)', () => {
+      expect(adapter.defaultEffort).toBe('medium');
     });
   });
 
@@ -591,6 +595,44 @@ describe('CodexAdapter', () => {
       const cliArgs = callArgs[1] as string[];
       expect(cliArgs).toContain('--model');
       expect(cliArgs[cliArgs.indexOf('--model') + 1]).toBe(ModelId.GPT_MINI);
+    });
+
+    it('translates effort constraint to -c model_reasoning_effort=...', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Triage build failure',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { effort: 'high' },
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      // -c flag is paired with the key=value override; both must be present
+      // and adjacent so codex parses them together.
+      const cIdx = cliArgs.indexOf('-c');
+      expect(cIdx).toBeGreaterThan(-1);
+      expect(cliArgs[cIdx + 1]).toBe('model_reasoning_effort="high"');
+    });
+
+    it('omits -c model_reasoning_effort when effort is undefined', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Plain run',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {},
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      expect(cliArgs.some((a) => a.startsWith('model_reasoning_effort'))).toBe(false);
     });
   });
 

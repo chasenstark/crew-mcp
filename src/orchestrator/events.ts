@@ -29,5 +29,5 @@ export interface PipelineEvents {
 
 export interface AgentRegistry {
   get(name: string): AgentAdapter | undefined;
-  list(): { name: string; capabilities: string[] }[];
+  list(): { name: string; strengths: string[] }[];
 }

@@ -13,7 +13,8 @@ import { tmpdir } from 'os';
 import { extractJson } from '../utils/json-parse.js';
 import type {
   AgentAdapter,
-  AgentCapability,
+  AgentStrength,
+  EffortLevel,
   ExecuteOptions,
   HealthCheckResult,
   Task,
@@ -246,13 +247,17 @@ export function buildCodexResumeArgs(
 
 export class CodexAdapter implements AgentAdapter {
   readonly name = AgentId.CODEX;
-  readonly capabilities: AgentCapability[] = [
-    'implement',
-    'review',
-    'refactor',
-    'test',
-    'analyze',
+  // Soft routing hints; users override via ~/.crew/agents.json.
+  // See AgentStrength docs in src/adapters/types.ts.
+  readonly strengths: AgentStrength[] = [
+    'fast-iteration',
+    'autonomous-loops',
+    'code-implementation',
   ];
+  // Codex CLI takes `-c model_reasoning_effort=<low|medium|high>`. Default
+  // to medium — matches Codex's own default and gives the user a knob in
+  // both directions. Per-call override comes via Task.constraints.effort.
+  readonly defaultEffort: EffortLevel = 'medium';
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {
     supportsToolLoop: true,
@@ -292,6 +297,13 @@ export class CodexAdapter implements AgentAdapter {
       ];
       if (task.constraints?.model) {
         args.push('--model', task.constraints.model);
+      }
+      if (task.constraints?.effort) {
+        // Codex CLI applies reasoning effort via the TOML override flag.
+        // Threading it here means a per-dispatch effort override always
+        // wins over the user's CLI config + the per-machine agents.json
+        // default (resolution happens upstream in planRunAgent).
+        args.push('-c', `model_reasoning_effort="${task.constraints.effort}"`);
       }
 
       const timeout = task.constraints?.timeout ?? 300_000;

@@ -4,7 +4,7 @@ import { extractJson } from '../utils/json-parse.js';
 
 import type {
   AgentAdapter,
-  AgentCapability,
+  AgentStrength,
   ExecuteOptions,
   HealthCheckResult,
   Task,
@@ -236,13 +236,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   // Captain-facing shorthand. `mcp__crew__run_agent({ agent_id: "claude" })`
   // resolves to this adapter the same as `agent_id: "claude-code"`.
   readonly aliases: readonly string[] = ['claude'];
-  readonly capabilities: AgentCapability[] = [
-    'implement',
-    'review',
-    'refactor',
-    'test',
-    'document',
-    'analyze',
+  // Soft routing hints; users override via ~/.crew/strengths.json.
+  // See AgentStrength docs in src/adapters/types.ts.
+  readonly strengths: AgentStrength[] = [
+    'careful-reasoning',
+    'code-review',
+    'documentation',
   ];
   readonly supportsJsonSchema = true;
   readonly captainCapabilities = {

@@ -15,7 +15,7 @@ describe('GenericAdapter resume portability (M1.5-13)', () => {
       name: 'local-cli',
       command: 'echo',
       argsTemplate: ['{{prompt}}'],
-      capabilities: ['implement'],
+      strengths: [],
     });
     expect(adapter.captainCapabilities.supportsToolLoop).toBe(false);
   });
@@ -25,7 +25,7 @@ describe('GenericAdapter resume portability (M1.5-13)', () => {
       name: 'local-cli',
       command: 'echo',
       argsTemplate: ['{{prompt}}'],
-      capabilities: ['implement'],
+      strengths: [],
     });
     expect((adapter as unknown as { executeWithTools?: unknown }).executeWithTools).toBeUndefined();
   });
@@ -35,7 +35,7 @@ describe('GenericAdapter resume portability (M1.5-13)', () => {
       name: 'local-cli',
       command: 'echo',
       argsTemplate: ['{{prompt}}'],
-      capabilities: ['implement'],
+      strengths: [],
     });
     expect((adapter as unknown as { getCliVersionTag?: unknown }).getCliVersionTag).toBeUndefined();
   });

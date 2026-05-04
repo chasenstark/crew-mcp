@@ -211,11 +211,11 @@ describe('config-service', () => {
     addAgent(cwd, 'local-gemma', { adapter: 'generic', command: 'ollama' });
 
     setConfigValue(cwd, 'agents.local-gemma.args', 'run,gemma4:latest,{{prompt}}');
-    setConfigValue(cwd, 'agents.local-gemma.capabilities', 'implement,review');
+    setConfigValue(cwd, 'agents.local-gemma.strengths', 'code-review,fast-iteration');
 
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.agents['local-gemma'].args).toEqual(['run', 'gemma4:latest', '{{prompt}}']);
-    expect(projectConfig?.agents['local-gemma'].capabilities).toEqual(['implement', 'review']);
+    expect(projectConfig?.agents['local-gemma'].strengths).toEqual(['code-review', 'fast-iteration']);
   });
 
   it('supports cycling with "next" for model fields', () => {
@@ -365,7 +365,7 @@ describe('config-service', () => {
     const addResult = addAgent(cwd, 'local-gemma', {
       adapter: 'generic',
       command: 'ollama',
-      capabilities: ['analyze'],
+      strengths: ['code-review'],
     });
     expect(addResult.agent.command).toBe('ollama');
     expect(loadConfigByScope('project', cwd)?.agents['local-gemma']).toBeDefined();

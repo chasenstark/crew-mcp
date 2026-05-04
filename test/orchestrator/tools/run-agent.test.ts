@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import {
   planRunAgent,
+  resolveEffectiveEffort,
   type RunAgentHandlerContext,
 } from '../../../src/orchestrator/tools/run-agent.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
@@ -15,7 +16,7 @@ import { WorktreeManager } from '../../../src/git/worktree.js';
 function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
   const adapter: AgentAdapter = {
     name: overrides?.name ?? 'mock',
-    capabilities: overrides?.capabilities ?? ['analyze'],
+    strengths: overrides?.strengths ?? [],
     supportsJsonSchema: false,
     execute: overrides?.execute ?? (async () => ({
       output: 'ok',
@@ -258,5 +259,60 @@ describe('planRunAgent', () => {
       runId: plan.runId,
       worktreePath: plan.worktreePath,
     });
+  });
+
+  it('threads the resolved effort into the dispatched task constraints', async () => {
+    // The full precedence test lives in `resolveEffectiveEffort` below;
+    // this verifies the dispatch path actually plumbs the value through
+    // to the adapter (the layer that translates to a CLI flag).
+    let observedEffort: string | undefined;
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      execute: async (task) => {
+        observedEffort = task.constraints?.effort;
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+      agentPrefs: { codex: { effort: 'low' } },
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'go', effort: 'high' },
+      'tool-call-1',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    // Per-call wins over agents.json override.
+    expect(observedEffort).toBe('high');
+  });
+});
+
+describe('resolveEffectiveEffort', () => {
+  function adapterWith(defaultEffort?: 'low' | 'medium' | 'high'): AgentAdapter {
+    return makeMockAdapter({ name: 'codex', defaultEffort });
+  }
+
+  it('per-call > agents.json > adapter default', () => {
+    const a = adapterWith('medium');
+    expect(resolveEffectiveEffort(a, 'high', { codex: { effort: 'low' } })).toBe('high');
+  });
+
+  it('falls back to agents.json when no per-call value', () => {
+    const a = adapterWith('medium');
+    expect(resolveEffectiveEffort(a, undefined, { codex: { effort: 'low' } })).toBe('low');
+  });
+
+  it('falls back to adapter defaultEffort when prefs file lacks an entry', () => {
+    const a = adapterWith('medium');
+    expect(resolveEffectiveEffort(a, undefined, {})).toBe('medium');
+    expect(resolveEffectiveEffort(a, undefined, undefined)).toBe('medium');
+  });
+
+  it('returns undefined when adapter has no default and no override exists', () => {
+    const a = adapterWith(undefined);
+    expect(resolveEffectiveEffort(a, undefined, {})).toBeUndefined();
   });
 });
