@@ -42,15 +42,16 @@ program
 program
   .command('install')
   .description('Install the crew MCP server + skill into a host CLI')
-  .requiredOption(
+  .option(
     '-t, --target <host>',
-    'Target host: claude-code | codex | gemini | all',
+    'Target host: claude-code | codex | gemini | all. '
+    + 'Omit to detect installed CLIs and pick interactively.',
   )
   .option(
     '--no-auto-approve',
     'Do not pre-approve mcp__crew__* tools (host CLI will prompt before each call). Default: pre-approve.',
   )
-  .action(async (opts: { target: string; autoApprove: boolean }) => {
+  .action(async (opts: { target?: string; autoApprove: boolean }) => {
     applyDebugFlag();
     // commander's --no-foo sets opts.foo = false; default is true.
     const result = await installCommand({

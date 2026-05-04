@@ -447,6 +447,58 @@ describe('install / verify / uninstall — happy path', () => {
     expect(after.mcpServers.other).toEqual({ command: 'foo', args: [] });
     expect(after.mcpServers.crew).toBeUndefined();
   });
+
+  it('install without --target dispatches to the interactive selector (TTY path)', async () => {
+    let receivedHosts: ReadonlyArray<{ id: string; installed: boolean }> = [];
+    const result = await installCommand({
+      // target omitted → interactive fallback
+      home,
+      skipRunningCheck: true,
+      isInteractive: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      selectTargets: async (hosts) => {
+        receivedHosts = hosts;
+        // Stub: pick claude-code regardless of detection.
+        return ['claude-code'];
+      },
+    });
+    expect(result.installed).toEqual(['claude-code']);
+    // Selector saw all 3 registered hosts with detection results.
+    expect(receivedHosts.map((h) => h.id).sort()).toEqual(['claude-code', 'codex', 'gemini']);
+    // The forced install path should still write even if the host wasn't on PATH.
+    expect(existsSync(HOST_ADAPTERS['claude-code'].skillPath(home))).toBe(true);
+  });
+
+  it('install without --target in non-interactive mode does NOT call the selector', async () => {
+    // Non-interactive (CI/pipe) → auto-install detected hosts without
+    // prompting. The selector must not be invoked. Whether any hosts
+    // are detected depends on the test environment's PATH, which we
+    // don't control here — assert only on the no-prompt invariant.
+    let selectorCalled = false;
+    await installCommand({
+      home,
+      skipRunningCheck: true,
+      isInteractive: false,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      selectTargets: async () => {
+        selectorCalled = true;
+        return [];
+      },
+    });
+    expect(selectorCalled).toBe(false);
+  });
+
+  it('install without --target and selector returning [] exits cleanly (cancel)', async () => {
+    const result = await installCommand({
+      home,
+      skipRunningCheck: true,
+      isInteractive: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      selectTargets: async () => [],
+    });
+    expect(result.installed).toEqual([]);
+    expect(result.skipped).toEqual([]);
+  });
 });
 
 describe('resolveTargets', () => {

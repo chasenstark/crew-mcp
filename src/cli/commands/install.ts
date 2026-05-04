@@ -40,6 +40,10 @@ import {
   type InstalledTarget,
 } from '../../install/install-manifest.js';
 import {
+  selectTargets as defaultSelectTargets,
+  type DetectedHost,
+} from '../../install/interactive-target.js';
+import {
   renderSkill,
   resolvePackageRoot,
   templatePathForHost,
@@ -47,9 +51,23 @@ import {
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import { logger } from '../../utils/logger.js';
 
+/**
+ * Test seam for the interactive target picker. Production uses
+ * `defaultSelectTargets` from interactive-target.ts (readline-backed).
+ * Tests inject a stub that returns canned selections without driving
+ * a real TTY.
+ */
+export type TargetSelector = (hosts: readonly DetectedHost[]) => Promise<HostId[]>;
+
 export interface InstallOptions {
-  /** Comma-separated host ids, or 'all'. Required. */
-  target: string;
+  /**
+   * Comma-separated host ids, or 'all'. When omitted, the install
+   * command falls back to interactive selection: detect every
+   * registered host, prompt the user to pick (or auto-install all
+   * detected when stdin is not a TTY). Pass an empty string or
+   * undefined to trigger the fallback.
+   */
+  target?: string;
   /** Skip "host running, please restart" detection (CI/tests). */
   skipRunningCheck?: boolean;
   /** Override $HOME (tests). */
@@ -58,6 +76,18 @@ export interface InstallOptions {
   packageRoot?: string;
   /** Override crew binary resolution (tests). */
   resolveCrewBinary?: CrewBinaryResolver;
+  /**
+   * Test seam: override the interactive target selector. Defaults to
+   * `selectTargets` from interactive-target.ts (readline-backed).
+   * Only invoked when `target` is absent AND stdin is a TTY.
+   */
+  selectTargets?: TargetSelector;
+  /**
+   * Test seam: force the TTY/non-TTY branch when target is absent.
+   * Defaults to `process.stdin.isTTY`. Tests pass `false` to exercise
+   * the auto-install-all-detected fallback without a real terminal.
+   */
+  isInteractive?: boolean;
   /**
    * Force install even if the host CLI binary isn't detected on PATH.
    * Defaults to true for explicit single-target installs and false for
@@ -87,16 +117,35 @@ export interface InstallResult {
 
 export async function installCommand(opts: InstallOptions): Promise<InstallResult> {
   const home = opts.home ?? homedir();
-  const targets = resolveTargets(opts.target);
   const packageRoot = resolvePackageRoot(opts.packageRoot);
   const resolveBin = opts.resolveCrewBinary ?? defaultCrewBinaryResolver;
   const { command: crewBin, args: crewArgs } = resolveBin();
 
-  // For --target all, we only install where we detect the host. For an
-  // explicit --target codex, we install regardless (the user knows what
-  // they want; they may be installing in advance of the host CLI).
-  const isExplicitAll = opts.target.trim() === 'all';
-  const forceWithoutBinary = opts.forceWithoutBinary ?? !isExplicitAll;
+  // Resolve targets either from --target (explicit) or via the
+  // detect+prompt fallback (no --target). The fallback path is the
+  // empty-string / undefined case.
+  const targetInput = (opts.target ?? '').trim();
+  let targets: HostId[];
+  let camethroughInteractive = false;
+  if (targetInput.length === 0) {
+    targets = await resolveTargetsInteractively(opts);
+    camethroughInteractive = true;
+    if (targets.length === 0) {
+      // User cancelled or no detected hosts — exit cleanly without an error.
+      // The interactive helper already explained what happened.
+      return { installed: [], skipped: [] };
+    }
+  } else {
+    targets = resolveTargets(targetInput);
+  }
+
+  // For --target all (and the interactive fallback) we only install where
+  // we detect the host. For an explicit --target codex, we install
+  // regardless (the user knows what they want; they may be installing in
+  // advance of the host CLI).
+  const isExplicitAll = targetInput === 'all';
+  const forceWithoutBinary =
+    opts.forceWithoutBinary ?? !(isExplicitAll || camethroughInteractive);
 
   const result: InstallResult = { installed: [], skipped: [] };
 
@@ -252,4 +301,74 @@ export function resolveTargets(input: string): HostId[] {
 
 function isHostId(value: string): value is HostId {
   return (ALL_HOST_IDS as readonly string[]).includes(value);
+}
+
+/**
+ * Fallback when `--target` was omitted. Detects every registered host;
+ * branches on TTY:
+ *   - TTY:     prompt the user via the interactive selector.
+ *   - non-TTY: auto-install to all detected hosts (no prompt possible).
+ *
+ * Returns an empty array on cancel, no detected hosts, or non-TTY with
+ * nothing detected — caller treats as "exit cleanly, do nothing." A
+ * helpful note is logged in each case so the user knows why nothing
+ * happened.
+ */
+async function resolveTargetsInteractively(opts: InstallOptions): Promise<HostId[]> {
+  const detected = await detectAllHosts();
+  const detectedCount = detected.filter((h) => h.installed).length;
+  const isInteractive = opts.isInteractive ?? Boolean(process.stdin.isTTY);
+
+  if (!isInteractive) {
+    if (detectedCount === 0) {
+      logger.info(
+        'crew install: no host CLIs detected on PATH and no --target given; nothing to install. '
+        + `Try \`crew install --target <${ALL_HOST_IDS.join(' | ')}>\`.`,
+      );
+      return [];
+    }
+    const ids = detected.filter((h) => h.installed).map((h) => h.id);
+    logger.info(
+      `crew install: no --target given (non-interactive); installing detected hosts: ${ids.join(', ')}.`,
+    );
+    return ids;
+  }
+
+  if (detectedCount === 0) {
+    logger.info(
+      'crew install: no host CLIs detected on PATH. '
+      + `Force-install one with \`crew install --target <${ALL_HOST_IDS.join(' | ')}>\`.`,
+    );
+    return [];
+  }
+
+  const selector: TargetSelector = opts.selectTargets
+    ?? ((hosts) => defaultSelectTargets({ hosts }));
+  return selector(detected);
+}
+
+/**
+ * Run `detectInstalled` against every registered host adapter.
+ * Concurrent so a slow detection can't block the others. Errors are
+ * absorbed (treated as "not detected") — `detectInstalled` is best-
+ * effort by contract.
+ */
+async function detectAllHosts(): Promise<DetectedHost[]> {
+  const results = await Promise.all(
+    ALL_HOST_IDS.map(async (id): Promise<DetectedHost> => {
+      const adapter = HOST_ADAPTERS[id];
+      try {
+        const detection = await adapter.detectInstalled();
+        return {
+          id,
+          displayName: adapter.displayName,
+          installed: detection.installed,
+          version: detection.version,
+        };
+      } catch {
+        return { id, displayName: adapter.displayName, installed: false };
+      }
+    }),
+  );
+  return results;
 }
