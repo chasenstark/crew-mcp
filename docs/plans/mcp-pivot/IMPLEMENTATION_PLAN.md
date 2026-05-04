@@ -9,15 +9,20 @@
 
 ## Snapshot — 2026-05-04 (bridge for a fresh chat)
 
-**Where we are:** M0–M3 shipped on `v2/main`. M4 (eval + field
-report) remains.
+**Where we are:** M0–M3.5 shipped on `main` (3 commits ahead of
+`v2/main`, unpushed). M4 (eval + field report) is proposed; plan
+doc drafted at `docs/plans/active/m4-eval-and-field-report.md`.
 
 **Working directory:** `/Users/chasen/Documents/Projects/crew-mcp`.
 Branch `main` tracks remote `v2 = https://github.com/chasenstark/crew-mcp.git`.
 The original `crew` repo is frozen at the `v0.1-tui` git tag.
 
-**Latest commit:** `220588d` (UX-fix follow-up to M3).
-**Suite:** 483 passed / 3 skipped / 0 failed across 46 files. Lint clean. Build clean (160 KB ESM bundle).
+**Latest commits:**
+- `2359ec1` fix(install): Finding 5 — Codex skill path was wrong
+- `a35ec5f` feat(skill): strengthen ask-user gate from vibes to rubric
+- `1833a4f` refactor(state): M3.5 — relocate run state to ~/.crew/runs/
+
+**Suite:** 502 passed / 3 skipped / 0 failed across 47 files. Lint clean. Build clean (161 KB ESM bundle).
 
 ### Milestone status
 
@@ -27,8 +32,8 @@ The original `crew` repo is frozen at the `v0.1-tui` git tag.
 | M1 | ✓ shipped | `21e3c76` | `docs/plans/completed/m1-status.md` |
 | M2 | ✓ shipped | `8eaa29e`, `a584910` | `docs/plans/completed/m2-status.md` |
 | M3 | ✓ shipped | `205e8fa`, `220588d` | `docs/plans/active/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md` |
-| M3.5 | in implementation (uncommitted) | TBD | `docs/plans/active/m3.5-relocate-runtime-state.md` — relocate run state to `~/.crew/runs/`, delete gitignore-guard |
-| M4 | not started | — | — |
+| M3.5 | ✓ shipped | `1833a4f` (relocate) + `a35ec5f` (skill ask-user rubric) + `2359ec1` (Finding 5: Codex skill path) | `docs/plans/active/m3.5-relocate-runtime-state.md` |
+| M4 | proposed (plan drafted) | TBD | `docs/plans/active/m4-eval-and-field-report.md` — A/B eval + 2-week dogfooding + FIELD_REPORT.md + `v0.2.0` tag |
 
 ### Decisions made during implementation that aren't in the original plan below
 
@@ -85,10 +90,24 @@ passes for all three host adapters. Two UX gaps caught and fixed
 no detected hosts) are noted in
 `docs/status/v0.2-smoke-2026-05-04.md` as minor and deferred.
 
-Real host-CLI smoke (Claude Code / Codex / Gemini sessions actually
-spawning the MCP server end-to-end) is **pending**. The smoke doc
-has a copy-pasteable `npm link` recipe and a checklist; findings
-should append back to that file before M4 starts.
+**Real-host smoke updates since M3:**
+
+- **Claude Code:** end-to-end dispatch + merge confirmed by user
+  (2026-05-04). Skill auto-matches on description; works as
+  expected.
+- **Codex 0.128.0:** MCP substrate works (server listed,
+  `mcp__crew__*` tools reachable, run_agent round-trip in clean
+  dir). Skill auto-load was broken pre-Finding-5 (skill written
+  to wrong path); **fixed in `2359ec1`** — needs re-verification
+  against the user's real Codex install before M4 quantitative
+  arm.
+- **Gemini:** untested. Wants smoke before M4.
+- **Finding 7** (`.crew/` polluting host repo): originally fixed
+  via gitignore-guard, then **superseded by M3.5** (run state
+  moved to `~/.crew/runs/`, gitignore-guard deleted entirely).
+- **Findings 1, 2, 5, 7, 9: fixed.** Findings 3, 4, 8: minor +
+  deferred to v0.3. Finding 6: documented (skill body wording
+  mitigation).
 
 ### What M4 can assume
 
@@ -96,11 +115,21 @@ should append back to that file before M4 starts.
 - The 3 host adapters (Claude Code, Codex, Gemini) are wired and
   install-clean, parity-checked vs. the live MCP catalog.
 - Schema versions: run-state at v1, install-manifest at v1.
+- Run state lives at `~/.crew/runs/<runId>/` post-M3.5. Host repo
+  working tree is genuinely never touched (asserted end-to-end by
+  `test/git/worktree-host-repo-clean.test.ts`).
+- Skill body (`skills/crew-captain.body.md`) is the canonical
+  source; one edit propagates to all hosts on `crew install`.
+  Post-M3.5 the body has an explicit ask-user rubric (4 named
+  conditions gate a clarifying question before dispatch); the
+  M4 fixture's hard tasks should probe this rubric.
+- Codex skill path now `~/.codex/skills/crew/SKILL.md` (post
+  Finding 5 fix). Frontmatter shape mirrors Claude Code.
 - The `~/.crew/agents.yaml` "user-facing config" sketched in
   PRODUCT_VISION is **not yet implemented**. The adapter registry is
   built-in only (`claude-code`, `codex`, `gemini-cli`, `generic`,
-  `openai-compatible`). agents.yaml support is M4-or-later work and
-  not a v0.2 blocker.
+  `openai-compatible`). agents.yaml support is v0.3-or-later work
+  and not a v0.2 blocker.
 - PRODUCT_VISION Open Design Questions Q1 (blocking-vs-async),
   Q3 (`ask_user` semantics), Q4 (auto-load vs. explicit invoke)
   were all resolved during M2/M3. Q2 (host = worker quota), Q5
