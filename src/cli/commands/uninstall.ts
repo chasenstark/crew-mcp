@@ -18,7 +18,10 @@ import {
   HOST_ADAPTERS,
   type HostId,
 } from '../../install/hosts/index.js';
-import { removeInstalledTarget } from '../../install/install-manifest.js';
+import {
+  readInstallManifest,
+  removeInstalledTarget,
+} from '../../install/install-manifest.js';
 import { logger } from '../../utils/logger.js';
 import { resolveTargets } from './install.js';
 
@@ -38,6 +41,15 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
   const home = opts.home ?? homedir();
   const targets = resolveTargets(opts.target);
 
+  // Load the manifest once. We prefer the recorded skillPath over the
+  // adapter's current skillPath so that an older crew version's install
+  // (which may have written to a different path) is cleaned up correctly.
+  // Surfaced by Finding 5: v0.2.0-dev wrote Codex skills to
+  // ~/.codex/prompts/crew.md; the post-fix adapter writes to
+  // ~/.codex/skills/crew/SKILL.md. Reading from the manifest ensures
+  // smoke testers' old files don't orphan on uninstall.
+  const manifest = await readInstallManifest(home);
+
   const result: UninstallResult = { removed: [], skipped: [] };
 
   for (const targetId of targets) {
@@ -53,10 +65,17 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
         }
       }
 
-      // 2. Delete skill file (if it exists).
-      const skillPath = adapter.skillPath(home);
-      if (existsSync(skillPath)) {
-        rmSync(skillPath, { force: true });
+      // 2. Delete skill file(s). Try the manifest-recorded path first
+      // (truth for what we actually wrote), then the current adapter
+      // path (for installs whose manifest entry was lost). Both are
+      // idempotent — missing files are no-ops.
+      const recorded = manifest.targets[targetId]?.skillPath;
+      const current = adapter.skillPath(home);
+      const skillPaths = recorded && recorded !== current ? [recorded, current] : [current];
+      for (const skillPath of skillPaths) {
+        if (existsSync(skillPath)) {
+          rmSync(skillPath, { force: true });
+        }
       }
 
       // 3. Remove from install manifest.

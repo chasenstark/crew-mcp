@@ -10,9 +10,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 import { installCommand } from '../../../src/cli/commands/install.js';
 import { uninstallCommand } from '../../../src/cli/commands/uninstall.js';
@@ -250,6 +250,43 @@ describe('install / verify / uninstall — happy path', () => {
       targets: Record<string, unknown>;
     };
     expect(manifest.targets.codex).toBeUndefined();
+  });
+
+  it('uninstall reads skillPath from manifest, cleaning up legacy v0.2.0-dev paths (Finding 5)', async () => {
+    const adapter = HOST_ADAPTERS.codex;
+    const currentSkillPath = adapter.skillPath(home);
+    const legacySkillPath = join(home, '.codex', 'prompts', 'crew.md');
+
+    // Simulate a v0.2.0-dev install: skill at the OLD path, manifest
+    // captured the OLD path, no skill at the new adapter path.
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    // Move the just-installed skill file to the legacy location and
+    // rewrite the manifest entry to match — this is what a v0.2.0-dev
+    // install left behind on disk.
+    const skillContent = readFileSync(currentSkillPath, 'utf-8');
+    rmSync(currentSkillPath, { force: true });
+    mkdirSync(dirname(legacySkillPath), { recursive: true });
+    writeFileSync(legacySkillPath, skillContent, 'utf-8');
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      schemaVersion: 1;
+      targets: Record<string, { configPath: string; skillPath: string; version: string; installedAt: string; serverCommand: string; serverArgs: string[] }>;
+    };
+    manifest.targets.codex.skillPath = legacySkillPath;
+    writeFileSync(manifestPath(home), JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+    expect(existsSync(legacySkillPath)).toBe(true);
+    expect(existsSync(currentSkillPath)).toBe(false);
+
+    // Uninstall must clean up the legacy path even though the current
+    // adapter.skillPath() returns the new path.
+    const result = await uninstallCommand({ target: 'codex', home });
+    expect(result.removed).toEqual(['codex']);
+    expect(existsSync(legacySkillPath)).toBe(false);
   });
 
   it('uninstall preserves unrelated mcpServers entries (claude-code)', async () => {

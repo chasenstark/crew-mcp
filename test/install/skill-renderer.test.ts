@@ -126,7 +126,7 @@ describe('renderSkill (claude-code template)', () => {
 });
 
 describe('renderSkill (codex template)', () => {
-  it('substitutes BODY but uses no frontmatter', async () => {
+  it('emits SKILL.md frontmatter with name + description (Finding 5 fix)', async () => {
     const templatePath = templatePathForHost(REPO_ROOT, 'codex');
     const out = await renderSkill({
       templatePath,
@@ -134,8 +134,12 @@ describe('renderSkill (codex template)', () => {
       packageRoot: REPO_ROOT,
     });
 
-    expect(out).not.toMatch(/^---/);
-    expect(out).toContain('# crew — orchestration playbook');
+    // Codex 0.128.0 auto-loads skills from ~/.codex/skills/<name>/SKILL.md
+    // with frontmatter — same convention as Claude Code. Pre-fix template
+    // had no frontmatter and lived at ~/.codex/prompts/, which Codex never
+    // discovered as a skill.
+    expect(out).toMatch(/^---\nname: crew\ndescription: /);
+    expect(out).toContain(SKILL_DESCRIPTION);
     expect(out).toContain('## Crew — orchestration playbook');
     expect(out).toContain('mcp__crew__run_agent');
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);

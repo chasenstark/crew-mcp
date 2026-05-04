@@ -2,7 +2,16 @@
  * Codex host adapter.
  *
  * Config: ~/.codex/config.toml (TOML, [mcp_servers.<name>] tables).
- * Skill:  ~/.codex/prompts/crew.md (markdown prompt file).
+ * Skill:  ~/.codex/skills/crew/SKILL.md (frontmatter + body, mirrors
+ *         Claude Code's convention).
+ *
+ * Skill path correction (Finding 5, 2026-05-04): v0.2.0-dev initially
+ * wrote to ~/.codex/prompts/crew.md based on a misread of Codex's
+ * skill mechanism. Real-host smoke against Codex 0.128.0 surfaced
+ * that ~/.codex/prompts/ is not the load path — Codex auto-discovers
+ * skills under ~/.codex/skills/<name>/SKILL.md with frontmatter
+ * (`name` + `description`), identical in shape to Claude Code's
+ * convention.
  *
  * We deliberately avoid adding a TOML parser dependency. The
  * `[mcp_servers.crew]` block is a single self-contained section; we
@@ -61,7 +70,7 @@ export const codexAdapter: HostAdapter = {
   displayName: 'Codex',
 
   configPath: (home) => join(home, '.codex', 'config.toml'),
-  skillPath: (home) => join(home, '.codex', 'prompts', 'crew.md'),
+  skillPath: (home) => join(home, '.codex', 'skills', 'crew', 'SKILL.md'),
 
   mergeMcpBlock(existing, crewBin, crewArgs) {
     const block = renderCodexBlock(crewBin, crewArgs);

@@ -18,6 +18,15 @@ import { codexAdapter, _internals } from '../../../src/install/hosts/codex.js';
 const CMD = '/usr/local/bin/node';
 const ARGS = ['/abs/path/dist/index.js', 'serve'];
 
+describe('codexAdapter.skillPath (Finding 5)', () => {
+  it('points at ~/.codex/skills/crew/SKILL.md (NOT ~/.codex/prompts/crew.md)', () => {
+    const home = '/users/test';
+    expect(codexAdapter.skillPath(home)).toBe('/users/test/.codex/skills/crew/SKILL.md');
+    // Regression guard: the v0.2.0-dev path Codex never discovered.
+    expect(codexAdapter.skillPath(home)).not.toBe('/users/test/.codex/prompts/crew.md');
+  });
+});
+
 describe('codexAdapter.mergeMcpBlock', () => {
   it('writes the block as the entire file when input is empty', () => {
     const out = codexAdapter.mergeMcpBlock('', CMD, ARGS);

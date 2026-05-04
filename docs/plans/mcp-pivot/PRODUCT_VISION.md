@@ -95,13 +95,14 @@ $ crew install --target codex
 ✓ Detected codex 0.121.0
 ✓ Detected claude-code 1.0.23 (will register as a subagent)
 → Writing MCP server   → ~/.codex/config.toml [mcp_servers.crew]
-→ Writing captain skill → ~/.codex/prompts/crew.md
+→ Writing captain skill → ~/.codex/skills/crew/SKILL.md
 → Writing agent registry → ~/.crew/agents.yaml
 ✓ Verifying via `codex mcp list`...
 ✓ crew is installed.
 
-To use: in any codex session, type /crew or say "use crew to..."
-Restart any open codex sessions to pick this up.
+To use: in any codex session, just say "have <agent> review/...";
+Codex auto-loads the skill on intent. Restart any open codex
+sessions to pick this up.
 ```
 
 A single command writes both artifacts (MCP config block + skill
@@ -154,7 +155,7 @@ on it. Worktree isolation keeps the user's HEAD clean until merge.
 | File | Purpose | Updated by |
 |---|---|---|
 | `~/.codex/config.toml` `[mcp_servers.crew]` | MCP server registration | `crew install` |
-| `~/.codex/prompts/crew.md` | Skill (captain playbook) | `crew install` |
+| `~/.codex/skills/crew/SKILL.md` | Skill (captain playbook) | `crew install` |
 | `~/.claude.json` `mcpServers.crew` | MCP server registration | `crew install` |
 | `~/.claude/skills/crew/SKILL.md` | Skill (captain playbook) | `crew install` |
 | `~/.gemini/settings.json` | MCP server registration | `crew install` |
@@ -231,7 +232,7 @@ opening framing, and trigger metadata. Three host targets at v0.2:
 | Host | Skill file | Trigger |
 |---|---|---|
 | Claude Code | `~/.claude/skills/crew/SKILL.md` | auto-match on description |
-| Codex | `~/.codex/prompts/crew.md` | `/crew` or "@crew" |
+| Codex | `~/.codex/skills/crew/SKILL.md` | auto-match on description (frontmatter `name` + `description`) |
 | Gemini | `~/.gemini/extensions/crew/` | extension invocation |
 
 ---
