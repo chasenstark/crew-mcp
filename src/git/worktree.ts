@@ -2,7 +2,6 @@ import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { ensureCrewIgnored } from './gitignore-guard.js';
 import { logger } from '../utils/logger.js';
 
 interface WorktreeRecord {
@@ -38,36 +37,47 @@ export class WorktreeManager {
   private basePath: string;
   private metadataPath: string;
   private lockPath: string;
+  private legacyDirsInitialized = false;
   private runBasePath: string;
   private runMetadataPath: string;
   private runLockPath: string;
 
-  constructor(projectRoot: string) {
+  constructor(options: { projectRoot: string; crewHome: string }) {
+    const { projectRoot, crewHome } = options;
     this.git = simpleGit(projectRoot);
+    // Legacy task-keyed layout still rooted at <projectRoot>/.crew/worktrees/.
+    // Only reached by v0.1 merge.ts paths the v2 server doesn't use; will
+    // be deleted alongside the rest of the v0.1 leftovers in a future sweep.
+    // Lazy-init: paths are computed but mkdir is deferred to ensureLegacyDirs()
+    // so the host repo's working tree stays clean unless those legacy methods
+    // are actually invoked. M3.5 invariant: v2 callers never touch <projectRoot>/.crew/.
     this.basePath = join(projectRoot, '.crew', 'worktrees');
-    mkdirSync(this.basePath, { recursive: true });
     this.metadataPath = join(this.basePath, '.meta');
-    mkdirSync(this.metadataPath, { recursive: true });
     this.lockPath = join(this.basePath, '.locks');
-    mkdirSync(this.lockPath, { recursive: true });
-    // Run-scoped layout lives under .crew/runs/<runId>/worktree/ (M1.5-14).
-    // Metadata + locks sit alongside at .crew/runs/.meta and .crew/runs/.locks
-    // so a single run dir deletion cleans its worktree without needing the
-    // shared metadata store touched.
-    this.runBasePath = join(projectRoot, '.crew', 'runs');
+    // Run-scoped layout lives under <crewHome>/runs/<runId>/worktree/ (M3.5).
+    // Metadata + locks sit alongside at <crewHome>/runs/.meta and
+    // <crewHome>/runs/.locks so a single run dir deletion cleans its
+    // worktree without needing the shared metadata store touched. Storing
+    // these out of the host repo means git status stays clean and we don't
+    // need a gitignore-guard (Finding 7 + M3.5 plan).
+    this.runBasePath = join(crewHome, 'runs');
     mkdirSync(this.runBasePath, { recursive: true });
     this.runMetadataPath = join(this.runBasePath, '.meta');
     mkdirSync(this.runMetadataPath, { recursive: true });
     this.runLockPath = join(this.runBasePath, '.locks');
     mkdirSync(this.runLockPath, { recursive: true });
-    // Ensure the host repo's .gitignore covers .crew/ before we start
-    // accumulating run state. Idempotent and tolerant of write failures
-    // (warn-logs and continues; never crashes serve startup). Surfaced
-    // by Finding 7 in docs/status/v0.2-smoke-2026-05-04.md.
-    ensureCrewIgnored(projectRoot);
+  }
+
+  private ensureLegacyDirs(): void {
+    if (this.legacyDirsInitialized) return;
+    mkdirSync(this.basePath, { recursive: true });
+    mkdirSync(this.metadataPath, { recursive: true });
+    mkdirSync(this.lockPath, { recursive: true });
+    this.legacyDirsInitialized = true;
   }
 
   async createWorktree(taskId: string): Promise<string> {
+    this.ensureLegacyDirs();
     return this.withTaskLock(taskId, async () => {
       await this.git.raw(['worktree', 'prune']);
 
@@ -130,9 +140,12 @@ export class WorktreeManager {
       await worktreeGit.commit('crew: auto-commit before merge');
     }
 
-    // Refuse to merge if the user's working directory has uncommitted changes
+    // Refuse to merge if the user's working directory has uncommitted changes.
+    // Pre-M3.5 this filtered out `.crew/...` runtime state living inside the
+    // host repo; with run state moved to ~/.crew/runs/ there is nothing to
+    // filter — any modified file is a real user change.
     const mainStatus = await this.git.status();
-    if (this.statusChangedFiles(mainStatus, { ignoreRuntimeState: true }).length > 0) {
+    if (this.statusChangedFiles(mainStatus).length > 0) {
       throw new Error(
         `Cannot merge crew/${taskId}: working directory has uncommitted changes. ` +
         'Please commit or stash your changes first.'
@@ -176,6 +189,7 @@ export class WorktreeManager {
   }
 
   async cleanupWorktree(taskId: string): Promise<void> {
+    this.ensureLegacyDirs();
     await this.withTaskLock(taskId, async () => {
       const record = this.readWorktreeRecord(taskId);
       if (!record) {
@@ -190,6 +204,7 @@ export class WorktreeManager {
   }
 
   async cleanupAll(): Promise<void> {
+    this.ensureLegacyDirs();
     await this.git.raw(['worktree', 'prune']);
 
     for (const taskId of this.listRecordedTaskIds()) {
@@ -304,7 +319,7 @@ export class WorktreeManager {
     const mainStatus = await this.git.status();
     if (
       !options.force
-      && this.statusChangedFiles(mainStatus, { ignoreRuntimeState: true }).length > 0
+      && this.statusChangedFiles(mainStatus).length > 0
     ) {
       throw new Error(
         `Cannot merge run ${runId}: working directory has uncommitted changes. `
@@ -573,24 +588,14 @@ export class WorktreeManager {
     );
   }
 
-  private statusChangedFiles(
-    status: StatusResult,
-    options?: { ignoreRuntimeState?: boolean },
-  ): string[] {
-    const files = [
+  private statusChangedFiles(status: StatusResult): string[] {
+    return [
       ...status.modified,
       ...status.created,
       ...status.not_added,
       ...(status.deleted ?? []),
       ...(status.renamed ?? []).map((r) => r.to),
     ];
-
-    if (!options?.ignoreRuntimeState) return files;
-    return files.filter((file) => !this.isRuntimeStatePath(file));
-  }
-
-  private isRuntimeStatePath(pathValue: string): boolean {
-    return pathValue === '.crew' || pathValue.startsWith('.crew/');
   }
 
   private writeTaskLockRecord(lockDir: string, record: TaskLockRecord): void {

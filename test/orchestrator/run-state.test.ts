@@ -3,25 +3,28 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
 
 describe('RunStateStore', () => {
-  let root: string;
+  let crewHome: string;
+  let repoRoot: string;
   let store: RunStateStore;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'crew-runstate-'));
-    store = new RunStateStore(root);
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-runstate-home-'));
+    repoRoot = mkdtempSync(join(tmpdir(), 'crew-runstate-repo-'));
+    store = new RunStateStore({ crewHome, repoRoot });
   });
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('create() writes a state.json with status: running', () => {
+  it('create() writes a state.json with status: running under crewHome/runs/', () => {
     const state = store.create({
       runId: 'r-1',
       agentId: 'mock-coder',
@@ -32,7 +35,28 @@ describe('RunStateStore', () => {
     expect(state.prompts).toHaveLength(1);
     expect(state.prompts[0].turn).toBe(1);
     expect(state.prompts[0].prompt).toBe('do a thing');
-    expect(existsSync(join(root, '.crew', 'runs', 'r-1', 'state.json'))).toBe(true);
+    expect(existsSync(join(crewHome, 'runs', 'r-1', 'state.json'))).toBe(true);
+  });
+
+  it('create() persists repoRoot (symlink-resolved) on the state', () => {
+    const state = store.create({
+      runId: 'r-1',
+      agentId: 'a',
+      worktreePath: '/x',
+      initialPrompt: 'p',
+    });
+    // realpath because macOS tmpdir is a symlink (/var/... → /private/var/...)
+    expect(state.repoRoot).toBe(realpathSync(repoRoot));
+  });
+
+  it('create() does NOT write under the host repoRoot (host repo stays clean)', () => {
+    store.create({
+      runId: 'r-1',
+      agentId: 'a',
+      worktreePath: '/x',
+      initialPrompt: 'p',
+    });
+    expect(existsSync(join(repoRoot, '.crew'))).toBe(false);
   });
 
   it('read() returns undefined for unknown runs', () => {
@@ -42,11 +66,32 @@ describe('RunStateStore', () => {
   it('read() throws for unknown schemaVersion', () => {
     store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     writeFileSync(
-      join(root, '.crew', 'runs', 'r-1', 'state.json'),
+      join(crewHome, 'runs', 'r-1', 'state.json'),
       JSON.stringify({ schemaVersion: 99 }),
       'utf-8',
     );
     expect(() => store.read('r-1')).toThrow(/schemaVersion/);
+  });
+
+  it('read() tolerates legacy v1 records without repoRoot (no throw, undefined field)', () => {
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    writeFileSync(
+      join(crewHome, 'runs', 'r-1', 'state.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        runId: 'r-1',
+        agentId: 'a',
+        status: 'running',
+        startedAt: '2026-05-04T00:00:00Z',
+        worktreePath: '/x',
+        prompts: [{ turn: 1, prompt: 'p', startedAt: '2026-05-04T00:00:00Z' }],
+        filesChanged: [],
+      }),
+      'utf-8',
+    );
+    const state = store.read('r-1');
+    expect(state).toBeDefined();
+    expect(state?.repoRoot).toBeUndefined();
   });
 
   it('appendPrompt() resets status to running and grows prompts', () => {

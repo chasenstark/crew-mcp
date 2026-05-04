@@ -20,4 +20,4 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  'Poll the current state of a run by run_id. Returns status (running | success | partial | error | cancelled | merged | merge_conflict | discarded), prompts history, files_changed, and the tail of the events log. Use for the async-fallback path: when run_agent returns status:"running", call this to wait for completion.';
+  'Poll the current state of a run by run_id. Returns status (running | success | partial | error | cancelled | merged | merge_conflict | discarded), prompts history, files_changed, repo_root (the host repo this run was dispatched from), worktree_path, and the tail of the events log. Use for the async-fallback path: when run_agent returns status:"running", call this to wait for completion.';

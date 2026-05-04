@@ -53,21 +53,24 @@ function makeAbortSignal(): AbortSignal {
 
 describe('planRunAgent', () => {
   let root: string;
+  let crewHome: string;
   let worktreeManager: WorktreeManager;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'crew-run-agent-'));
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-run-agent-home-'));
     execSync('git init -q', { cwd: root });
     execSync('git config user.email test@crew.local', { cwd: root });
     execSync('git config user.name test', { cwd: root });
-    writeFileSync(join(root, '.gitignore'), '.crew/\n', 'utf-8');
-    execSync('git add .gitignore', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
     execSync('git commit -q -m init', { cwd: root });
-    worktreeManager = new WorktreeManager(root);
+    worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
   });
 
   it('returns an error plan when agent_id is unknown', async () => {

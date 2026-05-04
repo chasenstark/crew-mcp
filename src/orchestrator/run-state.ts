@@ -1,11 +1,12 @@
 /**
  * Per-run state persistence for v2.
  *
- * Each run owns a directory at `.crew/runs/<runId>/` that contains its
- * worktree (managed by WorktreeManager), a `state.json` (managed here),
- * and an append-only `events.log` (also here). Together those three files
- * are the durable record of a run that the host CLI can poll, resume, or
- * merge. The directory survives crew-serve restarts.
+ * Each run owns a directory at `<crewHome>/runs/<runId>/` (default
+ * `~/.crew/runs/<runId>/`, see `src/utils/crew-home.ts`) that contains
+ * its worktree (managed by WorktreeManager), a `state.json` (managed
+ * here), and an append-only `events.log` (also here). Together those
+ * three files are the durable record of a run that the host CLI can
+ * poll, resume, or merge. The directory survives crew-serve restarts.
  *
  * State.json is written by the M2 lifecycle tools:
  *   - run_agent      → create() then markTerminal()
@@ -16,9 +17,11 @@
  *
  * Schema is versioned (`schemaVersion`) but only V1 exists today. Reader
  * is strict: unknown schema versions throw rather than silently corrupt.
+ * `repoRoot` was added in M3.5 — `read()` tolerates legacy records that
+ * were written without it (the field is informational, not load-bearing).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export type RunStatus =
@@ -54,6 +57,14 @@ export interface RunStateV1 {
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly worktreePath: string;
+  /**
+   * Absolute, symlink-resolved path of the host repo this run was
+   * dispatched from. Added in M3.5 so runs in a single global
+   * `~/.crew/runs/` can be associated back to their origin repo.
+   * Optional because v0.2.0-dev records written before M3.5 may
+   * lack it; writers always populate.
+   */
+  readonly repoRoot?: string;
   readonly prompts: readonly PromptRecord[];
   readonly filesChanged: readonly string[];
   readonly lastError?: string;
@@ -69,18 +80,35 @@ export interface CreateRunStateInit {
   readonly initialPrompt: string;
 }
 
+export interface RunStateStoreOptions {
+  /**
+   * Per-user crew home directory (default `~/.crew/`). All run state
+   * lives under `<crewHome>/runs/<runId>/`.
+   */
+  readonly crewHome: string;
+  /**
+   * Absolute path of the host repo this store is associated with.
+   * Persisted into every run's state.json so a global `~/.crew/runs/`
+   * can be associated back to origin repos. Symlink-resolved on
+   * construction so two paths pointing at the same tree converge.
+   */
+  readonly repoRoot: string;
+}
+
 /**
- * Manages `.crew/runs/<runId>/state.json` + `events.log` files. One
- * instance per project root; thread-safe enough for the in-process v2
- * usage pattern (single host CLI session = single crew serve process =
- * serial tool calls).
+ * Manages `<crewHome>/runs/<runId>/state.json` + `events.log` files.
+ * One instance per (host repo, crew serve) pair; thread-safe enough
+ * for the in-process v2 usage pattern (single host CLI session =
+ * single crew serve process = serial tool calls).
  */
 export class RunStateStore {
   private readonly runsBasePath: string;
+  private readonly repoRoot: string;
 
-  constructor(projectRoot: string) {
-    this.runsBasePath = join(projectRoot, '.crew', 'runs');
+  constructor(options: RunStateStoreOptions) {
+    this.runsBasePath = join(options.crewHome, 'runs');
     mkdirSync(this.runsBasePath, { recursive: true });
+    this.repoRoot = resolveRepoRoot(options.repoRoot);
   }
 
   /**
@@ -98,6 +126,7 @@ export class RunStateStore {
       status: 'running',
       startedAt: now,
       worktreePath: init.worktreePath,
+      repoRoot: this.repoRoot,
       prompts: [
         {
           turn: 1,
@@ -284,5 +313,20 @@ export class RunStateStore {
     const tmp = `${path}.tmp`;
     writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
     renameSync(tmp, path);
+  }
+}
+
+/**
+ * Resolve the repo root through any symlinks so two paths that point at
+ * the same tree (`/Users/.../code/widget` vs `/Volumes/.../widget` via
+ * a symlink) agree on a single canonical repoRoot. Falls back to the
+ * raw path if realpath fails (e.g., the directory was removed between
+ * caller and constructor — vanishingly rare in practice).
+ */
+function resolveRepoRoot(raw: string): string {
+  try {
+    return realpathSync(raw);
+  } catch {
+    return raw;
   }
 }

@@ -27,6 +27,7 @@ The original `crew` repo is frozen at the `v0.1-tui` git tag.
 | M1 | ✓ shipped | `21e3c76` | `docs/plans/completed/m1-status.md` |
 | M2 | ✓ shipped | `8eaa29e`, `a584910` | `docs/plans/completed/m2-status.md` |
 | M3 | ✓ shipped | `205e8fa`, `220588d` | `docs/plans/active/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md` |
+| M3.5 | in implementation (uncommitted) | TBD | `docs/plans/active/m3.5-relocate-runtime-state.md` — relocate run state to `~/.crew/runs/`, delete gitignore-guard |
 | M4 | not started | — | — |
 
 ### Decisions made during implementation that aren't in the original plan below

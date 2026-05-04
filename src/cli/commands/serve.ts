@@ -53,6 +53,7 @@ import {
   getRunStatusInputSchema,
   GET_RUN_STATUS_DESCRIPTION,
 } from '../../orchestrator/tools/get-run-status.js';
+import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 
 export const SERVE_VERSION = '0.2.0-dev';
@@ -82,9 +83,17 @@ export interface ServeOptions {
 
   /**
    * Test seam: inject a pre-constructed worktree manager. Useful when a test
-   * wants to assert against a specific .crew/runs/ path.
+   * wants to assert against a specific run-state path.
    */
   worktreeManager?: WorktreeManager;
+
+  /**
+   * Test seam: override the per-user crew home directory. Defaults to
+   * `resolveCrewHome()` (`$CREW_HOME` if set, else `~/.crew`). Tests
+   * point this at a tmpdir so run state stays isolated and doesn't
+   * collide with the developer's real `~/.crew/runs/`.
+   */
+  crewHome?: string;
 
   /**
    * Test seam: override the async-fallback timeout. Tests that exercise the
@@ -119,7 +128,7 @@ export interface DiscardEnvelope {
  * The pieces a test or alternative entry point needs to drive the server
  * without spawning a subprocess: the configured `McpServer`, the dispatcher
  * (for asserting in-flight state or invoking cancellation), the worktree
- * manager (for asserting on .crew/runs/ paths), and the run-state store
+ * manager (for asserting on run-state paths), and the run-state store
  * (for asserting persistence outcomes).
  */
 export interface CrewMcpServerInstance {
@@ -139,10 +148,12 @@ export interface CrewMcpServerInstance {
  */
 export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerInstance {
   const projectRoot = options.cwd ?? process.cwd();
+  const crewHome = options.crewHome ?? resolveCrewHome();
   const registry = options.registry ?? createBuiltinRegistry();
-  const worktreeManager = options.worktreeManager ?? new WorktreeManager(projectRoot);
+  const worktreeManager = options.worktreeManager
+    ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher();
-  const runStateStore = new RunStateStore(projectRoot);
+  const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
   const fallbackMs = options.asyncFallbackMs ?? ASYNC_FALLBACK_MS;
 
   const server = new McpServer({

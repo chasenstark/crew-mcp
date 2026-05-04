@@ -86,10 +86,12 @@ describe('WorktreeManager', () => {
 
   function createManager() {
     const root = mkdtempSync(join(tmpdir(), 'crew-worktree-manager-'));
-    tempDirs.push(root);
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+    tempDirs.push(root, crewHome);
     return {
       root,
-      manager: new WorktreeManager(root),
+      crewHome,
+      manager: new WorktreeManager({ projectRoot: root, crewHome }),
       rootGit: getGitClient(root),
     };
   }
@@ -315,13 +317,13 @@ describe('WorktreeManager', () => {
         .mockReturnValueOnce('owner-run-2')
         .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
 
-      const { root, manager } = createManager();
+      const { crewHome, manager } = createManager();
       const [a, b] = await Promise.all([
         manager.createRunWorktree('run-1'),
         manager.createRunWorktree('run-2'),
       ]);
-      expect(a).toBe(join(root, '.crew', 'runs', 'run-1', 'worktree'));
-      expect(b).toBe(join(root, '.crew', 'runs', 'run-2', 'worktree'));
+      expect(a).toBe(join(crewHome, 'runs', 'run-1', 'worktree'));
+      expect(b).toBe(join(crewHome, 'runs', 'run-2', 'worktree'));
     });
 
     it('cleanupByRunId removes the worktree + run dir without touching siblings', async () => {
@@ -332,16 +334,16 @@ describe('WorktreeManager', () => {
         .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff')
         .mockReturnValueOnce('cleanup-owner-1');
 
-      const { root, manager } = createManager();
+      const { crewHome, manager } = createManager();
       await manager.createRunWorktree('run-1');
       await manager.createRunWorktree('run-2');
-      expect(existsSync(join(root, '.crew', 'runs', 'run-1'))).toBe(true);
-      expect(existsSync(join(root, '.crew', 'runs', 'run-2'))).toBe(true);
+      expect(existsSync(join(crewHome, 'runs', 'run-1'))).toBe(true);
+      expect(existsSync(join(crewHome, 'runs', 'run-2'))).toBe(true);
 
       await manager.cleanupByRunId('run-1');
 
-      expect(existsSync(join(root, '.crew', 'runs', 'run-1'))).toBe(false);
-      expect(existsSync(join(root, '.crew', 'runs', 'run-2'))).toBe(true);
+      expect(existsSync(join(crewHome, 'runs', 'run-1'))).toBe(false);
+      expect(existsSync(join(crewHome, 'runs', 'run-2'))).toBe(true);
     });
 
     it('.meta/<runId>.json is written and removed in lockstep with the worktree', async () => {
@@ -350,8 +352,8 @@ describe('WorktreeManager', () => {
         .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
         .mockReturnValueOnce('cleanup-owner-1');
 
-      const { root, manager } = createManager();
-      const metaPath = join(root, '.crew', 'runs', '.meta', 'run-1.json');
+      const { crewHome, manager } = createManager();
+      const metaPath = join(crewHome, 'runs', '.meta', 'run-1.json');
 
       await manager.createRunWorktree('run-1');
       expect(existsSync(metaPath)).toBe(true);
@@ -404,28 +406,20 @@ describe('WorktreeManager', () => {
       expect(() => manager.getRunWorktreePath('nope')).toThrow(/No recorded run worktree/);
     });
 
-    it('mergeRunWorktree ignores local .crew runtime metadata in the main checkout', async () => {
+    it('mergeRunWorktree merges cleanly when host repo has no uncommitted changes', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-1')
         .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-      const { root, manager, rootGit } = createManager();
+      const { crewHome, manager, rootGit } = createManager();
       const wPath = await manager.createRunWorktree('run-1');
-      rootGit.status.mockResolvedValueOnce({
-        modified: [],
-        created: [],
-        not_added: ['.crew/runs/.meta/run-1.json'],
-        deleted: [],
-        renamed: [],
-      });
-      // Default mock returns 'main' for every revparse, which is fine for
-      // the resolveMergeTargetBranch + current-branch checks. We override
-      // specifically the no-changes comparison (worktree HEAD vs target SHA)
-      // and the post-merge commitSha capture.
+      // Post-M3.5 the host repo's git status never includes any .crew/...
+      // paths because run state lives at <crewHome>/runs/, not under the
+      // host repo. The default empty status() mock reflects this reality.
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('worktree-sha'); // wGit revparse(['HEAD'])
       rootGit.revparse
         .mockResolvedValueOnce('main')        // resolveMergeTargetBranch → target='main'
-        .mockResolvedValueOnce('target-sha')  // my no-changes check: revparse([target])
+        .mockResolvedValueOnce('target-sha')  // no-changes check: revparse([target])
         .mockResolvedValueOnce('main')        // current-branch check
         .mockResolvedValueOnce('merged-sha'); // post-merge commitSha
 
@@ -438,7 +432,7 @@ describe('WorktreeManager', () => {
         '-m',
         'Merge crew run run-1',
       ]);
-      expect(existsSync(join(root, '.crew', 'runs', '.meta', 'run-1.json'))).toBe(true);
+      expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
     });
 
     it('mergeRunWorktree returns no-changes when worktree HEAD matches target', async () => {

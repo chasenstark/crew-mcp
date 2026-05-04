@@ -66,9 +66,10 @@ asking them to adopt a new TUI.
    One install command writes both. Updating crew updates both.
 
 3. **Worktree isolation is non-negotiable.** Every dispatched run
-   gets its own `.crew/runs/<runId>/worktree/`. The host CLI's
-   working directory never moves. Merges happen only via explicit
-   tool calls.
+   gets its own `~/.crew/runs/<runId>/worktree/` (out-of-tree from
+   the host repo, M3.5). The host CLI's working directory never
+   moves and `git status` in the host repo stays clean. Merges
+   happen only via explicit tool calls.
 
 4. **Provider-agnostic everywhere.** Host CLI swappable. Worker
    subagents swappable. The captain skill is host-templated but
@@ -120,7 +121,7 @@ codex> have claude review the changelog parser i just wrote
                                prompt: "Review src/changelog.ts...")]
 
   crew: dispatching → claude-code
-  crew: worktree .crew/runs/r-9f3a/
+  crew: worktree ~/.crew/runs/r-9f3a/worktree/
   crew: complete · 31s
 
 codex: Claude flagged 3 issues:
@@ -160,7 +161,7 @@ on it. Worktree isolation keeps the user's HEAD clean until merge.
 | `~/.gemini/extensions/crew/` | Skill (captain playbook) | `crew install` |
 | `~/.crew/agents.yaml` | Agent registry (which CLIs to dispatch to) | user; `crew install` seeds it |
 | `~/.crew/install.json` | Tracks which hosts have crew installed | `crew install` / `uninstall` |
-| `.crew/runs/<runId>/` | Per-run state, worktree, artifacts | `crew serve` (per dispatch) |
+| `~/.crew/runs/<runId>/` | Per-run state, worktree, artifacts (state.json, events.log, worktree/) | `crew serve` (per dispatch) |
 
 ---
 
@@ -292,7 +293,7 @@ them to adopt a new one.
 - Skill rendering + install + verify
 - Existing adapter substrate (Claude Code, Codex, Gemini, generic,
   openai-compatible)
-- Worktree isolation (`.crew/runs/`)
+- Worktree isolation (`~/.crew/runs/`, M3.5 — out of host repo)
 - Agent registry config (`~/.crew/agents.yaml`)
 - Eval harness + field report (portfolio artifact)
 
@@ -335,7 +336,7 @@ agents:
     args: [run, gemma4:latest, "{{prompt}}"]
 
 defaults:
-  worktree_root: .crew/runs
+  worktree_root: ~/.crew/runs   # post-M3.5: out of host repo, per-user
   cleanup_on_merge: true
   max_concurrent_runs: 2
 ```
@@ -368,7 +369,7 @@ agents.yaml is the registry.
 │                                                          │
 │   ToolCatalog → 6 tools (list_agents, run_agent, ...)   │
 │   ToolDispatcher → spawns worker subprocesses           │
-│   Worktree manager → .crew/runs/<id>/worktree/          │
+│   Worktree manager → ~/.crew/runs/<id>/worktree/        │
 │   Adapter registry → claude-code, codex, gemini, ...    │
 └────────┬───────────────┬───────────────┬────────────────┘
          │               │               │
@@ -398,7 +399,8 @@ agents.yaml is the registry.
   `{status: 'running', run_id}` and the host polls via
   `get_run_status`
 - Worker runs to completion regardless of host poll cadence
-- State + artifacts persist in `.crew/runs/<runId>/`
+- State + artifacts persist in `~/.crew/runs/<runId>/` (M3.5: out of
+  the host repo so `git status` stays clean)
 
 ### Permission model
 
@@ -455,10 +457,12 @@ items that remain open are flagged.
 
 6. **Multi-host concurrent runs.** **STILL OPEN / post-v0.2.** If
    the user has Codex AND Claude Code open simultaneously, each
-   spawns its own crew server. They share `.crew/runs/`. Run IDs are
-   UUIDs so collision is unlikely, but lock semantics for
-   `merge_run` (two hosts trying to merge two different runs into
-   the same branch) need thought.
+   spawns its own crew server. Post-M3.5 they share a single global
+   `~/.crew/runs/` (across host repos, not just sessions). Run IDs
+   are UUIDs so directory collision is impossible; lock keying is
+   per-runId. The remaining open question is `merge_run` semantics
+   (two hosts trying to merge two different runs into the same
+   branch) — needs smoke before declaring resolved.
 
 ---
 

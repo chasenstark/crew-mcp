@@ -69,6 +69,7 @@ interface Harness {
   client: Client;
   worktreeManager: WorktreeManager;
   root: string;
+  crewHome: string;
   close: () => Promise<void>;
 }
 
@@ -81,16 +82,18 @@ async function startHarness(
   options: HarnessOptions = {},
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
+  const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
   execSync('git init -q', { cwd: root });
   execSync('git config user.email test@crew.local', { cwd: root });
   execSync('git config user.name test', { cwd: root });
-  writeFileSync(join(root, '.gitignore'), '.crew/\n', 'utf-8');
-  execSync('git add .gitignore', { cwd: root });
+  writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+  execSync('git add README.md', { cwd: root });
   execSync('git commit -q -m init', { cwd: root });
 
-  const worktreeManager = new WorktreeManager(root);
+  const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
   const { server } = buildCrewMcpServer({
     cwd: root,
+    crewHome,
     registry: makeRegistry(adapters),
     worktreeManager,
     asyncFallbackMs: options.asyncFallbackMs,
@@ -105,10 +108,12 @@ async function startHarness(
     client,
     worktreeManager,
     root,
+    crewHome,
     close: async () => {
       await client.close();
       await server.close();
       rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
     },
   };
 }
@@ -702,15 +707,17 @@ describe('crew serve — lifecycle', () => {
       },
     });
     const root = mkdtempSync(join(tmpdir(), 'crew-serve-cancel-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-cancel-home-'));
     execSync('git init -q', { cwd: root });
     execSync('git config user.email test@crew.local', { cwd: root });
     execSync('git config user.name test', { cwd: root });
-    writeFileSync(join(root, '.gitignore'), '.crew/\n', 'utf-8');
-    execSync('git add .gitignore', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
     execSync('git commit -q -m init', { cwd: root });
-    const worktreeManager = new WorktreeManager(root);
+    const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
     const { server, dispatcher } = buildCrewMcpServer({
       cwd: root,
+      crewHome,
       registry: makeRegistry([adapter]),
       worktreeManager,
     });
@@ -736,6 +743,7 @@ describe('crew serve — lifecycle', () => {
     await client.close();
     await server.close();
     rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
   });
 });
 
