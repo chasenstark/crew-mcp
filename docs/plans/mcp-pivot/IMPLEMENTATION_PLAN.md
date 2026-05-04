@@ -7,17 +7,130 @@
 
 ---
 
+## Snapshot — 2026-05-04 (bridge for a fresh chat)
+
+**Where we are:** M0–M3 shipped on `v2/main`. M4 (eval + field
+report) remains.
+
+**Working directory:** `/Users/chasen/Documents/Projects/crew-mcp`.
+Branch `main` tracks remote `v2 = https://github.com/chasenstark/crew-mcp.git`.
+The original `crew` repo is frozen at the `v0.1-tui` git tag.
+
+**Latest commit:** `220588d` (UX-fix follow-up to M3).
+**Suite:** 483 passed / 3 skipped / 0 failed across 46 files. Lint clean. Build clean (160 KB ESM bundle).
+
+### Milestone status
+
+| M | Status | Anchor commit(s) | Status doc |
+|---|---|---|---|
+| M0 | ✓ shipped | `ab06fe4`, `9002ae7`, `bd63fa2`, `b27249d` | (in-commit messages) |
+| M1 | ✓ shipped | `21e3c76` | `docs/plans/completed/m1-status.md` |
+| M2 | ✓ shipped | `8eaa29e`, `a584910` | `docs/plans/completed/m2-status.md` |
+| M3 | ✓ shipped | `205e8fa`, `220588d` | `docs/plans/active/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md` |
+| M4 | not started | — | — |
+
+### Decisions made during implementation that aren't in the original plan below
+
+- **Repo name:** `crew-mcp`. Original `crew` lives at the `v0.1-tui`
+  tag; the v2 fork is a fresh GitHub repo (could not GitHub-fork
+  since the same owner already had the original).
+- **Cleanup commit graph collapsed.** M0 envisioned ~10 separate
+  delete commits; reality demanded 3 (TUI; captain runtime + retired
+  tools + presets; commands trim) because cross-imports made
+  finer-grained commits churn through partial-broken states.
+- **6-tool surface, not v0.1's 8.** Retired: `finish`, `message_user`,
+  `ask_user`, `plan_tasks`, `analyze_output`, `compress_context`.
+  Added: `continue_run`, `merge_run`, `discard_run`, `get_run_status`.
+  Net: -8 + 4 + 2 kept = 6.
+- **State schemas start at v1.** v0.1 had v3→v4→v5 migrations; v2
+  ships per-run state and `~/.crew/install.json` at schemaVersion: 1
+  with no migration plumbing. Reader throws on unknown versions.
+- **`mergeRunWorktree` returns `MergeRunResult`** (`'merged' |
+  'conflict' | 'no-changes'`) instead of throwing on conflict.
+  Conflict paths captured via `git diff --name-only --diff-filter=U`.
+- **`cleanupByRunId` preserves `state.json` + `events.log`** (uses
+  `rmdirSync` non-recursive). `discard_run` keeps the state record so
+  `get_run_status` can still report on a discarded run.
+- **Codex TOML merge is hand-rolled, not parser-based.** Header-line
+  detection + scan-to-next-section preserves comments, formatting,
+  and unrelated tables that any parse → mutate → stringify
+  round-trip would erase. Internals exposed for tests.
+- **Static install tool catalog mirrors `serve.ts`** with a build-time
+  parity unit test connecting an in-memory MCP client to a real
+  `buildCrewMcpServer()` and asserting `listTools()` matches. Drift
+  fails the test loudly.
+- **Default console log level is `'info'`** (was `'error'` in v0.1)
+  so lifecycle CLI commands give feedback. `crew serve`'s logger
+  output goes to stderr; the MCP wire protocol's stdout discipline
+  is unaffected. `CREW_LOG_LEVEL=error` restores silent-by-default.
+- **Skill renderer strips HTML comments from the canonical body.**
+  `skills/crew-captain.body.md` carries provenance notes in
+  `<!-- ... -->` for repo readers; those are stripped before the
+  rendered skill ships into the host CLI's context.
+- **Crew binary resolves via `process.execPath + process.argv[1]`.**
+  Tests inject a stub via `resolveCrewBinary`. Avoids
+  npm-shim-detection logic that would have differed across
+  Mac/Linux/Windows.
+- **Async-fallback at 60s, configurable via `asyncFallbackMs`
+  ServeOptions for tests** (M2). Settled the open design question
+  about blocking-vs-async in PRODUCT_VISION.
+
+### Smoke status
+
+Local install → verify → uninstall against tmpdir-fake `$HOME`
+passes for all three host adapters. Two UX gaps caught and fixed
+(`220588d`): default log level + HTML comment leak. Findings 3 and
+4 (empty `config.toml` after uninstall, silent `--target all` with
+no detected hosts) are noted in
+`docs/status/v0.2-smoke-2026-05-04.md` as minor and deferred.
+
+Real host-CLI smoke (Claude Code / Codex / Gemini sessions actually
+spawning the MCP server end-to-end) is **pending**. The smoke doc
+has a copy-pasteable `npm link` recipe and a checklist; findings
+should append back to that file before M4 starts.
+
+### What M4 can assume
+
+- All 6 MCP tools are stable surface. Don't extend in M4.
+- The 3 host adapters (Claude Code, Codex, Gemini) are wired and
+  install-clean, parity-checked vs. the live MCP catalog.
+- Schema versions: run-state at v1, install-manifest at v1.
+- The `~/.crew/agents.yaml` "user-facing config" sketched in
+  PRODUCT_VISION is **not yet implemented**. The adapter registry is
+  built-in only (`claude-code`, `codex`, `gemini-cli`, `generic`,
+  `openai-compatible`). agents.yaml support is M4-or-later work and
+  not a v0.2 blocker.
+- PRODUCT_VISION Open Design Questions Q1 (blocking-vs-async),
+  Q3 (`ask_user` semantics), Q4 (auto-load vs. explicit invoke)
+  were all resolved during M2/M3. Q2 (host = worker quota), Q5
+  (skill drift), Q6 (multi-host concurrent merge locks) remain
+  open and should be probed in M4 dogfooding where natural.
+
+### Lingering v0.1 dead code (out of scope for M3)
+
+`src/workflow/` still contains v0.1 leftovers (`config-codec`,
+`config-validation`, `config-repository`, `config-service`,
+`config-path-registry`, `config-normalization`, `defaults`, `loader`,
+`review-step`) that are unreachable from `serve.ts` but weren't
+deleted in M0's commit-graph collapse. `defaults/workflow.yaml` and
+the top-level `AGENTS.md` / `agent-implementation-guide.md` are also
+v0.1 historical docs. None of these block M4; either delete in a
+follow-up `chore: M0 cleanup leftovers` commit before M4 starts, or
+leave for a v0.3 sweep.
+
+---
+
 ## Overview
 
-| Milestone | Goal | Deliverable |
-|---|---|---|
-| M0 | Fork + clean | New repo; v0.1 frozen; dead code removed |
-| M1 | Minimal MCP server | `crew serve` with `list_agents` + `run_agent` |
-| M2 | Full lifecycle | `continue_run`, `merge_run`, `discard_run`, `get_run_status` |
-| M3 | Skill + install | Per-host skill rendering, `crew install`, `crew verify` |
-| M4 | Eval + field report | A/B harness, 2 weeks of dogfooding, write-up |
+| Milestone | Status | Goal | Deliverable |
+|---|---|---|---|
+| M0 | ✓ shipped | Fork + clean | New repo; v0.1 frozen; dead code removed |
+| M1 | ✓ shipped | Minimal MCP server | `crew serve` with `list_agents` + `run_agent` |
+| M2 | ✓ shipped | Full lifecycle | `continue_run`, `merge_run`, `discard_run`, `get_run_status` |
+| M3 | ✓ shipped | Skill + install | Per-host skill rendering, `crew install`, `crew verify` |
+| M4 | not started | Eval + field report | A/B harness, 2 weeks of dogfooding, write-up |
 
-**Total estimated effort: 3–5 weeks of focused part-time work.**
+**Total estimated effort: 3–5 weeks of focused part-time work.** M0–M3 came in roughly on plan; M4 still budget ~1.5 weeks calendar.
 
 Strict linear dependencies. Each milestone lands cleanly before the
 next starts. Resist scope creep within milestones.
@@ -25,6 +138,14 @@ next starts. Resist scope creep within milestones.
 ---
 
 ## M0 — Fork + Cleanup
+
+> **Status: ✓ shipped.** Anchor commits `ab06fe4`, `9002ae7`,
+> `bd63fa2`, `b27249d`. Notable deviation: collapsed from 10 planned
+> commits to 4 (TUI, captain runtime + retired tools + presets,
+> commands trim, and the final rename) due to cross-import
+> entanglement. Lingering v0.1 dead-code in `src/workflow/`,
+> `defaults/`, and the top-level guides survived the cleanup —
+> tracked in the Snapshot section above.
 
 **Goal:** Two clean repos. v0.1 frozen as a portfolio artifact. v2
 fork has dead code removed and structural rename done.
@@ -132,6 +253,12 @@ fork has dead code removed and structural rename done.
 
 ## M1 — Minimal MCP Server
 
+> **Status: ✓ shipped.** Anchor commit `21e3c76`. Status doc:
+> `docs/plans/completed/m1-status.md`. Notable: the manual end-to-end
+> Codex smoke from task #5 was deferred to M3 (which automates the
+> install) and ultimately to M4 dogfooding — the in-process
+> integration tests + subprocess wire-protocol test cover the path.
+
 **Goal:** `crew serve` is a working stdio MCP server exposing
 `list_agents` and `run_agent`. End-to-end: install the MCP block
 manually in `~/.codex/config.toml`, open Codex, call the tool, get
@@ -225,6 +352,15 @@ a result.
 ---
 
 ## M2 — Full Lifecycle
+
+> **Status: ✓ shipped.** Anchor commits `8eaa29e` (M2 substance) +
+> `a584910` (orphan v0.1 state module deletion folded in). Status
+> doc: `docs/plans/completed/m2-status.md`. Notable deviations: the
+> originally-planned `state.json` shape is now a discriminated `RunStateV1`
+> with terminal-status enum (`success | partial | error | cancelled |
+> merged | merge_conflict | discarded`); concurrency test deferred to
+> M4 (substrate supports it but no explicit two-runs-in-parallel
+> assertion shipped).
 
 **Goal:** All 6 tools available. Worktree lifecycle (continue,
 merge, discard, status) is host-controllable.
@@ -324,6 +460,17 @@ merge, discard, status) is host-controllable.
 ---
 
 ## M3 — Skill + Install + Verify
+
+> **Status: ✓ shipped.** Anchor commits `205e8fa` (substance) +
+> `220588d` (UX fixes from local smoke). Status docs:
+> `docs/plans/active/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md`.
+> Notable deviations: hand-rolled TOML merge instead of adding a
+> parser dep (preserves user comments); install at install-time runs
+> the full skill render but does NOT call `host_cli mcp list` as a
+> live self-test (deferred — relies on `crew verify`'s static parity
+> check + the M4 host-CLI smoke); restart warning is a best-effort
+> `ps` scan, not a hard detection. Manual host-CLI smoke deferred
+> to M4 dogfooding.
 
 **Goal:** One-command install on each host. Skill content shipped with
 the package, rendered per-host. Verification at install time + via
@@ -430,6 +577,15 @@ the package, rendered per-host. Verification at install time + via
 ---
 
 ## M4 — Eval + Field Report
+
+> **Status: not started.** Inputs from M0–M3 are listed in the
+> Snapshot section. Manual host-CLI smoke (real Claude Code / Codex /
+> Gemini sessions actually spawning the MCP server) is the recommended
+> first step before kicking off the eval — see
+> `docs/status/v0.2-smoke-2026-05-04.md` for the recipe + checklist.
+> Lingering v0.1 dead code in `src/workflow/` etc. should either be
+> swept in a `chore:` commit or left for a v0.3 cleanup; either is
+> fine.
 
 **Goal:** A measurable, dogfoodable v0.2.0. The portfolio artifact is
 the field report.
@@ -575,15 +731,15 @@ Same milestone discipline as v0.1 with lighter ceremony.
 
 ---
 
-## Out-Of-Band Decisions To Make Before M0 Starts
+## Out-Of-Band Decisions — resolved during M0/M3
 
-1. **Name for the v2 fork.** Can be deferred to early M0 but blocks
-   the fork commit.
-2. **npm package name.** If keeping "crew" and the name is taken, pick
-   `@chasen/crew` or similar.
-3. **Whether to actually `npm publish` v0.2 or keep it install-from-source.**
-   For personal use, install-from-source is fine. For portfolio, npm
-   publish is a nice-to-have ("you can install my tool with one
-   command") but not load-bearing.
-
-These are 30-minute decisions, not week-long ones. Resolve and move on.
+1. **Name for the v2 fork.** **RESOLVED:** `crew-mcp`. New GitHub
+   repo at `https://github.com/chasenstark/crew-mcp`. Original `crew`
+   stays frozen at the `v0.1-tui` tag.
+2. **npm package name.** **RESOLVED in M3:** `crew-mcp`. Binary
+   stays as `crew` so the install-time UX (`crew install --target …`)
+   reads naturally.
+3. **Whether to actually `npm publish` v0.2.** **STILL OPEN.**
+   Currently install-from-source via `npm link`. Decision to
+   `npm publish` can be made at M4 close or v0.3; not load-bearing for
+   the field-report portfolio artifact.

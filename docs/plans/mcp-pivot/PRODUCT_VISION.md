@@ -88,7 +88,7 @@ asking them to adopt a new TUI.
 ### Install
 
 ```
-$ npm install -g crew
+$ npm install -g crew-mcp
 $ crew install --target codex
 
 ✓ Detected codex 0.121.0
@@ -311,8 +311,17 @@ them to adopt a new one.
 
 ## Configuration Surface
 
+> **Status as of v0.2-dev:** the user-facing `~/.crew/agents.yaml`
+> below is the planned shape. It is **not yet implemented**. The
+> v0.2-dev adapter registry is built-in only (`claude-code`, `codex`,
+> `gemini-cli`, `generic`, `openai-compatible`) — there is no YAML
+> loader, no `defaults` section honored at runtime, and no
+> `max_concurrent_runs` enforcement. The shape below is the target
+> for whichever post-M3 milestone tackles user-facing config; M4
+> dogfooding will inform that decision.
+
 ```yaml
-# ~/.crew/agents.yaml — the entire user-facing config
+# ~/.crew/agents.yaml — the entire user-facing config (planned)
 agents:
   claude-code:
     adapter: claude-code
@@ -405,38 +414,51 @@ agents.yaml is the registry.
 
 ## Open Design Questions
 
-These are unresolved as of v2 planning. Most are deferable to post-MVP.
+Originally listed as open at v2 planning. Resolutions inline below;
+items that remain open are flagged.
 
-1. **Run lifecycle: blocking vs. async by default.** Currently sketched
-   as "blocks ≤ 60 s, then async with `run_id`." Worth real-use
-   validation; might simplify to always-async if host CLIs handle it
-   cleanly. Decision made during M2.
+1. **Run lifecycle: blocking vs. async by default.** **RESOLVED in
+   M2.** Implemented as originally sketched: blocks ≤ 60 s, then
+   returns `{status: 'running', run_id}` and the host polls via
+   `get_run_status`. The 60 s value is configurable via
+   `asyncFallbackMs` in `ServeOptions` for tests. State.json is the
+   source of truth regardless of when the host polls. Real-use
+   validation lands in M4.
 
-2. **Cost/quota interaction when host = worker.** If the user is in
-   Claude Code and crew dispatches to Claude Code as a subagent, both
-   spawn against the same Claude Max account. Crew should warn or
-   refuse by default. Implementation TBD; addressed in M3 or M4.
+2. **Cost/quota interaction when host = worker.** **STILL OPEN.** The
+   captain skill at `skills/crew-captain.body.md` includes a
+   "Cross-CLI quota awareness" paragraph instructing the host CLI to
+   warn the user before dispatching to its own product — the
+   simplest first version, no server-side enforcement. M4 dogfooding
+   will surface whether this is enough or whether `run_agent` should
+   refuse self-dispatch by default.
 
-3. **`ask_user` semantics.** Today this was a captain tool. In the
-   inverted model, the host CLI's own user-chat is where questions
-   land. Probably: `ask_user` is removed; the captain skill instructs
-   the host CLI to ask inline before destructive operations. Worth
-   eval-testing in M4.
+3. **`ask_user` semantics.** **RESOLVED in M3.** The tool was removed
+   from the v2 surface. The captain skill instructs the host CLI to
+   ask the user inline before destructive operations (notably
+   `merge_run` and `discard_run`); the host's own chat is the asking
+   surface.
 
-4. **Auto-load vs. explicit invoke for skills.** Default to auto-load
-   (skill description matching) for usability; provide `--manual-only`
-   install flag for users who want explicit `/crew` triggers. Decision
-   in M3.
+4. **Auto-load vs. explicit invoke for skills.** **RESOLVED in M3.**
+   Auto-load by default. Claude Code uses `description`-frontmatter
+   matching (the `SKILL_DESCRIPTION` constant in `src/install/skill-renderer.ts`
+   is tuned for the orchestration intent); Codex uses `/crew` or
+   `@crew`; Gemini uses extension-descriptor invocation. No
+   `--manual-only` install flag at v0.2 — can be added if M4
+   dogfooding finds users want it.
 
-5. **Skill drift across host CLI updates.** Claude Code's skill
-   semantics or Codex's prompt semantics could change. Verification
-   covers naming drift; semantic drift requires version pinning and
-   release notes. Watch item, not a v0.2 blocker.
+5. **Skill drift across host CLI updates.** **STILL OPEN / monitor.**
+   `crew verify` covers `mcp__crew__*` tool-name drift between the
+   rendered skill and the live MCP catalog. Semantic drift in the
+   host CLI's skill semantics requires release-notes vigilance —
+   not a v0.2 blocker.
 
-6. **Multi-host concurrent runs.** If the user has Codex AND Claude
-   Code open simultaneously, each spawns its own crew server. They
-   share `.crew/runs/`. Run IDs are UUIDs so collision is unlikely,
-   but lock semantics for `merge_run` need thought. Post-v0.2.
+6. **Multi-host concurrent runs.** **STILL OPEN / post-v0.2.** If
+   the user has Codex AND Claude Code open simultaneously, each
+   spawns its own crew server. They share `.crew/runs/`. Run IDs are
+   UUIDs so collision is unlikely, but lock semantics for
+   `merge_run` (two hosts trying to merge two different runs into
+   the same branch) need thought.
 
 ---
 
@@ -444,7 +466,7 @@ These are unresolved as of v2 planning. Most are deferable to post-MVP.
 
 This is for personal use + portfolio. Success looks like:
 
-1. Installable in 30 seconds: `npm i -g crew && crew install --target all`
+1. Installable in 30 seconds: `npm i -g crew-mcp && crew install --target all`
 2. Workable from inside Claude Code or Codex with zero TUI
 3. The captain skill can be A/B'd against an empty skill in eval
 4. The author can dogfood it on real work for 2 weeks without
@@ -457,7 +479,12 @@ This is for personal use + portfolio. Success looks like:
 
 ## Naming
 
-The v2 fork likely gets a new name. Candidates explored:
+> **Resolved at fork time:** `crew-mcp`. Lives at
+> `https://github.com/chasenstark/crew-mcp` as a fresh GitHub repo
+> alongside the original `crew` (frozen at the `v0.1-tui` tag). The
+> npm package name follows: `crew-mcp`, binary still `crew`.
+
+Candidates considered:
 
 - `quartermaster` — continues the nautical metaphor; literal
   "dispatcher and provisioner"; longer to type
@@ -466,4 +493,6 @@ The v2 fork likely gets a new name. Candidates explored:
 - `dispatch` — neutral; conflicts with common word
 - `captain-mcp` — most explicit; less branded
 
-To be picked at fork time. The product vision works under any name.
+`crew-mcp` was picked: keeps continuity with the `crew` brand
+identity from v0.1, with `-mcp` making the architecture inversion
+explicit. The product vision works under any name.
