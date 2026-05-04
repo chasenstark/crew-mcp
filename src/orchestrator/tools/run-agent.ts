@@ -149,42 +149,74 @@ export async function planRunAgent(
     runId,
     worktreePath,
     adapter,
-    task: {
+    task: buildAdapterDispatchTask({
       toolCallId,
-      toolName: 'run_agent' as const,
       runId,
+      adapter,
+      prompt: input.prompt,
+      effectiveWorkingDirectory,
+      worktreePath,
+      effectiveModel,
+      worktreeManager: ctx.worktreeManager,
       input: { ...input },
-      run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
-        const result = await adapter.execute({
-          prompt: input.prompt,
-          context: {
-            workingDirectory: effectiveWorkingDirectory,
-          },
-          constraints: {
-            signal: taskCtx.signal,
-            model: effectiveModel,
-          },
-          onOutput: taskCtx.onStream,
-        });
+    }),
+  };
+}
 
-        // v2: enrich filesModified from the worktree status only when the
-        // adapter ran in its dedicated worktree AND the run succeeded. We do
-        // NOT merge — host CLI does that explicitly via merge_run (M2).
-        if (result.status === 'error' || effectiveWorkingDirectory !== worktreePath) {
-          return result;
-        }
-        try {
-          const fromWorktree = await ctx.worktreeManager.getModifiedFilesByRun(runId);
-          if (fromWorktree.length === 0) return result;
-          const merged = Array.from(
-            new Set([...result.filesModified, ...fromWorktree].filter((f) => f.trim().length > 0)),
-          );
-          return { ...result, filesModified: merged };
-        } catch {
-          // Probing the worktree shouldn't fail the dispatch.
-          return result;
-        }
-      },
+/**
+ * Build a dispatch task that drives the adapter against an existing worktree
+ * and returns the adapter's TaskResult enriched with filesModified discovered
+ * from the worktree status. Used by `planRunAgent` (fresh runs) and by
+ * `continue_run` in serve.ts (reusing an existing worktree).
+ *
+ * No merge, no cleanup — v2's host CLI owns worktree lifecycle.
+ */
+export function buildAdapterDispatchTask(args: {
+  readonly toolCallId: string;
+  readonly runId: string;
+  readonly adapter: AgentAdapter;
+  readonly prompt: string;
+  readonly effectiveWorkingDirectory: string;
+  readonly worktreePath: string;
+  readonly effectiveModel: string | undefined;
+  readonly worktreeManager: WorktreeManager;
+  readonly input: Record<string, unknown>;
+}): RunAgentDispatchPlan['task'] {
+  return {
+    toolCallId: args.toolCallId,
+    toolName: 'run_agent' as const,
+    runId: args.runId,
+    input: args.input,
+    run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
+      const result = await args.adapter.execute({
+        prompt: args.prompt,
+        context: {
+          workingDirectory: args.effectiveWorkingDirectory,
+        },
+        constraints: {
+          signal: taskCtx.signal,
+          model: args.effectiveModel,
+        },
+        onOutput: taskCtx.onStream,
+      });
+
+      // v2: enrich filesModified from worktree status when the adapter ran
+      // inside its dedicated worktree AND the run didn't error. We do NOT
+      // merge — host CLI does that explicitly via merge_run.
+      if (result.status === 'error' || args.effectiveWorkingDirectory !== args.worktreePath) {
+        return result;
+      }
+      try {
+        const fromWorktree = await args.worktreeManager.getModifiedFilesByRun(args.runId);
+        if (fromWorktree.length === 0) return result;
+        const merged = Array.from(
+          new Set([...result.filesModified, ...fromWorktree].filter((f) => f.trim().length > 0)),
+        );
+        return { ...result, filesModified: merged };
+      } catch {
+        // Probing the worktree shouldn't fail the dispatch.
+        return result;
+      }
     },
   };
 }

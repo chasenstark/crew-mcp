@@ -1,6 +1,6 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../utils/logger.js';
 
@@ -17,6 +17,11 @@ interface RunWorktreeRecord {
   worktreePath: string;
   createdAt: string;
 }
+
+export type MergeRunResult =
+  | { status: 'merged'; commitSha: string }
+  | { status: 'conflict'; conflicts: string[] }
+  | { status: 'no-changes' };
 
 interface TaskLockRecord {
   ownerId: string;
@@ -276,9 +281,12 @@ export class WorktreeManager {
     return this.statusChangedFiles(status);
   }
 
-  async mergeRunWorktree(runId: string, targetBranch?: string): Promise<void> {
+  async mergeRunWorktree(
+    runId: string,
+    options: { targetBranch?: string; force?: boolean } = {},
+  ): Promise<MergeRunResult> {
     const record = this.requireRunWorktreeRecord(runId);
-    const target = await this.resolveMergeTargetBranch(targetBranch);
+    const target = await this.resolveMergeTargetBranch(options.targetBranch);
 
     const wGit = simpleGit(record.worktreePath);
     const worktreeStatus = await wGit.status();
@@ -288,18 +296,55 @@ export class WorktreeManager {
     }
 
     const mainStatus = await this.git.status();
-    if (this.statusChangedFiles(mainStatus, { ignoreRuntimeState: true }).length > 0) {
+    if (
+      !options.force
+      && this.statusChangedFiles(mainStatus, { ignoreRuntimeState: true }).length > 0
+    ) {
       throw new Error(
         `Cannot merge run ${runId}: working directory has uncommitted changes. `
-        + 'Please commit or stash your changes first.',
+        + 'Please commit or stash your changes first, or pass force=true.',
       );
+    }
+
+    // If the worktree has the same HEAD as the target, there's nothing to
+    // merge. Surface that explicitly so the host CLI doesn't generate an
+    // empty merge commit.
+    const worktreeHead = (await wGit.revparse(['HEAD'])).trim();
+    const targetHead = (await this.git.revparse([target])).trim();
+    if (worktreeHead === targetHead) {
+      return { status: 'no-changes' };
     }
 
     const currentBranch = (await this.git.revparse(['--abbrev-ref', 'HEAD'])).trim();
     if (currentBranch !== target) {
       await this.git.checkout(target);
     }
-    await this.git.merge([record.branchName, '--no-ff', '-m', `Merge crew run ${runId}`]);
+    try {
+      await this.git.merge([record.branchName, '--no-ff', '-m', `Merge crew run ${runId}`]);
+    } catch (err) {
+      // simple-git throws on merge conflicts. Capture the conflicting
+      // paths and leave the merge in-progress for the user to resolve
+      // (this matches `git merge`'s natural behavior).
+      const conflicts = await this.detectConflicts();
+      if (conflicts.length > 0) {
+        return { status: 'conflict', conflicts };
+      }
+      throw err;
+    }
+    const commitSha = (await this.git.revparse(['HEAD'])).trim();
+    return { status: 'merged', commitSha };
+  }
+
+  private async detectConflicts(): Promise<string[]> {
+    try {
+      const out = await this.git.raw(['diff', '--name-only', '--diff-filter=U']);
+      return out
+        .split('\n')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    } catch {
+      return [];
+    }
   }
 
   async cleanupByRunId(runId: string): Promise<void> {
@@ -309,14 +354,19 @@ export class WorktreeManager {
       const cleanup = await this.cleanupRunRecordedWorktree(record);
       if (cleanup.success) {
         this.deleteRunWorktreeRecord(runId);
-        // Remove the run directory (if empty after worktree removal).
-        try {
-          const runDir = join(this.runBasePath, this.toRunToken(runId));
-          if (existsSync(runDir)) {
-            rmSync(runDir, { recursive: true, force: true });
+        // Remove the run directory ONLY if it's empty after the worktree
+        // is gone. v2 keeps state.json + events.log alongside the worktree
+        // (so get_run_status can still report on a discarded run); we
+        // mustn't recursively nuke them. rmdirSync throws on a non-empty
+        // dir, which is exactly the signal we want — fall through and
+        // leave the dir intact in that case.
+        const runDir = join(this.runBasePath, this.toRunToken(runId));
+        if (existsSync(runDir)) {
+          try {
+            rmdirSync(runDir);
+          } catch {
+            // Non-empty (state.json, events.log present) → keep it.
           }
-        } catch {
-          // best-effort
         }
       }
     });

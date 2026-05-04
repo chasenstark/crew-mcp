@@ -1,10 +1,12 @@
-// v2 tool barrel — surviving 2 of v0.1's 8 tools.
+// v2 tool barrel — the 6-tool surface.
 //
-// run_agent and list_agents are the only v0.1 tools that survive into v2's
-// hosted-MCP model. M2 will add lifecycle tools (continue_run, merge_run,
-// discard_run, get_run_status) on top. The retired tools (ask_user,
-// message_user, finish, plan_tasks, analyze_output, compress_context) move
-// to the host CLI's responsibility — see HISTORICAL_CONTEXT.md.
+// run_agent + list_agents survive from v0.1 (with run_agent's auto-merge
+// removed in M1). The lifecycle tools (continue_run, merge_run,
+// discard_run, get_run_status) are new in M2 — they hand worktree
+// lifecycle control to the host CLI explicitly. The retired v0.1 tools
+// (ask_user, message_user, finish, plan_tasks, analyze_output,
+// compress_context) move to the host CLI's responsibility — see
+// HISTORICAL_CONTEXT.md.
 export {
   planRunAgent,
   runAgentInputSchema,
@@ -24,3 +26,23 @@ export {
   type ListAgentsInput,
   type ListAgentsOutput,
 } from './list-agents.js';
+export {
+  continueRunInputSchema,
+  CONTINUE_RUN_DESCRIPTION,
+  type ContinueRunInput,
+} from './continue-run.js';
+export {
+  mergeRunInputSchema,
+  MERGE_RUN_DESCRIPTION,
+  type MergeRunInput,
+} from './merge-run.js';
+export {
+  discardRunInputSchema,
+  DISCARD_RUN_DESCRIPTION,
+  type DiscardRunInput,
+} from './discard-run.js';
+export {
+  getRunStatusInputSchema,
+  GET_RUN_STATUS_DESCRIPTION,
+  type GetRunStatusInput,
+} from './get-run-status.js';

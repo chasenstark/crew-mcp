@@ -409,7 +409,7 @@ describe('WorktreeManager', () => {
         .mockReturnValueOnce('owner-1')
         .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { root, manager, rootGit } = createManager();
-      await manager.createRunWorktree('run-1');
+      const wPath = await manager.createRunWorktree('run-1');
       rootGit.status.mockResolvedValueOnce({
         modified: [],
         created: [],
@@ -417,9 +417,21 @@ describe('WorktreeManager', () => {
         deleted: [],
         renamed: [],
       });
+      // Default mock returns 'main' for every revparse, which is fine for
+      // the resolveMergeTargetBranch + current-branch checks. We override
+      // specifically the no-changes comparison (worktree HEAD vs target SHA)
+      // and the post-merge commitSha capture.
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('worktree-sha'); // wGit revparse(['HEAD'])
+      rootGit.revparse
+        .mockResolvedValueOnce('main')        // resolveMergeTargetBranch → target='main'
+        .mockResolvedValueOnce('target-sha')  // my no-changes check: revparse([target])
+        .mockResolvedValueOnce('main')        // current-branch check
+        .mockResolvedValueOnce('merged-sha'); // post-merge commitSha
 
-      await manager.mergeRunWorktree('run-1');
+      const result = await manager.mergeRunWorktree('run-1');
 
+      expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
       expect(rootGit.merge).toHaveBeenCalledWith([
         'crew-run/run-1-aaaaaaaa',
         '--no-ff',
@@ -427,6 +439,38 @@ describe('WorktreeManager', () => {
         'Merge crew run run-1',
       ]);
       expect(existsSync(join(root, '.crew', 'runs', '.meta', 'run-1.json'))).toBe(true);
+    });
+
+    it('mergeRunWorktree returns no-changes when worktree HEAD matches target', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('same-sha'); // wGit revparse(['HEAD'])
+      rootGit.revparse
+        .mockResolvedValueOnce('main')      // resolveMergeTargetBranch
+        .mockResolvedValueOnce('same-sha'); // my no-changes check: revparse([target])
+      const result = await manager.mergeRunWorktree('run-1');
+      expect(result).toEqual({ status: 'no-changes' });
+      expect(rootGit.merge).not.toHaveBeenCalled();
+    });
+
+    it('mergeRunWorktree refuses dirty host worktree without force', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      await manager.createRunWorktree('run-1');
+      rootGit.status.mockResolvedValueOnce({
+        modified: ['somefile.ts'],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      await expect(manager.mergeRunWorktree('run-1')).rejects.toThrow(/uncommitted changes/);
     });
   });
 });

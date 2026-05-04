@@ -33,7 +33,14 @@ describe.skipIf(!hasBuild)('crew serve — subprocess wire protocol', () => {
       await client.connect(transport);
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual(['list_agents', 'run_agent']);
+      expect(names).toEqual([
+        'continue_run',
+        'discard_run',
+        'get_run_status',
+        'list_agents',
+        'merge_run',
+        'run_agent',
+      ]);
     } finally {
       await client.close();
     }
