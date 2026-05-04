@@ -28,13 +28,30 @@ import type { HostAdapter } from './types.js';
 const execFileAsync = promisify(execFile);
 
 /**
- * Header line that opens the crew block. Anchored to start of line;
- * trailing whitespace tolerated.
+ * Header line that opens the primary crew block (used by mergeMcpBlock
+ * to find/replace the `command` + `args` section we own). Anchored to
+ * start of line; trailing whitespace tolerated.
  */
 const HEADER_RE = /^\[mcp_servers\.crew\][^\S\n]*$/m;
 
 /**
- * Any TOML section header — used to detect the END of the crew block
+ * Header line that opens any block in the crew namespace — including
+ * sub-blocks Codex creates for per-tool approval-mode persistence
+ * (e.g., `[mcp_servers.crew.tools.run_agent]`). Used by removeMcpBlock
+ * so `crew uninstall` clears the whole namespace, not just our own
+ * `command`/`args` block.
+ *
+ * Surfaced by Finding 9 in `docs/status/v0.2-smoke-2026-05-04.md`:
+ * Codex auto-creates these sub-blocks when the user grants per-tool
+ * approvals during a session. If our uninstall left them behind,
+ * Codex would refuse to load on the next launch ("invalid transport
+ * in mcp_servers.crew") because the parent block (which holds
+ * command + args) was gone but its children still referenced it.
+ */
+const NAMESPACE_HEADER_RE = /^\[mcp_servers\.crew(?:\.[^\]]*)?\][^\S\n]*$/gm;
+
+/**
+ * Any TOML section header — used to detect the END of a crew block
  * during scan-forward.
  */
 const SECTION_HEADER_RE = /^\[[^\]]+\]/m;
@@ -60,13 +77,20 @@ export const codexAdapter: HostAdapter = {
   },
 
   removeMcpBlock(existing) {
-    const span = locateCrewBlock(existing);
-    if (!span) return existing;
-    const before = existing.slice(0, span.start);
-    const after = existing.slice(span.end);
-    // Squeeze 3+ consecutive newlines that may result from removing a
-    // mid-file block down to 2.
-    return (before + after).replace(/\n{3,}/g, '\n\n');
+    // Remove every block whose header is in the crew namespace —
+    // [mcp_servers.crew] AND any [mcp_servers.crew.<...>] sub-block
+    // (Codex creates [mcp_servers.crew.tools.<tool>] for per-tool
+    // approval persistence; leaving those orphaned makes Codex refuse
+    // to load on next launch). Splice spans out in reverse so indices
+    // stay valid as we mutate.
+    const spans = locateAllCrewNamespaceBlocks(existing);
+    if (spans.length === 0) return existing;
+    let out = existing;
+    for (let i = spans.length - 1; i >= 0; i--) {
+      const { start, end } = spans[i];
+      out = out.slice(0, start) + out.slice(end);
+    }
+    return out.replace(/\n{3,}/g, '\n\n');
   },
 
   hasMcpBlock(existing) {
@@ -114,6 +138,41 @@ function locateCrewBlock(raw: string): BlockSpan | null {
   const nextSection = rest.search(SECTION_HEADER_RE);
   const end = nextSection === -1 ? raw.length : afterHeader + nextSection;
   return { start, end };
+}
+
+/**
+ * Find every block in the `mcp_servers.crew` namespace — the main
+ * `[mcp_servers.crew]` block AND any `[mcp_servers.crew.<...>]`
+ * sub-block. Returns spans sorted by start offset. Used by
+ * `removeMcpBlock` to clean up Codex's auto-created per-tool
+ * approval sub-blocks alongside our own block on uninstall.
+ *
+ * Each span's `end` points at the next section header (anywhere — not
+ * just other crew-namespace headers), or at end-of-file. That
+ * matches the v1 single-block locator's contract; spans of adjacent
+ * crew-namespace blocks naturally end at the next crew header, so
+ * splicing them all out leaves no gaps.
+ */
+function locateAllCrewNamespaceBlocks(raw: string): BlockSpan[] {
+  const spans: BlockSpan[] = [];
+  // Reset the global regex's lastIndex; sharing a /g regex across
+  // calls keeps cumulative state otherwise.
+  NAMESPACE_HEADER_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = NAMESPACE_HEADER_RE.exec(raw)) !== null) {
+    const start = match.index;
+    const afterHeader = start + match[0].length;
+    const rest = raw.slice(afterHeader);
+    const nextSection = rest.search(SECTION_HEADER_RE);
+    const end = nextSection === -1 ? raw.length : afterHeader + nextSection;
+    spans.push({ start, end });
+    // Advance lastIndex past this header to avoid an infinite loop on
+    // zero-width matches (defensive; shouldn't happen with our regex).
+    if (NAMESPACE_HEADER_RE.lastIndex <= start) {
+      NAMESPACE_HEADER_RE.lastIndex = start + 1;
+    }
+  }
+  return spans;
 }
 
 /**
@@ -167,6 +226,7 @@ async function detectProcessRunning(pattern: RegExp): Promise<boolean> {
 // Internals exposed for tests to assert against directly.
 export const _internals = {
   locateCrewBlock,
+  locateAllCrewNamespaceBlocks,
   renderCodexBlock,
   tomlString,
 };

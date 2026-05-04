@@ -162,6 +162,119 @@ describe('codexAdapter.hasMcpBlock', () => {
   });
 });
 
+describe('codexAdapter.removeMcpBlock — namespace sub-blocks (Finding 9)', () => {
+  it('removes Codex auto-created [mcp_servers.crew.tools.*] sub-blocks', () => {
+    // Real-world repro from the v0.2 smoke: Codex creates approval-mode
+    // sub-blocks under our namespace when the user grants per-tool
+    // approvals. Uninstall has to clean those up too, otherwise Codex
+    // refuses to load on next launch ("invalid transport in
+    // mcp_servers.crew") because the sub-blocks reference a parent
+    // section we removed.
+    const existing =
+      'model = "gpt-5.5"\n' +
+      '\n' +
+      '[mcp_servers.crew]\n' +
+      `command = "${CMD}"\n` +
+      `args = ["${ARGS[0]}", "${ARGS[1]}"]\n` +
+      '\n' +
+      '[mcp_servers.crew.tools.list_agents]\n' +
+      'approval_mode = "approve"\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.run_agent]\n' +
+      'approval_mode = "approve"\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.get_run_status]\n' +
+      'approval_mode = "approve"\n';
+    const out = codexAdapter.removeMcpBlock(existing);
+    expect(out).not.toContain('[mcp_servers.crew]');
+    expect(out).not.toContain('[mcp_servers.crew.tools.list_agents]');
+    expect(out).not.toContain('[mcp_servers.crew.tools.run_agent]');
+    expect(out).not.toContain('[mcp_servers.crew.tools.get_run_status]');
+    expect(out).toContain('model = "gpt-5.5"');
+  });
+
+  it('removes only crew-namespace blocks; preserves other mcp_servers entries', () => {
+    const existing =
+      '[mcp_servers.crew]\n' +
+      `command = "${CMD}"\n` +
+      'args = []\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.list_agents]\n' +
+      'approval_mode = "approve"\n' +
+      '\n' +
+      '[mcp_servers.linear]\n' +
+      'url = "https://mcp.linear.app/mcp"\n' +
+      '\n' +
+      '[mcp_servers.figma]\n' +
+      'url = "https://mcp.figma.com/mcp"\n';
+    const out = codexAdapter.removeMcpBlock(existing);
+    expect(out).not.toContain('[mcp_servers.crew]');
+    expect(out).not.toContain('[mcp_servers.crew.tools.');
+    // Sister namespaces (linear, figma) preserved verbatim.
+    expect(out).toContain('[mcp_servers.linear]');
+    expect(out).toContain('[mcp_servers.figma]');
+  });
+
+  it('removes orphaned [mcp_servers.crew.tools.*] when the parent block was already gone', () => {
+    // Replicates the exact failure mode the user hit: parent
+    // [mcp_servers.crew] removed by an earlier uninstall, but the
+    // sub-blocks left behind are now causing Codex to error.
+    const existing =
+      'model = "gpt-5.5"\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.list_agents]\n' +
+      'approval_mode = "approve"\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.run_agent]\n' +
+      'approval_mode = "approve"\n';
+    const out = codexAdapter.removeMcpBlock(existing);
+    expect(out).not.toContain('[mcp_servers.crew');
+    expect(out).toContain('model = "gpt-5.5"');
+  });
+
+  it('does not match sibling namespaces like [mcp_servers.crew_extension]', () => {
+    // Conservative: only remove blocks whose header is exactly
+    // [mcp_servers.crew] or [mcp_servers.crew.<...>].
+    const existing =
+      '[mcp_servers.crew_extension]\n' +
+      'url = "..."\n';
+    expect(codexAdapter.removeMcpBlock(existing)).toBe(existing);
+  });
+
+  it('idempotent across the Finding 9 scenario', () => {
+    const existing =
+      '[mcp_servers.crew]\n' +
+      `command = "${CMD}"\n` +
+      'args = []\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.run_agent]\n' +
+      'approval_mode = "approve"\n';
+    const once = codexAdapter.removeMcpBlock(existing);
+    const twice = codexAdapter.removeMcpBlock(once);
+    expect(twice).toBe(once);
+  });
+});
+
+describe('codexAdapter.mergeMcpBlock — preserves user per-tool approval sub-blocks', () => {
+  it('replaces only [mcp_servers.crew] and leaves [mcp_servers.crew.tools.*] alone', () => {
+    // Re-installing should NOT erase the user's approval-mode prefs
+    // — those are user-set, not crew-set. Only mergeMcpBlock's narrow
+    // [mcp_servers.crew] matcher applies; the broader namespace
+    // matcher is uninstall-only.
+    const existing =
+      '[mcp_servers.crew]\n' +
+      'command = "old"\n' +
+      'args = []\n' +
+      '\n' +
+      '[mcp_servers.crew.tools.run_agent]\n' +
+      'approval_mode = "approve"\n';
+    const out = codexAdapter.mergeMcpBlock(existing, CMD, ARGS);
+    expect(out).toContain(`command = "${CMD}"`);
+    expect(out).toContain('[mcp_servers.crew.tools.run_agent]');
+    expect(out).toContain('approval_mode = "approve"');
+  });
+});
+
 describe('codex internals', () => {
   it('locateCrewBlock spans through trailing newlines up to next section', () => {
     const raw =
