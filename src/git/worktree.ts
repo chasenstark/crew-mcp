@@ -2,6 +2,7 @@ import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { ensureCrewIgnored } from './gitignore-guard.js';
 import { logger } from '../utils/logger.js';
 
 interface WorktreeRecord {
@@ -59,6 +60,11 @@ export class WorktreeManager {
     mkdirSync(this.runMetadataPath, { recursive: true });
     this.runLockPath = join(this.runBasePath, '.locks');
     mkdirSync(this.runLockPath, { recursive: true });
+    // Ensure the host repo's .gitignore covers .crew/ before we start
+    // accumulating run state. Idempotent and tolerant of write failures
+    // (warn-logs and continues; never crashes serve startup). Surfaced
+    // by Finding 7 in docs/status/v0.2-smoke-2026-05-04.md.
+    ensureCrewIgnored(projectRoot);
   }
 
   async createWorktree(taskId: string): Promise<string> {
