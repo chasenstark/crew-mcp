@@ -154,18 +154,23 @@ export const codexAdapter: HostAdapter = {
 };
 
 // Codex's per-tool approval_mode schema: auto | prompt | approve.
-// `auto` = no prompt, always allowed (this is what `crew-mcp install`
-// chooses by default — `--no-auto-approve` opts out by writing nothing).
-// Codex previously accepted `always` as the auto-approve variant; that
-// was renamed to `auto`. Writing `always` against current Codex now
-// causes "Error loading config.toml: unknown variant `always`" at
-// startup, so do not regress this constant.
-const APPROVAL_MODE_AUTO = 'auto';
+// Empirically (codex-cli 0.128.0):
+//   - `approve` = pre-approved, never prompt. This is what codex writes
+//     itself when the user clicks "approve_for_session" in the TUI.
+//   - `prompt`  = always prompt before invoking the tool.
+//   - `auto`    = inherit the MCP server's `default_tools_approval_mode`,
+//     which itself prompts unless explicitly set. So `auto` does NOT
+//     mean "auto-approve" — that's what tripped us up; "auto" still
+//     resulted in user prompts on every list_agents / run_agent call.
+// Codex previously accepted `always` for the no-prompt variant (the
+// schema since renamed); writing `always` now causes "unknown variant
+// `always`" at startup. So `approve` is the only correct value here.
+const APPROVAL_MODE_APPROVE = 'approve';
 
 function renderCrewToolsBlocks(tools: readonly string[]): string {
   return tools
     .map((tool) =>
-      `[mcp_servers.crew.tools.${tool}]\napproval_mode = ${tomlString(APPROVAL_MODE_AUTO)}\n`,
+      `[mcp_servers.crew.tools.${tool}]\napproval_mode = ${tomlString(APPROVAL_MODE_APPROVE)}\n`,
     )
     .join('\n');
 }

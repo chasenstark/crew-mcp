@@ -287,13 +287,13 @@ describe('codexAdapter.mergeMcpBlock — preserves user per-tool approval sub-bl
 describe('codexAdapter.writeAutoApproval / clearAutoApproval', () => {
   const TOOLS = ['list_agents', 'run_agent', 'merge_run'];
 
-  it('appends one tools block per tool with approval_mode = "auto"', () => {
+  it('appends one tools block per tool with approval_mode = "approve"', () => {
     const config = '[mcp_servers.crew]\ncommand = "x"\nargs = []\n';
     const out = codexAdapter.writeAutoApproval!(config, TOOLS);
     expect(out).toContain('[mcp_servers.crew]');
-    expect(out).toContain('[mcp_servers.crew.tools.list_agents]\napproval_mode = "auto"');
-    expect(out).toContain('[mcp_servers.crew.tools.run_agent]\napproval_mode = "auto"');
-    expect(out).toContain('[mcp_servers.crew.tools.merge_run]\napproval_mode = "auto"');
+    expect(out).toContain('[mcp_servers.crew.tools.list_agents]\napproval_mode = "approve"');
+    expect(out).toContain('[mcp_servers.crew.tools.run_agent]\napproval_mode = "approve"');
+    expect(out).toContain('[mcp_servers.crew.tools.merge_run]\napproval_mode = "approve"');
   });
 
   it('places tools blocks immediately after the parent crew block', () => {
@@ -312,15 +312,19 @@ describe('codexAdapter.writeAutoApproval / clearAutoApproval', () => {
 
   it('overwrites pre-existing per-tool approval state (Finding 9 + auto-approve interaction)', () => {
     // Codex auto-creates [mcp_servers.crew.tools.X] with approval_mode =
-    // "approve" when the user clicks "approve" in a session. crew install
-    // (with auto-approve) is the explicit "always allow" consent — overwrite.
+    // "approve" or "prompt" when the user clicks "approve_for_session"
+    // or "decline" in the TUI. crew-mcp install (with auto-approve) is
+    // the explicit "always allow" consent — strip and rewrite. We
+    // happen to write the same value codex's session-state does,
+    // `"approve"`, but the test asserts there's no DUPLICATE block.
     const config =
       '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
-      '[mcp_servers.crew.tools.list_agents]\napproval_mode = "approve"\n';
+      '[mcp_servers.crew.tools.list_agents]\napproval_mode = "prompt"\n';
     const out = codexAdapter.writeAutoApproval!(config, ['list_agents', 'run_agent']);
     expect(out.match(/\[mcp_servers\.crew\.tools\.list_agents\]/g)).toHaveLength(1);
-    expect(out).toContain('[mcp_servers.crew.tools.list_agents]\napproval_mode = "auto"');
-    expect(out).not.toContain('approval_mode = "approve"');
+    expect(out).toContain('[mcp_servers.crew.tools.list_agents]\napproval_mode = "approve"');
+    expect(out).toContain('[mcp_servers.crew.tools.run_agent]\napproval_mode = "approve"');
+    expect(out).not.toContain('approval_mode = "prompt"');
   });
 
   it('is idempotent — writing twice produces the same output', () => {
@@ -343,8 +347,8 @@ describe('codexAdapter.writeAutoApproval / clearAutoApproval', () => {
   it('clearAutoApproval removes all crew tools blocks but preserves the parent', () => {
     const config =
       '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
-      '[mcp_servers.crew.tools.list_agents]\napproval_mode = "auto"\n\n' +
-      '[mcp_servers.crew.tools.run_agent]\napproval_mode = "auto"\n';
+      '[mcp_servers.crew.tools.list_agents]\napproval_mode = "approve"\n\n' +
+      '[mcp_servers.crew.tools.run_agent]\napproval_mode = "approve"\n';
     const out = codexAdapter.clearAutoApproval!(config);
     expect(out).toContain('[mcp_servers.crew]');
     expect(out).not.toContain('[mcp_servers.crew.tools.');
@@ -358,8 +362,8 @@ describe('codexAdapter.writeAutoApproval / clearAutoApproval', () => {
   it('clearAutoApproval preserves sister namespaces (codex.* but not crew.*)', () => {
     const config =
       '[mcp_servers.crew]\ncommand = "x"\nargs = []\n\n' +
-      '[mcp_servers.crew.tools.run_agent]\napproval_mode = "auto"\n\n' +
-      '[mcp_servers.linear.tools.list_issues]\napproval_mode = "auto"\n';
+      '[mcp_servers.crew.tools.run_agent]\napproval_mode = "approve"\n\n' +
+      '[mcp_servers.linear.tools.list_issues]\napproval_mode = "approve"\n';
     const out = codexAdapter.clearAutoApproval!(config);
     expect(out).not.toContain('[mcp_servers.crew.tools.');
     expect(out).toContain('[mcp_servers.linear.tools.list_issues]');
