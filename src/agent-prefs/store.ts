@@ -70,6 +70,15 @@ export interface AgentPreferences {
   readonly strengths?: readonly string[];
   /** Default effort level for dispatches to this agent. */
   readonly effort?: EffortLevel;
+  /**
+   * Default model for dispatches to this agent. Free-form string
+   * (passed through to the adapter's `--model` flag). Per-call
+   * `run_agent({model})` wins. Empty/missing = adapter's CLI picks
+   * its own default — we deliberately don't second-guess
+   * `~/.claude.json` / `~/.codex/config.toml` etc. when the user
+   * hasn't expressed a per-machine preference.
+   */
+  readonly model?: string;
 }
 
 export type AgentPrefsMap = Record<string, AgentPreferences>;
@@ -146,6 +155,15 @@ function coerceEntry(agentName: string, value: unknown): AgentPreferences | unde
       );
     }
   }
+  if ('model' in record) {
+    if (typeof record.model === 'string' && record.model.trim().length > 0) {
+      out.model = record.model.trim();
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".model must be a non-empty string; dropping field`,
+      );
+    }
+  }
   return out;
 }
 
@@ -182,13 +200,16 @@ export function seedAgentPrefsFile(
   const seeded: Record<string, unknown> = {
     _readme: [
       'Per-machine agent preferences. Each adapter ships defaults; edit',
-      'an entry to override for this machine. `strengths` are free-form',
-      'soft routing hints surfaced to the captain via list_agents.',
-      '`effort` is one of "low"|"medium"|"high"|"xhigh"|"max" — codex',
-      'translates to its `model_reasoning_effort` flag; other adapters',
-      'log a debug message and ignore (the captain restates the level',
-      'in the prompt for portable signaling). Underscore-prefixed keys',
-      'are always ignored. Delete this file to fall back to defaults.',
+      'an entry to override for this machine. Three tunable fields:',
+      '  - strengths: free-form soft routing hints surfaced via list_agents.',
+      '  - effort: "low"|"medium"|"high"|"xhigh"|"max" — codex translates',
+      '    to its model_reasoning_effort flag; other adapters log+ignore',
+      '    and the captain restates the level in the prompt instead.',
+      '  - model: free-form string passed to the adapter\'s --model flag.',
+      '    Empty/missing = the adapter\'s CLI picks (we don\'t override',
+      '    your ~/.claude.json or ~/.codex/config.toml).',
+      'Per-call overrides via run_agent({model, effort}) always win.',
+      'Underscore-prefixed keys are ignored. Delete this file to reset.',
     ],
     ...defaults,
   };
@@ -201,7 +222,10 @@ export function seedAgentPrefsFile(
 /**
  * Resolve the effective prefs for an agent: file override merged on
  * top of adapter defaults, field-by-field. A user who overrides only
- * `effort` keeps the adapter's default `strengths`.
+ * `effort` keeps the adapter's default `strengths`. `model` is the
+ * exception — adapters intentionally don't ship a default for it
+ * (they delegate to the CLI's own config), so the result's `model`
+ * is just whatever the override specifies (or undefined).
  */
 export function effectiveAgentPrefs(
   agentName: string,
@@ -213,5 +237,6 @@ export function effectiveAgentPrefs(
   return {
     strengths: override.strengths !== undefined ? override.strengths : adapterDefault.strengths,
     effort: override.effort !== undefined ? override.effort : adapterDefault.effort,
+    model: override.model !== undefined ? override.model : adapterDefault.model,
   };
 }

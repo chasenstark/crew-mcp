@@ -157,7 +157,7 @@ export async function planRunAgent(
   }
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
-  const effectiveModel = input.model ?? ctx.resolveModel?.(input.agent_id);
+  const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs, ctx.resolveModel);
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
@@ -203,6 +203,31 @@ export function resolveEffectiveEffort(
     prefs ?? {},
   );
   return merged.effort;
+}
+
+/**
+ * Resolve the model that actually goes to the adapter:
+ *   1. per-call override (input.model)
+ *   2. user's agents.json override for this agent
+ *   3. legacy ctx.resolveModel hook (vestigial v1; serve.ts doesn't
+ *      inject it, but kept so workflow-config-driven setups can wire
+ *      a resolver if they want)
+ *   4. undefined → adapter doesn't pass --model and the CLI's own
+ *      default (claude-code's ~/.claude.json, codex's config.toml,
+ *      etc.) wins
+ *
+ * Exported for tests + symmetry with resolveEffectiveEffort.
+ */
+export function resolveEffectiveModel(
+  adapter: AgentAdapter,
+  perCall: string | undefined,
+  prefs: AgentPrefsMap | undefined,
+  resolveModel?: (agentName: string) => string | undefined,
+): string | undefined {
+  if (perCall) return perCall;
+  const fromPrefs = prefs?.[adapter.name]?.model;
+  if (fromPrefs) return fromPrefs;
+  return resolveModel?.(adapter.name);
 }
 
 /**

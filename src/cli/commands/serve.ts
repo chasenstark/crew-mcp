@@ -35,6 +35,7 @@ import {
   buildAdapterDispatchTask,
   planRunAgent,
   resolveEffectiveEffort,
+  resolveEffectiveModel,
   runAgentInputSchema,
   RUN_AGENT_DESCRIPTION,
 } from '../../orchestrator/tools/run-agent.js';
@@ -248,14 +249,19 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       }
 
       const toolCallId = randomUUID();
-      // Resolve effort with the same precedence run_agent uses:
-      // per-call > agents.json > adapter default. Re-read prefs each
-      // continue so a user edit between dispatches is honored without
-      // a serve restart.
+      // Resolve effort + model with the same precedence run_agent
+      // uses: per-call > agents.json > adapter default. Re-read prefs
+      // each continue so a user edit between dispatches is honored
+      // without a serve restart.
       const continueAgentPrefs = readAgentPrefsFile(crewHome);
       const effectiveEffort = resolveEffectiveEffort(
         adapter,
         args.effort,
+        continueAgentPrefs,
+      );
+      const effectiveModel = resolveEffectiveModel(
+        adapter,
+        args.model,
         continueAgentPrefs,
       );
       const task = buildAdapterDispatchTask({
@@ -265,7 +271,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         prompt: args.prompt,
         effectiveWorkingDirectory: state.worktreePath,
         worktreePath: state.worktreePath,
-        effectiveModel: args.model,
+        effectiveModel,
         effectiveEffort,
         worktreeManager,
         input: { ...args },

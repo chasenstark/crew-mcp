@@ -60,6 +60,13 @@ export interface ListAgentsAgentEntry {
    * generic). Captain may override per-call via `run_agent`.
    */
   readonly effort?: EffortLevel;
+  /**
+   * Default model applied to dispatches that don't pass an explicit
+   * `model`. Omitted when the user hasn't expressed a per-machine
+   * preference — in that case the adapter's CLI picks its own
+   * default. Captain may override per-call via `run_agent`.
+   */
+  readonly model?: string;
   readonly adapter: string;
   readonly available: boolean;
   readonly version?: string;
@@ -125,6 +132,9 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
         // `effort` only present when defined — adapters with no native
         // knob and no user override stay omitted, signalling honestly.
         ...(merged.effort ? { effort: merged.effort } : {}),
+        // `model` only present when the user has set a per-machine
+        // override. Absence = "the adapter's CLI picks."
+        ...(merged.model ? { model: merged.model } : {}),
         adapter: adapter.name,
       } as const;
       let health: Awaited<ReturnType<typeof adapter.healthCheck>>;

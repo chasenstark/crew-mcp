@@ -153,4 +153,25 @@ describe('listAgents', () => {
     const out = await listAgents({ registry });
     expect('effort' in out.agents[0]).toBe(false);
   });
+
+  it('surfaces a per-machine model override from agents.json', async () => {
+    const registry = makeRegistry([
+      makeAdapter({ name: 'claude-code', strengths: [] }),
+    ]);
+    const out = await listAgents({
+      registry,
+      agentPrefs: { 'claude-code': { model: 'claude-opus-4-7' } },
+    });
+    expect(out.agents[0].model).toBe('claude-opus-4-7');
+  });
+
+  it('omits model when no per-machine override exists', async () => {
+    // Adapters intentionally don't ship a default model — the CLI's
+    // own config wins. So absence is the correct signal here, not [].
+    const registry = makeRegistry([
+      makeAdapter({ name: 'codex', strengths: [] }),
+    ]);
+    const out = await listAgents({ registry });
+    expect('model' in out.agents[0]).toBe(false);
+  });
 });

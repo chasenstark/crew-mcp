@@ -235,3 +235,57 @@ describe('readAgentPrefsFile — extended effort levels', () => {
     });
   });
 });
+
+describe('model field', () => {
+  it('round-trips a per-agent model through write+read', () => {
+    writeAgentPrefsFile(crewHome, {
+      'claude-code': { model: 'claude-opus-4-7', effort: 'medium' },
+      codex: { model: 'gpt-5.5-codex' },
+    });
+    expect(readAgentPrefsFile(crewHome)).toEqual({
+      'claude-code': { model: 'claude-opus-4-7', effort: 'medium' },
+      codex: { model: 'gpt-5.5-codex' },
+    });
+  });
+
+  it('drops a non-string model value but keeps other fields on the entry', () => {
+    writeFileSync(
+      resolveAgentPrefsPath(crewHome),
+      JSON.stringify({ codex: { model: 42, effort: 'high' } }),
+      'utf-8',
+    );
+    expect(readAgentPrefsFile(crewHome)).toEqual({ codex: { effort: 'high' } });
+  });
+
+  it('drops an empty/whitespace-only model value', () => {
+    writeFileSync(
+      resolveAgentPrefsPath(crewHome),
+      JSON.stringify({ codex: { model: '   ', strengths: ['ok'] } }),
+      'utf-8',
+    );
+    expect(readAgentPrefsFile(crewHome)).toEqual({ codex: { strengths: ['ok'] } });
+  });
+
+  it('trims whitespace around a valid model string', () => {
+    writeFileSync(
+      resolveAgentPrefsPath(crewHome),
+      JSON.stringify({ codex: { model: '  gpt-5.5-codex  ' } }),
+      'utf-8',
+    );
+    expect(readAgentPrefsFile(crewHome)).toEqual({ codex: { model: 'gpt-5.5-codex' } });
+  });
+
+  it('effectiveAgentPrefs lets the file model win over an adapter default of undefined', () => {
+    expect(
+      effectiveAgentPrefs(
+        'codex',
+        { strengths: ['default'], effort: 'medium' /* no model */ },
+        { codex: { model: 'gpt-5.5-codex' } },
+      ),
+    ).toEqual({
+      strengths: ['default'],
+      effort: 'medium',
+      model: 'gpt-5.5-codex',
+    });
+  });
+});

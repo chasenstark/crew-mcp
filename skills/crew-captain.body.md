@@ -18,7 +18,7 @@
 
 This skill loads when the user wants to dispatch coding work to other
 AI agents — "have Claude review this", "send this to Codex", "use a
-local model to triage", or any "have *another* agent do X" framing.
+local model to triage", or any "have _another_ agent do X" framing.
 It teaches you how to use the `mcp__crew__*` tools to dispatch work
 into worktree-isolated runs and merge them back when the user is
 ready. Crew is an MCP server: it provides the verbs; you stay the
@@ -98,8 +98,8 @@ them hold.
 
 1. **Scope is open-ended.** The ask uses verbs like "improve",
    "rework", "redesign", or "make X better" without naming a target
-   file, success criterion, or stop condition. Ask: *"What does
-   done look like for this?"*
+   file, success criterion, or stop condition. Ask: _"What does
+   done look like for this?"_
 2. **More than one plausible approach exists.** Name two and let
    the user pick. Don't dispatch on the assumption your read is
    right when a different interpretation is equally defensible.
@@ -154,13 +154,21 @@ within a crew minor version; if a tool seems to have changed, run
   `"claude-code"`) work too; `list_agents` surfaces them per
   adapter under the `aliases` field.
 - `list_agents` also returns `strengths[]` (soft routing hints —
-  what each agent is good at) and an optional `effort` default. Use
-  `strengths` as nudges when picking between adapters, not as hard
-  filters. The user tunes both per-machine in `~/.crew/agents.json`,
-  so what you see is what they want.
+  what each agent is good at), an optional `effort` default, and an
+  optional `model` default. Use `strengths` as nudges when picking
+  between adapters, not as hard filters. The user tunes all three
+  per-machine in `~/.crew/agents.json`, so what you see is what
+  they want.
+- **Model:** when `list_agents` shows a `model` for an agent,
+  dispatches will use it automatically — you don't have to pass
+  `model:` unless you want to override (e.g., user asks for "the
+  cheap one" or "use opus for this"). When the field is absent, the
+  adapter's CLI picks (its own `~/.claude.json` /
+  `~/.codex/config.toml` etc.) — don't invent a model name; let the
+  CLI default win unless the user names a specific one.
 - **Effort is two signals — always pair them.** `run_agent` /
   `continue_run` accept `effort: "low" | "medium" | "high" | "xhigh"
-  | "max"` (codex's `model_reasoning_effort` set) and surface the
+| "max"` (codex's `model_reasoning_effort` set) and surface the
   per-machine default in `list_agents`. Today only the codex adapter
   has a native CLI flag for it; claude-code, gemini-cli, and
   openai-compatible silently ignore the constraint. So when you
@@ -169,7 +177,7 @@ within a crew minor version; if a tool seems to have changed, run
      its native knob; harmless for the others).
   2. Restate it in the prompt itself, in one short line:
      `> Apply <level> reasoning effort: think before acting / move
-     fast and don't over-deliberate / etc.`
+fast and don't over-deliberate / etc.`
 
   This keeps the signal portable across adapters — without the
   prompt line, dispatching `effort: "high"` to claude-code does
@@ -177,6 +185,7 @@ within a crew minor version; if a tool seems to have changed, run
   `medium` for ordinary work, `high`/`xhigh` for deep refactors or
   correctness-critical work, `max` when latency genuinely doesn't
   matter and you want the model to chew on it.
+
 - Worktrees persist across crew-serve restarts. A `run_id` you got
   yesterday is still resumable today (until merged or discarded).
 - Prefer inline reasoning over routing through agents for things you

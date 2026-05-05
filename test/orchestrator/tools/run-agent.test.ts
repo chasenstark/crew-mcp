@@ -7,6 +7,7 @@ import { execSync } from 'child_process';
 import {
   planRunAgent,
   resolveEffectiveEffort,
+  resolveEffectiveModel,
   type RunAgentHandlerContext,
 } from '../../../src/orchestrator/tools/run-agent.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
@@ -291,7 +292,7 @@ describe('planRunAgent', () => {
 });
 
 describe('resolveEffectiveEffort', () => {
-  function adapterWith(defaultEffort?: 'low' | 'medium' | 'high'): AgentAdapter {
+  function adapterWith(defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'): AgentAdapter {
     return makeMockAdapter({ name: 'codex', defaultEffort });
   }
 
@@ -314,5 +315,42 @@ describe('resolveEffectiveEffort', () => {
   it('returns undefined when adapter has no default and no override exists', () => {
     const a = adapterWith(undefined);
     expect(resolveEffectiveEffort(a, undefined, {})).toBeUndefined();
+  });
+});
+
+describe('resolveEffectiveModel', () => {
+  const adapter = makeMockAdapter({ name: 'codex' });
+
+  it('per-call wins over agents.json + legacy resolveModel', () => {
+    expect(
+      resolveEffectiveModel(
+        adapter,
+        'opus',
+        { codex: { model: 'sonnet' } },
+        () => 'gpt-mini',
+      ),
+    ).toBe('opus');
+  });
+
+  it('agents.json wins over legacy resolveModel when no per-call', () => {
+    expect(
+      resolveEffectiveModel(
+        adapter,
+        undefined,
+        { codex: { model: 'sonnet' } },
+        () => 'gpt-mini',
+      ),
+    ).toBe('sonnet');
+  });
+
+  it('falls through to legacy resolveModel when prefs lacks a model', () => {
+    expect(
+      resolveEffectiveModel(adapter, undefined, {}, () => 'gpt-mini'),
+    ).toBe('gpt-mini');
+  });
+
+  it('returns undefined when nothing is configured (CLI default wins)', () => {
+    expect(resolveEffectiveModel(adapter, undefined, {}, undefined)).toBeUndefined();
+    expect(resolveEffectiveModel(adapter, undefined, undefined, undefined)).toBeUndefined();
   });
 });
