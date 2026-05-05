@@ -168,7 +168,7 @@ CREW SERVE:
      ├─ runDispatchAndRespond:
      │     ├─ installs lifecycle listeners on the dispatcher
      │     ├─ dispatcher.start(task)  ← spawns the subagent
-     │     ├─ races: terminal-event-promise vs 5min timeout
+     │     ├─ races: terminal-event-promise vs 60s timeout
      │     │
      │     │   subagent runs in its worktree:
      │     │     codex execute() → spawns `codex exec ...`
@@ -206,12 +206,16 @@ CREW SERVE:
 
 Two key races:
 
-- **5min block vs terminal**: if the subagent finishes within 5min,
-  the captain receives the full result in a single tool-call return.
-  If it takes longer, `run_agent` returns `status: "running"` and the
-  captain polls `get_run_status` until terminal. With progress
-  notifications streaming the whole time, polling is the rare exception
-  rather than the rule.
+- **60s block vs terminal**: if the subagent finishes within 60s, the
+  captain receives the full result in a single tool-call return. If it
+  takes longer, `run_agent` returns `status: "running"` and the captain
+  polls `get_run_status` until terminal. The block was 5min through
+  2026-05-04; field testing against codex (which doesn't surface MCP
+  `notifications/progress`) turned long blocks into UX dead-zones, so
+  the default was shortened. Hosts that DO surface progress (Claude
+  Code) still get live streaming inside the shorter block; the only
+  trade-off is that medium-length runs (60s–5min) now return
+  `running` and force a poll.
 
 - **Terminal vs cancel**: the dispatcher tracks an `AbortController`
   per in-flight run. `cancel_run` finds the run by `run_id` and aborts;

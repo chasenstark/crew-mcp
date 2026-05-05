@@ -71,15 +71,20 @@ export const SERVE_VERSION = '0.2.0-dev';
  * expected to poll via get_run_status. The dispatch keeps running in
  * the background and writes its terminal state to state.json regardless.
  *
- * 5 min default — chosen to comfortably cover the median agent run
- * (typically 10s–2min) while staying under the host CLI's per-tool-call
- * timeout (Claude Code defaults to ~10 min, Codex ~10 min, Gemini ~5 min).
- * Combined with `notifications/progress` streaming chunks back to the
- * host during the wait, the captain typically receives the full result
- * in a single tool-call return — no polling required. Polling is the
- * exception now, not the rule.
+ * 60s default — short enough that hosts which don't surface
+ * `notifications/progress` to the user (observed: codex CLI as of
+ * 2026-05) don't sit silent for minutes. Captain receives a fast
+ * `status: "running"` envelope with a run_id and polls
+ * `get_run_status` to surface the events.log tail; the user sees
+ * activity even without progress streaming.
+ *
+ * The previous 5-minute default optimized for "single synchronous
+ * return with full result" but turned a 2-minute Codex run into a UX
+ * dead-zone — see commit message of the 60s change for the field
+ * report. Hosts that DO support progress (Claude Code) keep working
+ * the same; the live stream still flows, just inside a shorter block.
  */
-export const ASYNC_FALLBACK_MS = 300_000;
+export const ASYNC_FALLBACK_MS = 60_000;
 
 export interface ServeOptions {
   /**
@@ -717,6 +722,14 @@ function progressNotifierFrom(extra: {
   }) => Promise<void>;
 }): ProgressNotifier | undefined {
   const token = extra._meta?.progressToken;
+  // Diagnostic — one line per dispatched call. Lets the user/operator see
+  // whether their host CLI is opting into progress streaming. Some clients
+  // (codex CLI as of 2026-05) don't supply a token; that silently disables
+  // streaming chunks back to the captain, so the only signal is this log.
+  // info-level so it shows by default; the runtime is one line per call.
+  logger.info(
+    `progress token: ${token === undefined ? 'absent (no streaming chunks to captain)' : String(token)}`,
+  );
   if (token === undefined) return undefined;
   let counter = 0;
   return {

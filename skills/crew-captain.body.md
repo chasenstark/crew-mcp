@@ -158,15 +158,24 @@ not running through a checklist for its own sake.
 
 ## Async fallback — long dispatches
 
-The default flow is synchronous: `run_agent` / `continue_run` block
-until the agent finishes (up to 5 min) and stream live output via
-`notifications/progress` so the user sees activity. **You don't
-need to poll for typical dispatches.**
+`run_agent` / `continue_run` block synchronously for up to 60s. If
+the agent finishes inside that window, the tool call returns the
+final envelope and you're done. If it doesn't, the call returns
+`{ status: "running", run_id }` and the dispatch keeps running in
+the background — its terminal state is persisted to state.json.
 
-If a tool call exceeds 5 min, it returns `status: "running"` with a
-`run_id`. Then poll `get_run_status` with the same `run_id` until
-status reaches terminal (`success`, `partial`, `error`, `cancelled`).
-Keep the user updated during long polls — silent waits feel broken.
+**Whenever you receive `status: "running"`, immediately call
+`get_run_status({ run_id })` and surface the `log_tail` to the user.
+Then poll every 10–20s** until status reaches terminal (`success`,
+`partial`, `error`, `cancelled`). Each poll returns the latest
+state.json + tail of events.log, which is what the user actually
+wants to see while waiting. **Silence feels broken — surface the
+tail every poll, even if you only paraphrase the last line.**
+
+Some hosts also stream live chunks via MCP `notifications/progress`
+during the synchronous block (the user sees them inline in the host
+UI). If your host doesn't surface those, the polling loop above is
+the user's only feedback channel — don't skip it.
 
 If the user wants to abort a `running` dispatch, call
 `cancel_run({ run_id })`. The underlying subprocess receives an
