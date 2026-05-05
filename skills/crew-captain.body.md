@@ -316,6 +316,13 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
     post-run uncommitted changes — relay those to the user.
   - `merge_run` refuses on a read-only run with a clear reason.
     `discard_run` works (metadata-only cleanup).
+  - **Discard reviewer runs once you've consumed their findings.**
+    Read-only runs do **not** auto-clean — only implementer runs
+    do (via the `merge_run` cleanup path, which doesn't apply
+    here). A multi-branch stack with N reviewers leaves N stale
+    run-state directories under `~/.crew/runs/` until the
+    captain explicitly discards. Cleanup is cheap (~20KB each,
+    no worktree to remove) and idempotent.
   - `continue_run` is sticky — resuming a read-only run stays
     read-only. To switch modes, dispatch a fresh `run_agent`.
   - Without `read_only: true`, dispatching a reviewer at another
