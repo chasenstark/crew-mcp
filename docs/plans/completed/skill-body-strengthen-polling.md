@@ -1,7 +1,6 @@
 # Strengthen captain skill: forbid turn-ending waits during a `running` dispatch
 
-**Status:** drafted, not applied. Awaiting decision on whether to
-ship as-drafted, trim, or merge with broader skill-body refactor.
+**Status:** applied 2026-05-05.
 **Anchor commit:** `cc3bb09` — async-first dispatch + long-poll
 `get_run_status`. **Related plan:** `long-poll-cost-tuning.md`
 (parked). **Source skill:** `skills/crew-captain.body.md`.
