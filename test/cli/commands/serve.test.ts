@@ -449,6 +449,9 @@ describe('crew serve — merge_run tool', () => {
       expect(mergeEnv.commit_sha).toMatch(/^[0-9a-f]{40}$/);
       // Post-merge: file lives in host HEAD.
       expect(existsSync(join(h.root, 'NEW.md'))).toBe(true);
+      // Post-merge: worktree directory is auto-cleaned (the changes
+      // are durably in main, so the worktree has no remaining value).
+      expect(existsSync(runEnv.worktree_path)).toBe(false);
 
       // state.json reflects the merge.
       const statusRes = await h.client.callTool({

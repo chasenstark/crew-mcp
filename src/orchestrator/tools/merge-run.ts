@@ -20,6 +20,12 @@
  *     { status: 'conflict', conflicts: [...] } on conflict (worktree
  *     stays alive for resolution), or { status: 'no-changes' } when
  *     worktree HEAD already matches the target.
+ *   - On `merged`, the worktree directory is auto-cleaned best-effort
+ *     (the merged commit is permanently in the host's HEAD, so the
+ *     worktree has no remaining value). state.json + events.log
+ *     persist for archeology. On `conflict` or `no-changes` the
+ *     worktree is preserved — the captain can resolve, retry, or
+ *     iterate via continue_run, then explicitly discard_run.
  */
 
 import { z } from 'zod';
@@ -48,4 +54,4 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a run's worktree back into the host's HEAD. ALWAYS confirm with the user before calling this — it's the only tool that mutates the user's branch. **Pass `commit_title`** (and optionally `commit_body`) describing what the run changed; the merge commit uses these as its subject + body, with a `Crew-Run: <run_id>` trailer auto-appended. Omitting commit_title falls back to a generic 'Merge crew run <id>' message — fine for throwaway runs, bad for any history a human will read. Optional target_branch defaults to the host's current branch. Pass force=true only when the user has explicitly accepted that the host's uncommitted changes will be left untouched. Returns { status: 'merged' | 'conflict' | 'no-changes' }.";
+  "Merge a run's worktree back into the host's HEAD. ALWAYS confirm with the user before calling this — it's the only tool that mutates the user's branch. **Pass `commit_title`** (and optionally `commit_body`) describing what the run changed; the merge commit uses these as its subject + body, with a `Crew-Run: <run_id>` trailer auto-appended. Omitting commit_title falls back to a generic 'Merge crew run <id>' message — fine for throwaway runs, bad for any history a human will read. Optional target_branch defaults to the host's current branch. Pass force=true only when the user has explicitly accepted that the host's uncommitted changes will be left untouched. On `merged` status the worktree is auto-cleaned (no follow-up discard_run needed); on `conflict` or `no-changes` the worktree is preserved for resolution or iteration. Returns { status: 'merged' | 'conflict' | 'no-changes' }.";

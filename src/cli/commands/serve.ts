@@ -368,6 +368,21 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
             target,
             commitSha: result.commitSha,
           });
+          // Best-effort worktree cleanup: once the run is merged into
+          // the host's HEAD, the worktree itself has no remaining
+          // value (the changes are durably in main). state.json +
+          // events.log persist for archeology per cleanupByRunId
+          // semantics. If cleanup fails, the merge still succeeded
+          // and the captain can retry via discard_run.
+          try {
+            await worktreeManager.cleanupByRunId(args.run_id);
+          } catch (err) {
+            logger.warn(
+              `merge_run ${args.run_id}: worktree cleanup failed after `
+              + `successful merge — call discard_run to retry. Error: `
+              + `${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
           const env: MergeEnvelope = {
             run_id: args.run_id,
             status: 'merged',
