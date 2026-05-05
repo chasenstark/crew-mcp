@@ -34,6 +34,12 @@ that crew may be misconfigured**. Suggest `crew install --target
 not pretend the dispatch happened. If the user prefers, continue
 inline yourself instead.
 
+Always reach for the `mcp__crew__*` tools — never shell out to a
+local `crew` binary on PATH (or a `dist/index.js` you spot in the
+repo). The MCP path is the contract; shelling out bypasses worktree
+allocation and run-state tracking, leaving the user in a state where
+`merge_run` / `discard_run` can't find the run.
+
 ## Dispatch-vs-inline — the load-bearing decision
 
 Most asks should not be dispatched. A dispatch costs ~30–60s of
@@ -55,6 +61,17 @@ matches one of these signals:
 If you're unsure, default to inline. Dispatching for trivial work
 defeats the point of the user staying in their primary CLI.
 
+## Decision order — the spine
+
+Run this in your head before reaching for any tool. Each step has its
+own section below; this list is the ordering glue.
+
+1. **Inline or dispatch?** No signal in the list above → inline; stop here.
+2. **Ask first?** If any rubric item below fires, ask one question and wait.
+3. **Dispatch.** `list_agents` → `run_agent` (or `continue_run` to resume an existing run).
+4. **Iterate or surface.** Read the result; iterate inline (`continue_run` / second opinion) or summarize for the user.
+5. **Merge / discard.** Only on explicit user approval. Never call `merge_run` or `discard_run` unprompted.
+
 ## The default flow — code → review → iterate → merge
 
 When the user dispatches an implementation:
@@ -68,11 +85,19 @@ When the user dispatches an implementation:
 3. **Iterate.** If something's off, `continue_run` against the same
    `run_id` with a fix prompt — same agent, same worktree. If you
    want a second opinion, `run_agent` to a different agent with
-   `working_directory` pointed at the worktree path so the reviewer
-   sees the implementer's changes.
+   `working_directory` pointed at the implementer's worktree so the
+   reviewer sees the changes — **but write "review only, do not
+   edit" in the reviewer's prompt**. Reviewer edits would land in
+   the implementer's worktree while the reviewer's own `run_id`
+   tracks an empty diff, and merge semantics get confusing fast.
+   Apply reviewer findings via `continue_run` on the implementer's
+   run.
 4. **Surface to the user.** Once you're satisfied (or once you have
-   a question only the user can answer), summarize. Then ask: do
-   they want to merge, continue iterating, or discard?
+   a question only the user can answer), summarize. For an
+   implementer run, ask: merge, continue iterating, or discard?
+   For a **review-only run** (no edits expected), there's nothing to
+   merge — surface the findings and ask whether to discard the
+   worktree (cleanup) or keep it around for follow-up.
 5. **Merge or discard on user instruction.** Never call `merge_run`
    or `discard_run` without explicit approval — see merge-boundary
    safety rule below.
@@ -88,7 +113,10 @@ concretely so they know what they're approving:
 Not just "Should I merge?" The same goes for `discard_run` — confirm
 before throwing away work the user might still want. If `merge_run`
 returns conflicts, surface the conflicting paths to the user; do
-not attempt automated resolution.
+not attempt automated resolution. The host repo may now be in a
+mid-merge state — let the user resolve by hand or run
+`git merge --abort`. Don't run `merge --abort` yourself without
+asking; it discards their position in the merge.
 
 ## When to ask the user — rubric, not vibes
 
@@ -110,8 +138,9 @@ them hold.
    guessing. Picking the wrong agent costs the user a 30–60s
    round-trip and a discard.
 
-When all four are clean — small, targeted, single approach,
-non-sensitive area, agent obvious — **just dispatch**. Trivial,
+The rubric only fires **after** you've decided to dispatch. If a
+dispatch signal already applies and the four items above are clean —
+**just dispatch**, no clarifying question needed. Trivial,
 well-specified asks should not be ceremonious; over-asking on an
 obvious "fix this typo via the reviewer" defeats the point of the
 crew. The escape hatch matters as much as the gate.
@@ -128,6 +157,11 @@ dispatch exceeded crew's blocking timeout (60s). Poll
 `get_run_status` with the same `run_id` until status reaches
 terminal (`success`, `partial`, `error`, `cancelled`). Keep the
 user updated during long polls — silent waits feel broken.
+
+There is **no `cancel_run` tool today.** If the user wants to abort
+a `running` dispatch you can't kill it from here — let it finish
+and `discard_run` after, or tell the user to interrupt their host
+CLI session. Don't pretend you cancelled it.
 
 ## Cross-CLI quota awareness
 
@@ -148,11 +182,17 @@ within a crew minor version; if a tool seems to have changed, run
 
 - **Never** call `merge_run` or `discard_run` without explicit user
   approval.
-- `agent_id` for `run_agent` and `continue_run` must come from
-  `list_agents`. Don't invent agent names — you'll get a clear
-  error and waste a turn. Aliases (e.g., `"claude"` for
-  `"claude-code"`) work too; `list_agents` surfaces them per
-  adapter under the `aliases` field.
+- `agent_id` for `run_agent` must come from `list_agents`. Don't
+  invent agent names — you'll get a clear error and waste a turn.
+  Aliases (e.g., `"claude"` for `"claude-code"`) work too;
+  `list_agents` surfaces them per adapter under the `aliases`
+  field. **`continue_run` does NOT take `agent_id`** — it takes
+  `run_id` and reuses the run's recorded agent automatically.
+- **Skip agents where `list_agents` returns `available: false`.**
+  Their adapter healthcheck failed (binary missing, auth broken,
+  etc.); the `error` field tells you why. Tell the user the agent
+  isn't available rather than dispatching to it and discovering
+  the failure on a 30s timeout.
 - `list_agents` also returns `strengths[]` (soft routing hints —
   what each agent is good at), an optional `effort` default, and an
   optional `model` default. Use `strengths` as nudges when picking
@@ -160,31 +200,35 @@ within a crew minor version; if a tool seems to have changed, run
   per-machine in `~/.crew/agents.json`, so what you see is what
   they want.
 - **Model:** when `list_agents` shows a `model` for an agent,
-  dispatches will use it automatically — you don't have to pass
-  `model:` unless you want to override (e.g., user asks for "the
-  cheap one" or "use opus for this"). When the field is absent, the
-  adapter's CLI picks (its own `~/.claude.json` /
-  `~/.codex/config.toml` etc.) — don't invent a model name; let the
-  CLI default win unless the user names a specific one.
-- **Effort is two signals — always pair them.** `run_agent` /
-  `continue_run` accept `effort: "low" | "medium" | "high" | "xhigh"
-| "max"` (codex's `model_reasoning_effort` set) and surface the
-  per-machine default in `list_agents`. Today only the codex adapter
-  has a native CLI flag for it; claude-code, gemini-cli, and
-  openai-compatible silently ignore the constraint. So when you
-  want a specific effort level, do BOTH:
-  1. Pass `effort: "<level>"` in the tool call (lets codex flip
-     its native knob; harmless for the others).
-  2. Restate it in the prompt itself, in one short line:
-     `> Apply <level> reasoning effort: think before acting / move
-fast and don't over-deliberate / etc.`
+  dispatches use it automatically — you don't have to pass
+  `model:` unless the user names a specific model or alias to
+  override it ("use opus for this", "switch to gpt-5.4-mini").
+  When the field is absent, the adapter's CLI picks (its own
+  `~/.claude.json` / `~/.codex/config.toml` etc.) — don't invent
+  a model name. If the user asks for something fuzzy ("the cheap
+  one", "the smarter one") and you can't map it to a concrete
+  name from `list_agents` or context, ask which model they mean
+  rather than guessing.
+- **Effort.** `run_agent` / `continue_run` accept
+  `effort: "low" | "medium" | "high" | "xhigh" | "max"` (codex's
+  `model_reasoning_effort` set), and `list_agents` surfaces the
+  per-machine default. When you accept the default, pass nothing
+  and don't add effort framing to the prompt. **When you
+  intentionally choose or override the level**, do BOTH:
+  1. Pass `effort: "<level>"` in the tool call (lets codex flip its
+     native knob; claude-code / gemini-cli / openai-compatible
+     ignore the constraint, but the call is harmless).
+  2. Restate it in the prompt in one short line, e.g. `Apply
+     <level> reasoning effort: <one phrase about what that means
+     for this task>.`
 
-  This keeps the signal portable across adapters — without the
-  prompt line, dispatching `effort: "high"` to claude-code does
-  nothing. Rough mapping: `low` for triage and quick fixes,
-  `medium` for ordinary work, `high`/`xhigh` for deep refactors or
-  correctness-critical work, `max` when latency genuinely doesn't
-  matter and you want the model to chew on it.
+  Without the prompt line, dispatching `effort: "high"` to
+  claude-code does nothing — for those adapters the prompt is the
+  only signal the model sees. Rough mapping:
+  - `low`: classification, typo fixes, mechanical changes, quick sanity checks.
+  - `medium`: ordinary implementation or review.
+  - `high`: cross-file reasoning, non-trivial refactors, root-cause triage.
+  - `xhigh` / `max`: correctness-critical work (auth, money, migrations), architectural changes, or when the user explicitly asks for an exhaustive pass.
 
 - Worktrees persist across crew-serve restarts. A `run_id` you got
   yesterday is still resumable today (until merged or discarded).
