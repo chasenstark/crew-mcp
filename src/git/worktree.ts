@@ -41,9 +41,17 @@ export class WorktreeManager {
   private runBasePath: string;
   private runMetadataPath: string;
   private runLockPath: string;
+  /**
+   * Absolute path of the host repo this manager was constructed against.
+   * Exposed via `getProjectRoot()` so callers (e.g., run-agent's
+   * read-only path) can default working_directory to the host repo
+   * without threading a separate parameter.
+   */
+  private readonly projectRoot: string;
 
   constructor(options: { projectRoot: string; crewHome: string }) {
     const { projectRoot, crewHome } = options;
+    this.projectRoot = projectRoot;
     this.git = simpleGit(projectRoot);
     // Legacy task-keyed layout still rooted at <projectRoot>/.crew/worktrees/.
     // Only reached by v0.1 merge.ts paths the v2 server doesn't use; will
@@ -66,6 +74,10 @@ export class WorktreeManager {
     mkdirSync(this.runMetadataPath, { recursive: true });
     this.runLockPath = join(this.runBasePath, '.locks');
     mkdirSync(this.runLockPath, { recursive: true });
+  }
+
+  getProjectRoot(): string {
+    return this.projectRoot;
   }
 
   private ensureLegacyDirs(): void {

@@ -581,6 +581,158 @@ describe('crew serve — discard_run tool', () => {
   });
 });
 
+describe('crew serve — read_only runs', () => {
+  it('does not allocate a worktree and runs against host repo when working_directory is unset', async () => {
+    let observedCwd: string | undefined;
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        observedCwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        return { output: 'looked', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'reviewer', prompt: 'review please', read_only: true },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      expect(env.status).toBe('success');
+      expect(env.worktree_path).toBe(h.root);
+      expect(observedCwd).toBe(h.root);
+      // No worktree on disk under .crew/runs/<runId>/worktree/.
+      expect(existsSync(join(h.crewHome, 'runs', env.run_id, 'worktree'))).toBe(false);
+      // state.json carries the readOnly bit so continue_run / merge_run
+      // can branch on it without consulting the dispatcher.
+      const statusRes = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id },
+      });
+      const status = statusRes.structuredContent as { readOnly?: boolean };
+      expect(status.readOnly).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('merge_run refuses on a read-only run with an explicit reason', async () => {
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async () => ({ output: '', filesModified: [], status: 'success', metadata: {} }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      const merge = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: env.run_id },
+      });
+      expect(merge.isError).toBe(true);
+      const text = (merge.content as Array<{ text: string }>)[0].text;
+      expect(text).toMatch(/read-only/);
+      expect(text).toMatch(/nothing to merge/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('discard_run on a read-only run is metadata-only (no FS to clean)', async () => {
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async () => ({ output: '', filesModified: [], status: 'success', metadata: {} }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      const discard = await h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: env.run_id },
+      });
+      const denv = discard.structuredContent as { ok: boolean };
+      expect(denv.ok).toBe(true);
+      // host repo still exists & is unchanged.
+      expect(existsSync(h.root)).toBe(true);
+      // state.json reflects discarded.
+      const status = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id },
+      });
+      const s = status.structuredContent as { status: string };
+      expect(s.status).toBe('discarded');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('continue_run on a read-only run stays read-only (sticky)', async () => {
+    let secondCwd: string | undefined;
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        const t = task as { context: { workingDirectory: string }; prompt: string };
+        if (t.prompt === 'turn-two') secondCwd = t.context.workingDirectory;
+        return { output: `did: ${t.prompt}`, filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'reviewer', prompt: 'turn-one', read_only: true },
+      });
+      const firstEnv = first.structuredContent as RunEnvelope;
+      // continue_run does not accept read_only — but the bit is sticky from state.json.
+      await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: firstEnv.run_id, prompt: 'turn-two' },
+      });
+      // The second turn ran against host repo (the original "worktree path"),
+      // not against a freshly-allocated worktree. Confirms the sticky path.
+      expect(secondCwd).toBe(h.root);
+      // No worktree was allocated for either turn.
+      expect(existsSync(join(h.crewHome, 'runs', firstEnv.run_id, 'worktree'))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('surfaces a warnings field when a read-only run dirties the working directory', async () => {
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'leaked.md'), 'oops\n', 'utf-8');
+        return { output: 'leaked', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      expect(env.status).toBe('success');
+      expect(env.warnings).toBeDefined();
+      expect(env.warnings?.length).toBeGreaterThan(0);
+      expect(env.warnings?.[0]).toMatch(/leaked\.md/);
+      // Cleanup leaked file before harness teardown.
+      rmSync(join(h.root, 'leaked.md'), { force: true });
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe('crew serve — get_run_status tool', () => {
   it('returns full state + log_tail for a completed run', async () => {
     const adapter = makeMockAdapter({

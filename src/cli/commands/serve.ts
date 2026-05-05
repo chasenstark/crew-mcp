@@ -125,6 +125,14 @@ export interface RunEnvelope {
   readonly status: RunStatus;
   readonly summary: string;
   readonly files_changed: readonly string[];
+  /**
+   * Advisory messages from the dispatch layer (not the agent itself).
+   * Today's only producer is the read-only run dirty-tree probe in
+   * run-agent.ts. Surfaced through the envelope so the captain can
+   * relay contract violations to the user without parsing the
+   * summary text.
+   */
+  readonly warnings?: readonly string[];
 }
 
 export interface MergeEnvelope {
@@ -222,6 +230,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         agentId: args.agent_id,
         worktreePath: plan.worktreePath,
         initialPrompt: args.prompt,
+        readOnly: plan.readOnly,
       });
 
       return runDispatchAndRespond({
@@ -285,6 +294,11 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         prompt: args.prompt,
         effectiveWorkingDirectory: state.worktreePath,
         worktreePath: state.worktreePath,
+        // Stickiness: a continue_run inherits the original dispatch's
+        // read_only bit. Read it back from state.json so the
+        // post-dispatch probe (warning vs. worktree enrichment)
+        // matches the original run's contract.
+        readOnly: state.readOnly === true,
         effectiveModel,
         effectiveEffort,
         worktreeManager,
@@ -317,6 +331,17 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       const state = runStateStore.read(args.run_id);
       if (!state) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
+      }
+      if (state.readOnly) {
+        // No worktree exists for read-only runs; merge is meaningless.
+        // Surface a precise reason so the captain can explain the
+        // category mismatch instead of pretending the merge could
+        // have worked under different circumstances.
+        return errorContent(
+          `Run "${args.run_id}" was dispatched read-only; nothing to merge. ` +
+          'Read-only runs run against the host repo (or a target worktree) without ' +
+          'allocating their own branch. Use `discard_run` to drop the run record.',
+        );
       }
       if (state.status === 'discarded') {
         return errorContent(
@@ -389,7 +414,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       const state = runStateStore.read(args.run_id);
       try {
         if (state && state.status !== 'discarded') {
-          await worktreeManager.cleanupByRunId(args.run_id);
+          // Read-only runs never allocated a worktree, so the
+          // worktree-cleanup branch would no-op anyway — but skipping
+          // it explicitly makes the contract clearer and avoids the
+          // run-lock acquisition the cleanup helper takes.
+          if (!state.readOnly) {
+            await worktreeManager.cleanupByRunId(args.run_id);
+          }
           runStateStore.markDiscarded(args.run_id);
         }
       } catch (err) {
@@ -726,12 +757,20 @@ function formatRunEnvelope(
       files_changed: [],
     };
   }
+  // Carry warnings (e.g., read-only dirty-tree contract violations)
+  // through to the captain-visible envelope. Omit the field entirely
+  // when empty/undefined so happy-path envelopes stay narrow.
+  const warnings =
+    terminal.result.warnings && terminal.result.warnings.length > 0
+      ? terminal.result.warnings
+      : undefined;
   return {
     run_id: runId,
     worktree_path: worktreePath,
     status: terminal.result.status,
     summary: terminal.result.output,
     files_changed: terminal.result.filesModified,
+    ...(warnings ? { warnings } : {}),
   };
 }
 

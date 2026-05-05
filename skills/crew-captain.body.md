@@ -85,13 +85,14 @@ When the user dispatches an implementation:
 3. **Iterate.** If something's off, `continue_run` against the same
    `run_id` with a fix prompt — same agent, same worktree. If you
    want a second opinion, `run_agent` to a different agent with
-   `working_directory` pointed at the implementer's worktree so the
-   reviewer sees the changes — **but write "review only, do not
-   edit" in the reviewer's prompt**. Reviewer edits would land in
-   the implementer's worktree while the reviewer's own `run_id`
-   tracks an empty diff, and merge semantics get confusing fast.
-   Apply reviewer findings via `continue_run` on the implementer's
-   run.
+   `read_only: true` and `working_directory` pointed at the
+   implementer's worktree so the reviewer sees the changes without
+   allocating its own worktree. The reviewer is structurally
+   prevented from leaving stranded edits in a phantom worktree —
+   it just reads the implementer's tree. (Restate "review only, do
+   not edit" in the reviewer's prompt anyway; the flag skips
+   allocation but doesn't constrain the agent's tools.) Apply
+   reviewer findings via `continue_run` on the implementer's run.
 4. **Surface to the user.** Once you're satisfied (or once you have
    a question only the user can answer), summarize. For an
    implementer run, ask: merge, continue iterating, or discard?
@@ -210,6 +211,25 @@ shell out to the `crew` binary yourself — even for diagnostics).
   a model name. If the user's request is fuzzy and you can't map
   it to a concrete name from `list_agents` or context, ask which
   model they mean rather than guessing.
+- **Read-only dispatches.** Pass `read_only: true` on `run_agent` for
+  review/triage/Q&A work where the agent shouldn't edit (code review,
+  architecture critique, "explain what this module does"). Skipping
+  worktree allocation saves ~100ms–1s and disk space, and the
+  reviewer-on-implementer pattern (`read_only: true` +
+  `working_directory: <implementer-worktree>`) becomes the structural
+  default rather than a prompt-level workaround. Caveats:
+  - There's no FS isolation. If the agent ignores the prompt and
+    writes, the changes land in `working_directory`. The dispatch
+    surfaces a `warnings` field on the result if it detects
+    post-run uncommitted changes — relay those to the user.
+  - `merge_run` refuses on a read-only run with a clear reason.
+    `discard_run` works (metadata-only cleanup).
+  - `continue_run` is sticky — resuming a read-only run stays
+    read-only. To switch modes, dispatch a fresh `run_agent`.
+  - Without `read_only: true`, dispatching a reviewer at another
+    run's worktree still works but allocates a wasted worktree —
+    prefer the flag.
+
 - **Effort.** `run_agent` / `continue_run` accept
   `effort: "low" | "medium" | "high" | "xhigh" | "max"` (codex's
   `model_reasoning_effort` set), and `list_agents` surfaces the

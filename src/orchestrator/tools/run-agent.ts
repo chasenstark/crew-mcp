@@ -58,12 +58,29 @@ export const runAgentInputSchema = z.object({
    * `model_reasoning_effort` set.
    */
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  /**
+   * Skip worktree allocation. Use for review/triage/Q&A dispatches
+   * where the agent is not expected to write. `working_directory`
+   * defaults to the host repo root when this is set; pass an explicit
+   * path (e.g., another run's worktree) to point a reviewer at the
+   * implementer's changes.
+   *
+   * Trade-off: there is no FS-level isolation. If the agent ignores
+   * the prompt contract and writes, the changes land in
+   * `working_directory`. The dispatch surfaces a `warnings` field on
+   * the result if it detects post-run uncommitted changes.
+   *
+   * Sticky: a `continue_run` against a read-only run stays read-only.
+   * `merge_run` errors with a clear reason; `discard_run` is
+   * metadata-only.
+   */
+  read_only: z.boolean().optional(),
 });
 
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  '**Primary work primitive.** Delegate a bounded task to a named subagent. agent_id must come from list_agents; write the agent\'s prompt inline — do NOT route through plan_tasks for single-task work. working_directory defaults to the run worktree.';
+  '**Primary work primitive.** Delegate a bounded task to a named subagent. agent_id must come from list_agents; write the agent\'s prompt inline — do NOT route through plan_tasks for single-task work. working_directory defaults to the run worktree (or the host repo root when read_only=true). Set read_only=true for review/triage/Q&A dispatches that should not edit files; pair with working_directory pointed at the implementer\'s worktree to review another run\'s changes.';
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;
@@ -86,7 +103,23 @@ export interface RunAgentHandlerContext {
 export interface RunAgentDispatchPlan {
   readonly kind: 'dispatched';
   readonly runId: string;
+  /**
+   * The agent's CWD for this dispatch. For an editing run this is the
+   * allocated worktree; for a read-only run it's `working_directory`
+   * if the caller supplied one, else the host repo root. Read by
+   * serve.ts to populate state.json's `worktreePath` field — yes, the
+   * field name is a misnomer for read-only runs (no worktree exists),
+   * but renaming it would mean a state-schema migration.
+   */
   readonly worktreePath: string;
+  /**
+   * True iff this dispatch skipped worktree allocation. serve.ts uses
+   * this to (a) propagate the bit into RunStateV1 so continue_run
+   * stays sticky, (b) suppress merge-related branches in lifecycle
+   * cleanup. Distinct from `worktreePath === host repo root` because
+   * a read-only run can also point at someone else's worktree.
+   */
+  readonly readOnly: boolean;
   readonly adapter: AgentAdapter;
   readonly task: {
     toolCallId: string;
@@ -139,14 +172,24 @@ export async function planRunAgent(
   }
 
   const runId = randomUUID();
+  const readOnly = input.read_only === true;
   let worktreePath: string;
-  try {
-    worktreePath = await ctx.worktreeManager.createRunWorktree(runId);
-  } catch (err: unknown) {
-    return {
-      kind: 'error',
-      message: `Failed to allocate worktree for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
-    };
+  if (readOnly) {
+    // No FS isolation: working_directory is either what the caller
+    // specified (e.g., another run's worktree for the reviewer
+    // pattern) or the host repo root. The "worktreePath" stored in
+    // RunStateV1 mirrors that — it is informational, not a worktree
+    // we own.
+    worktreePath = input.working_directory ?? ctx.worktreeManager.getProjectRoot();
+  } else {
+    try {
+      worktreePath = await ctx.worktreeManager.createRunWorktree(runId);
+    } catch (err: unknown) {
+      return {
+        kind: 'error',
+        message: `Failed to allocate worktree for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
@@ -158,6 +201,7 @@ export async function planRunAgent(
     kind: 'dispatched',
     runId,
     worktreePath,
+    readOnly,
     adapter,
     task: buildAdapterDispatchTask({
       toolCallId,
@@ -166,6 +210,7 @@ export async function planRunAgent(
       prompt: input.prompt,
       effectiveWorkingDirectory,
       worktreePath,
+      readOnly,
       effectiveModel,
       effectiveEffort,
       worktreeManager: ctx.worktreeManager,
@@ -232,6 +277,14 @@ export function buildAdapterDispatchTask(args: {
   readonly prompt: string;
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
+  /**
+   * Whether the dispatch is read-only (no worktree allocated).
+   * Changes the post-run probe: instead of enriching filesModified
+   * from the worktree, run a best-effort `git status --porcelain` in
+   * the working_directory and surface a `warnings` entry if the
+   * agent dirtied the tree against the prompt's contract.
+   */
+  readonly readOnly?: boolean;
   readonly effectiveModel: string | undefined;
   /**
    * Effort already resolved upstream via `resolveEffectiveEffort`.
@@ -262,10 +315,30 @@ export function buildAdapterDispatchTask(args: {
         onOutput: taskCtx.onStream,
       });
 
+      if (result.status === 'error') return result;
+
+      if (args.readOnly) {
+        // Best-effort: detect contract violations (the agent edited
+        // despite being told not to) and surface as a warning. Never
+        // fail the dispatch on probe errors — the run completed; the
+        // probe is purely advisory.
+        try {
+          const dirtied = await detectDirtyTree(args.effectiveWorkingDirectory);
+          if (dirtied.length === 0) return result;
+          const warning =
+            `Read-only run produced uncommitted changes in ${args.effectiveWorkingDirectory}: ` +
+            `${dirtied.join(', ')}. Review with \`git status\` in that directory.`;
+          const existing = Array.isArray(result.warnings) ? result.warnings : [];
+          return { ...result, warnings: [...existing, warning] };
+        } catch {
+          return result;
+        }
+      }
+
       // v2: enrich filesModified from worktree status when the adapter ran
       // inside its dedicated worktree AND the run didn't error. We do NOT
       // merge — host CLI does that explicitly via merge_run.
-      if (result.status === 'error' || args.effectiveWorkingDirectory !== args.worktreePath) {
+      if (args.effectiveWorkingDirectory !== args.worktreePath) {
         return result;
       }
       try {
@@ -281,4 +354,31 @@ export function buildAdapterDispatchTask(args: {
       }
     },
   };
+}
+
+/**
+ * Best-effort dirty-tree probe for read-only dispatches. Uses
+ * `simple-git` so the call is cheap and matches the rest of the
+ * codebase's git plumbing. Returns an empty array if the directory
+ * isn't a git checkout (the agent had nothing to dirty in any
+ * trackable way) or if status fails — the warning is purely
+ * advisory.
+ */
+async function detectDirtyTree(workingDirectory: string): Promise<string[]> {
+  // Lazy import to keep the planning path tree-shake-friendly.
+  const { default: simpleGit } = await import('simple-git');
+  try {
+    const git = simpleGit(workingDirectory);
+    const status = await git.status();
+    const all = [
+      ...status.modified,
+      ...status.created,
+      ...status.not_added,
+      ...(status.deleted ?? []),
+      ...(status.renamed ?? []).map((r) => r.to),
+    ];
+    return Array.from(new Set(all.filter((f) => f.length > 0)));
+  } catch {
+    return [];
+  }
 }

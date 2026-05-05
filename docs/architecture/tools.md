@@ -23,7 +23,7 @@ source of truth.
 
 | Tool | Dispatch kind | Description |
 |------|---------------|-------------|
-| `run_agent` | dispatched | **Primary work primitive.** Delegate a bounded task to a named subagent. Allocates `~/.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up. Write the agent's prompt inline — do NOT route through `plan_tasks` for single-task work. Input: `{agent_id, prompt, working_directory?, model?, effort?}`. `effort` (`low|medium|high|xhigh|max`) overrides the per-machine default in `~/.crew/agents.json`. Streams chunks via `notifications/progress` when client supplies a `progressToken`; blocks up to 5min before returning `status: "running"` for the captain to poll. |
+| `run_agent` | dispatched | **Primary work primitive.** Delegate a bounded task to a named subagent. Allocates `~/.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up. Write the agent's prompt inline — do NOT route through `plan_tasks` for single-task work. Input: `{agent_id, prompt, working_directory?, model?, effort?, read_only?}`. `effort` (`low|medium|high|xhigh|max`) overrides the per-machine default in `~/.crew/agents.json`. `read_only: true` skips worktree allocation entirely — the agent runs against `working_directory` (defaulting to the host repo root) without FS isolation; `merge_run` refuses, `discard_run` is metadata-only, post-run dirty-tree probe surfaces a `warnings` field if the agent edited despite the contract. Streams chunks via `notifications/progress` when client supplies a `progressToken`; blocks up to 5min before returning `status: "running"` for the captain to poll. |
 | `list_agents` | synchronous | Return the current agent inventory: `{name, strengths[], effort?, model?, adapter, available, version?, authenticated?, error?, quota?, aliases?}`. `strengths` are soft routing hints; `effort` is the per-machine default for adapters with a native reasoning-effort knob (codex); `model` is the per-machine default when the user has set one. |
 | `cancel_run` | synchronous | Abort an in-flight run. Looks up the run by `run_id`, signals the underlying subprocess via AbortController; the existing lifecycle listener marks the run terminal with `status: "cancelled"`. Idempotent — returns `{ ok: false, reason }` for terminal/unknown runs. Worktree preserved (call `discard_run` after for cleanup). |
 | `ask_user` | dispatched | Block until the user answers. Use to clarify scope, resolve ambiguity, or align on approach — not only when blocked. Schedule via the ask-user coordinator; user_message events resolve in FIFO order. |
@@ -67,6 +67,14 @@ waypoints. Rules of thumb:
   `run:cancelled` listeners fire
   `worktreeManager.cleanupByRunId(runId)` exactly once. No finally blocks
   inside the tool's `run()` to avoid double-cleanup.
+- `read_only: true` runs skip allocation entirely: no branch is created,
+  `worktreePath` in `RunStateV1` is informational (the agent's CWD,
+  not a worktree we own), the dispatcher's terminal listener still
+  fires but `cleanupByRunId` is bypassed in `discard_run`. The
+  read-only bit is sticky across `continue_run` — the resumed turn
+  reads `state.readOnly` and threads it back into
+  `buildAdapterDispatchTask` so the post-run dirty-tree probe stays
+  aligned with the original contract.
 
 ## Adding a tool
 

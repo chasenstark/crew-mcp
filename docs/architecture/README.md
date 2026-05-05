@@ -301,12 +301,46 @@ That means:
 
 `state.json` schema (v1) carries: `runId`, `agentId`, `worktreePath`,
 `status`, `prompts[]` (turns + summaries), `filesChanged`, optional
-`mergeStatus`. Defined in `src/orchestrator/run-state.ts`. No
-migrations until v3 — additive changes only.
+`readOnly`, optional `mergeStatus`. Defined in
+`src/orchestrator/run-state.ts`. No migrations until v3 — additive
+changes only.
 
 `events.log` is per-line streaming output appended as the adapter's
 `onOutput` callback fires. Used by `get_run_status` to surface a
 `log_tail` for the captain to summarize during long polls.
+
+### Read-only runs (skip the worktree)
+
+`run_agent` accepts `read_only: true` for review/triage/Q&A
+dispatches that aren't expected to write. The branch:
+
+- **No allocation.** `worktreeManager.createRunWorktree(runId)` is
+  not called. The agent's CWD is `working_directory` (caller's
+  choice — typically another run's worktree for the
+  reviewer-on-implementer pattern) or the host repo root.
+- **`worktreePath` is informational.** Stored in `state.json` for
+  consistency, but it's not a worktree we own.
+- **No FS isolation.** If the agent ignores the prompt contract and
+  edits, the changes land in `working_directory`. The dispatch runs
+  a best-effort `git status --porcelain` after the agent terminates;
+  any uncommitted changes surface as a `warnings` field on the
+  result.
+- **`merge_run` refuses** — there's no branch to merge. The handler
+  returns a clear error ("dispatched read-only; nothing to merge").
+- **`discard_run` is metadata-only.** The state record is marked
+  `discarded`; no FS cleanup happens because there's no worktree to
+  remove.
+- **Sticky on `continue_run`.** The follow-up turn reads
+  `state.readOnly` and threads it back into the dispatch task so the
+  same contract applies. To switch modes, dispatch a fresh
+  `run_agent` instead of continuing.
+
+Trade-off: read-only runs trade structural isolation for cheaper
+dispatches. The 5 worktrees a fan-out review used to allocate
+(implementer + 4 reviewers) collapse to 1 (just the implementer's),
+and the reviewers point at it directly. The risk — a misbehaving
+agent dirties the host repo — is the same risk model the user
+already accepts when running an agent inline.
 
 ---
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -291,6 +291,146 @@ describe('planRunAgent', () => {
     await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
     // Per-call wins over agents.json override.
     expect(observedEffort).toBe('high');
+  });
+});
+
+describe('planRunAgent — read_only path', () => {
+  let root: string;
+  let crewHome: string;
+  let worktreeManager: WorktreeManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'crew-run-agent-ro-'));
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-run-agent-ro-home-'));
+    execSync('git init -q', { cwd: root });
+    execSync('git config user.email test@crew.local', { cwd: root });
+    execSync('git config user.name test', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
+    execSync('git commit -q -m init', { cwd: root });
+    worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
+  });
+
+  it('skips worktree allocation and defaults working_directory to host repo root', async () => {
+    let observedWorkingDir: string | undefined;
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        observedWorkingDir = task.context?.workingDirectory;
+        return { output: 'looked', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'reviewer', prompt: 'just look', read_only: true },
+      'call-ro',
+      ctx,
+    );
+    expect(plan.kind).toBe('dispatched');
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    expect(plan.readOnly).toBe(true);
+    // worktreePath echoes the host repo root rather than allocating a fresh tree.
+    expect(plan.worktreePath).toBe(root);
+    // ~/.crew/runs/.meta carries one record per allocated worktree; a
+    // skipped allocation leaves it empty.
+    const metaDir = join(crewHome, 'runs', '.meta');
+    const metas = readdirSync(metaDir).filter((f) => f.endsWith('.json'));
+    expect(metas).toHaveLength(0);
+
+    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    expect(observedWorkingDir).toBe(root);
+  });
+
+  it('forwards explicit working_directory when read_only=true', async () => {
+    let observed: string | undefined;
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        observed = task.context?.workingDirectory;
+        return { output: '', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const target = join(root, 'some-other-tree');
+    mkdirSync(target, { recursive: true });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      {
+        agent_id: 'reviewer',
+        prompt: 'p',
+        read_only: true,
+        working_directory: target,
+      },
+      'call-x',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.worktreePath).toBe(target);
+    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    expect(observed).toBe(target);
+  });
+
+  it('attaches a warnings field when a read-only run dirties the working tree', async () => {
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        // Reviewer breaks contract: writes a file despite read_only: true.
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'leaked.md'), 'oops\n', 'utf-8');
+        return { output: 'broke contract', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'reviewer', prompt: 'just review', read_only: true },
+      'call-x',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    expect(result.warnings).toBeDefined();
+    expect(result.warnings?.length).toBeGreaterThan(0);
+    expect(result.warnings?.[0]).toMatch(/leaked\.md/);
+    // Clean up the host repo dirt so afterEach's rmSync is well-behaved.
+    rmSync(join(root, 'leaked.md'), { force: true });
+  });
+
+  it('omits warnings when a read-only run leaves the working tree clean', async () => {
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async () => ({
+        output: 'looked, said nothing, touched nothing',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'reviewer', prompt: 'review', read_only: true },
+      'call-x',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    expect(result.warnings).toBeUndefined();
   });
 });
 

@@ -65,6 +65,16 @@ export interface RunStateV1 {
    * lack it; writers always populate.
    */
   readonly repoRoot?: string;
+  /**
+   * True iff this run was dispatched with `read_only: true` — no
+   * worktree was allocated, `worktreePath` is informational (the
+   * agent's CWD, not a worktree we own), `merge_run` refuses, and
+   * `discard_run` is metadata-only. Sticky on `continue_run`.
+   *
+   * Optional for backward compatibility with state.json files written
+   * before this field existed (treated as `false` when absent).
+   */
+  readonly readOnly?: boolean;
   readonly prompts: readonly PromptRecord[];
   readonly filesChanged: readonly string[];
   readonly lastError?: string;
@@ -78,6 +88,13 @@ export interface CreateRunStateInit {
   readonly agentId: string;
   readonly worktreePath: string;
   readonly initialPrompt: string;
+  /**
+   * Whether this run was dispatched with `read_only: true`. Persisted
+   * so `continue_run` can read the bit back and stay sticky, and so
+   * `merge_run` / `discard_run` can branch on it without consulting
+   * the dispatcher.
+   */
+  readonly readOnly?: boolean;
 }
 
 export interface RunStateStoreOptions {
@@ -127,6 +144,7 @@ export class RunStateStore {
       startedAt: now,
       worktreePath: init.worktreePath,
       repoRoot: this.repoRoot,
+      ...(init.readOnly ? { readOnly: true } : {}),
       prompts: [
         {
           turn: 1,

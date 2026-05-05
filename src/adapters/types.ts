@@ -210,6 +210,14 @@ export interface TaskResult {
   filesModified: string[];
   status: 'success' | 'error' | 'partial';
   sessionId?: string;
+  /**
+   * Advisory messages attached by the dispatch layer (not the
+   * adapter itself). Today's only producer is the read-only run
+   * post-dispatch dirty-tree probe in run-agent.ts, which surfaces a
+   * warning when an agent edited despite the read-only contract.
+   * Adapters should not populate this field.
+   */
+  warnings?: readonly string[];
   metadata: {
     costUsd?: number;
     durationMs?: number;
