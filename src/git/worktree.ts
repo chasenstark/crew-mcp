@@ -408,7 +408,20 @@ export class WorktreeManager {
 
   async mergeRunWorktree(
     runId: string,
-    options: { targetBranch?: string; force?: boolean } = {},
+    options: {
+      targetBranch?: string;
+      force?: boolean;
+      /**
+       * Subject line for the merge commit. Captain-supplied, falls
+       * back to the generic `Merge crew run <runId>` if absent.
+       */
+      commitTitle?: string;
+      /**
+       * Extra body paragraphs for the merge commit. The `Crew-Run`
+       * trailer is appended after this regardless.
+       */
+      commitBody?: string;
+    } = {},
   ): Promise<MergeRunResult> {
     const record = this.requireRunWorktreeRecord(runId);
     const target = await this.resolveMergeTargetBranch(options.targetBranch);
@@ -417,7 +430,12 @@ export class WorktreeManager {
     const worktreeStatus = await wGit.status();
     if (this.statusChangedFiles(worktreeStatus).length > 0) {
       await wGit.add('.');
-      await wGit.commit('crew: auto-commit before merge');
+      // Reuse the commit_title for the pre-merge auto-commit so the
+      // linear log stays readable — without this the agent's tail
+      // edits land as "crew: auto-commit before merge" even when the
+      // captain provided a meaningful title for the merge.
+      const autoCommitMsg = options.commitTitle ?? 'crew: auto-commit before merge';
+      await wGit.commit(autoCommitMsg);
     }
 
     const mainStatus = await this.git.status();
@@ -444,8 +462,13 @@ export class WorktreeManager {
     if (currentBranch !== target) {
       await this.git.checkout(target);
     }
+    const mergeMessage = buildMergeCommitMessage({
+      runId,
+      title: options.commitTitle,
+      body: options.commitBody,
+    });
     try {
-      await this.git.merge([record.branchName, '--no-ff', '-m', `Merge crew run ${runId}`]);
+      await this.git.merge([record.branchName, '--no-ff', '-m', mergeMessage]);
     } catch (err) {
       // simple-git throws on merge conflicts. Capture the conflicting
       // paths and leave the merge in-progress for the user to resolve
@@ -913,4 +936,36 @@ export class WorktreeManager {
       this.releaseTaskLock(lockDir, ownerId);
     }
   }
+}
+
+/**
+ * Compose the merge commit message from captain-supplied title +
+ * body, appending a `Crew-Run: <runId>` trailer so every merge is
+ * traceable back to its run record. Falls back to a generic title
+ * when the captain didn't pass one (deliberately ugly, since human
+ * git history is the audience).
+ *
+ * Format:
+ *
+ *   <title or fallback>
+ *
+ *   <body, when supplied>
+ *
+ *   Crew-Run: <runId>
+ *
+ * The trailer follows git's conventional `Token: value` shape, so
+ * `git log --format='%(trailers:key=Crew-Run)'` and similar tools
+ * pick it up cleanly.
+ */
+export function buildMergeCommitMessage(args: {
+  runId: string;
+  title?: string;
+  body?: string;
+}): string {
+  const subject = args.title?.trim() || `Merge crew run ${args.runId}`;
+  const parts = [subject];
+  const body = args.body?.trim();
+  if (body) parts.push('', body);
+  parts.push('', `Crew-Run: ${args.runId}`);
+  return parts.join('\n');
 }

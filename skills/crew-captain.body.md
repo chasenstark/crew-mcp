@@ -120,6 +120,27 @@ mid-merge state — let the user resolve by hand or run
 `git merge --abort`. Don't run `merge --abort` yourself without
 asking; it discards their position in the merge.
 
+**Always pass a meaningful `commit_title`** (and optionally
+`commit_body`) to `merge_run`. The merge commit's subject becomes
+permanent git history the user reads later — "Merge crew run
+abc123…" is the fallback for when you forgot, and it's useless
+when scrolling `git log`. You have the prompt, the agent's
+summary, and the diff context; compose a conventional-style
+subject from them: short imperative (≤72 chars), describing what
+the run accomplished, not that it was a crew run.
+
+> Good: `commit_title: "fix(parser): handle empty-line input
+> correctly"` `commit_body: "Adds the empty-line guard to
+> parseLine() with a regression test."`
+>
+> Bad: `commit_title: "Codex did the parser fix"`
+>
+> Worse: omitting commit_title and letting it fall back to
+> `Merge crew run <id>`.
+
+The `Crew-Run: <run_id>` trailer is appended automatically — don't
+include it manually.
+
 ## When to ask the user — rubric, not vibes
 
 Before dispatching, **ask one clarifying question** if any of the

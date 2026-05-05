@@ -359,6 +359,8 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         const result = await worktreeManager.mergeRunWorktree(args.run_id, {
           targetBranch: args.target_branch,
           force: args.force,
+          commitTitle: args.commit_title,
+          commitBody: args.commit_body,
         });
         const target = args.target_branch ?? '<host current branch>';
         if (result.status === 'merged') {

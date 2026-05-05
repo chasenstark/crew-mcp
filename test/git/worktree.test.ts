@@ -426,13 +426,104 @@ describe('WorktreeManager', () => {
       const result = await manager.mergeRunWorktree('run-1');
 
       expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
+      // Fallback message when no commit_title is supplied:
+      // generic subject + Crew-Run trailer.
       expect(rootGit.merge).toHaveBeenCalledWith([
         'crew-run/run-1-aaaaaaaa',
         '--no-ff',
         '-m',
-        'Merge crew run run-1',
+        'Merge crew run run-1\n\nCrew-Run: run-1',
       ]);
       expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
+    });
+
+    it('mergeRunWorktree uses captain-supplied commit_title + commit_body in the merge commit', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('worktree-sha');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('target-sha')
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('merged-sha');
+
+      const result = await manager.mergeRunWorktree('run-1', {
+        commitTitle: 'fix(parser): handle empty-line input correctly',
+        commitBody: 'Adds the empty-line guard to parseLine() with a regression test.',
+      });
+
+      expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
+      expect(rootGit.merge).toHaveBeenCalledWith([
+        'crew-run/run-1-aaaaaaaa',
+        '--no-ff',
+        '-m',
+        [
+          'fix(parser): handle empty-line input correctly',
+          '',
+          'Adds the empty-line guard to parseLine() with a regression test.',
+          '',
+          'Crew-Run: run-1',
+        ].join('\n'),
+      ]);
+    });
+
+    it('mergeRunWorktree commit_title without commit_body still appends the Crew-Run trailer', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('worktree-sha');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('target-sha')
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('merged-sha');
+
+      await manager.mergeRunWorktree('run-1', {
+        commitTitle: 'docs: update README install steps',
+      });
+
+      expect(rootGit.merge).toHaveBeenCalledWith([
+        'crew-run/run-1-aaaaaaaa',
+        '--no-ff',
+        '-m',
+        'docs: update README install steps\n\nCrew-Run: run-1',
+      ]);
+    });
+
+    it('mergeRunWorktree reuses commit_title for the pre-merge auto-commit when worktree has uncommitted changes', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      // Worktree has uncommitted changes — triggers the pre-merge add+commit.
+      wGit.status.mockResolvedValueOnce({
+        modified: ['src.ts'],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      wGit.revparse.mockResolvedValueOnce('worktree-sha');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('target-sha')
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('merged-sha');
+
+      await manager.mergeRunWorktree('run-1', {
+        commitTitle: 'feat(api): add /v2/health endpoint',
+      });
+
+      expect(wGit.commit).toHaveBeenCalledWith('feat(api): add /v2/health endpoint');
     });
 
     it('mergeRunWorktree returns no-changes when worktree HEAD matches target', async () => {
