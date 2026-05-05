@@ -18,6 +18,7 @@ import { execSync } from 'child_process';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { z } from 'zod';
 
 import { buildCrewMcpServer, type RunEnvelope } from '../../../src/cli/commands/serve.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
@@ -129,10 +130,11 @@ describe('crew serve — listTools surface', () => {
     await h.close();
   });
 
-  it('exposes exactly the M2 surface: 6 tools', async () => {
+  it('exposes the v2 tool surface (7 tools incl. cancel_run)', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'cancel_run',
       'continue_run',
       'discard_run',
       'get_run_status',
@@ -626,6 +628,193 @@ describe('crew serve — get_run_status tool', () => {
         arguments: { run_id: 'r-nope' },
       });
       expect(res.isError).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('crew serve — cancel_run tool', () => {
+  it('cancels an in-flight run, marking state="cancelled"', async () => {
+    let abortFired = false;
+    const adapter = makeMockAdapter({
+      name: 'mock-cancellable',
+      execute: async (task) => {
+        const t = task as { constraints?: { signal?: AbortSignal } };
+        return new Promise<TaskResult>((_resolve, reject) => {
+          t.constraints?.signal?.addEventListener('abort', () => {
+            abortFired = true;
+            reject(new Error('aborted'));
+          });
+        });
+      },
+    });
+    const h = await startHarness([adapter], { asyncFallbackMs: 50 });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-cancellable', prompt: 'hang forever' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      expect(env.status).toBe('running');
+
+      const cancel = await h.client.callTool({
+        name: 'cancel_run',
+        arguments: { run_id: env.run_id },
+      });
+      expect((cancel.structuredContent as { ok: boolean }).ok).toBe(true);
+
+      // Wait for the dispatcher to finalize cancellation in run state.
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        return (r.structuredContent as { status: string }).status === 'cancelled';
+      });
+      expect(abortFired).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('returns ok:false with reason when run_id is unknown', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'noop' })]);
+    try {
+      const result = await h.client.callTool({
+        name: 'cancel_run',
+        arguments: { run_id: 'never-existed' },
+      });
+      const body = result.structuredContent as { ok: boolean; reason?: string };
+      expect(body.ok).toBe(false);
+      expect(body.reason).toMatch(/Unknown run_id/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('returns ok:false with reason when run is already terminal', async () => {
+    const adapter = makeMockAdapter({
+      name: 'fast',
+      execute: async () => ({
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'fast', prompt: 'finish quickly' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      expect(env.status).toBe('success');
+
+      const cancel = await h.client.callTool({
+        name: 'cancel_run',
+        arguments: { run_id: env.run_id },
+      });
+      const body = cancel.structuredContent as { ok: boolean; reason?: string };
+      expect(body.ok).toBe(false);
+      expect(body.reason).toMatch(/not in-flight.*status="success"/);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('crew serve — progress notifications', () => {
+  it('forwards adapter onOutput chunks as notifications/progress when client supplies a progressToken', async () => {
+    const adapter = makeMockAdapter({
+      name: 'streamy',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        t.onOutput?.('chunk-one');
+        t.onOutput?.('chunk-two');
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      // Capture progress notifications. The MCP SDK's Client exposes
+      // setNotificationHandler for arbitrary methods; we install one
+      // for notifications/progress and assert chunks land.
+      const progress: Array<{ progress: number; message?: string }> = [];
+      h.client.setNotificationHandler(
+        z.object({
+          method: z.literal('notifications/progress'),
+          params: z.object({
+            progressToken: z.union([z.string(), z.number()]),
+            progress: z.number(),
+            message: z.string().optional(),
+          }),
+        }) as unknown as Parameters<typeof h.client.setNotificationHandler>[0],
+        async (notif: unknown) => {
+          const n = notif as { params: { progress: number; message?: string } };
+          progress.push({ progress: n.params.progress, message: n.params.message });
+        },
+      );
+
+      await h.client.callTool(
+        {
+          name: 'run_agent',
+          arguments: { agent_id: 'streamy', prompt: 'stream chunks' },
+        },
+        undefined,
+        { onprogress: () => undefined }, // request a progressToken from the SDK
+      );
+      // The SDK's onprogress callback also receives notifications, but
+      // our setNotificationHandler captures the raw payload for assert.
+      await waitFor(() => progress.length >= 2, 1000);
+      expect(progress.map((p) => p.message)).toEqual(['chunk-one', 'chunk-two']);
+      expect(progress[0].progress).toBe(1);
+      expect(progress[1].progress).toBe(2);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('does NOT send progress notifications when client omits progressToken', async () => {
+    const adapter = makeMockAdapter({
+      name: 'streamy',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        t.onOutput?.('only-chunk');
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const progress: unknown[] = [];
+      h.client.setNotificationHandler(
+        z.object({
+          method: z.literal('notifications/progress'),
+          params: z.unknown(),
+        }) as unknown as Parameters<typeof h.client.setNotificationHandler>[0],
+        async (notif: unknown) => {
+          progress.push(notif);
+        },
+      );
+      // No onprogress callback → SDK omits progressToken in _meta.
+      await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'streamy', prompt: 'stream chunks' },
+      });
+      // Give the server a beat to emit any in-flight notifications.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(progress).toEqual([]);
     } finally {
       await h.close();
     }

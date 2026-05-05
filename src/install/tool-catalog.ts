@@ -13,6 +13,7 @@
  */
 
 import {
+  CANCEL_RUN_DESCRIPTION,
   CONTINUE_RUN_DESCRIPTION,
   DISCARD_RUN_DESCRIPTION,
   GET_RUN_STATUS_DESCRIPTION,
@@ -29,6 +30,7 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'merge_run', description: MERGE_RUN_DESCRIPTION },
   { name: 'discard_run', description: DISCARD_RUN_DESCRIPTION },
   { name: 'get_run_status', description: GET_RUN_STATUS_DESCRIPTION },
+  { name: 'cancel_run', description: CANCEL_RUN_DESCRIPTION },
 ];
 
 export function getCatalogToolNames(): readonly string[] {

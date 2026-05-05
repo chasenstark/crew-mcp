@@ -156,16 +156,20 @@ not running through a checklist for its own sake.
 
 ## Async fallback — long dispatches
 
-If `run_agent` or `continue_run` returns `status: "running"`, the
-dispatch exceeded crew's blocking timeout (60s). Poll
-`get_run_status` with the same `run_id` until status reaches
-terminal (`success`, `partial`, `error`, `cancelled`). Keep the
-user updated during long polls — silent waits feel broken.
+The default flow is synchronous: `run_agent` / `continue_run` block
+until the agent finishes (up to 5 min) and stream live output via
+`notifications/progress` so the user sees activity. **You don't
+need to poll for typical dispatches.**
 
-There is **no `cancel_run` tool today.** If the user wants to abort
-a `running` dispatch you can't kill it from here — let it finish
-and `discard_run` after, or tell the user to interrupt their host
-CLI session. Don't pretend you cancelled it.
+If a tool call exceeds 5 min, it returns `status: "running"` with a
+`run_id`. Then poll `get_run_status` with the same `run_id` until
+status reaches terminal (`success`, `partial`, `error`, `cancelled`).
+Keep the user updated during long polls — silent waits feel broken.
+
+If the user wants to abort a `running` dispatch, call
+`cancel_run({ run_id })`. The underlying subprocess receives an
+abort signal and the run lands in `status: "cancelled"`. The
+worktree is preserved (call `discard_run` after for cleanup).
 
 ## The tools
 

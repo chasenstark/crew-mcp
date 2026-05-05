@@ -48,6 +48,10 @@ import {
   MERGE_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/merge-run.js';
 import {
+  cancelRunInputSchema,
+  CANCEL_RUN_DESCRIPTION,
+} from '../../orchestrator/tools/cancel-run.js';
+import {
   discardRunInputSchema,
   DISCARD_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/discard-run.js';
@@ -66,8 +70,16 @@ export const SERVE_VERSION = '0.2.0-dev';
  * return early with `{ status: 'running', run_id }` and the host CLI is
  * expected to poll via get_run_status. The dispatch keeps running in
  * the background and writes its terminal state to state.json regardless.
+ *
+ * 5 min default — chosen to comfortably cover the median agent run
+ * (typically 10s–2min) while staying under the host CLI's per-tool-call
+ * timeout (Claude Code defaults to ~10 min, Codex ~10 min, Gemini ~5 min).
+ * Combined with `notifications/progress` streaming chunks back to the
+ * host during the wait, the captain typically receives the full result
+ * in a single tool-call return — no polling required. Polling is the
+ * exception now, not the rule.
  */
-export const ASYNC_FALLBACK_MS = 60_000;
+export const ASYNC_FALLBACK_MS = 300_000;
 
 export interface ServeOptions {
   /**
@@ -189,7 +201,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: RUN_AGENT_DESCRIPTION,
       inputSchema: runAgentInputSchema.shape,
     },
-    async (args) => {
+    async (args, extra) => {
       const toolCallId = randomUUID();
       const agentPrefs = readAgentPrefsFile(crewHome);
       const plan = await planRunAgent(args, toolCallId, {
@@ -220,6 +232,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         dispatcher,
         runStateStore,
         fallbackMs,
+        progress: progressNotifierFrom(extra),
       });
     },
   );
@@ -231,7 +244,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: CONTINUE_RUN_DESCRIPTION,
       inputSchema: continueRunInputSchema.shape,
     },
-    async (args) => {
+    async (args, extra) => {
       const state = runStateStore.read(args.run_id);
       if (!state) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
@@ -247,6 +260,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           `Agent "${state.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
         );
       }
+      const continueExtra = extra;
 
       const toolCallId = randomUUID();
       // Resolve effort + model with the same precedence run_agent
@@ -287,6 +301,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         dispatcher,
         runStateStore,
         fallbackMs,
+        progress: progressNotifierFrom(continueExtra),
       });
     },
   );
@@ -405,6 +420,35 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     },
   );
 
+  // ---- cancel_run ------------------------------------------------------
+  server.registerTool(
+    'cancel_run',
+    {
+      description: CANCEL_RUN_DESCRIPTION,
+      inputSchema: cancelRunInputSchema.shape,
+    },
+    async (args) => {
+      // Match by runId rather than toolCallId — the captain knows the
+      // run_id (returned from run_agent), not the internal toolCallId.
+      const inFlight = dispatcher
+        .listInFlight()
+        .find((t) => t.runId === args.run_id);
+      if (!inFlight) {
+        // Not in-flight: either already terminal, never started, or
+        // unknown. Surface state to help the captain explain to the user.
+        const state = runStateStore.read(args.run_id);
+        const reason = state
+          ? `Run "${args.run_id}" is not in-flight (status="${state.status}").`
+          : `Unknown run_id "${args.run_id}".`;
+        return jsonContent({ run_id: args.run_id, ok: false, reason });
+      }
+      // Trigger abort — the existing run:cancelled lifecycle listener
+      // will mark the run terminal with status='cancelled'.
+      dispatcher.cancel(inFlight.toolCallId, 'cancel_run requested');
+      return jsonContent({ run_id: args.run_id, ok: true });
+    },
+  );
+
   return { server, dispatcher, worktreeManager, runStateStore };
 }
 
@@ -465,6 +509,24 @@ interface DispatchAndRespondArgs {
   dispatcher: ToolDispatcher;
   runStateStore: RunStateStore;
   fallbackMs: number;
+  /**
+   * Optional MCP progress notifier — when supplied, each adapter
+   * onOutput chunk fires `notifications/progress` so the host CLI
+   * can render live streaming output. Absent when the client did
+   * not include a `progressToken` in the request `_meta`. Callers
+   * build this via `progressNotifierFrom(extra)`.
+   */
+  progress?: ProgressNotifier;
+}
+
+/**
+ * Shape of a per-call progress notifier. `send(message)` increments
+ * an internal monotonic counter and fires `notifications/progress`.
+ * Returns void; failures are swallowed so a transport hiccup can't
+ * fail the dispatch.
+ */
+interface ProgressNotifier {
+  send(message: string): void;
 }
 
 /**
@@ -484,6 +546,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     runStateStore: args.runStateStore,
     runId: args.runId,
     toolCallId: args.toolCallId,
+    progress: args.progress,
   });
   args.dispatcher.start(args.task);
 
@@ -535,6 +598,7 @@ function installRunLifecycleListeners(args: {
   runStateStore: RunStateStore;
   runId: string;
   toolCallId: string;
+  progress?: ProgressNotifier;
 }): Promise<DispatchTerminal> {
   return new Promise<DispatchTerminal>((resolve) => {
     const subs: Array<{ dispose(): void }> = [];
@@ -589,9 +653,54 @@ function installRunLifecycleListeners(args: {
         } catch {
           // Log writes are best-effort; never let a write failure break dispatch.
         }
+        // Bridge to MCP progress notifications when the client supplied
+        // a progressToken. Adapters typically emit line-buffered chunks
+        // (codex/claude-code/gemini-cli all do), so per-chunk firing is
+        // reasonable. A noisy adapter could be batched here later if it
+        // shows up as a problem.
+        if (args.progress) args.progress.send(info.chunk);
       }),
     );
   });
+}
+
+/**
+ * Build a per-call progress notifier from the MCP request `extra`. If
+ * the client did not provide a `progressToken` in the request `_meta`,
+ * returns undefined — caller treats that as "no progress notifications
+ * for this call." The captain shouldn't depend on progress events; they
+ * are pure UX, the tool result is the contract.
+ *
+ * Counter is monotonically increasing per the MCP progress spec. We
+ * don't know the total chunk count up-front so `total` is omitted
+ * (renderers handle that as an indeterminate progress bar).
+ *
+ * Notification failures are caught + dropped: a transport hiccup
+ * (e.g., client disconnected) must never fail the dispatch.
+ */
+function progressNotifierFrom(extra: {
+  _meta?: { progressToken?: string | number };
+  sendNotification: (n: {
+    method: 'notifications/progress';
+    params: { progressToken: string | number; progress: number; message?: string };
+  }) => Promise<void>;
+}): ProgressNotifier | undefined {
+  const token = extra._meta?.progressToken;
+  if (token === undefined) return undefined;
+  let counter = 0;
+  return {
+    send(message: string): void {
+      counter += 1;
+      void extra
+        .sendNotification({
+          method: 'notifications/progress',
+          params: { progressToken: token, progress: counter, message },
+        })
+        .catch(() => {
+          // Swallow — see jsdoc above.
+        });
+    },
+  };
 }
 
 function formatRunEnvelope(

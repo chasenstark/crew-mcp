@@ -46,3 +46,8 @@ export {
   GET_RUN_STATUS_DESCRIPTION,
   type GetRunStatusInput,
 } from './get-run-status.js';
+export {
+  cancelRunInputSchema,
+  CANCEL_RUN_DESCRIPTION,
+  type CancelRunInput,
+} from './cancel-run.js';
