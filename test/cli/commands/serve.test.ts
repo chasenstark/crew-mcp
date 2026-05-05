@@ -1,12 +1,12 @@
 /**
- * In-process integration tests for `crew serve`.
+ * In-process integration tests for `crew-mcp serve`.
  *
  * Drives the server via SDK Client + InMemoryTransport.createLinkedPair() —
  * no subprocess, no stdio framing. The wire-protocol contract is the SDK's
  * job; what we own is the tool surface (list_agents, run_agent), the
  * envelope shape, and the worktree-lifecycle boundary (no auto-merge).
  *
- * Subprocess + real-stdio coverage is added in M3 once `crew install` exists
+ * Subprocess + real-stdio coverage is added in M3 once `crew-mcp install` exists
  * (we'd be testing install + serve together at that point anyway).
  */
 

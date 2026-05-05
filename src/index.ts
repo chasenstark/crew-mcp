@@ -8,15 +8,15 @@ import { verifyCommand } from './cli/commands/verify.js';
 import { setLogLevel } from './utils/logger.js';
 
 program
-  .name('crew')
+  .name('crew-mcp')
   .description('MCP server + skill for multi-agent coding orchestration')
   .version('0.2.0-dev')
   .option('--debug', 'Enable debug logging');
 
-// v2 entry points: `crew serve` (M1, stdio MCP server) and the
-// `crew install` / `crew verify` / `crew uninstall` commands (M3). The v0.1
-// commands (`run`, `init`, `config`, `profile`, `state reset`, `resume`) are
-// removed — see docs/plans/mcp-pivot/IMPLEMENTATION_PLAN.md.
+// v2 entry points: `crew-mcp serve` (M1, stdio MCP server) and the
+// `crew-mcp install` / `crew-mcp verify` / `crew-mcp uninstall` commands (M3).
+// The v0.1 commands (`run`, `init`, `config`, `profile`, `state reset`,
+// `resume`) are removed — see docs/plans/mcp-pivot/IMPLEMENTATION_PLAN.md.
 
 const applyDebugFlag = (): void => {
   if (program.opts<{ debug?: boolean }>().debug) {
@@ -26,7 +26,7 @@ const applyDebugFlag = (): void => {
 
 program
   .command('serve')
-  .description('Run crew as a stdio MCP server (the host CLI spawns this)')
+  .description('Run crew-mcp as a stdio MCP server (the host CLI spawns this)')
   .action(async () => {
     applyDebugFlag();
     await serveCommand();

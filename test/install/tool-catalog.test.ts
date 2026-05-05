@@ -1,6 +1,6 @@
 /**
  * Parity test: the static install tool catalog must match the live MCP
- * surface registered in `crew serve`. Drift here is the single most
+ * surface registered in `crew-mcp serve`. Drift here is the single most
  * likely source of skill ↔ MCP mismatches at install time, so we catch
  * it at build time instead of runtime.
  *

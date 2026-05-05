@@ -5,7 +5,7 @@
 // pieces below are the load-bearing substrate that v2 reuses: the
 // MCP-shaped action server, the per-CLI MCP registration converters, and
 // the non-blocking dispatcher. ToolCatalog will be rebuilt in M1 against
-// the trimmed 6-tool surface; until then, the M1 `crew serve` entrypoint
+// the trimmed 6-tool surface; until then, the M1 `crew-mcp serve` entrypoint
 // will compose CaptainActionServer + ToolDispatcher + the surviving
 // run-agent / list-agents tool definitions directly.
 export { CaptainActionServer, DEFAULT_TOOL_NAMESPACE } from './action-server.js';

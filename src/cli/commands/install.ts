@@ -108,7 +108,7 @@ export interface InstallOptions {
   forceWithoutBinary?: boolean;
   /**
    * Pre-approve crew tools so the host CLI doesn't prompt before each
-   * `mcp__crew__*` call. Defaults to true — running `crew install` IS
+   * `mcp__crew__*` call. Defaults to true — running `crew-mcp install` IS
    * the explicit consent action; per-call prompts after that are
    * friction without protection (the captain skill's "always confirm
    * before merge_run" remains the real safety gate at the model layer).

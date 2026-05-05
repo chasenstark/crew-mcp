@@ -1,7 +1,7 @@
 /**
  * Resolve the absolute crew binary the host CLI should spawn.
  *
- * In production, `crew install` is invoked from the same npm-installed
+ * In production, `crew-mcp install` is invoked from the same npm-installed
  * binary the host CLI will later spawn. We capture:
  *
  *   - process.execPath  — node interpreter (cross-platform safe)
@@ -10,7 +10,7 @@
  *                         npm's bin shim or symlink already)
  *
  * That pair is what we write into the host's MCP config. Users who
- * later move their npm prefix or reinstall will need to `crew install`
+ * later move their npm prefix or reinstall will need to `crew-mcp install`
  * again — this is documented in the README.
  *
  * Tests inject `CrewBinaryResolver` to bypass argv resolution.
@@ -35,7 +35,7 @@ export const defaultCrewBinaryResolver: CrewBinaryResolver = () => {
   const scriptPath = process.argv[1];
   if (!scriptPath || scriptPath.length === 0) {
     throw new Error(
-      'Cannot resolve crew binary: process.argv[1] is empty. Are you running crew via an unusual launcher?',
+      'Cannot resolve crew-mcp binary: process.argv[1] is empty. Are you running crew-mcp via an unusual launcher?',
     );
   }
   return {

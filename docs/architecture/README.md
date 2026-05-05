@@ -18,9 +18,10 @@ modern AI coding CLI (Claude Code, Codex, Gemini CLI) into a "captain"
 that can dispatch sub-tasks to *other* coding agents — and then merge
 the results back into the host repo when the user approves.
 
-It ships as one binary (`crew`) that exposes itself as an **MCP server**
-(`crew serve`) and provides an installer (`crew install`) that wires
-the server + a portable orchestration skill into each host CLI's config.
+It ships as one binary (`crew-mcp`) that exposes itself as an **MCP
+server** (`crew-mcp serve`) and provides an installer (`crew-mcp
+install`) that wires the server + a portable orchestration skill into
+each host CLI's config.
 
 The user stays in their primary CLI; crew gives that CLI six verbs for
 delegating work to other agents in worktree-isolated runs.
@@ -49,7 +50,7 @@ delegating work to other agents in worktree-isolated runs.
                                     │  MCP (stdio)
                                     ▼
                      ┌────────────────────────────┐
-                     │   crew serve  (this code)  │
+                     │ crew-mcp serve (this code) │
                      │                            │
                      │  - tool registry           │
                      │  - dispatcher (in-flight)  │
@@ -102,7 +103,7 @@ crew as an MCP server, we get:
 - **Universal compatibility**: any MCP-compliant host (Claude Code,
   Codex, Gemini CLI, future ones) can use crew without code changes.
 - **No fork/maintain a CLI**: we don't have to be a captain ourselves.
-- **Process isolation**: `crew serve` runs as a separate stdio
+- **Process isolation**: `crew-mcp serve` runs as a separate stdio
   subprocess of the host. The host's process boundary cleanly separates
   captain reasoning from crew's tool implementation.
 - **Streaming**: MCP supports `notifications/progress`, which we use
@@ -225,7 +226,7 @@ Two distinct adapter interfaces, one for each side of the boundary:
 
 ### Host adapters (`src/install/hosts/`)
 
-For `crew install` only — they know how to wire the MCP block + skill
+For `crew-mcp install` only — they know how to wire the MCP block + skill
 file into each host CLI's config:
 
 ```
@@ -296,7 +297,7 @@ That means:
 - The host repo is **not modified** until the captain calls `merge_run`.
   A botched dispatch costs nothing — the user discards the worktree
   and the host repo is untouched.
-- Worktrees persist across `crew serve` restarts. A `run_id` from
+- Worktrees persist across `crew-mcp serve` restarts. A `run_id` from
   yesterday is still resumable today (until merged or discarded).
 
 `state.json` schema (v1) carries: `runId`, `agentId`, `worktreePath`,
@@ -349,7 +350,7 @@ already accepts when running an agent inline.
 ### `~/.crew/agents.json`
 
 User-tunable preferences per agent. Read every dispatch (cheap) so an
-edit between dispatches takes effect without restarting `crew serve`.
+edit between dispatches takes effect without restarting `crew-mcp serve`.
 
 ```json
 {
@@ -396,14 +397,14 @@ undefined  →  adapter doesn't pass --model / -c flag,
               CLI's own default wins
 ```
 
-`crew install` seeds the file with adapter defaults on first install
+`crew-mcp install` seeds the file with adapter defaults on first install
 (`seedAgentPrefsFile`); `crew agents edit` opens it in `$EDITOR`.
 
 ### `~/.crew/install.json`
 
-Tracks which host CLIs `crew install` has wired into. Schema in
-`src/install/install-manifest.ts`. Used by `crew verify` (parity
-check) and `crew uninstall` (undo).
+Tracks which host CLIs `crew-mcp install` has wired into. Schema in
+`src/install/install-manifest.ts`. Used by `crew-mcp verify` (parity
+check) and `crew-mcp uninstall` (undo).
 
 ---
 
@@ -437,7 +438,7 @@ Target resolution:
 The renderer (`src/install/skill-renderer.ts`) substitutes
 `{{TOOL_LIST}}` with the catalog from `tool-catalog.ts` so the skill
 the captain reads always matches the live tool surface (parity-checked
-by `crew verify`).
+by `crew-mcp verify`).
 
 Per-host quirks live in `src/install/hosts/<host>.ts`:
 
@@ -530,7 +531,7 @@ src/
 ├── index.ts                 ← CLI entry: serve, install, verify, uninstall, status, agents
 ├── cli/commands/
 │   ├── serve.ts             ← MCP server (the bulk of runtime logic)
-│   ├── install.ts           ← `crew install` orchestration
+│   ├── install.ts           ← `crew-mcp install` orchestration
 │   ├── uninstall.ts         ← reverse of install
 │   ├── verify.ts            ← parity check (skill ↔ tool catalog)
 │   ├── status.ts            ← health check across registered adapters
@@ -630,7 +631,7 @@ These are load-bearing. Breaking them breaks the contract.
    first install; missing file = adapter defaults. The user's existing
    per-CLI configs (`~/.claude.json`, `~/.codex/config.toml`) are the
    source of truth unless the user has expressed a per-machine override.
-5. **Run state is durable across `crew serve` restarts.** A `run_id`
+5. **Run state is durable across `crew-mcp serve` restarts.** A `run_id`
    from yesterday is still resumable today.
 
 ---

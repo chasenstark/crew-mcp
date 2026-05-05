@@ -1,9 +1,9 @@
 /**
- * Static tool catalog used by `crew install` (to render the skill's
- * tool list) and `crew verify` (to parity-check the rendered skill).
+ * Static tool catalog used by `crew-mcp install` (to render the skill's
+ * tool list) and `crew-mcp verify` (to parity-check the rendered skill).
  *
  * Mirrors the tools registered in `src/cli/commands/serve.ts`. Drift
- * between this list and the live MCP surface is what `crew verify`
+ * between this list and the live MCP surface is what `crew-mcp verify`
  * exists to catch — and a parity unit test in
  * `test/install/tool-catalog.test.ts` asserts the two stay aligned at
  * build time.

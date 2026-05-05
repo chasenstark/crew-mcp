@@ -3,7 +3,7 @@
  *
  * Each adapter ships defaults for `strengths` (soft routing hints) and
  * `effort` (reasoning depth: low|medium|high). The user overrides those
- * defaults per-machine by editing this file. `crew install` seeds it on
+ * defaults per-machine by editing this file. `crew-mcp install` seeds it on
  * first install with every registered adapter's defaults; `crew agents
  * edit` opens it in `$EDITOR`.
  *
@@ -183,7 +183,7 @@ export function writeAgentPrefsFile(crewHome: string, data: AgentPrefsMap): void
 
 /**
  * Write the file ONLY if it doesn't already exist. Called by
- * `crew install` after a successful target install so first-time users
+ * `crew-mcp install` after a successful target install so first-time users
  * end up with a discoverable, editable file. Never overwrites existing
  * user customization.
  *

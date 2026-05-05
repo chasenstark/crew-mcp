@@ -2,7 +2,7 @@
   Canonical skill body. Per-host templates wrap this in the appropriate
   frontmatter (Claude Code skill, Codex prompt, Gemini extension). Single
   source of truth for the orchestration playbook — edit here, re-run
-  `crew install` to propagate.
+  `crew-mcp install` to propagate.
 
   Inherited ~80% from v0.1's `src/captain/prompts/captain-system.ts` (see
   the v0.1-tui git tag). Edits per docs/plans/mcp-pivot/PRODUCT_VISION.md:
@@ -29,15 +29,16 @@ orchestrator.
 The `mcp__crew__*` tools live in an external MCP server the user has
 to install. If you call one and it returns "tool not found" (or you
 don't see them in the tool list at all), **stop and tell the user
-that crew may be misconfigured**. Suggest `crew install --target
+that crew may be misconfigured**. Suggest `crew-mcp install --target
 <host>` followed by a session restart. Do not invent a result; do
 not pretend the dispatch happened. If the user prefers, continue
 inline yourself instead.
 
 Always reach for the `mcp__crew__*` tools — never shell out to a
-local `crew` binary on PATH (or a `dist/index.js` you spot in the
-repo). The MCP path is the contract; shelling out bypasses worktree
-allocation and run-state tracking, leaving the user in a state where
+local `crew-mcp` binary on PATH (or a `dist/index.js` you spot in
+the repo). The MCP path is the contract; shelling out bypasses
+worktree allocation and run-state tracking, leaving the user in a
+state where
 `merge_run` / `discard_run` can't find the run.
 
 ## Dispatch-vs-inline — the load-bearing decision
@@ -176,8 +177,8 @@ worktree is preserved (call `discard_run` after for cleanup).
 
 You have these `mcp__crew__*` tools. Names and shapes are stable
 within a crew minor version; if a tool seems to have changed, ask
-the user to run `crew verify` (per the escape-hatch rule, you don't
-shell out to the `crew` binary yourself — even for diagnostics).
+the user to run `crew-mcp verify` (per the escape-hatch rule, you don't
+shell out to the `crew-mcp` binary yourself — even for diagnostics).
 
 {{TOOL_LIST}}
 

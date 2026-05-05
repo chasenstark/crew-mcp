@@ -2,8 +2,8 @@
  * HostAdapter — per-host CLI install/uninstall surface.
  *
  * Each host (Claude Code, Codex, Gemini) has its own config-file format
- * and skill location. The adapter pattern lets `crew install` and
- * `crew uninstall` stay generic; each adapter knows:
+ * and skill location. The adapter pattern lets `crew-mcp install` and
+ * `crew-mcp uninstall` stay generic; each adapter knows:
  *
  *   - where its config + skill files live
  *   - how to merge / remove the crew MCP block from the config
@@ -14,7 +14,7 @@
  * strings (parse → mutate → stringify); the install command handles I/O.
  *
  * `mergeMcpBlock` and `removeMcpBlock` MUST be idempotent. Re-running
- * `crew install` or `crew uninstall` is a supported workflow; both
+ * `crew-mcp install` or `crew-mcp uninstall` is a supported workflow; both
  * commands ship as "do the right thing regardless of current state."
  */
 
@@ -51,7 +51,7 @@ export interface HostAdapter {
 
   /**
    * Best-effort check whether the host's config currently registers
-   * crew. Used by `crew verify`.
+   * crew. Used by `crew-mcp verify`.
    */
   hasMcpBlock(existing: string): boolean;
 
@@ -82,7 +82,7 @@ export interface HostAdapter {
   /**
    * Pre-approve the listed crew tools so the host CLI doesn't prompt
    * the user before each `mcp__crew__*` call. The user's running
-   * `crew install` is the explicit consent action; per-call prompts
+   * `crew-mcp install` is the explicit consent action; per-call prompts
    * after that point are friction without protection (the captain
    * skill's "always confirm before merge_run" is the real safety
    * gate, model-level, unaffected by this).
@@ -94,13 +94,13 @@ export interface HostAdapter {
    *
    * Idempotent: re-running with the same inputs produces the same
    * output. Adapters that don't implement this opt out of the
-   * auto-approve flow entirely (their `crew install` will leave per-
+   * auto-approve flow entirely (their `crew-mcp install` will leave per-
    * call prompts in place).
    */
   writeAutoApproval?(existing: string, tools: readonly string[]): string;
 
   /**
-   * Reverse `writeAutoApproval`. Called on `crew uninstall` and on
+   * Reverse `writeAutoApproval`. Called on `crew-mcp uninstall` and on
    * `crew install --no-auto-approve` so the end state is predictable
    * regardless of how the user previously installed. Idempotent: a
    * no-op if no auto-approval state is present.

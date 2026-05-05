@@ -2,7 +2,7 @@
  * Skill renderer tests — placeholder substitution + tool list rendering.
  *
  * Uses the real canonical body and per-host templates from skills/ in
- * the repo (no mocking). Exercises the same code path `crew install`
+ * the repo (no mocking). Exercises the same code path `crew-mcp install`
  * uses, just without filesystem writes.
  */
 

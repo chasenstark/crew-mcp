@@ -9,7 +9,7 @@ A self-contained install / verify / uninstall surface plus the canonical
 captain skill body and per-host templates. From a built `crew-mcp`
 binary the user can now run `crew install --target <host>` and the host
 CLI gets both the MCP block and the rendered skill, with a manifest at
-`~/.crew/install.json` so `crew verify` and `crew uninstall` know what
+`~/.crew/install.json` so `crew-mcp verify` and `crew-mcp uninstall` know what
 to operate on.
 
 ### New CLI commands
@@ -17,7 +17,7 @@ to operate on.
 | Command | Purpose |
 |---|---|
 | `crew install --target {claude-code\|codex\|gemini\|all}` | Write MCP block + skill file; record install in `~/.crew/install.json`. |
-| `crew verify` | Compare every installed skill's `mcp__crew__*` references against the static tool catalog. |
+| `crew-mcp verify` | Compare every installed skill's `mcp__crew__*` references against the static tool catalog. |
 | `crew uninstall --target {host\|all}` | Reverse the install: remove MCP block, delete skill file, drop from manifest. |
 
 All commands are idempotent. `--target all` enumerates every registered
@@ -87,7 +87,7 @@ whole file when we touch one block.
 - `test/install/tool-catalog.test.ts` (1 case) — parity-test connecting
   an in-memory MCP client to `buildCrewMcpServer()` and asserting
   `listTools()` matches the static catalog. Drift here is what
-  `crew verify` exists to catch and we catch it at build time.
+  `crew-mcp verify` exists to catch and we catch it at build time.
 - `test/cli/commands/install-uninstall-verify.test.ts` (15 cases) —
   end-to-end: install writes skill+config+manifest, install all,
   install is idempotent, install preserves unrelated keys, verify
@@ -105,9 +105,9 @@ Build clean (159.85 KB ESM bundle, +21 KB over M2).
 |---|---|
 | `crew install --target codex` writes MCP block + skill | done |
 | Same for `--target claude-code` and `--target gemini` | done |
-| `crew verify` passes after install | done |
-| `crew uninstall` cleanly removes | done |
-| Re-running `crew install` is idempotent | done (test: install twice → same end state) |
+| `crew-mcp verify` passes after install | done |
+| `crew-mcp uninstall` cleanly removes | done |
+| Re-running `crew-mcp install` is idempotent | done (test: install twice → same end state) |
 | `crew install --target all` auto-detects installed hosts | done |
 | Restart-warning UX | done (best-effort `ps` scan, suppressible via skipRunningCheck) |
 | `~/.crew/install.json` tracks installed targets + version | done (schema v1) |
@@ -169,7 +169,7 @@ field report on top:
 
 The "manual smoke in real Codex / Claude Code / Gemini sessions"
 criterion still requires installing the package globally
-(`npm link` or `npm install -g`) and running `crew install` against
+(`npm link` or `npm install -g`) and running `crew-mcp install` against
 a real host CLI. M4's dogfooding phase is where this happens
 naturally. The integration test path covers everything except the
 host CLI's actual MCP-spawn handshake, which is the same code path

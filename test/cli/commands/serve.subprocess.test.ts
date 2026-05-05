@@ -1,5 +1,5 @@
 /**
- * Subprocess smoke test for `crew serve`.
+ * Subprocess smoke test for `crew-mcp serve`.
  *
  * Spawns the built `dist/index.js serve` as a real child process and drives
  * it via the SDK's StdioClientTransport. This proves the production
@@ -22,7 +22,7 @@ const here = fileURLToPath(new URL('.', import.meta.url));
 const distPath = join(here, '..', '..', '..', 'dist', 'index.js');
 const hasBuild = existsSync(distPath);
 
-describe.skipIf(!hasBuild)('crew serve — subprocess wire protocol', () => {
+describe.skipIf(!hasBuild)('crew-mcp serve — subprocess wire protocol', () => {
   it('initializes + listTools over real stdio framing', async () => {
     const transport = new StdioClientTransport({
       command: process.execPath, // node
@@ -34,6 +34,7 @@ describe.skipIf(!hasBuild)('crew serve — subprocess wire protocol', () => {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
       expect(names).toEqual([
+        'cancel_run',
         'continue_run',
         'discard_run',
         'get_run_status',

@@ -1,9 +1,9 @@
 /**
  * Install manifest — tracks which hosts have crew installed.
  *
- * Lives at ~/.crew/install.json. Read by `crew verify` and
- * `crew uninstall` to know what to check and what to remove. Written
- * by `crew install` after a successful install.
+ * Lives at ~/.crew/install.json. Read by `crew-mcp verify` and
+ * `crew-mcp uninstall` to know what to check and what to remove. Written
+ * by `crew-mcp install` after a successful install.
  *
  * Schema versioned (v1). Future bumps add a migration; today the
  * reader throws on unknown versions so a stale manifest fails loud.

@@ -33,16 +33,16 @@ npm run build
 npm link
 
 # Install into one or more host CLIs
-crew install --target codex          # ~/.codex/config.toml + ~/.codex/prompts/crew.md
-crew install --target claude-code    # ~/.claude.json + ~/.claude/skills/crew/SKILL.md
-crew install --target gemini         # ~/.gemini/settings.json + ~/.gemini/extensions/crew/SKILL.md
-crew install --target all            # auto-detects installed hosts
+crew-mcp install --target codex          # ~/.codex/config.toml + ~/.codex/prompts/crew.md
+crew-mcp install --target claude-code    # ~/.claude.json + ~/.claude/skills/crew/SKILL.md
+crew-mcp install --target gemini         # ~/.gemini/settings.json + ~/.gemini/extensions/crew/SKILL.md
+crew-mcp install --target all            # auto-detects installed hosts
 
 # Verify the install (skill ↔ MCP tool surface parity)
-crew verify
+crew-mcp verify
 
 # Reverse it
-crew uninstall --target codex
+crew-mcp uninstall --target codex
 ```
 
 Then restart your host CLI session. From inside it, ask things like

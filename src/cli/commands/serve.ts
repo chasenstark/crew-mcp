@@ -1,4 +1,4 @@
-// `crew serve` — the v2 stdio MCP server entry point.
+// `crew-mcp serve` — the v2 stdio MCP server entry point.
 //
 // The host CLI (Claude Code / Codex / Gemini) spawns this command at session
 // start via its MCP config block. We expose v2's full 6-tool surface over

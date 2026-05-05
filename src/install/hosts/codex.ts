@@ -47,7 +47,7 @@ const HEADER_RE = /^\[mcp_servers\.crew\][^\S\n]*$/m;
  * Header line that opens any block in the crew namespace — including
  * sub-blocks Codex creates for per-tool approval-mode persistence
  * (e.g., `[mcp_servers.crew.tools.run_agent]`). Used by removeMcpBlock
- * so `crew uninstall` clears the whole namespace, not just our own
+ * so `crew-mcp uninstall` clears the whole namespace, not just our own
  * `command`/`args` block.
  *
  * Surfaced by Finding 9 in `docs/status/v0.2-smoke-2026-05-04.md`:
@@ -130,7 +130,7 @@ export const codexAdapter: HostAdapter = {
   writeAutoApproval(existing, tools) {
     // Strip any pre-existing crew-tools blocks (Codex auto-creates these
     // when the user clicks "approve" in a session — see Finding 9). The
-    // user's `crew install` is the explicit consent action; we overwrite
+    // user's `crew-mcp install` is the explicit consent action; we overwrite
     // session-state with the deliberate auto-approve choice.
     const cleared = removeCrewToolBlocks(existing);
     if (tools.length === 0) return cleared;

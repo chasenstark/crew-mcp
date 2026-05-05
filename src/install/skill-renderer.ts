@@ -11,12 +11,12 @@
  *
  *   {{BODY}}         — the canonical body
  *   {{TOOL_LIST}}    — the live tool list rendered from the catalog (so
- *                      `crew verify` can parity-check the rendered skill
+ *                      `crew-mcp verify` can parity-check the rendered skill
  *                      against the MCP surface)
  *   {{DESCRIPTION}}  — Claude Code skill description (auto-match phrase)
  *   {{CREW_VERSION}} — package version, useful as a footer marker
  *
- * Path resolution: `crew install` runs from the installed package, so we
+ * Path resolution: `crew-mcp install` runs from the installed package, so we
  * resolve `skills/` relative to the source file's compiled location. The
  * built bundle's import.meta.url points into `dist/`, which sits as a
  * sibling of `skills/`. Tests can override via `packageRoot`.
@@ -136,7 +136,7 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
 
 /**
  * Render the tool catalog as a markdown bullet list. The format is
- * stable so `crew verify` can parse `mcp__crew__*` references back out:
+ * stable so `crew-mcp verify` can parse `mcp__crew__*` references back out:
  *
  *   - `mcp__crew__<name>` — <description>
  */

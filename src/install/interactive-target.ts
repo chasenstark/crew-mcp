@@ -1,5 +1,5 @@
 /**
- * Interactive target picker for `crew install` (no `--target` flag).
+ * Interactive target picker for `crew-mcp install` (no `--target` flag).
  *
  * Prints a numbered list of registered hosts, marks detected ones with
  * a check, and asks for either comma-separated indices, the shorthand

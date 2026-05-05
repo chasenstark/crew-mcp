@@ -1,5 +1,5 @@
 /**
- * `crew verify` — sanity-check installed skill ↔ MCP tool catalog.
+ * `crew-mcp verify` — sanity-check installed skill ↔ MCP tool catalog.
  *
  * Reads ~/.crew/install.json to learn what's installed, then for each
  * installed target:

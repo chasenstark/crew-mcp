@@ -14,7 +14,7 @@
  *   discarded persists across crew-serve restarts.
  *
  * Ownership model: this file owns the **schema** + a pure **plan builder**.
- * The MCP server (`crew serve`, src/cli/commands/serve.ts) calls
+ * The MCP server (`crew-mcp serve`, src/cli/commands/serve.ts) calls
  * `planRunAgent` to validate input + allocate a worktree, then dispatches
  * the task through `ToolDispatcher` and waits for the terminal event before
  * shaping the response envelope.
