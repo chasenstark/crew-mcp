@@ -312,6 +312,20 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
 
       runStateStore.appendPrompt(args.run_id, args.prompt);
 
+      // Re-mirror uncommitted host state into the worktree so changes
+      // the user made between turns are visible to this turn's agent.
+      // Skip for read-only runs — they don't have a worktree we own.
+      // Best-effort: failures are logged inside the manager.
+      if (state.readOnly !== true) {
+        try {
+          await worktreeManager.syncUncommittedToRunWorktree(args.run_id);
+        } catch (err) {
+          logger.warn(
+            `continue_run: uncommitted-state sync failed for ${args.run_id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       return runDispatchAndRespond({
         runId: args.run_id,
         worktreePath: state.worktreePath,

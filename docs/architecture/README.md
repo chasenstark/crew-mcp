@@ -301,6 +301,14 @@ That means:
 - The host repo is **not modified** until the captain calls `merge_run`.
   A botched dispatch costs nothing — the user discards the worktree
   and the host repo is untouched.
+- **Uncommitted host state is mirrored.** Plain `git worktree add`
+  only carries committed state across, but `createRunWorktree`
+  follows up with `syncUncommittedToWorktree`: untracked-non-gitignored
+  + tracked-modified files get copied in, tracked-deleted files get
+  removed. The dispatched agent sees the same in-progress files the
+  user does. `continue_run` re-runs the sync each turn so changes the
+  user makes between turns flow through. Best-effort: per-file
+  failures are warn-logged, not fatal.
 - Worktrees persist across `crew-mcp serve` restarts. A `run_id` from
   yesterday is still resumable today (until merged or discarded).
 

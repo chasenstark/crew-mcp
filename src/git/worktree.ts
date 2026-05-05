@@ -1,7 +1,7 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { logger } from '../utils/logger.js';
 
 interface WorktreeRecord {
@@ -277,6 +277,18 @@ export class WorktreeManager {
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
           await this.git.raw(['worktree', 'add', '-b', record.branchName, record.worktreePath]);
+          // Mirror the host repo's uncommitted state into the fresh worktree
+          // so the dispatched agent sees the same in-progress files the
+          // user does (see syncUncommittedToWorktree). Best-effort: a sync
+          // failure is logged but doesn't fail the dispatch — the agent
+          // will just operate on committed state in that case.
+          try {
+            await this.syncUncommittedToWorktree(record.worktreePath);
+          } catch (syncErr) {
+            logger.warn(
+              `Run ${runId}: failed to sync uncommitted state into worktree: ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`,
+            );
+          }
           try {
             this.writeRunWorktreeRecord(record);
           } catch (err) {
@@ -305,6 +317,86 @@ export class WorktreeManager {
 
   getRunWorktreePath(runId: string): string {
     return this.requireRunWorktreeRecord(runId).worktreePath;
+  }
+
+  /**
+   * Mirror the host repo's uncommitted state into a run worktree.
+   * Untracked-non-gitignored + tracked-modified files get copied;
+   * tracked-deleted files (`git rm` or working-tree deletion) get
+   * removed in the worktree. Renames apply both: copy `.to`, remove
+   * `.from`. Gitignored paths are excluded automatically because
+   * simple-git's `status.not_added` honors `.gitignore`.
+   *
+   * Called once on `createRunWorktree` (so the dispatched agent sees
+   * the user's working state) and again on every `continue_run` turn
+   * (so changes the user made between turns flow through). Skipped
+   * for `read_only` runs — they don't allocate a worktree.
+   *
+   * Best-effort: per-file failures are warn-logged and don't abort
+   * the sync. Returns counts so callers can surface diagnostics.
+   */
+  async syncUncommittedToRunWorktree(runId: string): Promise<{
+    readonly copied: number;
+    readonly removed: number;
+  }> {
+    const record = this.requireRunWorktreeRecord(runId);
+    return this.syncUncommittedToWorktree(record.worktreePath);
+  }
+
+  /**
+   * Internal — called by createRunWorktree + syncUncommittedToRunWorktree.
+   * Reads `git status` against the host repo and applies the deltas to
+   * `worktreePath`. See the public-method docblock for semantics.
+   */
+  private async syncUncommittedToWorktree(worktreePath: string): Promise<{
+    readonly copied: number;
+    readonly removed: number;
+  }> {
+    const status = await this.git.status();
+    const renames = (status.renamed ?? []) as ReadonlyArray<{ from: string; to: string }>;
+    const toCopy = new Set<string>([
+      ...status.modified,
+      ...status.created,
+      ...status.not_added,
+      ...renames.map((r) => r.to),
+    ]);
+    const toRemove = new Set<string>([
+      ...(status.deleted ?? []),
+      ...renames.map((r) => r.from),
+    ]);
+    let copied = 0;
+    let removed = 0;
+    for (const relPath of toCopy) {
+      const src = join(this.projectRoot, relPath);
+      const dst = join(worktreePath, relPath);
+      try {
+        if (!existsSync(src)) continue;
+        const st = statSync(src);
+        if (!st.isFile()) continue;
+        mkdirSync(dirname(dst), { recursive: true });
+        copyFileSync(src, dst);
+        copied++;
+      } catch (err) {
+        logger.warn(
+          `syncUncommitted: failed to copy ${relPath} into worktree: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    for (const relPath of toRemove) {
+      if (toCopy.has(relPath)) continue;
+      const dst = join(worktreePath, relPath);
+      try {
+        if (existsSync(dst)) {
+          rmSync(dst, { force: true });
+          removed++;
+        }
+      } catch (err) {
+        logger.warn(
+          `syncUncommitted: failed to remove ${relPath} from worktree: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return { copied, removed };
   }
 
   async getModifiedFilesByRun(runId: string): Promise<string[]> {

@@ -466,5 +466,133 @@ describe('WorktreeManager', () => {
       });
       await expect(manager.mergeRunWorktree('run-1')).rejects.toThrow(/uncommitted changes/);
     });
+
+    describe('syncUncommittedToWorktree (mirror host working state)', () => {
+      // Each test:
+      //   1. seeds files in the host root's filesystem
+      //   2. mocks rootGit.status() to report those as the appropriate
+      //      uncommitted category (modified/not_added/deleted/renamed)
+      //   3. invokes createRunWorktree (or syncUncommittedToRunWorktree)
+      //   4. asserts the worktree's filesystem mirrors the host's
+      //
+      // The git operations themselves are mocked out — we're testing
+      // the file-copying logic, not git semantics.
+      it('copies untracked-non-gitignored files into a new run worktree', async () => {
+        mockRandomUUID
+          .mockReturnValueOnce('owner-1')
+          .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+        const { root, crewHome, manager, rootGit } = createManager();
+        writeFileSync(join(root, 'notes.md'), 'untracked content', 'utf-8');
+        mkdirSync(join(root, 'docs'), { recursive: true });
+        writeFileSync(join(root, 'docs', 'plan.md'), 'plan body', 'utf-8');
+        rootGit.status.mockResolvedValue({
+          modified: [],
+          created: [],
+          not_added: ['notes.md', 'docs/plan.md'],
+          deleted: [],
+          renamed: [],
+        });
+        await manager.createRunWorktree('run-1');
+        const wt = join(crewHome, 'runs', 'run-1', 'worktree');
+        expect(readFileSync(join(wt, 'notes.md'), 'utf-8')).toBe('untracked content');
+        expect(readFileSync(join(wt, 'docs', 'plan.md'), 'utf-8')).toBe('plan body');
+      });
+
+      it('copies tracked-modified files into the worktree', async () => {
+        mockRandomUUID
+          .mockReturnValueOnce('owner-1')
+          .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+        const { root, crewHome, manager, rootGit } = createManager();
+        writeFileSync(join(root, 'src.ts'), 'export const x = 1; // edited', 'utf-8');
+        rootGit.status.mockResolvedValue({
+          modified: ['src.ts'],
+          created: [],
+          not_added: [],
+          deleted: [],
+          renamed: [],
+        });
+        await manager.createRunWorktree('run-1');
+        const wt = join(crewHome, 'runs', 'run-1', 'worktree');
+        expect(readFileSync(join(wt, 'src.ts'), 'utf-8')).toBe('export const x = 1; // edited');
+      });
+
+      it('removes tracked-deleted files from the worktree', async () => {
+        mockRandomUUID
+          .mockReturnValueOnce('owner-1')
+          .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+        const { crewHome, manager, rootGit } = createManager();
+        rootGit.status.mockResolvedValue({
+          modified: [],
+          created: [],
+          not_added: [],
+          deleted: ['removed.ts'],
+          renamed: [],
+        });
+        await manager.createRunWorktree('run-1');
+        const wt = join(crewHome, 'runs', 'run-1', 'worktree');
+        // Pre-seed the deleted file inside the worktree (would have come
+        // from `git worktree add` checking out the committed state). Then
+        // the next sync should remove it.
+        writeFileSync(join(wt, 'removed.ts'), 'old content', 'utf-8');
+        await manager.syncUncommittedToRunWorktree('run-1');
+        expect(existsSync(join(wt, 'removed.ts'))).toBe(false);
+      });
+
+      it('handles renames by copying `to` and removing `from`', async () => {
+        mockRandomUUID
+          .mockReturnValueOnce('owner-1')
+          .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+        const { root, crewHome, manager, rootGit } = createManager();
+        writeFileSync(join(root, 'new-name.ts'), 'renamed body', 'utf-8');
+        rootGit.status.mockResolvedValue({
+          modified: [],
+          created: [],
+          not_added: [],
+          deleted: [],
+          renamed: [{ from: 'old-name.ts', to: 'new-name.ts' }],
+        });
+        await manager.createRunWorktree('run-1');
+        const wt = join(crewHome, 'runs', 'run-1', 'worktree');
+        // Pre-seed the from-side; the sync would delete it.
+        writeFileSync(join(wt, 'old-name.ts'), 'stale', 'utf-8');
+        await manager.syncUncommittedToRunWorktree('run-1');
+        expect(existsSync(join(wt, 'old-name.ts'))).toBe(false);
+        expect(readFileSync(join(wt, 'new-name.ts'), 'utf-8')).toBe('renamed body');
+      });
+
+      it('syncUncommittedToRunWorktree returns counts', async () => {
+        mockRandomUUID
+          .mockReturnValueOnce('owner-1')
+          .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+        const { root, crewHome, manager, rootGit } = createManager();
+        writeFileSync(join(root, 'a.md'), 'a', 'utf-8');
+        writeFileSync(join(root, 'b.md'), 'b', 'utf-8');
+        rootGit.status.mockResolvedValue({
+          modified: [],
+          created: [],
+          not_added: ['a.md', 'b.md'],
+          deleted: ['gone.ts'],
+          renamed: [],
+        });
+        await manager.createRunWorktree('run-1');
+        const wt = join(crewHome, 'runs', 'run-1', 'worktree');
+        writeFileSync(join(wt, 'gone.ts'), 'old', 'utf-8');
+        const counts = await manager.syncUncommittedToRunWorktree('run-1');
+        expect(counts).toEqual({ copied: 2, removed: 1 });
+      });
+
+      it('sync failure during createRunWorktree is non-fatal', async () => {
+        mockRandomUUID
+          .mockReturnValueOnce('owner-1')
+          .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+        const { crewHome, manager, rootGit } = createManager();
+        // Status throws — sync swallows + warns; createRunWorktree must
+        // still return successfully.
+        rootGit.status.mockRejectedValueOnce(new Error('git status boom'));
+        const wt = await manager.createRunWorktree('run-1');
+        expect(wt).toBe(join(crewHome, 'runs', 'run-1', 'worktree'));
+        expect(existsSync(wt)).toBe(true);
+      });
+    });
   });
 });
