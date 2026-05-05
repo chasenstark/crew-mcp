@@ -45,7 +45,7 @@ export async function agentsEditCommand(): Promise<number> {
 
 function collectAdapterDefaults(): AgentPrefsMap {
   const registry = createBuiltinRegistry();
-  const defaults: Record<string, { strengths?: readonly string[]; effort?: 'low' | 'medium' | 'high' }> = {};
+  const defaults: AgentPrefsMap = {};
   for (const adapter of registry.listAvailable()) {
     defaults[adapter.name] = {
       strengths: [...adapter.strengths],

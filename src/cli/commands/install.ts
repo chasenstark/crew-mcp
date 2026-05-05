@@ -234,7 +234,7 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
  */
 function collectAdapterDefaults(): AgentPrefsMap {
   const registry = createBuiltinRegistry();
-  const defaults: Record<string, { strengths?: readonly string[]; effort?: 'low' | 'medium' | 'high' }> = {};
+  const defaults: AgentPrefsMap = {};
   for (const adapter of registry.listAvailable()) {
     defaults[adapter.name] = {
       strengths: [...adapter.strengths],

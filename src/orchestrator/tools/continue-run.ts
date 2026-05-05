@@ -21,8 +21,9 @@ export const continueRunInputSchema = z.object({
   /**
    * Per-call reasoning effort override. Same precedence as run_agent:
    * wins over the user's agents.json default + adapter default.
+   * Vocabulary mirrors codex's `model_reasoning_effort` set.
    */
-  effort: z.enum(['low', 'medium', 'high']).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
 });
 
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;

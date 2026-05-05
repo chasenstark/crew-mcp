@@ -173,11 +173,13 @@ export type AgentStrength = string;
  * the value (and log a debug breadcrumb so the captain's pick isn't
  * silently swallowed).
  *
- * Symmetric three-level scale because every provider that exposes a
- * reasoning-effort flag uses the same three buckets — keeps the user's
- * mental model portable across adapters.
+ * Five-level scale matching codex's `model_reasoning_effort` set
+ * (`low|medium|high|xhigh|max`) — the only adapter that wires this
+ * natively today, so we mirror its vocabulary verbatim. Other adapters
+ * either ignore the value (gemini-cli, generic) or rely on the captain
+ * restating the level in the prompt (see skill body).
  */
-export type EffortLevel = 'low' | 'medium' | 'high';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface Task {
   prompt: string;

@@ -206,16 +206,32 @@ describe('effectiveAgentPrefs', () => {
 });
 
 describe('isEffortLevel', () => {
-  it('accepts valid levels', () => {
+  it('accepts the full codex set: low|medium|high|xhigh|max', () => {
     expect(isEffortLevel('low')).toBe(true);
     expect(isEffortLevel('medium')).toBe(true);
     expect(isEffortLevel('high')).toBe(true);
+    expect(isEffortLevel('xhigh')).toBe(true);
+    expect(isEffortLevel('max')).toBe(true);
   });
 
   it('rejects everything else', () => {
     expect(isEffortLevel('extreme')).toBe(false);
+    expect(isEffortLevel('minimal')).toBe(false);
     expect(isEffortLevel('')).toBe(false);
     expect(isEffortLevel(undefined)).toBe(false);
     expect(isEffortLevel(2)).toBe(false);
+  });
+});
+
+describe('readAgentPrefsFile — extended effort levels', () => {
+  it('round-trips xhigh and max through write+read', () => {
+    writeAgentPrefsFile(crewHome, {
+      codex: { effort: 'xhigh' },
+      'claude-code': { effort: 'max' },
+    });
+    expect(readAgentPrefsFile(crewHome)).toEqual({
+      codex: { effort: 'xhigh' },
+      'claude-code': { effort: 'max' },
+    });
   });
 });

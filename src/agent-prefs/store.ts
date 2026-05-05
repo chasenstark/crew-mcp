@@ -47,9 +47,16 @@ export const AGENT_PREFS_FILENAME = 'agents.json';
 /**
  * Runtime list mirror of the EffortLevel literal union. Used for
  * validation in `isEffortLevel` and as a docstring anchor for the help
- * text written into the seeded `agents.json` _readme.
+ * text written into the seeded `agents.json` _readme. Mirrors codex's
+ * `model_reasoning_effort` set verbatim.
  */
-export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high'];
+export const EFFORT_LEVELS: readonly EffortLevel[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
 
 export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === 'string' && (EFFORT_LEVELS as readonly string[]).includes(value);
@@ -177,10 +184,11 @@ export function seedAgentPrefsFile(
       'Per-machine agent preferences. Each adapter ships defaults; edit',
       'an entry to override for this machine. `strengths` are free-form',
       'soft routing hints surfaced to the captain via list_agents.',
-      '`effort` is one of "low"|"medium"|"high" — adapters that support',
-      'a reasoning-effort knob (codex, claude-code) honor it; others',
-      'log a debug message and ignore. Underscore-prefixed keys are',
-      'always ignored. Delete this file to fall back to adapter defaults.',
+      '`effort` is one of "low"|"medium"|"high"|"xhigh"|"max" — codex',
+      'translates to its `model_reasoning_effort` flag; other adapters',
+      'log a debug message and ignore (the captain restates the level',
+      'in the prompt for portable signaling). Underscore-prefixed keys',
+      'are always ignored. Delete this file to fall back to defaults.',
     ],
     ...defaults,
   };

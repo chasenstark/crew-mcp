@@ -159,10 +159,10 @@ within a crew minor version; if a tool seems to have changed, run
   filters. The user tunes both per-machine in `~/.crew/agents.json`,
   so what you see is what they want.
 - **Effort is two signals — always pair them.** `run_agent` /
-  `continue_run` accept `effort: "low" | "medium" | "high"` and
-  surface the per-machine default in `list_agents`. Today only the
-  codex adapter has a native CLI flag (`-c
-  model_reasoning_effort=…`); claude-code, gemini-cli, and
+  `continue_run` accept `effort: "low" | "medium" | "high" | "xhigh"
+  | "max"` (codex's `model_reasoning_effort` set) and surface the
+  per-machine default in `list_agents`. Today only the codex adapter
+  has a native CLI flag for it; claude-code, gemini-cli, and
   openai-compatible silently ignore the constraint. So when you
   want a specific effort level, do BOTH:
   1. Pass `effort: "<level>"` in the tool call (lets codex flip
@@ -173,8 +173,10 @@ within a crew minor version; if a tool seems to have changed, run
 
   This keeps the signal portable across adapters — without the
   prompt line, dispatching `effort: "high"` to claude-code does
-  nothing. Use `low` for triage and quick fixes, `high` for deep
-  refactors or work where correctness matters more than latency.
+  nothing. Rough mapping: `low` for triage and quick fixes,
+  `medium` for ordinary work, `high`/`xhigh` for deep refactors or
+  correctness-critical work, `max` when latency genuinely doesn't
+  matter and you want the model to chew on it.
 - Worktrees persist across crew-serve restarts. A `run_id` you got
   yesterday is still resumable today (until merged or discarded).
 - Prefer inline reasoning over routing through agents for things you

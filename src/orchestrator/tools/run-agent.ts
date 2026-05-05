@@ -54,9 +54,10 @@ export const runAgentInputSchema = z.object({
    * Per-call reasoning effort override. Wins over the user's
    * agents.json default + adapter default. Adapters with no native
    * reasoning-effort knob (gemini-cli, generic) ignore the value and
-   * log a debug breadcrumb.
+   * log a debug breadcrumb. Vocabulary mirrors codex's
+   * `model_reasoning_effort` set.
    */
-  effort: z.enum(['low', 'medium', 'high']).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
 });
 
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
