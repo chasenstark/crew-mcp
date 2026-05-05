@@ -137,6 +137,10 @@ them hold.
 4. **You don't know which agent fits.** Ask the user rather than
    guessing. Picking the wrong agent costs the user a 30–60s
    round-trip and a discard.
+5. **The agent you'd dispatch to is the same product as the host
+   CLI.** E.g. dispatching to `claude-code` from inside Claude
+   Code — both consume the same subscription quota. Warn the user
+   and offer a different agent before dispatching.
 
 The rubric only fires **after** you've decided to dispatch. If a
 dispatch signal already applies and the four items above are clean —
@@ -163,18 +167,12 @@ a `running` dispatch you can't kill it from here — let it finish
 and `discard_run` after, or tell the user to interrupt their host
 CLI session. Don't pretend you cancelled it.
 
-## Cross-CLI quota awareness
-
-If the user's host CLI is the same product as the agent you're
-dispatching to (e.g., dispatching `claude-code` from inside Claude
-Code), warn them: both consume from the same subscription. Ask
-whether they'd prefer a different agent before dispatching.
-
 ## The tools
 
 You have these `mcp__crew__*` tools. Names and shapes are stable
-within a crew minor version; if a tool seems to have changed, run
-`crew verify` (or ask the user to).
+within a crew minor version; if a tool seems to have changed, ask
+the user to run `crew verify` (per the escape-hatch rule, you don't
+shell out to the `crew` binary yourself — even for diagnostics).
 
 {{TOOL_LIST}}
 
@@ -205,10 +203,9 @@ within a crew minor version; if a tool seems to have changed, run
   override it ("use opus for this", "switch to gpt-5.4-mini").
   When the field is absent, the adapter's CLI picks (its own
   `~/.claude.json` / `~/.codex/config.toml` etc.) — don't invent
-  a model name. If the user asks for something fuzzy ("the cheap
-  one", "the smarter one") and you can't map it to a concrete
-  name from `list_agents` or context, ask which model they mean
-  rather than guessing.
+  a model name. If the user's request is fuzzy and you can't map
+  it to a concrete name from `list_agents` or context, ask which
+  model they mean rather than guessing.
 - **Effort.** `run_agent` / `continue_run` accept
   `effort: "low" | "medium" | "high" | "xhigh" | "max"` (codex's
   `model_reasoning_effort` set), and `list_agents` surfaces the
