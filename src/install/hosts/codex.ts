@@ -153,12 +153,19 @@ export const codexAdapter: HostAdapter = {
   },
 };
 
-const APPROVAL_MODE_ALWAYS = 'always';
+// Codex's per-tool approval_mode schema: auto | prompt | approve.
+// `auto` = no prompt, always allowed (this is what `crew-mcp install`
+// chooses by default — `--no-auto-approve` opts out by writing nothing).
+// Codex previously accepted `always` as the auto-approve variant; that
+// was renamed to `auto`. Writing `always` against current Codex now
+// causes "Error loading config.toml: unknown variant `always`" at
+// startup, so do not regress this constant.
+const APPROVAL_MODE_AUTO = 'auto';
 
 function renderCrewToolsBlocks(tools: readonly string[]): string {
   return tools
     .map((tool) =>
-      `[mcp_servers.crew.tools.${tool}]\napproval_mode = ${tomlString(APPROVAL_MODE_ALWAYS)}\n`,
+      `[mcp_servers.crew.tools.${tool}]\napproval_mode = ${tomlString(APPROVAL_MODE_AUTO)}\n`,
     )
     .join('\n');
 }

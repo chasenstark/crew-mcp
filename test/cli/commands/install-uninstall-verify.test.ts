@@ -354,7 +354,7 @@ describe('install / verify / uninstall — happy path', () => {
     const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
     // All 6 catalog tools get pre-approval blocks.
     for (const tool of ['list_agents', 'run_agent', 'continue_run', 'merge_run', 'discard_run', 'get_run_status']) {
-      expect(config).toContain(`[mcp_servers.crew.tools.${tool}]\napproval_mode = "always"`);
+      expect(config).toContain(`[mcp_servers.crew.tools.${tool}]\napproval_mode = "auto"`);
     }
     // Manifest records that auto-approval was applied.
     const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
