@@ -127,7 +127,10 @@ describe('planRunAgent', () => {
     const ctx: RunAgentHandlerContext = {
       registry: makeRegistry([adapter]),
       worktreeManager,
-      resolveModel: () => 'preferred-model',
+      // Per-machine model pref simulates the user's agents.json setting
+      // — exercises the same plumbing the legacy resolveModel hook used
+      // to cover, just through the prefs path that's actually wired.
+      agentPrefs: { codex: { model: 'preferred-model' } },
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'fix the typo' },
@@ -194,7 +197,7 @@ describe('planRunAgent', () => {
     expect(() => readFileSync(join(root, 'src', 'generated.ts'), 'utf-8')).toThrow();
   });
 
-  it('overrides resolveModel when the caller supplies model in the input', async () => {
+  it('per-call model wins over agents.json prefs', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
       output: '',
       filesModified: [],
@@ -205,7 +208,7 @@ describe('planRunAgent', () => {
     const ctx: RunAgentHandlerContext = {
       registry: makeRegistry([adapter]),
       worktreeManager,
-      resolveModel: () => 'preferred-model',
+      agentPrefs: { codex: { model: 'preferred-model' } },
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'do x', model: 'explicit-model' },
@@ -321,36 +324,20 @@ describe('resolveEffectiveEffort', () => {
 describe('resolveEffectiveModel', () => {
   const adapter = makeMockAdapter({ name: 'codex' });
 
-  it('per-call wins over agents.json + legacy resolveModel', () => {
+  it('per-call wins over agents.json', () => {
     expect(
-      resolveEffectiveModel(
-        adapter,
-        'opus',
-        { codex: { model: 'sonnet' } },
-        () => 'gpt-mini',
-      ),
+      resolveEffectiveModel(adapter, 'opus', { codex: { model: 'sonnet' } }),
     ).toBe('opus');
   });
 
-  it('agents.json wins over legacy resolveModel when no per-call', () => {
+  it('agents.json wins when no per-call value', () => {
     expect(
-      resolveEffectiveModel(
-        adapter,
-        undefined,
-        { codex: { model: 'sonnet' } },
-        () => 'gpt-mini',
-      ),
+      resolveEffectiveModel(adapter, undefined, { codex: { model: 'sonnet' } }),
     ).toBe('sonnet');
   });
 
-  it('falls through to legacy resolveModel when prefs lacks a model', () => {
-    expect(
-      resolveEffectiveModel(adapter, undefined, {}, () => 'gpt-mini'),
-    ).toBe('gpt-mini');
-  });
-
   it('returns undefined when nothing is configured (CLI default wins)', () => {
-    expect(resolveEffectiveModel(adapter, undefined, {}, undefined)).toBeUndefined();
-    expect(resolveEffectiveModel(adapter, undefined, undefined, undefined)).toBeUndefined();
+    expect(resolveEffectiveModel(adapter, undefined, {})).toBeUndefined();
+    expect(resolveEffectiveModel(adapter, undefined, undefined)).toBeUndefined();
   });
 });

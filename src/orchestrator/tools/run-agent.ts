@@ -69,13 +69,6 @@ export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;
   readonly worktreeManager: WorktreeManager;
   /**
-   * Captain-level model resolver: if the call leaves `model` undefined,
-   * this returns the configured default for the named agent (workflow
-   * role model, per-agent model, etc.). Returning undefined is fine —
-   * the agent adapter then falls back to its own default.
-   */
-  readonly resolveModel?: (agentName: string) => string | undefined;
-  /**
    * Snapshot of the per-machine agent prefs (`~/.crew/agents.json`).
    * Read once per dispatch by the caller (serve.ts) and passed in here
    * so `planRunAgent` stays pure — no hidden FS reads in a hot path,
@@ -157,7 +150,7 @@ export async function planRunAgent(
   }
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
-  const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs, ctx.resolveModel);
+  const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs);
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
@@ -209,10 +202,7 @@ export function resolveEffectiveEffort(
  * Resolve the model that actually goes to the adapter:
  *   1. per-call override (input.model)
  *   2. user's agents.json override for this agent
- *   3. legacy ctx.resolveModel hook (vestigial v1; serve.ts doesn't
- *      inject it, but kept so workflow-config-driven setups can wire
- *      a resolver if they want)
- *   4. undefined → adapter doesn't pass --model and the CLI's own
+ *   3. undefined → adapter doesn't pass --model and the CLI's own
  *      default (claude-code's ~/.claude.json, codex's config.toml,
  *      etc.) wins
  *
@@ -222,12 +212,9 @@ export function resolveEffectiveModel(
   adapter: AgentAdapter,
   perCall: string | undefined,
   prefs: AgentPrefsMap | undefined,
-  resolveModel?: (agentName: string) => string | undefined,
 ): string | undefined {
   if (perCall) return perCall;
-  const fromPrefs = prefs?.[adapter.name]?.model;
-  if (fromPrefs) return fromPrefs;
-  return resolveModel?.(adapter.name);
+  return prefs?.[adapter.name]?.model;
 }
 
 /**
