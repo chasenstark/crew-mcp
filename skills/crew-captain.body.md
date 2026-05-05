@@ -185,39 +185,76 @@ lifecycle from `get_run_status`. There is no "fast path" that
 returns terminal inline — even sub-second runs come back as
 `running` and you make one quick poll to terminal.
 
-**The polling loop:**
+### Hard rule: stay in the same turn
+
+While a run is `running`, **do not end your turn**. Do not use
+`ScheduleWakeup`, `/loop` dynamic mode, `CronCreate`, "I'll check
+back in N minutes" patterns, or any other mechanism that hands
+control back to the user and resumes later. The long-poll
+`get_run_status` call **is** the wait. Holding the turn open
+through repeated long-polls is the intended design — not a token
+leak to optimize away.
+
+If you find yourself reasoning about "prompt-cache windows" or
+"saving tokens by waking up later": **stop**. That trade-off has
+already been considered (see
+`docs/plans/active/long-poll-cost-tuning.md` in the crew-mcp
+repo) and explicitly rejected as the default. The user is
+watching a render loop; silence reads as hung.
+
+### The polling loop
 
 1. Dispatch. Confirm the run_id back to the user briefly (one line).
 2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
-   since_event_line: <last cursor> })` in a loop. Start the cursor
-   at 0; on each response, update it from `next_event_line`.
+   since_event_line: <last cursor> })`. Start the cursor at 0; on
+   each response, update it from `next_event_line`.
 3. **Each response either has new content or the run terminated.**
-   Server-side the call blocks until either: (a) new events appear
-   for this run, (b) the run reaches a terminal status, or (c) the
-   30s wait expires. Surface the `events_tail` lines to the user
-   (paraphrase the load-bearing parts; don't dump verbatim if
-   long), then loop.
-4. Exit the loop when `status` is `success | partial | error |
+   Server-side the call blocks until either: (a) new events
+   appear, (b) the run reaches a terminal status, or (c) the 30s
+   wait expires. Surface the `events_tail` lines (paraphrase the
+   load-bearing parts; don't dump verbatim if long).
+4. **Immediately call `get_run_status` again** with the updated
+   cursor. Same turn. No wakeups, no scheduled returns.
+5. Exit the loop when `status` is `success | partial | error |
    cancelled` (or — for read-only runs — also `discarded`).
-5. Surface the final summary (latest prompt's `summary` field) and
-   ask about merge / iterate / discard.
+6. Surface the final summary (latest prompt's `summary`) and ask
+   about merge / iterate / discard.
 
-If a 30s poll returns with no new events, say something brief
-("still working, no new output yet") and re-poll. Don't go silent.
-The user is staring at your render loop — silence reads as hung.
+If a 30s poll returns with no new events, say one short line
+("still working, no new output yet") and re-poll in the same
+turn. The model's instinct to minimize idle cost by ending the
+turn is wrong here — override it.
 
-**Cancellation:** `cancel_run({ run_id })` aborts the in-flight
-dispatch. The status will land as `cancelled` on the next poll.
+### Worked shape
 
-**Progress streaming via MCP:** some hosts also surface
-`notifications/progress` (the user sees chunks inline in the host
-UI without you doing anything). That's parallel to — not a
-replacement for — the polling loop. Always poll.
+```
+run_agent(...)              → { status: "running", run_id: R }
+"Dispatched as R. Watching."
+get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0})
+  → events_tail: [...], next_event_line: 4, status: "running"
+"<paraphrase of events>"
+get_run_status({R, wait_for_change_ms: 30000, since_event_line: 4})
+  → events_tail: [...], next_event_line: 9, status: "running"
+"<paraphrase>"
+get_run_status({R, wait_for_change_ms: 30000, since_event_line: 9})
+  → events_tail: [...], next_event_line: 11, status: "success",
+    summary: "..."
+"Done. <summary>. Merge / iterate / discard?"
+```
 
-If the user wants to abort a `running` dispatch, call
-`cancel_run({ run_id })`. The underlying subprocess receives an
-abort signal and the run lands in `status: "cancelled"`. The
-worktree is preserved (call `discard_run` after for cleanup).
+All of that happens inside one captain turn. The user types
+nothing between the dispatch and the merge prompt.
+
+### Cancellation
+
+`cancel_run({ run_id })` aborts the in-flight dispatch. The status
+will land as `cancelled` on the next poll.
+
+### Progress streaming via MCP
+
+Some hosts also surface `notifications/progress` (chunks render
+inline in the host UI without you doing anything). That's parallel
+to — not a replacement for — the polling loop. Always poll.
 
 ## The tools
 
