@@ -287,7 +287,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--max-turns', String(task.constraints.maxTurns));
     }
 
-    const timeout = task.constraints?.timeout ?? 300_000; // 5 minutes default
+    // No wall-clock timeout (was 300_000 pre-2026-05). Cancellation
+    // is captain-driven via cancelSignal; the agent's own turn/token
+    // budget is the natural cap.
+    const timeout = task.constraints?.timeout;
     logger.debug('[adapter:claude-code] starting execute', {
       cwd: task.context.workingDirectory,
       timeoutMs: timeout,
@@ -300,7 +303,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     try {
       const subprocess = execa('claude', args, {
         cwd: task.context.workingDirectory,
-        timeout,
+        ...(timeout ? { timeout } : {}),
         cancelSignal: task.constraints?.signal,
         reject: false,
         stdin: 'ignore',
@@ -473,7 +476,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--max-turns', String(options.maxTurns));
     }
 
-    const timeout = options?.timeout ?? 300_000;
+    // No wall-clock timeout — see execute() for the rationale.
+    const timeout = options?.timeout;
     logger.debug('[adapter:claude-code] starting executeWithSchema', {
       cwd: options?.workingDirectory,
       timeoutMs: timeout,
@@ -486,7 +490,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     try {
       result = await execa('claude', args, {
         cwd: options?.workingDirectory,
-        timeout,
+        ...(timeout ? { timeout } : {}),
         cancelSignal: options?.signal,
         reject: false,
         stdin: 'ignore',

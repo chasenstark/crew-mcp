@@ -74,13 +74,8 @@ interface Harness {
   close: () => Promise<void>;
 }
 
-interface HarnessOptions {
-  asyncFallbackMs?: number;
-}
-
 async function startHarness(
   adapters: AgentAdapter[],
-  options: HarnessOptions = {},
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
@@ -97,7 +92,6 @@ async function startHarness(
     crewHome,
     registry: makeRegistry(adapters),
     worktreeManager,
-    asyncFallbackMs: options.asyncFallbackMs,
   });
 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -117,6 +111,45 @@ async function startHarness(
       rmSync(crewHome, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Async-first dispatch helper. `run_agent` and `continue_run` always
+ * return `status: "running"` immediately now; tests that need to assert
+ * terminal state call this to drive the captain's polling loop until
+ * the run resolves. Mirrors the captain skill body's polling pattern
+ * minus the `wait_for_change_ms` (no need to long-poll in tests —
+ * mock adapters terminate within ms).
+ */
+async function pollUntilTerminal(
+  client: Client,
+  runId: string,
+  options: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<{
+  status: string;
+  state: Record<string, unknown>;
+  events_tail: readonly string[];
+}> {
+  const deadline = Date.now() + (options.timeoutMs ?? 5000);
+  const interval = options.intervalMs ?? 5;
+  while (Date.now() < deadline) {
+    const res = await client.callTool({
+      name: 'get_run_status',
+      arguments: { run_id: runId },
+    });
+    const state = res.structuredContent as Record<string, unknown> & {
+      status: string;
+      events_tail: readonly string[];
+    };
+    if (
+      state.status !== 'running'
+      && state.status !== undefined
+    ) {
+      return { status: state.status, state, events_tail: state.events_tail };
+    }
+    await new Promise((r) => setTimeout(r, interval));
+  }
+  throw new Error(`Run ${runId} did not reach terminal state within timeout`);
 }
 
 // --- tests ---
@@ -236,12 +269,17 @@ describe('crew serve — run_agent tool', () => {
       });
       const env = res.structuredContent as RunEnvelope;
       expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
-      expect(env.status).toBe('success');
-      expect(env.summary).toBe('changed CHANGE.md');
+      // Async-first: run_agent always returns running; poll for terminal.
+      expect(env.status).toBe('running');
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('success');
       // Worktree exists, file lives only there (no auto-merge).
       expect(existsSync(join(env.worktree_path, 'CHANGE.md'))).toBe(true);
       expect(existsSync(join(h.root, 'CHANGE.md'))).toBe(false);
-      expect(env.files_changed).toContain('CHANGE.md');
+      expect(final.state.filesChanged).toContain('CHANGE.md');
+      // Latest prompt's summary captures the adapter's output.
+      const prompts = final.state.prompts as Array<{ summary?: string }>;
+      expect(prompts[prompts.length - 1].summary).toBe('changed CHANGE.md');
     } finally {
       await h.close();
     }
@@ -260,11 +298,14 @@ describe('crew serve — run_agent tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'try it' },
       });
-      expect(res.isError).toBe(true);
+      // Async-first: run_agent itself succeeds even when the dispatch
+      // will fail. Adapter errors surface via get_run_status terminal.
       const env = res.structuredContent as RunEnvelope;
-      expect(env.status).toBe('error');
-      expect(env.summary).toMatch(/adapter exploded/);
-      expect(env.files_changed).toEqual([]);
+      expect(env.status).toBe('running');
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('error');
+      expect(String(final.state.lastError ?? '')).toMatch(/adapter exploded/);
+      expect(final.state.filesChanged).toEqual([]);
     } finally {
       await h.close();
     }
@@ -303,6 +344,9 @@ describe('crew serve — continue_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'turn-one' },
       });
       const firstEnv = first.structuredContent as RunEnvelope;
+      // Wait for turn 1 to terminate before continuing — continue_run
+      // doesn't gate on terminal but the adapter mock isn't reentrant.
+      await pollUntilTerminal(h.client, firstEnv.run_id);
       const second = await h.client.callTool({
         name: 'continue_run',
         arguments: { run_id: firstEnv.run_id, prompt: 'turn-two' },
@@ -310,17 +354,15 @@ describe('crew serve — continue_run tool', () => {
       const secondEnv = second.structuredContent as RunEnvelope;
       expect(secondEnv.run_id).toBe(firstEnv.run_id);
       expect(secondEnv.worktree_path).toBe(firstEnv.worktree_path);
-      expect(secondEnv.summary).toBe('did: turn-two');
+      expect(secondEnv.status).toBe('running');
+      const final = await pollUntilTerminal(h.client, firstEnv.run_id);
+      expect(final.status).toBe('success');
       // Adapter received both prompts, both pointed at the same worktree.
       expect(calls).toHaveLength(2);
       expect(calls[0]).toBe(`turn-one@${firstEnv.worktree_path}`);
       expect(calls[1]).toBe(`turn-two@${firstEnv.worktree_path}`);
       // state.json should record both turns.
-      const statusRes = await h.client.callTool({
-        name: 'get_run_status',
-        arguments: { run_id: firstEnv.run_id },
-      });
-      const status = statusRes.structuredContent as { prompts: Array<{ turn: number; prompt: string }> };
+      const status = final.state as unknown as { prompts: Array<{ turn: number; prompt: string }> };
       expect(status.prompts).toHaveLength(2);
       expect(status.prompts.map((p) => p.prompt)).toEqual(['turn-one', 'turn-two']);
     } finally {
@@ -598,19 +640,16 @@ describe('crew serve — read_only runs', () => {
         arguments: { agent_id: 'reviewer', prompt: 'review please', read_only: true },
       });
       const env = res.structuredContent as RunEnvelope;
-      expect(env.status).toBe('success');
+      expect(env.status).toBe('running');
       expect(env.worktree_path).toBe(h.root);
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('success');
       expect(observedCwd).toBe(h.root);
       // No worktree on disk under .crew/runs/<runId>/worktree/.
       expect(existsSync(join(h.crewHome, 'runs', env.run_id, 'worktree'))).toBe(false);
       // state.json carries the readOnly bit so continue_run / merge_run
       // can branch on it without consulting the dispatcher.
-      const statusRes = await h.client.callTool({
-        name: 'get_run_status',
-        arguments: { run_id: env.run_id },
-      });
-      const status = statusRes.structuredContent as { readOnly?: boolean };
-      expect(status.readOnly).toBe(true);
+      expect(final.state.readOnly).toBe(true);
     } finally {
       await h.close();
     }
@@ -721,10 +760,16 @@ describe('crew serve — read_only runs', () => {
         arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
       });
       const env = res.structuredContent as RunEnvelope;
-      expect(env.status).toBe('success');
-      expect(env.warnings).toBeDefined();
-      expect(env.warnings?.length).toBeGreaterThan(0);
-      expect(env.warnings?.[0]).toMatch(/leaked\.md/);
+      expect(env.status).toBe('running');
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('success');
+      // With async-first dispatch, warnings are persisted on the run
+      // state and surfaced via get_run_status (not on a synchronous
+      // envelope). The probe records the leaked file path.
+      const warnings = final.state.warnings as readonly string[] | undefined;
+      expect(warnings).toBeDefined();
+      expect(warnings?.length).toBeGreaterThan(0);
+      expect(warnings?.[0]).toMatch(/leaked\.md/);
       // Cleanup leaked file before harness teardown.
       rmSync(join(h.root, 'leaked.md'), { force: true });
     } finally {
@@ -751,22 +796,21 @@ describe('crew serve — get_run_status tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'go' },
       });
       const runEnv = run.structuredContent as RunEnvelope;
-      const res = await h.client.callTool({
-        name: 'get_run_status',
-        arguments: { run_id: runEnv.run_id },
-      });
-      const s = res.structuredContent as {
+      const final = await pollUntilTerminal(h.client, runEnv.run_id);
+      const s = final.state as unknown as {
         runId: string;
         agentId: string;
         status: string;
         prompts: unknown[];
-        log_tail: string[];
+        events_tail: string[];
+        next_event_line: number;
       };
       expect(s.runId).toBe(runEnv.run_id);
       expect(s.agentId).toBe('mock-coder');
       expect(s.status).toBe('success');
       expect(s.prompts).toHaveLength(1);
-      expect(Array.isArray(s.log_tail)).toBe(true);
+      expect(Array.isArray(s.events_tail)).toBe(true);
+      expect(typeof s.next_event_line).toBe('number');
     } finally {
       await h.close();
     }
@@ -801,7 +845,7 @@ describe('crew serve — cancel_run tool', () => {
         });
       },
     });
-    const h = await startHarness([adapter], { asyncFallbackMs: 50 });
+    const h = await startHarness([adapter]);
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
@@ -862,7 +906,9 @@ describe('crew serve — cancel_run tool', () => {
         arguments: { agent_id: 'fast', prompt: 'finish quickly' },
       });
       const env = run.structuredContent as RunEnvelope;
-      expect(env.status).toBe('success');
+      expect(env.status).toBe('running');
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('success');
 
       const cancel = await h.client.callTool({
         name: 'cancel_run',
@@ -973,57 +1019,202 @@ describe('crew serve — progress notifications', () => {
   });
 });
 
-describe('crew serve — async-fallback for run_agent', () => {
-  it('returns status:running early when dispatch exceeds the fallback window', async () => {
+describe('crew serve — async-first dispatch + long-poll get_run_status', () => {
+  it('run_agent returns status:running immediately even when adapter is fast', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'instant',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      // Async-first: run_agent never inlines a terminal envelope —
+      // the captain always polls.
+      expect(env.status).toBe('running');
+      expect(env.summary).toMatch(/Poll get_run_status/);
+      expect(env.summary).toMatch(/wait_for_change_ms/);
+      // Polling resolves to terminal.
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('success');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('long-poll get_run_status resolves immediately when run already terminated', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      // Wait for terminal first.
+      await pollUntilTerminal(h.client, env.run_id);
+      // Now a long-poll with a generous wait should still return fast
+      // because the run is already terminal — server short-circuits.
+      const t0 = Date.now();
+      const res = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id, wait_for_change_ms: 5000 },
+      });
+      const elapsed = Date.now() - t0;
+      const s = res.structuredContent as { status: string };
+      expect(s.status).toBe('success');
+      // < 1s proves we didn't actually wait the 5000ms.
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('long-poll get_run_status wakes on stream events from an in-flight run', async () => {
+    let onOutputRef: ((chunk: string) => void) | undefined;
     let resolveAdapter!: () => void;
     const slow = new Promise<void>((r) => {
       resolveAdapter = r;
     });
     const adapter = makeMockAdapter({
-      name: 'mock-slow',
-      execute: async () => {
+      name: 'mock-streaming',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
         await slow;
         return {
-          output: 'eventually done',
+          output: 'done',
           filesModified: [],
           status: 'success',
           metadata: {},
         };
       },
     });
-    // Tiny fallback so the test doesn't have to wait 60s.
-    const h = await startHarness([adapter], { asyncFallbackMs: 50 });
+    const h = await startHarness([adapter]);
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
-        arguments: { agent_id: 'mock-slow', prompt: 'wait then succeed' },
+        arguments: { agent_id: 'mock-streaming', prompt: 'stream' },
       });
       const env = run.structuredContent as RunEnvelope;
-      expect(env.status).toBe('running');
-      expect(env.summary).toMatch(/poll get_run_status/);
-      // get_run_status while in flight should still report running.
-      const inFlightStatus = await h.client.callTool({
-        name: 'get_run_status',
-        arguments: { run_id: env.run_id },
-      });
-      expect((inFlightStatus.structuredContent as { status: string }).status).toBe('running');
+      // Wait briefly for the adapter to capture onOutput.
+      await waitFor(() => onOutputRef !== undefined);
 
-      // Now resolve the adapter and wait for the dispatch to finalize state.
+      // Start a long-poll with no events yet; trigger a stream event
+      // mid-poll and observe that the call wakes promptly with the
+      // new line in events_tail (cursor-based).
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 5000,
+          since_event_line: 0,
+        },
+      });
+      // Fire a chunk after a small delay so the long-poll is already
+      // installed when the dispatcher emits run:stream.
+      await new Promise((r) => setTimeout(r, 30));
+      onOutputRef?.('first chunk');
+
+      const t0 = Date.now();
+      const res = await pollPromise;
+      const elapsed = Date.now() - t0;
+      const s = res.structuredContent as {
+        status: string;
+        events_tail: string[];
+        next_event_line: number;
+      };
+      // The wake should have fired well under the 5000ms cap.
+      expect(elapsed).toBeLessThan(2000);
+      expect(s.events_tail).toContain('first chunk');
+      expect(s.next_event_line).toBe(1);
+
+      // Cleanup: complete the dispatch.
       resolveAdapter();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('cursor-based events_tail returns only new lines per poll', async () => {
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    const adapter = makeMockAdapter({
+      name: 'mock-streaming',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-streaming', prompt: 'stream' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+      onOutputRef?.('line 1');
+      onOutputRef?.('line 2');
+      // Wait for events.log to flush.
       await waitFor(async () => {
         const r = await h.client.callTool({
           name: 'get_run_status',
           arguments: { run_id: env.run_id },
         });
-        return (r.structuredContent as { status: string }).status === 'success';
+        const s = r.structuredContent as { next_event_line: number };
+        return s.next_event_line >= 2;
       });
-      const finalStatus = await h.client.callTool({
+
+      // First poll from cursor 0 should return both lines.
+      const first = await h.client.callTool({
         name: 'get_run_status',
-        arguments: { run_id: env.run_id },
+        arguments: { run_id: env.run_id, since_event_line: 0 },
       });
-      const final = finalStatus.structuredContent as { status: string; prompts: Array<{ summary?: string }> };
-      expect(final.status).toBe('success');
-      expect(final.prompts[0].summary).toBe('eventually done');
+      const f = first.structuredContent as {
+        events_tail: string[];
+        next_event_line: number;
+      };
+      expect(f.events_tail).toEqual(['line 1', 'line 2']);
+      expect(f.next_event_line).toBe(2);
+
+      // Polling again from the returned cursor with no new events:
+      // empty events_tail, stable cursor.
+      const second = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id, since_event_line: f.next_event_line },
+      });
+      const s2 = second.structuredContent as {
+        events_tail: string[];
+        next_event_line: number;
+      };
+      expect(s2.events_tail).toEqual([]);
+      expect(s2.next_event_line).toBe(2);
+
+      // Cleanup.
+      await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
     }
@@ -1066,19 +1257,37 @@ describe('crew serve — lifecycle', () => {
     const client = new Client({ name: 'crew-test-client', version: '0.0.0' });
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
-    const callPromise = client.callTool({
+    const run = await client.callTool({
       name: 'run_agent',
       arguments: { agent_id: 'mock-slow', prompt: 'never returns' },
     });
+    const env = run.structuredContent as RunEnvelope;
+    expect(env.status).toBe('running');
 
     // Wait for the dispatcher to start the task before cancelling.
     await waitFor(() => dispatcher.inFlightCount() === 1);
     dispatcher.cancelAll('lifecycle test');
 
-    const res = await callPromise;
-    const env = res.structuredContent as RunEnvelope;
-    expect(env.status).toBe('cancelled');
-    expect(env.summary).toMatch(/lifecycle test/);
+    // Async-first: cancellation lands in state.json on the bg
+    // listener. Poll until we see the cancelled status.
+    await waitFor(async () => {
+      const r = await client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id },
+      });
+      return (r.structuredContent as { status: string }).status === 'cancelled';
+    });
+    const final = await client.callTool({
+      name: 'get_run_status',
+      arguments: { run_id: env.run_id },
+    });
+    const f = final.structuredContent as {
+      status: string;
+      lastError?: string;
+      prompts: Array<{ summary?: string }>;
+    };
+    expect(f.status).toBe('cancelled');
+    expect(f.prompts[f.prompts.length - 1].summary).toMatch(/lifecycle test/);
     expect(abortObserved).toBe(true);
 
     await client.close();

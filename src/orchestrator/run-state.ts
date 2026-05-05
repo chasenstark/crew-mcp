@@ -79,6 +79,14 @@ export interface RunStateV1 {
   readonly filesChanged: readonly string[];
   readonly lastError?: string;
   readonly mergeStatus?: MergeStatus;
+  /**
+   * Advisory messages from the dispatch layer that aren't part of the
+   * agent's own output — surfaced via get_run_status. Today's only
+   * producer is the read-only run dirty-tree probe (the agent edited
+   * despite a read_only contract). Optional + additive so older
+   * state.json files load without migration.
+   */
+  readonly warnings?: readonly string[];
 }
 
 const SCHEMA_VERSION = 1 as const;
@@ -232,6 +240,13 @@ export class RunStateStore {
       summary: string;
       filesChanged: readonly string[];
       lastError?: string;
+      /**
+       * Advisory messages (e.g., read-only dirty-tree probe). Merged
+       * with any pre-existing warnings on the state — warnings
+       * accumulate across continue_run turns rather than being
+       * overwritten, so the captain sees every contract violation.
+       */
+      warnings?: readonly string[];
     },
   ): RunStateV1 {
     const now = new Date().toISOString();
@@ -241,6 +256,9 @@ export class RunStateStore {
           ? { ...p, completedAt: now, summary: args.summary }
           : p,
       );
+      const mergedWarnings = args.warnings && args.warnings.length > 0
+        ? [...(s.warnings ?? []), ...args.warnings]
+        : s.warnings;
       return {
         ...s,
         status: args.status,
@@ -248,6 +266,7 @@ export class RunStateStore {
         prompts,
         filesChanged: Array.from(new Set([...s.filesChanged, ...args.filesChanged])),
         lastError: args.lastError ?? s.lastError,
+        ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     });
   }
@@ -296,7 +315,9 @@ export class RunStateStore {
 
   /**
    * Return the last `n` lines of the run's events.log. Returns [] if
-   * the log doesn't exist. Used by get_run_status.
+   * the log doesn't exist. Legacy snapshot accessor; `readEventsSince`
+   * is preferred for the captain's poll loop (cursor-based, no
+   * re-rendering of already-seen content).
    */
   tailEvents(runId: string, n = 50): string[] {
     const path = this.eventsLogPath(runId);
@@ -304,6 +325,28 @@ export class RunStateStore {
     const content = readFileSync(path, 'utf-8');
     const lines = content.split('\n').filter((l) => l.length > 0);
     return lines.slice(-n);
+  }
+
+  /**
+   * Return events.log lines with index >= `sinceLine` plus a fresh
+   * cursor (`nextLine` = total line count after the read). The captain
+   * passes `nextLine` back as `sinceLine` on the next poll so each
+   * call surfaces only new content.
+   *
+   * Empty + nextLine=0 if the log doesn't exist yet (run hasn't
+   * produced output). Stable across polls when no new content has
+   * arrived (lines: [], nextLine === sinceLine).
+   */
+  readEventsSince(runId: string, sinceLine = 0): {
+    readonly lines: string[];
+    readonly nextLine: number;
+  } {
+    const path = this.eventsLogPath(runId);
+    if (!existsSync(path)) return { lines: [], nextLine: 0 };
+    const content = readFileSync(path, 'utf-8');
+    const all = content.split('\n').filter((l) => l.length > 0);
+    const start = Math.max(0, sinceLine);
+    return { lines: all.slice(start), nextLine: all.length };
   }
 
   /**

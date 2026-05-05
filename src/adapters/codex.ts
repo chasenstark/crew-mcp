@@ -306,7 +306,14 @@ export class CodexAdapter implements AgentAdapter {
         args.push('-c', `model_reasoning_effort="${task.constraints.effort}"`);
       }
 
-      const timeout = task.constraints?.timeout ?? 300_000;
+      // No wall-clock timeout. Pre-2026-05 we passed `timeout: 300_000`
+      // to execa and the kernel SIGKILL'd codex mid-edit on long
+      // xhigh-effort runs (field report: a 5-minute cliff killed the
+      // edit pass after Phase 1 completed cleanly). Cancellation is
+      // captain-driven via `cancel_run` → AbortController, which
+      // propagates here through `cancelSignal`. Hang protection is the
+      // agent's own turn/token budget.
+      const timeout = task.constraints?.timeout;
       logger.debug('[adapter:codex] starting execute', {
         cwd: task.context.workingDirectory,
         timeoutMs: timeout,
@@ -320,7 +327,7 @@ export class CodexAdapter implements AgentAdapter {
       try {
         const subprocess = execa(AgentId.CODEX, args, {
           cwd: task.context.workingDirectory,
-          timeout,
+          ...(timeout ? { timeout } : {}),
           cancelSignal: task.constraints?.signal,
           reject: false,
           stdin: 'ignore',
@@ -530,7 +537,11 @@ export class CodexAdapter implements AgentAdapter {
         ...(options?.model ? ['--model', options.model] : []),
       ];
 
-      const timeout = options?.timeout ?? 300_000;
+      // No wall-clock timeout — see the matching comment on the
+      // primary execute() path. The schema-mode call is bounded by
+      // the captain-driven cancel signal; the agent's turn budget is
+      // its own backstop.
+      const timeout = options?.timeout;
       logger.debug('[adapter:codex] starting executeWithSchema', {
         cwd: options?.workingDirectory,
         timeoutMs: timeout,
@@ -544,7 +555,7 @@ export class CodexAdapter implements AgentAdapter {
       try {
         result = await execa(AgentId.CODEX, args, {
           cwd: options?.workingDirectory,
-          timeout,
+          ...(timeout ? { timeout } : {}),
           cancelSignal: options?.signal,
           reject: false,
           stdin: 'ignore',
@@ -743,9 +754,10 @@ export class CodexAdapter implements AgentAdapter {
         cancelSignal: options.signal,
         reject: false,
         stdin: 'ignore',
-        // Large timeout — inner turns can take ~30s cold on codex, and
-        // ~5-10s warm. 5m is a hard safety-net cap.
-        timeout: 300_000,
+        // No wall-clock timeout. Inner turns vary widely with reasoning
+        // effort; field testing showed long xhigh runs were cliff-killed
+        // mid-edit by the prior 5m cap. Cancellation comes via the
+        // captain's cancelSignal.
       });
 
       if (result.exitCode !== 0 && !result.stdout) {

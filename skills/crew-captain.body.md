@@ -156,26 +156,42 @@ for this, scope is just src/parser.ts, replace the regex
 implementation"), don't re-ask. The rubric is about catching gaps,
 not running through a checklist for its own sake.
 
-## Async fallback — long dispatches
+## Polling lifecycle — every dispatch
 
-`run_agent` / `continue_run` block synchronously for up to 60s. If
-the agent finishes inside that window, the tool call returns the
-final envelope and you're done. If it doesn't, the call returns
-`{ status: "running", run_id }` and the dispatch keeps running in
-the background — its terminal state is persisted to state.json.
+`run_agent` and `continue_run` are **async-first**: they always
+return `{ status: "running", run_id }` immediately. You drive the
+lifecycle from `get_run_status`. There is no "fast path" that
+returns terminal inline — even sub-second runs come back as
+`running` and you make one quick poll to terminal.
 
-**Whenever you receive `status: "running"`, immediately call
-`get_run_status({ run_id })` and surface the `log_tail` to the user.
-Then poll every 10–20s** until status reaches terminal (`success`,
-`partial`, `error`, `cancelled`). Each poll returns the latest
-state.json + tail of events.log, which is what the user actually
-wants to see while waiting. **Silence feels broken — surface the
-tail every poll, even if you only paraphrase the last line.**
+**The polling loop:**
 
-Some hosts also stream live chunks via MCP `notifications/progress`
-during the synchronous block (the user sees them inline in the host
-UI). If your host doesn't surface those, the polling loop above is
-the user's only feedback channel — don't skip it.
+1. Dispatch. Confirm the run_id back to the user briefly (one line).
+2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
+   since_event_line: <last cursor> })` in a loop. Start the cursor
+   at 0; on each response, update it from `next_event_line`.
+3. **Each response either has new content or the run terminated.**
+   Server-side the call blocks until either: (a) new events appear
+   for this run, (b) the run reaches a terminal status, or (c) the
+   30s wait expires. Surface the `events_tail` lines to the user
+   (paraphrase the load-bearing parts; don't dump verbatim if
+   long), then loop.
+4. Exit the loop when `status` is `success | partial | error |
+   cancelled` (or — for read-only runs — also `discarded`).
+5. Surface the final summary (latest prompt's `summary` field) and
+   ask about merge / iterate / discard.
+
+If a 30s poll returns with no new events, say something brief
+("still working, no new output yet") and re-poll. Don't go silent.
+The user is staring at your render loop — silence reads as hung.
+
+**Cancellation:** `cancel_run({ run_id })` aborts the in-flight
+dispatch. The status will land as `cancelled` on the next poll.
+
+**Progress streaming via MCP:** some hosts also surface
+`notifications/progress` (the user sees chunks inline in the host
+UI without you doing anything). That's parallel to — not a
+replacement for — the polling loop. Always poll.
 
 If the user wants to abort a `running` dispatch, call
 `cancel_run({ run_id })`. The underlying subprocess receives an

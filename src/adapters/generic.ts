@@ -94,7 +94,10 @@ export class GenericAdapter implements AgentAdapter {
 
   async execute(task: Task): Promise<TaskResult> {
     const args = this.buildArgs(task.prompt);
-    const timeout = task.constraints?.timeout ?? 300_000;
+    // No wall-clock timeout. Generic adapters target arbitrary CLIs
+    // whose runtime varies wildly; a hardcoded 5m cap killed long runs
+    // unfairly. Cancellation comes through cancelSignal.
+    const timeout = task.constraints?.timeout;
     logger.debug(`[adapter:${this.name}] starting execute`, {
       command: this.command,
       args,
@@ -107,7 +110,7 @@ export class GenericAdapter implements AgentAdapter {
     try {
       const subprocess = execa(this.command, args, {
         cwd: task.context.workingDirectory,
-        timeout,
+        ...(timeout ? { timeout } : {}),
         cancelSignal: task.constraints?.signal,
         reject: false,
       });

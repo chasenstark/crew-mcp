@@ -165,29 +165,33 @@ CREW SERVE:
      │
      ├─ runStateStore.create() writes initial state.json
      │
-     ├─ runDispatchAndRespond:
+     ├─ runDispatchAndRespond (ASYNC-FIRST):
      │     ├─ installs lifecycle listeners on the dispatcher
      │     ├─ dispatcher.start(task)  ← spawns the subagent
-     │     ├─ races: terminal-event-promise vs 60s timeout
-     │     │
-     │     │   subagent runs in its worktree:
-     │     │     codex execute() → spawns `codex exec ...`
-     │     │     stdout streams chunks → onOutput(chunk)
-     │     │       ├─ append to events.log (run-state)
-     │     │       └─ send notifications/progress to host CLI
-     │     │              (host renders inline as the user watches)
-     │     │
-     │     │   adapter.execute() resolves with TaskResult
-     │     │   dispatcher emits 'run:complete'
-     │     │   lifecycle listener writes terminal state.json
-     │     │
-     │     ├─ terminal-event-promise resolves with the result
-     │     └─ returns RunEnvelope { status, summary, files_changed }
+     │     └─ returns RunEnvelope { status: "running", run_id }
+     │        IMMEDIATELY — the captain drives the lifecycle.
+     │
+     │     [in the background, once captain has returned:]
+     │     subagent runs in its worktree:
+     │       codex execute() → spawns `codex exec ...`
+     │       stdout streams chunks → onOutput(chunk)
+     │         ├─ append to events.log (run-state)
+     │         ├─ dispatcher emits 'run:stream'
+     │         │    (long-polling get_run_status calls wake on this)
+     │         └─ send notifications/progress to host CLI
+     │              (host renders inline as the user watches)
+     │     adapter.execute() resolves with TaskResult
+     │     dispatcher emits 'run:complete' / failed / cancelled
+     │     lifecycle listener writes terminal state.json
          │
-         ▼  (MCP response)
+         ▼  (MCP response with run_id, status: running)
 HOST CLI (captain):
-   5. reads result; decides if work is good
-   6. summarizes for user; asks: merge / iterate / discard?
+   5. starts polling get_run_status({ run_id, wait_for_change_ms: 30000,
+      since_event_line: <cursor> }). Server holds each call open until
+      new events arrive OR run terminates OR 30s passes; cursor advances
+      so each return surfaces only NEW events to the user.
+   6. on terminal status: reads final summary; asks user:
+      merge / iterate / discard?
          │
          ▼
 USER:   "Looks good, merge it"
@@ -206,21 +210,31 @@ CREW SERVE:
 
 Two key races:
 
-- **60s block vs terminal**: if the subagent finishes within 60s, the
-  captain receives the full result in a single tool-call return. If it
-  takes longer, `run_agent` returns `status: "running"` and the captain
-  polls `get_run_status` until terminal. The block was 5min through
-  2026-05-04; field testing against codex (which doesn't surface MCP
-  `notifications/progress`) turned long blocks into UX dead-zones, so
-  the default was shortened. Hosts that DO surface progress (Claude
-  Code) still get live streaming inside the shorter block; the only
-  trade-off is that medium-length runs (60s–5min) now return
-  `running` and force a poll.
+- **Long-poll vs new event**: `get_run_status` with
+  `wait_for_change_ms` set holds the response open server-side via a
+  one-shot listener on the dispatcher's `run:stream` /
+  `run:complete` / `run:failed` / `run:cancelled` events filtered by
+  `runId`. Whichever fires first wins the race against the
+  wait-cap timer (server clamps to `MAX_LONG_POLL_MS = 60_000` so a
+  long-poll never trips the host's MCP tool-call timeout). The
+  cursor (`since_event_line`) prevents re-rendering already-seen
+  events on each return.
 
 - **Terminal vs cancel**: the dispatcher tracks an `AbortController`
   per in-flight run. `cancel_run` finds the run by `run_id` and aborts;
   the same lifecycle listener that handles `run:complete` handles
   `run:cancelled` with `status: "cancelled"`.
+
+**Why async-first?** Pre-2026-05-05 `runDispatchAndRespond` raced a
+sync window (5 min, then 60s) against the terminal event. The
+problem: hosts that don't surface MCP `notifications/progress`
+(observed: codex CLI 0.128.0) turned the sync block into a silent
+freeze for the user. Even after dropping to 60s, the opening
+blackout + snapshot-cadence polling at 10–20s intervals still felt
+hung. Async-first decouples the captain's tool-call boundary from
+the agent's runtime — combined with cursor-based long-poll on
+`get_run_status`, the captain renders new content with sub-second
+latency rather than fixed-cadence snapshots.
 
 ---
 

@@ -66,25 +66,12 @@ import { logger } from '../../utils/logger.js';
 export const SERVE_VERSION = '0.2.0-dev';
 
 /**
- * If a dispatch exceeds this many milliseconds, run_agent / continue_run
- * return early with `{ status: 'running', run_id }` and the host CLI is
- * expected to poll via get_run_status. The dispatch keeps running in
- * the background and writes its terminal state to state.json regardless.
- *
- * 60s default — short enough that hosts which don't surface
- * `notifications/progress` to the user (observed: codex CLI as of
- * 2026-05) don't sit silent for minutes. Captain receives a fast
- * `status: "running"` envelope with a run_id and polls
- * `get_run_status` to surface the events.log tail; the user sees
- * activity even without progress streaming.
- *
- * The previous 5-minute default optimized for "single synchronous
- * return with full result" but turned a 2-minute Codex run into a UX
- * dead-zone — see commit message of the 60s change for the field
- * report. Hosts that DO support progress (Claude Code) keep working
- * the same; the live stream still flows, just inside a shorter block.
+ * Server-side cap on the long-poll wait that `get_run_status` honors
+ * via `wait_for_change_ms`. Kept under the smallest known host MCP
+ * tool-call timeout so a long-poll never trips the host's own deadline.
+ * Captains usually pass 30000; we clamp anything larger to this value.
  */
-export const ASYNC_FALLBACK_MS = 60_000;
+export const MAX_LONG_POLL_MS = 60_000;
 
 export interface ServeOptions {
   /**
@@ -115,11 +102,6 @@ export interface ServeOptions {
    */
   crewHome?: string;
 
-  /**
-   * Test seam: override the async-fallback timeout. Tests that exercise the
-   * fallback path use a tiny value (e.g., 50ms); production uses 60s.
-   */
-  asyncFallbackMs?: number;
 }
 
 export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled';
@@ -182,7 +164,6 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher();
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
-  const fallbackMs = options.asyncFallbackMs ?? ASYNC_FALLBACK_MS;
 
   const server = new McpServer({
     name: 'crew',
@@ -245,7 +226,6 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         task: plan.task,
         dispatcher,
         runStateStore,
-        fallbackMs,
         progress: progressNotifierFrom(extra),
       });
     },
@@ -333,7 +313,6 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         task,
         dispatcher,
         runStateStore,
-        fallbackMs,
         progress: progressNotifierFrom(continueExtra),
       });
     },
@@ -464,9 +443,36 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       if (!state) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
       }
-      const logTail = runStateStore.tailEvents(args.run_id, args.log_lines ?? 50);
-      const payload = { ...state, log_tail: logTail };
-      return jsonContent(payload);
+
+      const cursor = args.since_event_line ?? 0;
+      const useLongPoll = (args.wait_for_change_ms ?? 0) > 0
+        && !isTerminalRunStatus(state.status);
+
+      // Snapshot path — fast return.
+      if (!useLongPoll) {
+        return buildGetRunStatusResponse(state, runStateStore, args.run_id, cursor, args.log_lines);
+      }
+
+      // Already-have-data path: if the events log already advanced past
+      // the captain's cursor, return immediately without waiting.
+      const head = runStateStore.readEventsSince(args.run_id, cursor);
+      if (head.lines.length > 0) {
+        return buildGetRunStatusResponse(state, runStateStore, args.run_id, cursor, args.log_lines);
+      }
+
+      // Long-poll: subscribe to dispatcher events for this run; resolve
+      // on the first stream/terminal event or after wait_for_change_ms.
+      // The clamp prevents a misbehaving captain from holding the
+      // request open longer than the host's MCP tool-call timeout.
+      const waitMs = Math.min(args.wait_for_change_ms ?? 0, MAX_LONG_POLL_MS);
+      await waitForRunChange({
+        dispatcher,
+        runId: args.run_id,
+        waitMs,
+      });
+
+      const fresh = runStateStore.read(args.run_id) ?? state;
+      return buildGetRunStatusResponse(fresh, runStateStore, args.run_id, cursor, args.log_lines);
     },
   );
 
@@ -558,7 +564,6 @@ interface DispatchAndRespondArgs {
   task: import('../../orchestrator/tool-dispatcher.js').DispatchTask;
   dispatcher: ToolDispatcher;
   runStateStore: RunStateStore;
-  fallbackMs: number;
   /**
    * Optional MCP progress notifier — when supplied, each adapter
    * onOutput chunk fires `notifications/progress` so the host CLI
@@ -580,18 +585,29 @@ interface ProgressNotifier {
 }
 
 /**
- * The shared dispatch lifecycle for run_agent + continue_run. Wires the
- * dispatcher event subscriptions (state-write side effects + terminal
- * promise resolution + stream-log appends), starts the dispatch, and
- * races a 60s timer against the terminal event.
+ * Async-first dispatch — pre-2026-05 this raced a sync window against
+ * the terminal event so fast runs could return inline; now it always
+ * returns `status: "running"` immediately and the captain drives the
+ * lifecycle via `get_run_status` (long-polled, cursor-based).
  *
- * If the terminal wins: returns a full RunEnvelope. If the timer wins:
- * returns an early `status:'running'` envelope. Either way, the run-state
- * subscriptions stay alive until the dispatch eventually terminates and
- * write the final state to state.json.
+ * Why: the prior model produced a 60s opening blackout for every
+ * dispatch on hosts that don't surface MCP progress notifications
+ * (codex), and snapshot polling at 10–20s cadence felt like a hung
+ * UI even when the agent was actively working. Async-first lets the
+ * captain start a tight long-poll loop inside `get_run_status` that
+ * surfaces new events.log lines with sub-second latency.
+ *
+ * The lifecycle listeners installed here keep firing in the
+ * background after we return — they own state.json writes on
+ * terminal events. The captain's polls read state.json + events.log
+ * (cursor-based) to follow along.
  */
 async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<ToolCallReturn> {
-  const terminalPromise = installRunLifecycleListeners({
+  // Install terminal-event listeners + start the dispatch; we don't
+  // await the terminal promise — it resolves in the background and
+  // its side effects (markTerminal on state.json) are what later
+  // get_run_status calls observe.
+  void installRunLifecycleListeners({
     dispatcher: args.dispatcher,
     runStateStore: args.runStateStore,
     runId: args.runId,
@@ -600,30 +616,16 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
   });
   args.dispatcher.start(args.task);
 
-  const winner = await Promise.race([
-    terminalPromise.then((terminal) => ({ kind: 'terminal' as const, terminal })),
-    sleep(args.fallbackMs).then(() => ({ kind: 'timeout' as const })),
-  ]);
-
-  if (winner.kind === 'timeout') {
-    const env: RunEnvelope = {
-      run_id: args.runId,
-      worktree_path: args.worktreePath,
-      status: 'running',
-      summary: `Dispatch exceeded ${args.fallbackMs}ms; poll get_run_status with run_id="${args.runId}".`,
-      files_changed: [],
-    };
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(env, null, 2) }],
-      structuredContent: env as unknown as Record<string, unknown>,
-    };
-  }
-
-  const env = formatRunEnvelope(args.runId, args.worktreePath, winner.terminal);
+  const env: RunEnvelope = {
+    run_id: args.runId,
+    worktree_path: args.worktreePath,
+    status: 'running',
+    summary: `Dispatched. Poll get_run_status with run_id="${args.runId}" (use wait_for_change_ms: 30000 + since_event_line cursor for live progress).`,
+    files_changed: [],
+  };
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(env, null, 2) }],
     structuredContent: env as unknown as Record<string, unknown>,
-    isError: winner.terminal.kind !== 'complete' || env.status === 'error',
   };
 }
 
@@ -659,6 +661,11 @@ function installRunLifecycleListeners(args: {
             status: terminal.result.status,
             summary: terminal.result.output,
             filesChanged: terminal.result.filesModified,
+            // Persist advisory warnings (read-only dirty-tree probe is
+            // the only producer today). With async-first dispatch the
+            // captain reads them via get_run_status — there's no
+            // synchronous envelope path to surface them through.
+            warnings: terminal.result.warnings,
           });
         } else if (terminal.kind === 'failed') {
           args.runStateStore.markTerminal(args.runId, {
@@ -761,44 +768,93 @@ function progressNotifierFrom(extra: {
   };
 }
 
-function formatRunEnvelope(
+/**
+ * `get_run_status` payload shape — the run's persisted state plus
+ * cursor-driven events delta. `events_tail` contains only lines with
+ * index >= the input `since_event_line`; `next_event_line` is the
+ * cursor the captain passes back next call. `log_tail` is retained
+ * for snapshot callers that haven't migrated to cursor semantics
+ * (mirrors `tailEvents` output and only populated when the caller
+ * passes `log_lines` and not `since_event_line`).
+ */
+interface GetRunStatusResponse {
+  // Spread of RunStateV1 — typed wide because the state shape is
+  // additive over time and we don't want to re-declare it here.
+  readonly [key: string]: unknown;
+  readonly events_tail: readonly string[];
+  readonly next_event_line: number;
+  readonly log_tail?: readonly string[];
+}
+
+function buildGetRunStatusResponse(
+  state: object,
+  store: RunStateStore,
   runId: string,
-  worktreePath: string,
-  terminal: DispatchTerminal,
-): RunEnvelope {
-  if (terminal.kind === 'failed') {
-    return {
-      run_id: runId,
-      worktree_path: worktreePath,
-      status: 'error',
-      summary: terminal.error,
-      files_changed: [],
-    };
-  }
-  if (terminal.kind === 'cancelled') {
-    return {
-      run_id: runId,
-      worktree_path: worktreePath,
-      status: 'cancelled',
-      summary: terminal.reason,
-      files_changed: [],
-    };
-  }
-  // Carry warnings (e.g., read-only dirty-tree contract violations)
-  // through to the captain-visible envelope. Omit the field entirely
-  // when empty/undefined so happy-path envelopes stay narrow.
-  const warnings =
-    terminal.result.warnings && terminal.result.warnings.length > 0
-      ? terminal.result.warnings
-      : undefined;
-  return {
-    run_id: runId,
-    worktree_path: worktreePath,
-    status: terminal.result.status,
-    summary: terminal.result.output,
-    files_changed: terminal.result.filesModified,
-    ...(warnings ? { warnings } : {}),
+  sinceLine: number,
+  logLines: number | undefined,
+): ToolCallReturn {
+  const { lines, nextLine } = store.readEventsSince(runId, sinceLine);
+  const payload: GetRunStatusResponse = {
+    ...state,
+    events_tail: lines,
+    next_event_line: nextLine,
+    // Backward-compat: the legacy `log_tail` field is still surfaced
+    // for callers that pass `log_lines` but no cursor. Once captains
+    // are all on cursor semantics this can be deleted.
+    ...(sinceLine === 0 && logLines !== undefined
+      ? { log_tail: store.tailEvents(runId, logLines) }
+      : {}),
   };
+  return jsonContent(payload);
+}
+
+function isTerminalRunStatus(status: string): boolean {
+  return (
+    status === 'success'
+    || status === 'partial'
+    || status === 'error'
+    || status === 'cancelled'
+    || status === 'merged'
+    || status === 'merge_conflict'
+    || status === 'discarded'
+  );
+}
+
+/**
+ * Block until the dispatcher fires any of stream/complete/failed/
+ * cancelled for `runId`, OR `waitMs` elapses — whichever happens
+ * first. Listeners self-dispose on either path. The captain's
+ * long-poll resolves and the next `get_run_status` snapshot read
+ * picks up the latest state + new events.
+ */
+async function waitForRunChange(args: {
+  dispatcher: ToolDispatcher;
+  runId: string;
+  waitMs: number;
+}): Promise<void> {
+  const subs: Array<{ dispose(): void }> = [];
+  await new Promise<void>((resolve) => {
+    const finish = (): void => {
+      for (const s of subs) s.dispose();
+      resolve();
+    };
+    const matches = (info: { runId?: string }): boolean => info.runId === args.runId;
+    subs.push(
+      args.dispatcher.onEvent('run:stream', (info) => {
+        if (matches(info)) finish();
+      }),
+      args.dispatcher.onEvent('run:complete', (info) => {
+        if (matches(info)) finish();
+      }),
+      args.dispatcher.onEvent('run:failed', (info) => {
+        if (matches(info)) finish();
+      }),
+      args.dispatcher.onEvent('run:cancelled', (info) => {
+        if (matches(info)) finish();
+      }),
+    );
+    setTimeout(finish, args.waitMs);
+  });
 }
 
 function jsonContent<T extends object>(value: T, isError = false): ToolCallReturn {

@@ -284,13 +284,16 @@ export class GeminiCliAdapter implements AgentAdapter {
     }
     args.push(task.prompt);
 
-    const timeout = task.constraints?.timeout ?? 300_000;
+    // No wall-clock timeout (was 300_000). Cancellation flows through
+    // the captain-supplied cancelSignal; the agent's own budget caps
+    // runaway turns.
+    const timeout = task.constraints?.timeout;
 
     let result;
     try {
       result = await execa('gemini', args, {
         cwd: task.context.workingDirectory,
-        timeout,
+        ...(timeout ? { timeout } : {}),
         cancelSignal: task.constraints?.signal,
         reject: false,
       });
