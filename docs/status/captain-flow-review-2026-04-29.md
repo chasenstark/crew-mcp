@@ -23,6 +23,31 @@ logs, and source code each time.
 effectively per-client for the current stdio transport. Future SSE or other
 multi-client transports should revisit that storage.
 
+## Update - 2026-05-06 Codex Semantic Progress Parsing
+
+The Codex adapter's JSONL stream formatter now emits bounded semantic markdown
+lines for the observed Codex 0.128 event taxonomy instead of raw assistant text
+plus suppressed lifecycle events:
+
+- Top-level `thread.started`, `turn.started`, `turn.completed`,
+  `turn.failed`, and `error` events produce `[codex] turn:` or
+  `[codex] error:` lines.
+- `item.completed` envelopes produce `[codex] message:`, `[codex] reasoning:`,
+  `[codex] command:`, and `[codex] file:` lines.
+- New Codex 0.128 `item.started` command executions produce a separate
+  `[codex] command: started ...` line before the completion line.
+- Unknown or malformed event objects produce bounded `[codex] event: ...`
+  fallbacks instead of silent empty stream gaps.
+- Codex stream lines are capped at 240 characters including the `[codex] `
+  prefix, matching the current progress notification bound.
+
+Current targeted verification after this parser pass:
+
+- `npx vitest run test/adapters/codex.parser.test.ts`: passed.
+  - 1 test file passed.
+  - 20 tests passed.
+- `npx tsc --noEmit`: passed.
+
 ## Update - 2026-05-03 Interactive Startup Responsiveness + Status UX
 
 Interactive startup now renders Ink immediately and runs required adapter

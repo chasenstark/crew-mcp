@@ -55,7 +55,7 @@ interface CodexItem {
   path?: string;
   action?: string;
   command?: string;
-  exit_code?: number;
+  exit_code?: number | null;
   [key: string]: unknown;
 }
 
@@ -77,6 +77,10 @@ interface ParseJsonlResult {
   droppedLines: number;
 }
 
+const CODEX_STREAM_LINE_MAX_LEN = 240;
+const CODEX_STREAM_PREFIX = '[codex] ';
+const CODEX_STREAM_TRUNCATION_SUFFIX = '...';
+
 function parseJsonlEvent(line: string): CodexEvent | undefined {
   const parsed = JSON.parse(line);
   if (
@@ -93,6 +97,50 @@ function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
+function streamPreview(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function takeCodePointBudget(value: string, maxCodeUnits: number): string {
+  if (maxCodeUnits <= 0) return '';
+  let used = 0;
+  let out = '';
+  for (const codePoint of value) {
+    const next = used + codePoint.length;
+    if (next > maxCodeUnits) break;
+    out += codePoint;
+    used = next;
+  }
+  return out;
+}
+
+function boundStreamLine(line: string): string {
+  if (line.length <= CODEX_STREAM_LINE_MAX_LEN) return line;
+  const budget = CODEX_STREAM_LINE_MAX_LEN - CODEX_STREAM_TRUNCATION_SUFFIX.length;
+  return `${takeCodePointBudget(line, budget)}${CODEX_STREAM_TRUNCATION_SUFFIX}`;
+}
+
+function codexStreamLine(kind: string, summary: string): string {
+  const fallbackSummary = streamPreview(summary) || 'unknown';
+  return boundStreamLine(`${CODEX_STREAM_PREFIX}${kind}: ${fallbackSummary}`);
+}
+
+function codexEventFallback(event: unknown): string {
+  const type = typeof event === 'object' && event !== null
+    ? streamPreview((event as { type?: unknown }).type)
+    : '';
+  const itemType = typeof event === 'object' && event !== null
+    && typeof (event as { item?: unknown }).item === 'object'
+    && (event as { item?: unknown }).item !== null
+    ? streamPreview(((event as { item: { type?: unknown } }).item).type)
+    : '';
+  if ((type === 'item.started' || type === 'item.completed') && itemType) {
+    return codexStreamLine('event', `${type}/${itemType}`);
+  }
+  return codexStreamLine('event', type || 'unknown');
 }
 
 function numberField(
@@ -187,20 +235,75 @@ export function getLastAgentMessage(events: CodexEvent[]): string {
 }
 
 /**
- * Formats a single Codex event as a user-visible chunk for streaming.
- * Only forwards final `item.completed` content events; envelope/meta events
- * (thread.*, turn.*) are intentionally dropped from the live view.
+ * Formats a single Codex event as a bounded semantic markdown progress line.
+ * Event shapes drift between Codex CLI versions, so unexpected payloads fall
+ * back to a non-empty event line instead of breaking the stream.
  */
 export function formatEventForStream(event: CodexEvent): string {
-  const agentMessage = getItemOfType(event, 'agent_message');
-  if (agentMessage && typeof agentMessage.text === 'string') {
-    return agentMessage.text;
+  try {
+    switch (event.type) {
+      case 'thread.started':
+        return codexStreamLine('turn', 'thread started');
+      case 'turn.started':
+        return codexStreamLine('turn', 'started');
+      case 'turn.completed':
+        return codexStreamLine('turn', 'completed');
+      case 'turn.failed': {
+        const reason = streamPreview(event.reason);
+        return codexStreamLine('turn', reason ? `failed (${reason})` : 'failed');
+      }
+      case 'error':
+        return codexStreamLine('error', streamPreview(event.message) || 'unknown');
+      case 'item.started':
+      case 'item.completed':
+        return formatItemEventForStream(event);
+      default:
+        return codexEventFallback(event);
+    }
+  } catch {
+    return codexStreamLine('event', 'unknown');
   }
-  const reasoning = getItemOfType(event, 'reasoning');
-  if (reasoning && typeof reasoning.text === 'string') {
-    return `\u2502 ${reasoning.text}\n`;
+}
+
+function formatItemEventForStream(event: CodexEvent): string {
+  const item = event.item;
+  if (!item || typeof item !== 'object') {
+    return codexEventFallback(event);
   }
-  return '';
+
+  if (event.type === 'item.started' && item.type === 'command_execution') {
+    const command = streamPreview(item.command);
+    return codexStreamLine('command', command ? `started ${command}` : 'started');
+  }
+
+  if (event.type !== 'item.completed') {
+    return codexEventFallback(event);
+  }
+
+  switch (item.type) {
+    case 'agent_message':
+      return codexStreamLine('message', streamPreview(item.text) || 'message');
+    case 'reasoning':
+      return codexStreamLine('reasoning', streamPreview(item.text) || 'reasoning');
+    case 'command_execution': {
+      const command = streamPreview(item.command) || 'completed';
+      const exitCode = typeof item.exit_code === 'number'
+        ? ` (exit ${item.exit_code})`
+        : '';
+      return codexStreamLine('command', `${command}${exitCode}`);
+    }
+    case 'file_change': {
+      const path = streamPreview(item.path);
+      const action = streamPreview(item.action);
+      const normalizedAction = action === 'none' ? 'no change' : action;
+      return codexStreamLine('file', [
+        normalizedAction || 'changed',
+        path,
+      ].filter(Boolean).join(' '));
+    }
+    default:
+      return codexEventFallback(event);
+  }
 }
 
 /**
