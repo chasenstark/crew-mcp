@@ -5,6 +5,24 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-06 MCP Progress Payload Hardening
+
+`crew-mcp serve` progress formatting now treats the full
+`notifications/progress` message as the bounded surface:
+
+- `[<agent>] ` prefixes count against the 240-character cap.
+- Truncation is code-point safe and avoids lone UTF-16 surrogates.
+- CRLF, LF, and lone CR spinner overwrites are all progress-line delimiters.
+- Markdown dispatch results escape inline-code values containing backticks or
+  newlines.
+- `events_tail` remains the raw, unprefixed, untruncated progress source of
+  truth for captain polling; only the host inline notification surface is
+  shortened.
+
+`progressToken` diagnostics remain per `buildCrewMcpServer` instance, which is
+effectively per-client for the current stdio transport. Future SSE or other
+multi-client transports should revisit that storage.
+
 ## Update - 2026-05-03 Interactive Startup Responsiveness + Status UX
 
 Interactive startup now renders Ink immediately and runs required adapter

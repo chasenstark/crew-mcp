@@ -174,6 +174,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const dispatcher = new ToolDispatcher();
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
   // Per-server one-shot loud-log state for progressToken presence/absence.
+  // Crew's stdio MCP server is normally 1:1 with a single host client, so
+  // per-server is effectively per-client today. If crew grows SSE or another
+  // multi-client transport, revisit this storage so one client's first
+  // dispatch does not consume another client's startup diagnostic.
   // Created here (not module-level) so tests that build a fresh server
   // start with a clean slate — otherwise a serve test's first dispatch
   // logs cleanly but later tests' first dispatches go silent on the
@@ -696,15 +700,25 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
  */
 function renderDispatchMarkdown(env: RunEnvelope): string {
   const lines = [
-    `**Dispatched** \`${env.agent_id ?? 'agent'}\` as run \`${env.run_id}\`.`,
+    `**Dispatched** ${mdInlineCode(env.agent_id ?? 'agent')} as run \`${env.run_id}\`.`,
     '',
     `- Status: \`${env.status}\``,
-    `- Worktree: \`${env.worktree_path}\``,
+    `- Worktree: ${mdInlineCode(env.worktree_path)}`,
     `- Follow with: \`get_run_status({ run_id: "${env.run_id}", `
       + `wait_for_change_ms: 30000, since_event_line: <cursor> })\` `
       + '— start cursor at 0; advance via `next_event_line` on each response.',
   ];
   return lines.join('\n');
+}
+
+function mdInlineCode(value: string): string {
+  const normalized = value.replace(/[\r\n]+/g, ' ');
+  if (!normalized.includes('`')) return `\`${normalized}\``;
+  const longestBacktickRun = Math.max(
+    ...Array.from(normalized.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = '`'.repeat(Math.max(2, longestBacktickRun + 1));
+  return `${fence} ${normalized} ${fence}`;
 }
 
 /**
@@ -840,14 +854,33 @@ const PROGRESS_LINE_MAX_LEN = 240;
  */
 export function formatProgressLines(agentName: string, chunk: string): string[] {
   const out: string[] = [];
-  for (const raw of chunk.split(/\r?\n/)) {
+  for (const raw of chunk.split(/\r\n|\r|\n/)) {
     const trimmed = raw.replace(/\s+$/, '');
     if (trimmed.length === 0) continue;
+    const prefix = `[${agentName}] `;
+    if (prefix.length >= PROGRESS_LINE_MAX_LEN) {
+      out.push(takeCodePointBudget(prefix, PROGRESS_LINE_MAX_LEN));
+      continue;
+    }
+    const bodyBudget = PROGRESS_LINE_MAX_LEN - prefix.length;
     const body =
-      trimmed.length > PROGRESS_LINE_MAX_LEN
-        ? `${trimmed.slice(0, PROGRESS_LINE_MAX_LEN - 1)}…`
+      trimmed.length > bodyBudget
+        ? `${takeCodePointBudget(trimmed, bodyBudget - 1)}…`
         : trimmed;
-    out.push(`[${agentName}] ${body}`);
+    out.push(`${prefix}${body}`);
+  }
+  return out;
+}
+
+function takeCodePointBudget(value: string, maxCodeUnits: number): string {
+  if (maxCodeUnits <= 0) return '';
+  let used = 0;
+  let out = '';
+  for (const codePoint of value) {
+    const next = used + codePoint.length;
+    if (next > maxCodeUnits) break;
+    out += codePoint;
+    used = next;
   }
   return out;
 }
@@ -863,6 +896,7 @@ export function formatProgressLines(agentName: string, chunk: string): string[] 
 interface ProgressTokenSeen {
   presentLogged: boolean;
   absentLogged: boolean;
+  lastObserved?: 'present' | 'absent';
 }
 
 /**
@@ -891,6 +925,7 @@ function progressNotifierFrom(
   seen: ProgressTokenSeen,
 ): ProgressNotifier | undefined {
   const token = extra._meta?.progressToken;
+  const observed = token === undefined ? 'absent' : 'present';
   // Per-call info log: a one-liner the operator can grep when sanity-
   // checking a single dispatch ("did this run get a token?"). Cheap.
   logger.info(
@@ -898,6 +933,12 @@ function progressNotifierFrom(
       token === undefined ? 'absent (no streaming chunks to captain)' : String(token)
     }`,
   );
+  if (seen.lastObserved !== undefined && seen.lastObserved !== observed) {
+    logger.info(
+      `progressToken state changed from ${seen.lastObserved} to ${observed} this server session (agent=${agentId}).`,
+    );
+  }
+  seen.lastObserved = observed;
   // First-occurrence warn-level log: the question "is my host actually
   // providing a progressToken?" deserves a loud answer the first time
   // it's answered, so users catch a missing token without grepping
@@ -906,15 +947,15 @@ function progressNotifierFrom(
   if (token === undefined && !seen.absentLogged) {
     seen.absentLogged = true;
     logger.warn(
-      'MCP host did not supply progressToken on first dispatch — inline ' +
-      `notifications/progress will not fire this session (agent=${agentId}). ` +
+      'progressToken absent on first dispatch without a token this server session ' +
+      `(agent=${agentId}). Inline notifications/progress will not fire for this call. ` +
       'The captain\'s get_run_status long-poll is your only progress channel. ' +
       'Known: codex CLI 0.128.0 omits the token; Claude Code supplies it.',
     );
   } else if (token !== undefined && !seen.presentLogged) {
     seen.presentLogged = true;
     logger.info(
-      `MCP host supplied progressToken on first dispatch — inline progress streaming active (agent=${agentId}).`,
+      `progressToken present on first dispatch with a token this server session (agent=${agentId}); inline progress streaming active for this call.`,
     );
   }
   if (token === undefined) return undefined;

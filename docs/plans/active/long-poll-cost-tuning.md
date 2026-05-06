@@ -2,11 +2,12 @@
 
 **Status:** Phase 1 shipped 2026-05-06 — markdown initial response
 (`run_agent` / `continue_run` tool result) + `[<agent>] `-prefixed,
-line-split, length-bounded progress payloads. Phase 2 (sections 2 + 3)
-parked pending field-time with the new inline channel.
+line-split progress notifications bounded to 240 chars including the
+prefix. Phase 2 (sections 2 + 3) parked pending field-time with the new
+inline channel.
 **Anchor commits:** `cc3bb09` — `feat(serve): async-first dispatch +
 long-poll get_run_status + drop subprocess timeout`. Phase 1 commit
-TBD.
+`c697efb`.
 **Trigger to unpark Phase 2:** the cost-vs-UX tradeoff that motivated
 sections 2 + 3 flipped once Phase 1 landed — #5 carries real inline
 signal at zero captain inference cost, so going quieter on poll-return
@@ -33,11 +34,12 @@ Two surfaces, no schema changes, no captain-context cost.
   threads agent name into the stream handler and runs each chunk
   through `formatProgressLines(agent, chunk)` before sending. Splits
   on newlines (multi-line buffer flushes become multiple discrete
-  notifications), drops empty lines, truncates at 240 chars with `…`,
-  prefixes `[<agent>] `. `events_tail` retains the verbatim chunk —
-  only the host-UI surface is bounded. Cost: zero captain inference
-  tokens (`notifications/progress` is server→host UI, not appended
-  to the captain's conversation context).
+  notifications), drops empty lines, prefixes `[<agent>] `, and
+  truncates the body as needed so the complete notification is at most
+  240 chars including prefix and `…`. `events_tail` retains the
+  verbatim chunk — only the host-UI surface is bounded. Cost: zero
+  captain inference tokens (`notifications/progress` is server→host UI,
+  not appended to the captain's conversation context).
 - **Verification scaffolding for `progressToken` presence.** Per-call
   info log unchanged (`progress token (agent=...): <value>`), but
   the FIRST occurrence each session now elevates to warn-level (on
