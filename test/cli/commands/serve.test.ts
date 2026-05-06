@@ -20,7 +20,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 
-import { buildCrewMcpServer, type RunEnvelope } from '../../../src/cli/commands/serve.js';
+import {
+  buildCrewMcpServer,
+  formatProgressLines,
+  type RunEnvelope,
+} from '../../../src/cli/commands/serve.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
@@ -280,6 +284,40 @@ describe('crew serve — run_agent tool', () => {
       // Latest prompt's summary captures the adapter's output.
       const prompts = final.state.prompts as Array<{ summary?: string }>;
       expect(prompts[prompts.length - 1].summary).toBe('changed CHANGE.md');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('returns markdown text plus structuredContent (not raw JSON) on dispatch', async () => {
+    // #1: hosts collapse MCP tool calls to a one-line title and only
+    // show the result when the user expands. Markdown reads as a
+    // status report there; raw JSON reads as noise. The structured
+    // payload still travels via structuredContent for programmatic
+    // consumers.
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      // structuredContent unchanged — captain (and any host UI) can still
+      // pluck run_id / agent_id / worktree_path programmatically.
+      expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(env.agent_id).toBe('mock-coder');
+      expect(env.status).toBe('running');
+      // text is markdown, not stringified JSON.
+      const text = (res.content as Array<{ text: string }>)[0].text;
+      expect(text).not.toMatch(/^\s*\{/); // not a JSON blob
+      expect(text).toMatch(/^\*\*Dispatched\*\* `mock-coder` as run `/);
+      expect(text).toContain(env.run_id);
+      expect(text).toContain(env.worktree_path);
+      expect(text).toContain('get_run_status');
+      // Wait so the lifecycle terminates before harness teardown — otherwise
+      // the dispatcher's listeners outlive the test.
+      await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
     }
@@ -973,8 +1011,13 @@ describe('crew serve — progress notifications', () => {
       );
       // The SDK's onprogress callback also receives notifications, but
       // our setNotificationHandler captures the raw payload for assert.
+      // Per #5: each line is prefixed `[<agent>] ` so the host's
+      // inline progress UI labels which subagent emitted it.
       await waitFor(() => progress.length >= 2, 1000);
-      expect(progress.map((p) => p.message)).toEqual(['chunk-one', 'chunk-two']);
+      expect(progress.map((p) => p.message)).toEqual([
+        '[streamy] chunk-one',
+        '[streamy] chunk-two',
+      ]);
       expect(progress[0].progress).toBe(1);
       expect(progress[1].progress).toBe(2);
     } finally {
@@ -1016,6 +1059,104 @@ describe('crew serve — progress notifications', () => {
       // Give the server a beat to emit any in-flight notifications.
       await new Promise((r) => setTimeout(r, 50));
       expect(progress).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('splits multi-line chunks into one progress notification per non-empty line', async () => {
+    // #5: an adapter may emit a buffer flush that contains multiple
+    // newline-delimited records. Sending that as one notification
+    // means the host's inline UI shows a wall of text it has to
+    // layout itself; sending one notification per line gives the
+    // host a clean list of discrete updates. Empty lines (e.g.,
+    // trailing newlines from line-buffered subprocesses) are
+    // dropped so the counter doesn't tick on whitespace.
+    const adapter = makeMockAdapter({
+      name: 'multi',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        t.onOutput?.('first line\nsecond line\n\nthird line\n');
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const progress: Array<{ progress: number; message?: string }> = [];
+      h.client.setNotificationHandler(
+        z.object({
+          method: z.literal('notifications/progress'),
+          params: z.object({
+            progressToken: z.union([z.string(), z.number()]),
+            progress: z.number(),
+            message: z.string().optional(),
+          }),
+        }) as unknown as Parameters<typeof h.client.setNotificationHandler>[0],
+        async (notif: unknown) => {
+          const n = notif as { params: { progress: number; message?: string } };
+          progress.push({ progress: n.params.progress, message: n.params.message });
+        },
+      );
+      await h.client.callTool(
+        { name: 'run_agent', arguments: { agent_id: 'multi', prompt: 'p' } },
+        undefined,
+        { onprogress: () => undefined },
+      );
+      await waitFor(() => progress.length >= 3, 1000);
+      expect(progress.map((p) => p.message)).toEqual([
+        '[multi] first line',
+        '[multi] second line',
+        '[multi] third line',
+      ]);
+      // Counter is monotonic across the split lines — no resets per chunk.
+      expect(progress.map((p) => p.progress)).toEqual([1, 2, 3]);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('truncates over-long lines with an ellipsis suffix', async () => {
+    // #5 PROGRESS_LINE_MAX_LEN = 240. The verbatim chunk is still
+    // appended to events.log (events_tail surfaces it) — only the
+    // inline progress payload is bounded so the host UI stays
+    // readable.
+    const huge = 'x'.repeat(500);
+    const adapter = makeMockAdapter({
+      name: 'verbose',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        t.onOutput?.(huge);
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const progress: Array<{ message?: string }> = [];
+      h.client.setNotificationHandler(
+        z.object({
+          method: z.literal('notifications/progress'),
+          params: z.object({
+            progressToken: z.union([z.string(), z.number()]),
+            progress: z.number(),
+            message: z.string().optional(),
+          }),
+        }) as unknown as Parameters<typeof h.client.setNotificationHandler>[0],
+        async (notif: unknown) => {
+          const n = notif as { params: { message?: string } };
+          progress.push({ message: n.params.message });
+        },
+      );
+      await h.client.callTool(
+        { name: 'run_agent', arguments: { agent_id: 'verbose', prompt: 'p' } },
+        undefined,
+        { onprogress: () => undefined },
+      );
+      await waitFor(() => progress.length >= 1, 1000);
+      const msg = progress[0].message ?? '';
+      expect(msg.startsWith('[verbose] ')).toBe(true);
+      // Prefix `[verbose] ` (10 chars) + 239 truncated body chars + `…` (1) = 250.
+      expect(msg.length).toBe('[verbose] '.length + 240);
+      expect(msg.endsWith('…')).toBe(true);
     } finally {
       await h.close();
     }
@@ -1314,3 +1455,31 @@ async function waitFor(
 
 // Silence "unused import" for `readFileSync` if test variants change.
 void readFileSync;
+
+describe('formatProgressLines (unit)', () => {
+  it('prefixes a single-line chunk with the agent id', () => {
+    expect(formatProgressLines('codex', 'hello')).toEqual(['[codex] hello']);
+  });
+
+  it('drops empty lines and trailing whitespace', () => {
+    expect(formatProgressLines('a', '  \nfirst   \n\n   \nsecond\n')).toEqual([
+      '[a] first',
+      '[a] second',
+    ]);
+  });
+
+  it('truncates lines longer than 240 chars with an ellipsis', () => {
+    const result = formatProgressLines('x', 'a'.repeat(500));
+    expect(result).toHaveLength(1);
+    expect(result[0].endsWith('…')).toBe(true);
+    expect(result[0].length).toBe('[x] '.length + 240);
+  });
+
+  it('returns an empty array for a whitespace-only chunk', () => {
+    expect(formatProgressLines('a', '\n\n   \n')).toEqual([]);
+  });
+
+  it('handles CRLF line endings', () => {
+    expect(formatProgressLines('a', 'one\r\ntwo')).toEqual(['[a] one', '[a] two']);
+  });
+});

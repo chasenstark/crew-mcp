@@ -1,12 +1,54 @@
 # Long-poll cost + UX tuning
 
-**Status:** parked. Not ready to decide. Revisit after more
-field-time with the async-first architecture (commit `cc3bb09`).
-**Anchor commit:** `cc3bb09` — `feat(serve): async-first dispatch +
-long-poll get_run_status + drop subprocess timeout`.
-**Trigger to unpark:** if real captain inference cost on long runs
-becomes painful, or if the "appears hung but isn't" UX hits the
-wrong people more than once.
+**Status:** Phase 1 shipped 2026-05-06 — markdown initial response
+(`run_agent` / `continue_run` tool result) + `[<agent>] `-prefixed,
+line-split, length-bounded progress payloads. Phase 2 (sections 2 + 3)
+parked pending field-time with the new inline channel.
+**Anchor commits:** `cc3bb09` — `feat(serve): async-first dispatch +
+long-poll get_run_status + drop subprocess timeout`. Phase 1 commit
+TBD.
+**Trigger to unpark Phase 2:** the cost-vs-UX tradeoff that motivated
+sections 2 + 3 flipped once Phase 1 landed — #5 carries real inline
+signal at zero captain inference cost, so going quieter on poll-return
+no longer trades UX for cost. Re-evaluate after ~a week of dogfooding
+the new payload: do users still report "appears hung," do per-poll
+captain narrations still feel duplicative, does the captain need a
+reliable host-streams-progress signal to branch on. Sections 1 + 4
+remain on the original parked criteria (real cost pain or empirical
+data on per-host MCP timeouts).
+
+## Phase 1 — shipped 2026-05-06
+
+Two surfaces, no schema changes, no captain-context cost.
+
+- **#1 — markdown initial response.** `runDispatchAndRespond` in
+  `src/cli/commands/serve.ts` now renders a markdown block
+  (`**Dispatched** \`<agent>\` as run \`<id>\`...`) instead of
+  `JSON.stringify(env, null, 2)`. `RunEnvelope.agent_id` added
+  (optional, backward compat) so the captain — and any host UI
+  reading `structuredContent` — can label the run without round-tripping
+  through state.json. Cost: ~+20-50 tokens once per dispatch, sticky
+  in captain context until compaction. Trivial.
+- **#5 — prefixed/folded progress payload.** `installRunLifecycleListeners`
+  threads agent name into the stream handler and runs each chunk
+  through `formatProgressLines(agent, chunk)` before sending. Splits
+  on newlines (multi-line buffer flushes become multiple discrete
+  notifications), drops empty lines, truncates at 240 chars with `…`,
+  prefixes `[<agent>] `. `events_tail` retains the verbatim chunk —
+  only the host-UI surface is bounded. Cost: zero captain inference
+  tokens (`notifications/progress` is server→host UI, not appended
+  to the captain's conversation context).
+- **Verification scaffolding for `progressToken` presence.** Per-call
+  info log unchanged (`progress token (agent=...): <value>`), but
+  the FIRST occurrence each session now elevates to warn-level (on
+  absence) or info (on presence) so the "is my host wired up?"
+  question has a hard-to-miss startup answer. State lives on
+  `buildCrewMcpServer`, so tests start clean.
+
+Did NOT change: `events_tail` shape (still `string[]` of raw subprocess
+output), captain skill-body narration guidance, `MAX_LONG_POLL_MS`,
+or the request/response shape of `get_run_status`. Phase 2 is where
+those would move.
 
 ## Context
 
@@ -68,6 +110,16 @@ with no other change.
 
 ### 2. Skill-body nudge: stay quiet during silent long-polls
 
+**Post-Phase 1:** the framing here flips. Pre-#5 this section traded
+visibility for cost ("the user is *technically* seeing progress
+inline, so the captain doesn't need to re-render"). Post-#5 the inline
+channel actually carries labeled, bounded, multi-line signal — going
+quiet stops being a UX sacrifice and becomes a clean cost harvest.
+Pair tightly with section 3: the captain can only safely stay quiet
+on hosts that stream progress, so it needs a reliable signal to branch
+on. Ready to ship when we have field-evidence that #5's inline payload
+is doing the load-bearing work.
+
 When the host streams progress notifications inline, the captain
 re-rendering `events_tail` is duplicate output (and a Claude
 inference turn). Skill body could say:
@@ -94,6 +146,14 @@ inference turn). Skill body could say:
 
 ### 3. Diagnostic surface in `get_run_status` response
 
+**Post-Phase 1:** value goes up. Pre-#5 the captain's branch was
+roughly symmetric (raw chunks rendered similarly across hosts);
+post-#5 the two branches diverge meaningfully — inline-rendering hosts
+get rich live UX free while non-inline hosts (codex CLI 0.128.0) still
+need the captain to narrate verbatim. The flag becomes the right
+primitive for that fork. Section 2 is the consumer of this signal,
+so pair them.
+
 Let `get_run_status` return a `host_streams_progress: bool`
 alongside the cursor + status. The captain reads it on each poll
 and decides whether to render `events_tail` or stay quiet. Server
@@ -105,6 +165,9 @@ knows the answer because it's the one tracking
 - **Pros:** Claude doesn't have to guess.
 - **Cons:** another `RunStateV1` field. Marginal complexity for
   marginal benefit if (2) already covers the common case.
+- **Open question (resolved post-Phase 1):** surface flag, not static
+  guidance. Static guidance ages poorly as host-streaming behavior
+  drifts; the flag is cheap and stays correct.
 
 ### 4. `wait_for_terminal_only` flag on `get_run_status`
 
@@ -140,18 +203,29 @@ and inference cost becomes load-bearing.
 
 ## Decision criteria when we revisit
 
-- Has long-run inference cost become load-bearing in real
-  dogfooding (e.g., a multi-hour Codex run inflated costs
-  noticeably)?
-- Has the "appears hung but isn't" UX confused users beyond a
-  one-time learning moment?
-- Do we have empirical data on per-host MCP tool-call timeouts so
-  we can pick a safe `MAX_LONG_POLL_MS` default?
-- Has any other host besides codex shown progress-notification
-  gaps?
+**Phase 2 (sections 2 + 3 paired)** — the post-#5 cost harvest.
+Re-evaluate after ~a week of dogfooding the new inline payload:
 
-If any of those is "yes" with weight, ship (1) + (2) as a pair.
-(3) and (4) are escalations only if (1) + (2) prove insufficient.
+- Does the captain's per-poll narration of `events_tail` still feel
+  duplicative against the rich inline progress? (If yes, ship 2 + 3.)
+- Are users still saying "appears hung" even with the labeled
+  `[<agent>] ` chunks streaming inline? (If yes, the inline channel
+  is doing its job and section 2 is safe to flip; if no, leave
+  parked — visible captain narration is buying real reassurance.)
+- Has any host besides codex CLI shown progress-notification gaps?
+  (Drives whether section 3's flag is load-bearing or theoretical.)
+
+**Sections 1 + 4** — original criteria still apply:
+
+- Has long-run inference cost become load-bearing in real dogfooding
+  (e.g., a multi-hour Codex run inflated costs noticeably)? Drives
+  section 1 (`MAX_LONG_POLL_MS` bump).
+- Do we have empirical data on per-host MCP tool-call timeouts so
+  we can pick a safe default? Same.
+- Does section 4's `wait_for_terminal_only` API actually simplify
+  captain code beyond what the long `wait_for_change_ms` simulation
+  gives us? Need a concrete code-shape comparison before adding API
+  surface.
 
 ## Out of scope
 

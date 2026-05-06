@@ -108,6 +108,15 @@ export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled
 
 export interface RunEnvelope {
   readonly run_id: string;
+  /**
+   * The adapter id that's running this dispatch (e.g., "codex",
+   * "claude-code", "gemini"). Surfaced so the captain (and any host
+   * UI reading `structuredContent`) can label the run without
+   * round-tripping back through state.json. Optional for backward
+   * compat — older callers that constructed envelopes without it
+   * still type-check.
+   */
+  readonly agent_id?: string;
   readonly worktree_path: string;
   readonly status: RunStatus;
   readonly summary: string;
@@ -164,6 +173,15 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher();
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
+  // Per-server one-shot loud-log state for progressToken presence/absence.
+  // Created here (not module-level) so tests that build a fresh server
+  // start with a clean slate — otherwise a serve test's first dispatch
+  // logs cleanly but later tests' first dispatches go silent on the
+  // load-bearing warn line.
+  const progressTokenSeen: ProgressTokenSeen = {
+    presentLogged: false,
+    absentLogged: false,
+  };
 
   const server = new McpServer({
     name: 'crew',
@@ -221,12 +239,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
 
       return runDispatchAndRespond({
         runId: plan.runId,
+        agentName: args.agent_id,
         worktreePath: plan.worktreePath,
         toolCallId,
         task: plan.task,
         dispatcher,
         runStateStore,
-        progress: progressNotifierFrom(extra),
+        progress: progressNotifierFrom(extra, args.agent_id, progressTokenSeen),
       });
     },
   );
@@ -308,12 +327,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
 
       return runDispatchAndRespond({
         runId: args.run_id,
+        agentName: state.agentId,
         worktreePath: state.worktreePath,
         toolCallId,
         task,
         dispatcher,
         runStateStore,
-        progress: progressNotifierFrom(continueExtra),
+        progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
       });
     },
   );
@@ -576,6 +596,15 @@ type ToolCallReturn = {
 
 interface DispatchAndRespondArgs {
   runId: string;
+  /**
+   * Adapter id for this dispatch. Used as the `[prefix]` on
+   * `notifications/progress` chunks (so the host UI labels each line
+   * with which subagent emitted it) and surfaced in the markdown
+   * tool-call result for human readability. Must match the adapter
+   * the dispatcher is invoking — the captain's `run_agent` /
+   * `continue_run` call sites both have it on hand.
+   */
+  agentName: string;
   worktreePath: string;
   toolCallId: string;
   task: import('../../orchestrator/tool-dispatcher.js').DispatchTask;
@@ -628,22 +657,54 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     dispatcher: args.dispatcher,
     runStateStore: args.runStateStore,
     runId: args.runId,
+    agentName: args.agentName,
     toolCallId: args.toolCallId,
     progress: args.progress,
   });
   args.dispatcher.start(args.task);
 
+  const summary =
+    `Dispatched. Poll get_run_status with run_id="${args.runId}" ` +
+    `(use wait_for_change_ms: 30000 + since_event_line cursor for live progress).`;
   const env: RunEnvelope = {
     run_id: args.runId,
+    agent_id: args.agentName,
     worktree_path: args.worktreePath,
     status: 'running',
-    summary: `Dispatched. Poll get_run_status with run_id="${args.runId}" (use wait_for_change_ms: 30000 + since_event_line cursor for live progress).`,
+    summary,
     files_changed: [],
   };
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(env, null, 2) }],
+    content: [{ type: 'text' as const, text: renderDispatchMarkdown(env) }],
     structuredContent: env as unknown as Record<string, unknown>,
   };
+}
+
+/**
+ * Human-facing markdown rendered into the MCP tool-call result for
+ * `run_agent` / `continue_run`. Hosts that show the result inline
+ * (Claude Code's expand-on-click panel, codex's `> tool` block)
+ * render this directly; the structured payload still travels via
+ * `structuredContent` for programmatic consumers.
+ *
+ * Why markdown over the prior JSON.stringify: hosts collapse MCP
+ * tool calls to a one-line title and only show the result when the
+ * user expands. Raw JSON in that expand reads as noise; a short
+ * markdown block reads as a status report. Captain still extracts
+ * `run_id` reliably — it appears in a backticked code span the
+ * model can pluck verbatim.
+ */
+function renderDispatchMarkdown(env: RunEnvelope): string {
+  const lines = [
+    `**Dispatched** \`${env.agent_id ?? 'agent'}\` as run \`${env.run_id}\`.`,
+    '',
+    `- Status: \`${env.status}\``,
+    `- Worktree: \`${env.worktree_path}\``,
+    `- Follow with: \`get_run_status({ run_id: "${env.run_id}", `
+      + `wait_for_change_ms: 30000, since_event_line: <cursor> })\` `
+      + '— start cursor at 0; advance via `next_event_line` on each response.',
+  ];
+  return lines.join('\n');
 }
 
 /**
@@ -666,6 +727,13 @@ function installRunLifecycleListeners(args: {
   dispatcher: ToolDispatcher;
   runStateStore: RunStateStore;
   runId: string;
+  /**
+   * Adapter id, threaded through purely so progress-notification
+   * messages can be prefixed `[<agent>]`. Hosts that render
+   * `notifications/progress` inline (Claude Code) get a labeled
+   * stream so multi-agent dispatches don't blur together.
+   */
+  agentName: string;
   toolCallId: string;
   progress?: ProgressNotifier;
 }): Promise<DispatchTerminal> {
@@ -729,13 +797,72 @@ function installRunLifecycleListeners(args: {
         }
         // Bridge to MCP progress notifications when the client supplied
         // a progressToken. Adapters typically emit line-buffered chunks
-        // (codex/claude-code/gemini-cli all do), so per-chunk firing is
-        // reasonable. A noisy adapter could be batched here later if it
-        // shows up as a problem.
-        if (args.progress) args.progress.send(info.chunk);
+        // (codex/claude-code/gemini-cli all do); we split multi-line
+        // chunks so each rendered line is a discrete progress message
+        // rather than a wall of text the host has to layout itself.
+        // events.log retains the raw chunk above (verbatim source of
+        // truth for events_tail); only the host UI surface gets the
+        // formatted lines.
+        if (args.progress) {
+          for (const line of formatProgressLines(args.agentName, info.chunk)) {
+            args.progress.send(line);
+          }
+        }
       }),
     );
   });
+}
+
+/**
+ * Maximum per-line length sent in a `notifications/progress` message.
+ * Picked so a chunk fits comfortably in Claude Code's inline progress
+ * area (~one terminal line at default width) without truncating
+ * anything that's actually load-bearing in adapter output. Bigger
+ * payloads get truncated with an ellipsis suffix; the verbatim chunk
+ * stays available through `events_tail`, so nothing is lost — only
+ * the inline UX is bounded.
+ */
+const PROGRESS_LINE_MAX_LEN = 240;
+
+/**
+ * Format an adapter `onOutput` chunk into one or more progress
+ * notification messages. Splits on newlines (multi-line chunks
+ * become multiple notifications), drops empty lines, trims trailing
+ * whitespace, truncates over-long lines, and prefixes each line
+ * with `[<agentName>] ` so the host inline display labels who's
+ * speaking.
+ *
+ * Exported for tests. The contract is intentionally narrow: input
+ * is a raw chunk + agent id, output is the lines to feed into
+ * `progress.send` in order. No parsing of JSON event lines (that's
+ * the domain of the parked structured-events plan); we only do
+ * presentation cleanup.
+ */
+export function formatProgressLines(agentName: string, chunk: string): string[] {
+  const out: string[] = [];
+  for (const raw of chunk.split(/\r?\n/)) {
+    const trimmed = raw.replace(/\s+$/, '');
+    if (trimmed.length === 0) continue;
+    const body =
+      trimmed.length > PROGRESS_LINE_MAX_LEN
+        ? `${trimmed.slice(0, PROGRESS_LINE_MAX_LEN - 1)}…`
+        : trimmed;
+    out.push(`[${agentName}] ${body}`);
+  }
+  return out;
+}
+
+/**
+ * Per-server one-shot loud-log state for progressToken presence/absence.
+ * The per-call info-level log still fires every dispatch; this state
+ * is only consulted to elevate the FIRST occurrence to warn so the
+ * "is my host streaming progress?" question has a hard-to-miss
+ * answer at server startup. Reset per `buildCrewMcpServer` so tests
+ * (which spin a fresh server per case) start clean.
+ */
+interface ProgressTokenSeen {
+  presentLogged: boolean;
+  absentLogged: boolean;
 }
 
 /**
@@ -752,22 +879,44 @@ function installRunLifecycleListeners(args: {
  * Notification failures are caught + dropped: a transport hiccup
  * (e.g., client disconnected) must never fail the dispatch.
  */
-function progressNotifierFrom(extra: {
-  _meta?: { progressToken?: string | number };
-  sendNotification: (n: {
-    method: 'notifications/progress';
-    params: { progressToken: string | number; progress: number; message?: string };
-  }) => Promise<void>;
-}): ProgressNotifier | undefined {
+function progressNotifierFrom(
+  extra: {
+    _meta?: { progressToken?: string | number };
+    sendNotification: (n: {
+      method: 'notifications/progress';
+      params: { progressToken: string | number; progress: number; message?: string };
+    }) => Promise<void>;
+  },
+  agentId: string,
+  seen: ProgressTokenSeen,
+): ProgressNotifier | undefined {
   const token = extra._meta?.progressToken;
-  // Diagnostic — one line per dispatched call. Lets the user/operator see
-  // whether their host CLI is opting into progress streaming. Some clients
-  // (codex CLI as of 2026-05) don't supply a token; that silently disables
-  // streaming chunks back to the captain, so the only signal is this log.
-  // info-level so it shows by default; the runtime is one line per call.
+  // Per-call info log: a one-liner the operator can grep when sanity-
+  // checking a single dispatch ("did this run get a token?"). Cheap.
   logger.info(
-    `progress token: ${token === undefined ? 'absent (no streaming chunks to captain)' : String(token)}`,
+    `progress token (agent=${agentId}): ${
+      token === undefined ? 'absent (no streaming chunks to captain)' : String(token)
+    }`,
   );
+  // First-occurrence warn-level log: the question "is my host actually
+  // providing a progressToken?" deserves a loud answer the first time
+  // it's answered, so users catch a missing token without grepping
+  // info-level lines. Subsequent calls fall back to the info log
+  // above so we don't spam.
+  if (token === undefined && !seen.absentLogged) {
+    seen.absentLogged = true;
+    logger.warn(
+      'MCP host did not supply progressToken on first dispatch — inline ' +
+      `notifications/progress will not fire this session (agent=${agentId}). ` +
+      'The captain\'s get_run_status long-poll is your only progress channel. ' +
+      'Known: codex CLI 0.128.0 omits the token; Claude Code supplies it.',
+    );
+  } else if (token !== undefined && !seen.presentLogged) {
+    seen.presentLogged = true;
+    logger.info(
+      `MCP host supplied progressToken on first dispatch — inline progress streaming active (agent=${agentId}).`,
+    );
+  }
   if (token === undefined) return undefined;
   let counter = 0;
   return {
