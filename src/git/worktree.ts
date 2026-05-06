@@ -1,7 +1,7 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { randomUUID } from 'crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { logger } from '../utils/logger.js';
 
 interface WorktreeRecord {
@@ -22,6 +22,14 @@ export type MergeRunResult =
   | { status: 'merged'; commitSha: string }
   | { status: 'conflict'; conflicts: string[] }
   | { status: 'no-changes' };
+
+export interface RunGitCommitWritablePaths {
+  readonly worktreeGitDir: string;
+  readonly objectsDir: string;
+  readonly branchRefsDir: string;
+  readonly branchLogsDir: string;
+  readonly paths: readonly string[];
+}
 
 interface TaskLockRecord {
   ownerId: string;
@@ -78,6 +86,29 @@ export class WorktreeManager {
 
   getProjectRoot(): string {
     return this.projectRoot;
+  }
+
+  getRunGitCommitWritablePaths(runId: string): RunGitCommitWritablePaths {
+    const record = this.requireRunWorktreeRecord(runId);
+    const worktreeGitDir = this.resolveWorktreeGitDir(record.worktreePath);
+    const commonGitDir = this.resolveCommonGitDir(worktreeGitDir);
+    const branchParentSegments = record.branchName.split('/').slice(0, -1);
+    const branchRefsDir = join(commonGitDir, 'refs', 'heads', ...branchParentSegments);
+    const branchLogsDir = join(commonGitDir, 'logs', 'refs', 'heads', ...branchParentSegments);
+    const paths = Array.from(new Set([
+      worktreeGitDir,
+      join(commonGitDir, 'objects'),
+      branchRefsDir,
+      branchLogsDir,
+    ]));
+
+    return {
+      worktreeGitDir,
+      objectsDir: join(commonGitDir, 'objects'),
+      branchRefsDir,
+      branchLogsDir,
+      paths,
+    };
   }
 
   private ensureLegacyDirs(): void {
@@ -704,6 +735,27 @@ export class WorktreeManager {
 
   private isMissingBranchError(message: string): boolean {
     return message.includes('not found') || message.includes('No branch');
+  }
+
+  private resolveWorktreeGitDir(worktreePath: string): string {
+    const dotGitPath = join(worktreePath, '.git');
+    const dotGitStat = statSync(dotGitPath);
+    if (dotGitStat.isDirectory()) return dotGitPath;
+
+    const dotGitContents = readFileSync(dotGitPath, 'utf-8');
+    const match = dotGitContents.match(/^gitdir:\s*(.+)\s*$/m);
+    if (!match?.[1]) {
+      throw new Error(`Unable to resolve gitdir from ${dotGitPath}.`);
+    }
+    return resolve(dirname(dotGitPath), match[1]);
+  }
+
+  private resolveCommonGitDir(worktreeGitDir: string): string {
+    const commonDirPath = join(worktreeGitDir, 'commondir');
+    if (!existsSync(commonDirPath)) return worktreeGitDir;
+    const commonDir = readFileSync(commonDirPath, 'utf-8').trim();
+    if (commonDir.length === 0) return worktreeGitDir;
+    return resolve(worktreeGitDir, commonDir);
   }
 
   private isLockAlreadyHeldError(error: unknown): boolean {

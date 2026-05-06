@@ -302,6 +302,23 @@ export function buildAdapterDispatchTask(args: {
     runId: args.runId,
     input: args.input,
     run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
+      let writablePaths: readonly string[] | undefined;
+      if (!args.readOnly) {
+        try {
+          writablePaths = args.worktreeManager.getRunGitCommitWritablePaths(args.runId).paths;
+        } catch (err) {
+          return {
+            output: '',
+            filesModified: [],
+            status: 'error',
+            metadata: {},
+            warnings: [
+              `Failed to derive git writable paths for run ${args.runId}: ${err instanceof Error ? err.message : String(err)}`,
+            ],
+          };
+        }
+      }
+
       const result = await args.adapter.execute({
         prompt: args.prompt,
         context: {
@@ -311,6 +328,8 @@ export function buildAdapterDispatchTask(args: {
           signal: taskCtx.signal,
           model: args.effectiveModel,
           effort: args.effectiveEffort,
+          sandbox: args.readOnly ? 'read-only' : 'workspace-write',
+          writablePaths,
           // Allow localhost egress so tests that hit a local DB or
           // devserver actually exercise the change. Without this,
           // Codex's workspace-write sandbox blocks connect() and the

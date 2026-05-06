@@ -671,6 +671,38 @@ describe('CodexAdapter', () => {
       expect(cliArgs).toContain('sandbox_workspace_write.network_access=true');
     });
 
+    it('passes repeated --add-dir flags for writablePaths', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Run that commits in a linked worktree',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          sandbox: 'workspace-write',
+          writablePaths: [
+            '/repo/.git/worktrees/run-a',
+            '   ',
+            '/repo/.git/objects',
+            '/repo/.git/refs/heads/crew-run',
+          ],
+        },
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      const addDirPairs = cliArgs
+        .map((arg, idx) => [arg, cliArgs[idx + 1]] as const)
+        .filter(([arg]) => arg === '--add-dir');
+      expect(addDirPairs).toEqual([
+        ['--add-dir', '/repo/.git/worktrees/run-a'],
+        ['--add-dir', '/repo/.git/objects'],
+        ['--add-dir', '/repo/.git/refs/heads/crew-run'],
+      ]);
+    });
+
     it('omits sandbox + network overrides when constraints leave them unset', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,

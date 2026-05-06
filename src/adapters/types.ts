@@ -216,6 +216,16 @@ export interface Task {
      * non-codex adapters.
      */
     networkAccess?: boolean;
+    /**
+     * Additional filesystem roots that should be writable alongside the
+     * adapter's working directory. Codex maps these to repeated `--add-dir`
+     * flags, which feed its `sandbox_workspace_write.writable_roots` setting
+     * without replacing any user-configured roots. This is intentionally
+     * path-based instead of a boolean so callers can grant narrow git internals
+     * for an isolated worktree without opening the parent repository's entire
+     * `.git/` directory.
+     */
+    writablePaths?: readonly string[];
     signal?: AbortSignal;
   };
   onOutput?: (chunk: string) => void;
