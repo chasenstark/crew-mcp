@@ -73,6 +73,14 @@ export const SERVE_VERSION = '0.2.0-dev';
  */
 export const MAX_LONG_POLL_MS = 60_000;
 
+/**
+ * Default server-side cap for cursor-based `events_tail` deltas.
+ * Captains also have a smaller render cap in the skill body; this
+ * protects the MCP wire payload if an adapter emits too much between
+ * polls.
+ */
+export const DEFAULT_MAX_EVENTS_TAIL = 50;
+
 export interface ServeOptions {
   /**
    * Test seam: override the working directory the worktree manager roots
@@ -118,6 +126,7 @@ export interface RunEnvelope {
    */
   readonly agent_id?: string;
   readonly worktree_path: string;
+  readonly events_log_path: string;
   readonly status: RunStatus;
   readonly summary: string;
   readonly files_changed: readonly string[];
@@ -491,14 +500,28 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
 
       // Snapshot path — fast return.
       if (!useLongPoll) {
-        return buildGetRunStatusResponse(state, runStateStore, args.run_id, cursor, args.log_lines);
+        return buildGetRunStatusResponse(
+          state,
+          runStateStore,
+          args.run_id,
+          cursor,
+          args.log_lines,
+          args.max_events_tail,
+        );
       }
 
       // Already-have-data path: if the events log already advanced past
       // the captain's cursor, return immediately without waiting.
       const head = runStateStore.readEventsSince(args.run_id, cursor);
       if (head.lines.length > 0) {
-        return buildGetRunStatusResponse(state, runStateStore, args.run_id, cursor, args.log_lines);
+        return buildGetRunStatusResponse(
+          state,
+          runStateStore,
+          args.run_id,
+          cursor,
+          args.log_lines,
+          args.max_events_tail,
+        );
       }
 
       // Long-poll: subscribe to dispatcher events for this run; resolve
@@ -513,7 +536,14 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       });
 
       const fresh = runStateStore.read(args.run_id) ?? state;
-      return buildGetRunStatusResponse(fresh, runStateStore, args.run_id, cursor, args.log_lines);
+      return buildGetRunStatusResponse(
+        fresh,
+        runStateStore,
+        args.run_id,
+        cursor,
+        args.log_lines,
+        args.max_events_tail,
+      );
     },
   );
 
@@ -674,6 +704,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     run_id: args.runId,
     agent_id: args.agentName,
     worktree_path: args.worktreePath,
+    events_log_path: args.runStateStore.eventsLogPath(args.runId),
     status: 'running',
     summary,
     files_changed: [],
@@ -704,6 +735,7 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
     '',
     `- Status: \`${env.status}\``,
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
+    `- Tail: \`tail -F ${env.events_log_path}\` (capital F so it waits for the file to be created)`,
     `- Follow with: \`get_run_status({ run_id: "${env.run_id}", `
       + `wait_for_change_ms: 30000, since_event_line: <cursor> })\` `
       + '— start cursor at 0; advance via `next_event_line` on each response.',
@@ -990,6 +1022,8 @@ interface GetRunStatusResponse {
   readonly [key: string]: unknown;
   readonly events_tail: readonly string[];
   readonly next_event_line: number;
+  readonly events_log_path: string;
+  readonly events_tail_skipped?: number;
   readonly log_tail?: readonly string[];
 }
 
@@ -999,12 +1033,26 @@ function buildGetRunStatusResponse(
   runId: string,
   sinceLine: number,
   logLines: number | undefined,
+  maxEventsTail: number | undefined,
 ): ToolCallReturn {
   const { lines, nextLine } = store.readEventsSince(runId, sinceLine);
+  const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
+  const overCap = lines.length > maxTail;
+  const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
+  const skipped = overCap ? lines.length - eventLineBudget : 0;
+  const tailLines = eventLineBudget > 0 ? lines.slice(-eventLineBudget) : [];
+  const cappedLines = overCap
+    ? [
+        `(${skipped} more events skipped)`,
+        ...tailLines,
+      ]
+    : lines;
   const payload: GetRunStatusResponse = {
     ...state,
-    events_tail: lines,
+    events_log_path: store.eventsLogPath(runId),
+    events_tail: cappedLines,
     next_event_line: nextLine,
+    ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
     // Backward-compat: the legacy `log_tail` field is still surfaced
     // for callers that pass `log_lines` but no cursor. Once captains
     // are all on cursor semantics this can be deleted.
