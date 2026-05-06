@@ -317,7 +317,7 @@ describe('crew serve — run_agent tool', () => {
       expect(text).toMatch(/^\*\*Dispatched\*\* `mock-coder` as run `/);
       expect(text).toContain(env.run_id);
       expect(text).toContain(env.worktree_path);
-      expect(text).toContain(`tail -f ${env.events_log_path}`);
+      expect(text).toContain(`tail -F ${env.events_log_path}`);
       expect(text).toContain('get_run_status');
       // Wait so the lifecycle terminates before harness teardown — otherwise
       // the dispatcher's listeners outlive the test.
