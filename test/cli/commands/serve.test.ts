@@ -10,7 +10,7 @@
  * (we'd be testing install + serve together at that point anyway).
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -28,6 +28,7 @@ import {
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
+import { logger } from '../../../src/utils/logger.js';
 
 // --- helpers ---
 
@@ -323,6 +324,35 @@ describe('crew serve — run_agent tool', () => {
     }
   });
 
+  it('escapes backticks and newlines in markdown inline-code fields', async () => {
+    const agentName = 'mock`coder\nline';
+    const worktreePath = join(tmpdir(), 'path`with\nnewline');
+    const adapter = makeMockAdapter({ name: agentName });
+    const h = await startHarness([adapter]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: agentName,
+          prompt: 'go',
+          read_only: true,
+          working_directory: worktreePath,
+        },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      const text = (res.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain('**Dispatched** `` mock`coder line `` as run `');
+      expect(text).toContain(
+        '- Worktree: `` ' + worktreePath.replace(/[\r\n]+/g, ' ') + ' ``',
+      );
+      expect(env.agent_id).toBe(agentName);
+      expect(env.worktree_path).toBe(worktreePath);
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('surfaces adapter execute failures as a failed envelope', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
@@ -393,6 +423,12 @@ describe('crew serve — continue_run tool', () => {
       expect(secondEnv.run_id).toBe(firstEnv.run_id);
       expect(secondEnv.worktree_path).toBe(firstEnv.worktree_path);
       expect(secondEnv.status).toBe('running');
+      const secondText = (second.content as Array<{ text: string }>)[0].text;
+      expect(secondText).not.toMatch(/^\s*\{/);
+      expect(secondText).toMatch(/^\*\*Dispatched\*\* `mock-coder` as run `/);
+      expect(secondText).toContain(firstEnv.run_id);
+      expect(secondText).toContain(firstEnv.worktree_path);
+      expect(secondText).toContain('get_run_status');
       const final = await pollUntilTerminal(h.client, firstEnv.run_id);
       expect(final.status).toBe('success');
       // Adapter received both prompts, both pointed at the same worktree.
@@ -1064,6 +1100,96 @@ describe('crew serve — progress notifications', () => {
     }
   });
 
+  it('logs first absent progressToken state once per server', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const h = await startHarness([makeMockAdapter({ name: 'streamy' })]);
+    try {
+      await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'streamy', prompt: 'first' },
+      });
+      await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'streamy', prompt: 'second' },
+      });
+      const absentLogs = warnSpy.mock.calls
+        .map(([message]) => String(message))
+        .filter((message) => message.includes('progressToken absent on first dispatch'));
+      expect(absentLogs).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+      await h.close();
+    }
+  });
+
+  it('logs first present progressToken state once per server', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const h = await startHarness([makeMockAdapter({ name: 'streamy' })]);
+    try {
+      await h.client.callTool(
+        {
+          name: 'run_agent',
+          arguments: { agent_id: 'streamy', prompt: 'first' },
+        },
+        undefined,
+        { onprogress: () => undefined },
+      );
+      await h.client.callTool(
+        {
+          name: 'run_agent',
+          arguments: { agent_id: 'streamy', prompt: 'second' },
+        },
+        undefined,
+        { onprogress: () => undefined },
+      );
+      const presentLogs = infoSpy.mock.calls
+        .map(([message]) => String(message))
+        .filter((message) => message.includes('progressToken present on first dispatch'));
+      expect(presentLogs).toHaveLength(1);
+      expect(
+        warnSpy.mock.calls
+          .map(([message]) => String(message))
+          .filter((message) => message.includes('progressToken absent on first dispatch')),
+      ).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+      await h.close();
+    }
+  });
+
+  it('logs both observed progressToken states and a transition when state flips', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const h = await startHarness([makeMockAdapter({ name: 'streamy' })]);
+    try {
+      await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'streamy', prompt: 'absent' },
+      });
+      await h.client.callTool(
+        {
+          name: 'run_agent',
+          arguments: { agent_id: 'streamy', prompt: 'present' },
+        },
+        undefined,
+        { onprogress: () => undefined },
+      );
+      const warnMessages = warnSpy.mock.calls.map(([message]) => String(message));
+      const infoMessages = infoSpy.mock.calls.map(([message]) => String(message));
+      expect(warnMessages.filter((message) => message.includes('progressToken absent on first dispatch'))).toHaveLength(1);
+      expect(infoMessages.filter((message) => message.includes('progressToken present on first dispatch'))).toHaveLength(1);
+      expect(infoMessages.filter((message) => message.includes('progressToken state changed from absent to present'))).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+      await h.close();
+    }
+  });
+
   it('splits multi-line chunks into one progress notification per non-empty line', async () => {
     // #5: an adapter may emit a buffer flush that contains multiple
     // newline-delimited records. Sending that as one notification
@@ -1154,9 +1280,64 @@ describe('crew serve — progress notifications', () => {
       await waitFor(() => progress.length >= 1, 1000);
       const msg = progress[0].message ?? '';
       expect(msg.startsWith('[verbose] ')).toBe(true);
-      // Prefix `[verbose] ` (10 chars) + 239 truncated body chars + `…` (1) = 250.
-      expect(msg.length).toBe('[verbose] '.length + 240);
+      // Whole progress messages are bounded, including the `[agent] ` prefix.
+      expect(msg.length).toBeLessThanOrEqual(240);
       expect(msg.endsWith('…')).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('keeps events_tail raw while progress notifications are split and bounded', async () => {
+    const firstRaw = 'a'.repeat(300);
+    const secondRaw = 'b'.repeat(300);
+    const rawChunk = `${firstRaw}\n${secondRaw}`;
+    const adapter = makeMockAdapter({
+      name: 'verbose',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        t.onOutput?.(rawChunk);
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const progress: Array<{ message?: string }> = [];
+      h.client.setNotificationHandler(
+        z.object({
+          method: z.literal('notifications/progress'),
+          params: z.object({
+            progressToken: z.union([z.string(), z.number()]),
+            progress: z.number(),
+            message: z.string().optional(),
+          }),
+        }) as unknown as Parameters<typeof h.client.setNotificationHandler>[0],
+        async (notif: unknown) => {
+          const n = notif as { params: { message?: string } };
+          progress.push({ message: n.params.message });
+        },
+      );
+      const run = await h.client.callTool(
+        { name: 'run_agent', arguments: { agent_id: 'verbose', prompt: 'p' } },
+        undefined,
+        { onprogress: () => undefined },
+      );
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => progress.length >= 2, 1000);
+      expect(progress.map((p) => p.message)).toHaveLength(2);
+      for (const message of progress.map((p) => p.message ?? '')) {
+        expect(message.startsWith('[verbose] ')).toBe(true);
+        expect(message.length).toBeLessThanOrEqual(240);
+        expect(message.endsWith('…')).toBe(true);
+      }
+
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.events_tail).toEqual([firstRaw, secondRaw]);
+      for (const raw of final.events_tail) {
+        expect(raw.startsWith('[verbose] ')).toBe(false);
+        expect(raw.endsWith('…')).toBe(false);
+        expect(raw.length).toBe(300);
+      }
     } finally {
       await h.close();
     }
@@ -1453,6 +1634,20 @@ async function waitFor(
   throw new Error('waitFor: timeout');
 }
 
+function hasLoneSurrogate(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Silence "unused import" for `readFileSync` if test variants change.
 void readFileSync;
 
@@ -1472,7 +1667,33 @@ describe('formatProgressLines (unit)', () => {
     const result = formatProgressLines('x', 'a'.repeat(500));
     expect(result).toHaveLength(1);
     expect(result[0].endsWith('…')).toBe(true);
-    expect(result[0].length).toBe('[x] '.length + 240);
+    expect(result[0].length).toBe(240);
+  });
+
+  it('truncates without splitting surrogate pairs at the boundary', () => {
+    const prefixLen = '[x] '.length;
+    const availableBeforeEllipsis = 240 - prefixLen - 1;
+    const chunk = `${'a'.repeat(availableBeforeEllipsis - 2)}🚀tail`;
+    const result = formatProgressLines('x', chunk);
+    expect(result).toHaveLength(1);
+    expect(result[0].length).toBe(240);
+    expect(result[0]).toContain('🚀…');
+    expect(result[0]).not.toContain('\uFFFD');
+    expect(hasLoneSurrogate(result[0])).toBe(false);
+  });
+
+  it('accounts for a long agent-name prefix in the 240 char budget', () => {
+    const result = formatProgressLines('agent-name-'.repeat(20), 'b'.repeat(200));
+    expect(result).toHaveLength(1);
+    expect(result[0].length).toBeLessThanOrEqual(240);
+    expect(result[0].endsWith('…')).toBe(true);
+  });
+
+  it('truncates defensively when the prefix alone exceeds the budget', () => {
+    const result = formatProgressLines('agent-name-'.repeat(40), 'body');
+    expect(result).toHaveLength(1);
+    expect(result[0].length).toBe(240);
+    expect(result[0]).not.toContain('body');
   });
 
   it('returns an empty array for a whitespace-only chunk', () => {
@@ -1481,5 +1702,12 @@ describe('formatProgressLines (unit)', () => {
 
   it('handles CRLF line endings', () => {
     expect(formatProgressLines('a', 'one\r\ntwo')).toEqual(['[a] one', '[a] two']);
+  });
+
+  it('treats lone carriage returns as progress-line delimiters', () => {
+    expect(formatProgressLines('spin', 'frame one\rframe two')).toEqual([
+      '[spin] frame one',
+      '[spin] frame two',
+    ]);
   });
 });
