@@ -211,8 +211,12 @@ watching a render loop; silence reads as hung.
 3. **Each response either has new content or the run terminated.**
    Server-side the call blocks until either: (a) new events
    appear, (b) the run reaches a terminal status, or (c) the 30s
-   wait expires. Surface the `events_tail` lines (paraphrase the
-   load-bearing parts; don't dump verbatim if long).
+   wait expires. New `events_tail` lines are pre-rendered semantic
+   markdown like `[codex] command: read serve.ts`. Print them
+   verbatim, one per line. Do NOT paraphrase — the adapter already
+   did the summarization. Cap at ~10 lines per poll-return; if more
+   arrived, render the **last 10** (most recent) and say "(N more
+   events)" — newest activity is what the user wants to see.
 4. **Immediately call `get_run_status` again** with the updated
    cursor. Same turn. No wakeups, no scheduled returns.
 5. Exit the loop when `status` is `success | partial | error |
@@ -232,10 +236,10 @@ run_agent(...)              → { status: "running", run_id: R }
 "Dispatched as R. Watching."
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0})
   → events_tail: [...], next_event_line: 4, status: "running"
-"<paraphrase of events>"
+"<events_tail lines, verbatim>"
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 4})
   → events_tail: [...], next_event_line: 9, status: "running"
-"<paraphrase>"
+"<events_tail lines, verbatim>"
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 9})
   → events_tail: [...], next_event_line: 11, status: "success",
     summary: "..."

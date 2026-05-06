@@ -356,12 +356,15 @@ export class RunStateStore {
     return join(this.runsBasePath, runId);
   }
 
-  private statePath(runId: string): string {
-    return join(this.runsBasePath, runId, 'state.json');
+  /**
+   * Absolute path to a run's append-only semantic event log.
+   */
+  eventsLogPath(runId: string): string {
+    return join(this.runsBasePath, runId, 'events.log');
   }
 
-  private eventsLogPath(runId: string): string {
-    return join(this.runsBasePath, runId, 'events.log');
+  private statePath(runId: string): string {
+    return join(this.runsBasePath, runId, 'state.json');
   }
 
   /**

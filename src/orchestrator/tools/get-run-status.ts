@@ -46,9 +46,16 @@ export const getRunStatusInputSchema = z.object({
    * is set.
    */
   log_lines: z.number().int().nonnegative().optional(),
+  /**
+   * Maximum number of new events.log lines to return in this poll.
+   * Defaults server-side to 50. When more lines are available, the
+   * server returns the most recent lines plus a skipped-events marker
+   * and advances `next_event_line` to the log head.
+   */
+  max_events_tail: z.number().int().positive().max(500).optional(),
 });
 
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  'Poll the current state of a run by run_id. **Always poll** after run_agent / continue_run — those tools return status:"running" immediately and the captain drives the lifecycle from here. Returns status (running | success | partial | error | cancelled | merged | merge_conflict | discarded), prompts history, files_changed, repo_root, worktree_path, events_tail (new lines since `since_event_line`), and `next_event_line` (cursor for the next poll). Pass `wait_for_change_ms: 30000` to long-poll: the call blocks server-side until new events arrive or a terminal state is reached, so the captain renders new content with sub-second latency rather than fixed-cadence snapshots. Capped at 60000ms by the server.';
+  'Poll the current state of a run by run_id. **Always poll** after run_agent / continue_run — those tools return status:"running" immediately and the captain drives the lifecycle from here. Returns status (running | success | partial | error | cancelled | merged | merge_conflict | discarded), prompts history, files_changed, repo_root, worktree_path, events_log_path, events_tail (new lines since `since_event_line`), and `next_event_line` (cursor for the next poll). Pass `wait_for_change_ms: 30000` to long-poll: the call blocks server-side until new events arrive or a terminal state is reached, so the captain renders new content with sub-second latency rather than fixed-cadence snapshots. `events_tail` is capped to 50 lines per poll by default; pass `max_events_tail` to request a different cap (maximum 500). When the cap is exceeded, the response skips older backlog, includes a skipped-events marker, and advances the cursor to the current log head. Long-poll waits are capped at 60000ms by the server.';

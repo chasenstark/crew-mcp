@@ -276,6 +276,7 @@ describe('crew serve — run_agent tool', () => {
       expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
       // Async-first: run_agent always returns running; poll for terminal.
       expect(env.status).toBe('running');
+      expect(env.events_log_path).toBe(join(h.crewHome, 'runs', env.run_id, 'events.log'));
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
       // Worktree exists, file lives only there (no auto-merge).
@@ -309,12 +310,14 @@ describe('crew serve — run_agent tool', () => {
       expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
       expect(env.agent_id).toBe('mock-coder');
       expect(env.status).toBe('running');
+      expect(env.events_log_path).toBe(join(h.crewHome, 'runs', env.run_id, 'events.log'));
       // text is markdown, not stringified JSON.
       const text = (res.content as Array<{ text: string }>)[0].text;
       expect(text).not.toMatch(/^\s*\{/); // not a JSON blob
       expect(text).toMatch(/^\*\*Dispatched\*\* `mock-coder` as run `/);
       expect(text).toContain(env.run_id);
       expect(text).toContain(env.worktree_path);
+      expect(text).toContain(`tail -f ${env.events_log_path}`);
       expect(text).toContain('get_run_status');
       // Wait so the lifecycle terminates before harness teardown — otherwise
       // the dispatcher's listeners outlive the test.
@@ -881,6 +884,7 @@ describe('crew serve — get_run_status tool', () => {
         prompts: unknown[];
         events_tail: string[];
         next_event_line: number;
+        events_log_path: string;
       };
       expect(s.runId).toBe(runEnv.run_id);
       expect(s.agentId).toBe('mock-coder');
@@ -888,6 +892,7 @@ describe('crew serve — get_run_status tool', () => {
       expect(s.prompts).toHaveLength(1);
       expect(Array.isArray(s.events_tail)).toBe(true);
       expect(typeof s.next_event_line).toBe('number');
+      expect(s.events_log_path).toBe(runEnv.events_log_path);
     } finally {
       await h.close();
     }
@@ -1288,7 +1293,7 @@ describe('crew serve — progress notifications', () => {
     }
   });
 
-  it('keeps events_tail raw while progress notifications are split and bounded', async () => {
+  it('keeps events_tail as adapter-emitted lines while progress notifications are split and bounded', async () => {
     const firstRaw = 'a'.repeat(300);
     const secondRaw = 'b'.repeat(300);
     const rawChunk = `${firstRaw}\n${secondRaw}`;
@@ -1333,10 +1338,10 @@ describe('crew serve — progress notifications', () => {
 
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.events_tail).toEqual([firstRaw, secondRaw]);
-      for (const raw of final.events_tail) {
-        expect(raw.startsWith('[verbose] ')).toBe(false);
-        expect(raw.endsWith('…')).toBe(false);
-        expect(raw.length).toBe(300);
+      for (const adapterLine of final.events_tail) {
+        expect(adapterLine.startsWith('[verbose] ')).toBe(false);
+        expect(adapterLine.endsWith('…')).toBe(false);
+        expect(adapterLine.length).toBe(300);
       }
     } finally {
       await h.close();
@@ -1539,6 +1544,85 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       expect(s2.next_event_line).toBe(2);
 
       // Cleanup.
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('caps events_tail per poll and advances the cursor to the log head', async () => {
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-streaming',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-streaming', prompt: 'stream' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+      for (let i = 1; i <= 8; i += 1) {
+        onOutputRef?.(`[mock-streaming] message: line ${i}`);
+      }
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        const s = r.structuredContent as { next_event_line: number };
+        return s.next_event_line >= 8;
+      });
+
+      const capped = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          since_event_line: 0,
+          max_events_tail: 3,
+        },
+      });
+      const c = capped.structuredContent as {
+        events_tail: string[];
+        events_tail_skipped?: number;
+        next_event_line: number;
+      };
+      expect(c.events_tail).toEqual([
+        '(6 more events skipped)',
+        '[mock-streaming] message: line 7',
+        '[mock-streaming] message: line 8',
+      ]);
+      expect(c.events_tail_skipped).toBe(6);
+      expect(c.next_event_line).toBe(8);
+
+      const next = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id, since_event_line: c.next_event_line },
+      });
+      const n = next.structuredContent as {
+        events_tail: string[];
+        next_event_line: number;
+      };
+      expect(n.events_tail).toEqual([]);
+      expect(n.next_event_line).toBe(8);
+
+      resolveAdapter();
       await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();

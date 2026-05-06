@@ -7,6 +7,20 @@ logs, and source code each time.
 
 ## Update - 2026-05-06 MCP Progress Payload Hardening
 
+Phase 4 of per-adapter event parsing wired the semantic event stream into the
+captain-facing tool contract:
+
+- Dispatch envelopes now include `events_log_path`, and dispatch markdown shows
+  `tail -f <events.log>` for power users.
+- `get_run_status` responses include `events_log_path` and enforce a default
+  50-line `events_tail` cap per poll (`max_events_tail`, max 500, can override).
+  If more events arrived, the response includes a skipped-events marker and
+  advances `next_event_line` to the current log head so captains do not replay a
+  large backlog.
+- The captain skill body now instructs captains to print adapter-rendered
+  semantic `events_tail` lines verbatim, capped to about 10 rendered lines per
+  poll-return, while preserving silent-poll behavior when no new output arrives.
+
 `crew-mcp serve` progress formatting now treats the full
 `notifications/progress` message as the bounded surface:
 
@@ -15,9 +29,10 @@ logs, and source code each time.
 - CRLF, LF, and lone CR spinner overwrites are all progress-line delimiters.
 - Markdown dispatch results escape inline-code values containing backticks or
   newlines.
-- `events_tail` remains the raw, unprefixed, untruncated progress source of
-  truth for captain polling; only the host inline notification surface is
-  shortened.
+- `events_tail` remains the adapter-emitted progress source of truth for
+  captain polling. For Codex and Claude Code this is now semantic markdown
+  (`[adapter] kind: summary`); only the host inline notification surface is
+  separately shortened.
 
 `progressToken` diagnostics remain per `buildCrewMcpServer` instance, which is
 effectively per-client for the current stdio transport. Future SSE or other
