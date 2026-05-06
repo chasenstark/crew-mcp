@@ -47,6 +47,9 @@ const ClaudeResponseSchema = z.object({
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
 
+const CLAUDE_PROGRESS_PREFIX = '[claude-code] ';
+const PROGRESS_LINE_MAX_LEN = 240;
+
 /**
  * Exported argv builder for Claude's streaming tool-loop invocation.
  * Lives outside the class so M3-8 tests can assert `--mcp-config` placement
@@ -83,6 +86,48 @@ function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
+function compactPreview(value: unknown, fallback: string, max = 160): string {
+  let text = '';
+  if (typeof value === 'string') {
+    text = value;
+  } else if (value !== undefined) {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  const compacted = text.replace(/\s+/g, ' ').trim();
+  return preview(compacted || fallback, max);
+}
+
+function takeCodePointBudget(value: string, maxCodeUnits: number): string {
+  if (maxCodeUnits <= 0) return '';
+  let used = 0;
+  let out = '';
+  for (const codePoint of value) {
+    const next = used + codePoint.length;
+    if (next > maxCodeUnits) break;
+    out += codePoint;
+    used = next;
+  }
+  return out;
+}
+
+function claudeProgressLine(kind: string, summary: string): string {
+  const raw = `${CLAUDE_PROGRESS_PREFIX}${kind}: ${summary.replace(/\s+/g, ' ').trim()}`;
+  if (raw.length <= PROGRESS_LINE_MAX_LEN) return raw;
+  return `${takeCodePointBudget(raw, PROGRESS_LINE_MAX_LEN - 1)}…`;
+}
+
+function claudeEventFallback(type: unknown, innerType?: unknown): string {
+  const top = typeof type === 'string' && type.trim() ? type.trim() : 'unknown';
+  const inner = typeof innerType === 'string' && innerType.trim()
+    ? `/${innerType.trim()}`
+    : '';
+  return claudeProgressLine('event', `${top}${inner}`);
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -192,6 +237,139 @@ function extractAssistantTextFromStreamLine(line: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Formats one Claude Code stream-json event into bounded, semantic progress
+ * lines. Claude emits text, thinking, tool_use, and tool_result as nested
+ * content blocks, so this walks `message.content[]` instead of relying on the
+ * top-level event type alone.
+ */
+export function formatClaudeStreamLineForStream(line: string): string[] {
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (!event || typeof event !== 'object' || Array.isArray(event)) {
+      return [claudeEventFallback(undefined)];
+    }
+
+    const type = event.type;
+    if (typeof type !== 'string' || !type) {
+      return [claudeEventFallback(type)];
+    }
+
+    switch (type) {
+      case 'system':
+        return [formatClaudeSystemEvent(event)];
+      case 'rate_limit_event':
+        return [formatClaudeRateLimitEvent(event)];
+      case 'assistant':
+        return formatClaudeAssistantEvent(event);
+      case 'user':
+        return formatClaudeUserEvent(event);
+      case 'result':
+        return [formatClaudeResultEvent(event)];
+      default:
+        return [claudeEventFallback(type)];
+    }
+  } catch {
+    return [claudeEventFallback(undefined)];
+  }
+}
+
+function formatClaudeSystemEvent(event: Record<string, unknown>): string {
+  const subtype = typeof event.subtype === 'string' ? event.subtype : 'event';
+  if (subtype !== 'init') {
+    return claudeProgressLine('system', compactPreview(subtype, 'event'));
+  }
+
+  const model = typeof event.model === 'string' ? event.model : undefined;
+  const tools = Array.isArray(event.tools) ? event.tools.length : undefined;
+  const servers = Array.isArray(event.mcp_servers)
+    ? event.mcp_servers.map((server) => asObject(server))
+    : [];
+  const connectedServers = servers.filter((server) => server.status === 'connected').length;
+  const parts = ['init'];
+  if (model) parts.push(model);
+  if (tools !== undefined) parts.push(`tools=${tools}`);
+  if (servers.length > 0) parts.push(`mcp=${connectedServers}/${servers.length}`);
+  return claudeProgressLine('system', parts.join(' '));
+}
+
+function formatClaudeRateLimitEvent(event: Record<string, unknown>): string {
+  const info = asObject(event.rate_limit_info);
+  const status = typeof info.status === 'string' ? info.status : undefined;
+  const type = typeof info.rateLimitType === 'string' ? info.rateLimitType : undefined;
+  return claudeProgressLine(
+    'system',
+    compactPreview(['rate-limit', status, type].filter(Boolean).join(' '), 'rate-limit'),
+  );
+}
+
+function getClaudeContentBlocks(event: Record<string, unknown>): Record<string, unknown>[] {
+  const content = asObject(event.message).content;
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block) => block && typeof block === 'object' && !Array.isArray(block))
+    .map((block) => block as Record<string, unknown>);
+}
+
+function formatClaudeAssistantEvent(event: Record<string, unknown>): string[] {
+  const blocks = getClaudeContentBlocks(event);
+  if (blocks.length === 0) return [claudeEventFallback('assistant')];
+
+  const lines: string[] = [];
+  for (const block of blocks) {
+    switch (block.type) {
+      case 'text':
+        lines.push(claudeProgressLine('message', compactPreview(block.text, 'message')));
+        break;
+      case 'thinking':
+        lines.push(claudeProgressLine('thinking', compactPreview(block.thinking, 'thinking')));
+        break;
+      case 'tool_use':
+        lines.push(formatClaudeToolUseBlock(block));
+        break;
+      default:
+        lines.push(claudeEventFallback('assistant', block.type));
+        break;
+    }
+  }
+  return lines;
+}
+
+function formatClaudeToolUseBlock(block: Record<string, unknown>): string {
+  const name = typeof block.name === 'string' && block.name.trim()
+    ? block.name.trim()
+    : 'tool';
+  const args = compactPreview(block.input, '{}');
+  return claudeProgressLine('tool', `${name}(${args})`);
+}
+
+function formatClaudeUserEvent(event: Record<string, unknown>): string[] {
+  const lines: string[] = [];
+  for (const block of getClaudeContentBlocks(event)) {
+    switch (block.type) {
+      case 'tool_result':
+        lines.push(claudeProgressLine('result', block.is_error === true ? 'error' : 'ok'));
+        break;
+      case 'text':
+        break;
+      default:
+        lines.push(claudeEventFallback('user', block.type));
+        break;
+    }
+  }
+  return lines;
+}
+
+function formatClaudeResultEvent(event: Record<string, unknown>): string {
+  if (event.is_error === true || event.subtype === 'error') {
+    return claudeProgressLine(
+      'turn',
+      `failed ${compactPreview(event.terminal_reason ?? event.result, 'error')}`,
+    );
+  }
+  return claudeProgressLine('turn', 'completed');
 }
 
 /**
@@ -318,8 +496,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             const line = buffer.slice(0, newlineIdx).trim();
             buffer = buffer.slice(newlineIdx + 1);
             if (!line) continue;
-            const chunk = extractAssistantTextFromStreamLine(line);
-            if (chunk) task.onOutput!(chunk);
+            for (const chunk of formatClaudeStreamLineForStream(line)) {
+              task.onOutput!(chunk);
+            }
           }
         });
       }
