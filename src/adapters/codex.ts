@@ -305,6 +305,20 @@ export class CodexAdapter implements AgentAdapter {
         // default (resolution happens upstream in planRunAgent).
         args.push('-c', `model_reasoning_effort="${task.constraints.effort}"`);
       }
+      if (task.constraints?.sandbox) {
+        // String values mirror Codex's `--sandbox` enum. Type union in
+        // adapters/types.ts enforces this at compile time; if Codex
+        // renames a value upstream, fix both places together.
+        args.push('--sandbox', task.constraints.sandbox);
+      }
+      if (task.constraints?.networkAccess) {
+        // Default Codex `workspace-write` sandbox blocks localhost,
+        // which silently turns "tests passed" into "tests didn't run"
+        // for anything that touches a local DB/devserver. Toggle it on
+        // for runs that need it. Harmless under `read-only` (the key
+        // only affects workspace-write).
+        args.push('-c', 'sandbox_workspace_write.network_access=true');
+      }
 
       // No wall-clock timeout. Pre-2026-05 we passed `timeout: 300_000`
       // to execa and the kernel SIGKILL'd codex mid-edit on long

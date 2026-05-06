@@ -311,6 +311,15 @@ export function buildAdapterDispatchTask(args: {
           signal: taskCtx.signal,
           model: args.effectiveModel,
           effort: args.effectiveEffort,
+          // Allow localhost egress so tests that hit a local DB or
+          // devserver actually exercise the change. Without this,
+          // Codex's workspace-write sandbox blocks connect() and the
+          // run reports "tests passed" without having tested anything
+          // that touches the network — verified failure mode 2026-05.
+          // FS isolation still comes from the worktree (write-mode) +
+          // the dirty-tree probe (read-only mode); enabling network
+          // does not weaken either contract.
+          networkAccess: true,
         },
         onOutput: taskCtx.onStream,
       });

@@ -199,7 +199,23 @@ export interface Task {
      * > adapter default > undefined.
      */
     effort?: EffortLevel;
-    sandbox?: 'read-only' | 'workspace-write' | 'full-access';
+    /**
+     * Sandbox policy for adapters that natively sandbox shell commands
+     * (codex). Mirrors Codex's `--sandbox` enum verbatim — keep these
+     * strings in sync with the CLI or the spawn fails. Other adapters
+     * (claude-code, gemini, generic) ignore this.
+     */
+    sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    /**
+     * Allow network egress from inside the sandbox. Codex's
+     * `workspace-write` default blocks localhost, which silently breaks
+     * tests that hit a local DB/devserver — they "pass" without
+     * exercising the change. Setting this true threads
+     * `-c sandbox_workspace_write.network_access=true`. No effect under
+     * `read-only` (Codex has no read-only network toggle) or for
+     * non-codex adapters.
+     */
+    networkAccess?: boolean;
     signal?: AbortSignal;
   };
   onOutput?: (chunk: string) => void;

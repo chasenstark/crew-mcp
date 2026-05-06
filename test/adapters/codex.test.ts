@@ -634,6 +634,60 @@ describe('CodexAdapter', () => {
       const cliArgs = mockExeca.mock.calls[0][1] as string[];
       expect(cliArgs.some((a) => a.startsWith('model_reasoning_effort'))).toBe(false);
     });
+
+    it('passes --sandbox when sandbox constraint is set', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Run with relaxed sandbox',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { sandbox: 'workspace-write' },
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      const sIdx = cliArgs.indexOf('--sandbox');
+      expect(sIdx).toBeGreaterThan(-1);
+      expect(cliArgs[sIdx + 1]).toBe('workspace-write');
+    });
+
+    it('passes -c sandbox_workspace_write.network_access=true when networkAccess is true', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Run that needs localhost',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { networkAccess: true },
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      expect(cliArgs).toContain('sandbox_workspace_write.network_access=true');
+    });
+
+    it('omits sandbox + network overrides when constraints leave them unset', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Plain run',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {},
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      expect(cliArgs).not.toContain('--sandbox');
+      expect(cliArgs.some((a) => a.includes('network_access'))).toBe(false);
+    });
   });
 
   describe('healthCheck', () => {
