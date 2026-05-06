@@ -311,6 +311,13 @@ export class CodexAdapter implements AgentAdapter {
         // renames a value upstream, fix both places together.
         args.push('--sandbox', task.constraints.sandbox);
       }
+      for (const writablePath of task.constraints?.writablePaths ?? []) {
+        const trimmed = writablePath.trim();
+        if (trimmed.length === 0) continue;
+        // Codex CLI documents `--add-dir <DIR>` as the supported way to append
+        // writable roots without replacing sandbox_workspace_write.writable_roots.
+        args.push('--add-dir', trimmed);
+      }
       if (task.constraints?.networkAccess) {
         // Default Codex `workspace-write` sandbox blocks localhost,
         // which silently turns "tests passed" into "tests didn't run"

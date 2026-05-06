@@ -23,6 +23,25 @@ logs, and source code each time.
 effectively per-client for the current stdio transport. Future SSE or other
 multi-client transports should revisit that storage.
 
+## Update - 2026-05-06 Codex Worktree Commit Sandbox
+
+Codex write-mode dispatches now pass the run worktree's minimum git commit
+write surface as additional workspace-write roots, using Codex CLI's documented
+`--add-dir <DIR>` flag. This appends to Codex's
+`sandbox_workspace_write.writable_roots` behavior instead of replacing any
+user-configured writable roots:
+
+- The linked worktree gitdir from `<run>/worktree/.git`.
+- The common git object database (`.git/objects`).
+- The run-branch ref directory (`.git/refs/heads/crew-run`).
+- The matching run-branch reflog directory (`.git/logs/refs/heads/crew-run`).
+
+The fix intentionally does not grant the parent repository's entire `.git/`,
+hooks, config, non-crew branch refs, or other unrelated git internals. The
+practical ref/reflog grant is the `crew-run` namespace because current run
+branch names are `crew-run/<token>-<suffix>`, and `git commit` creates lock
+files beside the branch ref.
+
 ## Update - 2026-05-03 Interactive Startup Responsiveness + Status UX
 
 Interactive startup now renders Ink immediately and runs required adapter

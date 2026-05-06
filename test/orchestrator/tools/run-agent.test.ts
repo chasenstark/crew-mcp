@@ -150,11 +150,15 @@ describe('planRunAgent', () => {
     const args = executeMock.mock.calls[0][0] as {
       prompt: string;
       context: { workingDirectory: string };
-      constraints: { model?: string };
+      constraints: { model?: string; sandbox?: string; writablePaths?: readonly string[] };
     };
     expect(args.prompt).toBe('fix the typo');
     expect(args.context.workingDirectory).toBe(plan.worktreePath);
     expect(args.constraints.model).toBe('preferred-model');
+    expect(args.constraints.sandbox).toBe('workspace-write');
+    expect(args.constraints.writablePaths).toEqual(
+      worktreeManager.getRunGitCommitWritablePaths(plan.runId).paths,
+    );
   });
 
   it('leaves successful worktree edits in the worktree (no auto-merge in v2)', async () => {
@@ -291,6 +295,37 @@ describe('planRunAgent', () => {
     await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
     // Per-call wins over agents.json override.
     expect(observedEffort).toBe('high');
+  });
+
+  it('threads only the run worktree git commit paths into write-mode dispatches', async () => {
+    let observedWritablePaths: readonly string[] | undefined;
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      execute: async (task) => {
+        observedWritablePaths = task.constraints?.writablePaths;
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'commit from the run worktree' },
+      'tool-call-1',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+
+    const expected = worktreeManager.getRunGitCommitWritablePaths(plan.runId);
+    expect(observedWritablePaths).toEqual(expected.paths);
+    expect(observedWritablePaths).toContain(expected.worktreeGitDir);
+    expect(observedWritablePaths).toContain(expected.objectsDir);
+    expect(observedWritablePaths).toContain(expected.branchRefsDir);
+    expect(observedWritablePaths).toContain(expected.branchLogsDir);
+    expect(observedWritablePaths).not.toContain(join(root, '.git'));
   });
 });
 
