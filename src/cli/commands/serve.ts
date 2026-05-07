@@ -18,6 +18,7 @@
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -756,7 +757,7 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
   // harmless on other platforms.
   if (process.platform === 'darwin') {
     lines.push(
-      `- **Tail in Terminal**: [open in a side window](file://${encodeFileUriPath(env.tail_command_path)}) `
+      `- **Tail in Terminal**: [open in a side window](${fileUrlHref(env.tail_command_path)}) `
         + '(macOS — clicking opens Terminal.app and runs `tail -F` against the events log)',
     );
   }
@@ -771,15 +772,11 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
 }
 
 /**
- * Encode an absolute filesystem path for embedding in a `file://` URI.
- * Spaces and other reserved characters need percent-encoding so the
- * host's URI parser doesn't truncate at the first space — but path
- * separators (`/`) must NOT be encoded. `encodeURI` matches that
- * shape; `encodeURIComponent` would over-encode the slashes and break
- * the path.
+ * Convert an absolute filesystem path to a `file://` URI. `pathToFileURL`
+ * handles URI delimiters such as `#` and `?` as literal path characters.
  */
-function encodeFileUriPath(absPath: string): string {
-  return encodeURI(absPath);
+export function fileUrlHref(absPath: string): string {
+  return pathToFileURL(absPath).href;
 }
 
 function mdInlineCode(value: string): string {
@@ -1062,6 +1059,7 @@ interface GetRunStatusResponse {
   readonly events_tail: readonly string[];
   readonly next_event_line: number;
   readonly events_log_path: string;
+  readonly tail_command_path: string;
   /**
    * Count of older events.log lines that fell outside the per-poll cap
    * and are therefore *not* present in `events_tail`. Only meaningful
@@ -1122,6 +1120,7 @@ function buildGetRunStatusResponse(
   const payload: GetRunStatusResponse = {
     ...state,
     events_log_path: store.eventsLogPath(runId),
+    tail_command_path: store.tailCommandPath(runId),
     events_tail: cappedLines,
     next_event_line: cursorAfterDelta,
     ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
