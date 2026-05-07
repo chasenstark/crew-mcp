@@ -671,7 +671,16 @@ describe('CodexAdapter', () => {
       expect(cliArgs).toContain('sandbox_workspace_write.network_access=true');
     });
 
-    it('passes repeated --add-dir flags for writablePaths', async () => {
+    it('passes a single -c writable_roots config override (TOML array) for writablePaths', async () => {
+      // Bug fix 2026-05: codex's `--add-dir` adds paths via the
+      // `additional_writable_root` runtime-approval channel, which
+      // doesn't auto-approve in non-interactive `codex exec` — git
+      // commit failed on `index.lock` in linked worktrees because the
+      // gitdir grant was silently rejected. The fix is to set
+      // `sandbox_workspace_write.writable_roots` via `-c` so the path
+      // is in the seatbelt profile from the start. We also must NOT
+      // emit `--add-dir` (it's redundant and can be misleading in
+      // logs).
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,
         stderr: '',
@@ -693,14 +702,47 @@ describe('CodexAdapter', () => {
       });
 
       const cliArgs = mockExeca.mock.calls[0][1] as string[];
-      const addDirPairs = cliArgs
+      // Single `-c sandbox_workspace_write.writable_roots=[...]` pair,
+      // empty/whitespace entries filtered out, paths preserved in
+      // input order, JSON-encoded as a TOML-compatible string array.
+      const overridePairs = cliArgs
         .map((arg, idx) => [arg, cliArgs[idx + 1]] as const)
-        .filter(([arg]) => arg === '--add-dir');
-      expect(addDirPairs).toEqual([
-        ['--add-dir', '/repo/.git/worktrees/run-a'],
-        ['--add-dir', '/repo/.git/objects'],
-        ['--add-dir', '/repo/.git/refs/heads/crew-run'],
-      ]);
+        .filter(([arg, val]) => arg === '-c' && val?.startsWith('sandbox_workspace_write.writable_roots='));
+      expect(overridePairs).toHaveLength(1);
+      expect(overridePairs[0][1]).toBe(
+        'sandbox_workspace_write.writable_roots=["/repo/.git/worktrees/run-a","/repo/.git/objects","/repo/.git/refs/heads/crew-run"]',
+      );
+      // No --add-dir flags should remain — the legacy approach was
+      // observed to silently fail on paths outside cwd.
+      expect(cliArgs).not.toContain('--add-dir');
+    });
+
+    it('omits the writable_roots override entirely when writablePaths is empty', async () => {
+      // Empty/missing list → no `-c` for writable_roots. We don't
+      // want to emit `writable_roots=[]` because that would *clear*
+      // the default and forbid even cwd-implicit behaviors codex
+      // might rely on.
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'No writable paths',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          sandbox: 'workspace-write',
+          writablePaths: ['   ', ''],
+        },
+      });
+
+      const cliArgs = mockExeca.mock.calls[0][1] as string[];
+      const writableRootsPair = cliArgs.find(
+        (arg) => typeof arg === 'string' && arg.startsWith('sandbox_workspace_write.writable_roots='),
+      );
+      expect(writableRootsPair).toBeUndefined();
+      expect(cliArgs).not.toContain('--add-dir');
     });
 
     it('omits sandbox + network overrides when constraints leave them unset', async () => {

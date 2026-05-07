@@ -414,12 +414,34 @@ export class CodexAdapter implements AgentAdapter {
         // renames a value upstream, fix both places together.
         args.push('--sandbox', task.constraints.sandbox);
       }
-      for (const writablePath of task.constraints?.writablePaths ?? []) {
-        const trimmed = writablePath.trim();
-        if (trimmed.length === 0) continue;
-        // Codex CLI documents `--add-dir <DIR>` as the supported way to append
-        // writable roots without replacing sandbox_workspace_write.writable_roots.
-        args.push('--add-dir', trimmed);
+      // Sandbox writable-roots grant. We set `sandbox_workspace_write.writable_roots`
+      // via a `-c` config override rather than `--add-dir`. Why not --add-dir:
+      // observed failure mode 2026-05 — codex exec dispatches to a worktree
+      // whose `.git` is a linked-worktree pointer at `<host>/.git/worktrees/<wt>`,
+      // and `git commit` needs to write `index.lock` there. We passed that
+      // gitdir via `--add-dir` and codex still blocked the write with
+      // "outside the writable root". The codex binary surfaces two distinct
+      // notions of writable root: `writable_roots` (config-loaded, enforced
+      // at sandbox profile generation) and `additional_writable_root` (a
+      // runtime-approval modification of the active permission profile).
+      // `--add-dir` drives the latter, which in non-interactive `codex exec`
+      // doesn't auto-approve, so the grant silently fails for paths outside
+      // cwd. Setting `writable_roots` via `-c` puts the path into the
+      // *config* before the seatbelt profile is built, which works.
+      // Trade-off: `-c` REPLACES the user's per-machine `writable_roots` for
+      // this dispatch. Acceptable here because crew owns the sandbox
+      // contract for dispatched runs (the user's interactive codex config
+      // doesn't need to leak into a worktree run).
+      const writablePaths = (task.constraints?.writablePaths ?? [])
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0);
+      if (writablePaths.length > 0) {
+        // TOML array literal: `["a", "b"]`. JSON.stringify produces the
+        // exact same shape for string arrays, so reuse it rather than
+        // hand-rolling a serializer (and risking quote-escape bugs on
+        // paths with spaces or other unusual characters).
+        const tomlArray = JSON.stringify(writablePaths);
+        args.push('-c', `sandbox_workspace_write.writable_roots=${tomlArray}`);
       }
       if (task.constraints?.networkAccess) {
         // Default Codex `workspace-write` sandbox blocks localhost,
