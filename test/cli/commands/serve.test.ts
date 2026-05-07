@@ -319,6 +319,12 @@ describe('crew serve — run_agent tool', () => {
       // tail_command_path: the run-dir-local helper script the user
       // can open in a side terminal to follow the run live.
       expect(env.tail_command_path).toBe(join(h.crewHome, 'runs', env.run_id, 'tail.command'));
+      // tail_command_url: pre-encoded file:// URL the captain can
+      // paste directly into a markdown link in its inline dispatch
+      // confirmation (so the user sees the link without expanding
+      // the collapsed tool result).
+      expect(env.tail_command_url).toBe(fileUrlHref(env.tail_command_path));
+      expect(env.tail_command_url.startsWith('file://')).toBe(true);
       // text is markdown, not stringified JSON.
       const text = (res.content as Array<{ text: string }>)[0].text;
       expect(text).not.toMatch(/^\s*\{/); // not a JSON blob

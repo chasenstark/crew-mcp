@@ -137,6 +137,21 @@ export interface RunEnvelope {
    * still a runnable shell script the user can invoke directly.
    */
   readonly tail_command_path: string;
+  /**
+   * Pre-encoded `file://` URL pointing at `tail_command_path`. Provided
+   * as a separate field so captains can paste it verbatim into a
+   * markdown link without having to re-implement path encoding (we
+   * use `pathToFileURL().href` here so paths with `#`, `?`, spaces, or
+   * unicode round-trip correctly).
+   *
+   * Why this exists alongside `tail_command_path`: the captain's
+   * one-line dispatch confirmation needs to surface a clickable link
+   * inline in the conversation (the dispatch tool result is collapsed
+   * by default in Claude Code, so a link buried there is invisible).
+   * Centralizing the URL form here keeps captains from URL-encoding
+   * the path themselves.
+   */
+  readonly tail_command_url: string;
   readonly status: RunStatus;
   readonly summary: string;
   readonly files_changed: readonly string[];
@@ -716,6 +731,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     worktree_path: args.worktreePath,
     events_log_path: args.runStateStore.eventsLogPath(args.runId),
     tail_command_path: args.runStateStore.tailCommandPath(args.runId),
+    tail_command_url: fileUrlHref(args.runStateStore.tailCommandPath(args.runId)),
     status: 'running',
     summary,
     files_changed: [],
@@ -757,7 +773,7 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
   // harmless on other platforms.
   if (process.platform === 'darwin') {
     lines.push(
-      `- **Tail in Terminal**: [open in a side window](${fileUrlHref(env.tail_command_path)}) `
+      `- **Tail in Terminal**: [open in a side window](${env.tail_command_url}) `
         + '(macOS — clicking opens Terminal.app and runs `tail -F` against the events log)',
     );
   }

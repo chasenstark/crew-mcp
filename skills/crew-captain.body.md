@@ -213,9 +213,20 @@ during a dispatch should be: one dispatch confirmation, one
 terminal summary, one merge/iterate/discard prompt. That's the
 budget.
 
-1. Dispatch. Confirm the run_id back to the user **once**, briefly
-   (one line). Do NOT also relay the dispatch markdown's tail/follow
-   hints — those are already in the tool result the user can see.
+1. Dispatch. Confirm the run_id back to the user **once**, briefly,
+   and **include a clickable tail link inline** so the user can open
+   a side terminal without expanding the (collapsed-by-default) tool
+   result. The `run_agent` envelope returns `tail_command_url` —
+   paste it verbatim into a markdown link. Format:
+
+   ```
+   Dispatched as `<run_id>` — [tail in side terminal](<tail_command_url>). Watching.
+   ```
+
+   That's a single line. Don't relay the rest of the dispatch
+   markdown (worktree path, follow-up `get_run_status` hints, etc.)
+   — those are already in the tool result for the user who wants
+   them.
 2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
    since_event_line: <last cursor> })`. Start the cursor at 0; on
    each response, update it from `next_event_line`.
@@ -242,9 +253,12 @@ budget.
 
 Two side channels carry live progress without burning your context:
 
-- **The dispatch tool result** includes a `tail.command` link (on
-  macOS) and a `tail -F` snippet. The user clicks or runs it to
-  open a side terminal that streams the run's events live.
+- **The inline tail link in your dispatch confirmation** — the
+  `[tail in side terminal](<tail_command_url>)` markdown link you
+  emit (step 1) opens a side terminal on macOS via Terminal.app's
+  `.command` handler. This is the user's main progress channel;
+  surfacing it inline is the whole point of including the link in
+  your reply rather than relying on the tool-result panel.
 - Some hosts also render MCP `notifications/progress` chunks in
   their UI (a status line, an inline progress indicator). The
   adapter emits these automatically.
@@ -255,8 +269,9 @@ into your reply.
 ### Worked shape
 
 ```
-run_agent(...)              → { status: "running", run_id: R }
-"Dispatched as R. Watching."
+run_agent(...)              → { status: "running", run_id: R,
+                                tail_command_url: "file:///..." }
+"Dispatched as `R` — [tail in side terminal](file:///...). Watching."
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0})
   → events_tail: [], next_event_line: 4, status: "running"
 (no output)
