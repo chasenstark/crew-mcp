@@ -2,12 +2,13 @@
  * Unit tests for the per-run state store.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
+import { logger } from '../../src/utils/logger.js';
 
 describe('RunStateStore', () => {
   let crewHome: string;
@@ -20,6 +21,7 @@ describe('RunStateStore', () => {
     store = new RunStateStore({ crewHome, repoRoot });
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(crewHome, { recursive: true, force: true });
     rmSync(repoRoot, { recursive: true, force: true });
   });
@@ -107,6 +109,24 @@ describe('RunStateStore', () => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('node:child_process').execSync(`bash -n ${JSON.stringify(tailPath)}`);
     }).not.toThrow();
+  });
+
+  it('logs tail.command helper write failures without aborting dispatch', () => {
+    const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+    const runId = 'blocked';
+    writeFileSync(join(crewHome, 'runs', runId), 'not a directory', 'utf-8');
+
+    expect(() => {
+      (store as unknown as { writeTailCommandHelper(runId: string): void })
+        .writeTailCommandHelper(runId);
+    }).not.toThrow();
+    expect(debug).toHaveBeenCalledWith(
+      'Failed to write tail.command helper',
+      expect.objectContaining({
+        runId,
+        tailPath: store.tailCommandPath(runId),
+      }),
+    );
   });
 
   it('read() returns undefined for unknown runs', () => {
