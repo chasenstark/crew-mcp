@@ -12,7 +12,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "refresh": "npm run build && npm link && crew-mcp install -t all"
   },
   "engines": {
     "node": ">=20"
