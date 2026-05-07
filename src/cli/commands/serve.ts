@@ -56,8 +56,10 @@ import {
   DISCARD_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/discard-run.js';
 import {
+  DEFAULT_MAX_EVENTS_TAIL,
   getRunStatusInputSchema,
   GET_RUN_STATUS_DESCRIPTION,
+  MAX_EVENTS_TAIL_CAP,
 } from '../../orchestrator/tools/get-run-status.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
@@ -73,13 +75,10 @@ export const SERVE_VERSION = '0.2.0-dev';
  */
 export const MAX_LONG_POLL_MS = 60_000;
 
-/**
- * Default server-side cap for cursor-based `events_tail` deltas.
- * Captains also have a smaller render cap in the skill body; this
- * protects the MCP wire payload if an adapter emits too much between
- * polls.
- */
-export const DEFAULT_MAX_EVENTS_TAIL = 50;
+// Re-export for callers that imported these from this module.
+// Canonical definitions live in `orchestrator/tools/get-run-status` so
+// the schema bound and the default share one source of truth.
+export { DEFAULT_MAX_EVENTS_TAIL, MAX_EVENTS_TAIL_CAP };
 
 export interface ServeOptions {
   /**
@@ -1023,6 +1022,16 @@ interface GetRunStatusResponse {
   readonly events_tail: readonly string[];
   readonly next_event_line: number;
   readonly events_log_path: string;
+  /**
+   * Count of older events.log lines that fell outside the per-poll cap
+   * and are therefore *not* present in `events_tail`. Set only when the
+   * cap fired — otherwise the field is omitted (and a captain can treat
+   * "absent" as "no skip"). The lines are not lost: the cursor
+   * (`next_event_line`) advances past them, and the full log lives at
+   * `events_log_path`. When set, `events_tail`'s first line is a human-
+   * readable marker `(N more events skipped)` so verbatim renderers
+   * surface the elision to the user.
+   */
   readonly events_tail_skipped?: number;
   readonly log_tail?: readonly string[];
 }
@@ -1036,16 +1045,17 @@ function buildGetRunStatusResponse(
   maxEventsTail: number | undefined,
 ): ToolCallReturn {
   const { lines, nextLine } = store.readEventsSince(runId, sinceLine);
+  // When the delta exceeds the cap, reserve one slot for the skipped-
+  // events marker so total array length stays at `maxTail`. The marker
+  // is the *first* line so verbatim renderers show "N skipped" before
+  // the surviving tail; this matches how captains describe elisions.
   const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
   const overCap = lines.length > maxTail;
   const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
   const skipped = overCap ? lines.length - eventLineBudget : 0;
   const tailLines = eventLineBudget > 0 ? lines.slice(-eventLineBudget) : [];
   const cappedLines = overCap
-    ? [
-        `(${skipped} more events skipped)`,
-        ...tailLines,
-      ]
+    ? [`(${skipped} more events skipped)`, ...tailLines]
     : lines;
   const payload: GetRunStatusResponse = {
     ...state,

@@ -28,6 +28,10 @@ import {
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
+import {
+  getRunStatusInputSchema,
+  MAX_EVENTS_TAIL_CAP,
+} from '../../../src/orchestrator/tools/get-run-status.js';
 import { logger } from '../../../src/utils/logger.js';
 
 // --- helpers ---
@@ -1627,6 +1631,209 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
     } finally {
       await h.close();
     }
+  });
+
+  it('does not set events_tail_skipped when the delta fits under the cap', async () => {
+    // Regression: a captain reading `events_tail_skipped` to decide
+    // whether to render an "(N skipped)" hint must see *no* field when
+    // nothing was elided. Verify both the marker line and the field
+    // are absent when lines.length < cap.
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-undercap',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-undercap', prompt: 'stream' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+      // Emit fewer lines than the cap (cap=10, lines=4).
+      for (let i = 1; i <= 4; i += 1) {
+        onOutputRef?.(`[mock-undercap] message: line ${i}`);
+      }
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        return (r.structuredContent as { next_event_line: number }).next_event_line >= 4;
+      });
+
+      const r = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id, since_event_line: 0, max_events_tail: 10 },
+      });
+      const s = r.structuredContent as {
+        events_tail: string[];
+        events_tail_skipped?: number;
+        next_event_line: number;
+      };
+      expect(s.events_tail).toEqual([
+        '[mock-undercap] message: line 1',
+        '[mock-undercap] message: line 2',
+        '[mock-undercap] message: line 3',
+        '[mock-undercap] message: line 4',
+      ]);
+      // Field omitted (not 0) when nothing was skipped.
+      expect(s.events_tail_skipped).toBeUndefined();
+      expect(s.next_event_line).toBe(4);
+
+      resolveAdapter();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('does not skip when delta length exactly equals the cap', async () => {
+    // Boundary: lines.length === cap is the "fits exactly" case. The
+    // cap fires only when lines.length > cap, so no marker should be
+    // injected here even though we're right at the limit.
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-exact',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-exact', prompt: 'stream' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+      // Emit exactly cap=5 lines.
+      for (let i = 1; i <= 5; i += 1) {
+        onOutputRef?.(`[mock-exact] message: line ${i}`);
+      }
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        return (r.structuredContent as { next_event_line: number }).next_event_line >= 5;
+      });
+
+      const r = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id, since_event_line: 0, max_events_tail: 5 },
+      });
+      const s = r.structuredContent as {
+        events_tail: string[];
+        events_tail_skipped?: number;
+      };
+      expect(s.events_tail).toHaveLength(5);
+      expect(s.events_tail[0]).toBe('[mock-exact] message: line 1');
+      expect(s.events_tail[4]).toBe('[mock-exact] message: line 5');
+      expect(s.events_tail_skipped).toBeUndefined();
+
+      resolveAdapter();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('skips exactly one line when delta is cap+1', async () => {
+    // Boundary: cap+1. The marker takes one slot of the budget so the
+    // surviving tail is `cap-1` lines, and `events_tail_skipped` is
+    // the count of lines elided from the front (here, 2: the marker
+    // displaces one survivor when the cap is small).
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-plus1',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-plus1', prompt: 'stream' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+      // Emit cap+1 = 6 lines.
+      for (let i = 1; i <= 6; i += 1) {
+        onOutputRef?.(`[mock-plus1] message: line ${i}`);
+      }
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        return (r.structuredContent as { next_event_line: number }).next_event_line >= 6;
+      });
+
+      const r = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id, since_event_line: 0, max_events_tail: 5 },
+      });
+      const s = r.structuredContent as {
+        events_tail: string[];
+        events_tail_skipped?: number;
+        next_event_line: number;
+      };
+      // cap=5, lines=6 → budget=4 surviving + 1 marker line.
+      expect(s.events_tail).toEqual([
+        '(2 more events skipped)',
+        '[mock-plus1] message: line 3',
+        '[mock-plus1] message: line 4',
+        '[mock-plus1] message: line 5',
+        '[mock-plus1] message: line 6',
+      ]);
+      expect(s.events_tail_skipped).toBe(2);
+      expect(s.next_event_line).toBe(6);
+
+      resolveAdapter();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('rejects max_events_tail above MAX_EVENTS_TAIL_CAP at the schema boundary', () => {
+    // The schema bound (MAX_EVENTS_TAIL_CAP) is enforced via zod, not
+    // via runtime clamping; a misuse should surface as a clean
+    // ValidationError rather than silently capping. Verify the schema
+    // itself rejects 501 and accepts 500.
+    expect(() => getRunStatusInputSchema.parse({ run_id: 'r', max_events_tail: 501 })).toThrow();
+    expect(() =>
+      getRunStatusInputSchema.parse({ run_id: 'r', max_events_tail: MAX_EVENTS_TAIL_CAP }),
+    ).not.toThrow();
+    expect(() =>
+      getRunStatusInputSchema.parse({ run_id: 'r', max_events_tail: 0 }),
+    ).toThrow();
   });
 });
 
