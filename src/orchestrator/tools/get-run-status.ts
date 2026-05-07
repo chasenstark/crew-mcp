@@ -65,11 +65,12 @@ export const getRunStatusInputSchema = z.object({
    */
   log_lines: z.number().int().nonnegative().optional(),
   /**
-   * Maximum number of new events.log lines to return in this poll.
-   * Defaults server-side to {@link DEFAULT_MAX_EVENTS_TAIL}. When more
-   * lines are available, the server returns the most recent lines plus
-   * a skipped-events marker and advances `next_event_line` to the log
-   * head. Bounded above by {@link MAX_EVENTS_TAIL_CAP}.
+   * Maximum number of events.log lines to return in `events_tail` on
+   * the terminal poll-return. Defaults to {@link DEFAULT_MAX_EVENTS_TAIL}.
+   * When the run's full log exceeds this, the server returns the most
+   * recent lines plus a skipped-events marker. Bounded above by
+   * {@link MAX_EVENTS_TAIL_CAP}. Has no effect on running poll-returns
+   * (those always return `events_tail: []`).
    */
   max_events_tail: z.number().int().positive().max(MAX_EVENTS_TAIL_CAP).optional(),
 });
@@ -77,4 +78,4 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Poll the current state of a run by run_id. **Always poll** after run_agent / continue_run — those tools return status:"running" immediately and the captain drives the lifecycle from here. Returns status (running | success | partial | error | cancelled | merged | merge_conflict | discarded), prompts history, files_changed, repo_root, worktree_path, events_log_path, events_tail (new lines since \`since_event_line\`), and \`next_event_line\` (cursor for the next poll). Pass \`wait_for_change_ms: 30000\` to long-poll: the call blocks server-side until new events arrive or a terminal state is reached, so the captain renders new content with sub-second latency rather than fixed-cadence snapshots. \`events_tail\` is capped to ${DEFAULT_MAX_EVENTS_TAIL} lines per poll by default; pass \`max_events_tail\` to request a different cap (maximum ${MAX_EVENTS_TAIL_CAP}). When the cap is exceeded, the response skips older backlog, includes a skipped-events marker (\`events_tail_skipped\`), and advances the cursor to the current log head. Long-poll waits are capped at 60000ms by the server.`;
+  `Poll the current state of a run by run_id. **Always poll** after run_agent / continue_run — those tools return status:"running" immediately and the captain drives the lifecycle from here. Returns status (running | success | partial | error | cancelled | merged | merge_conflict | discarded), prompts history, files_changed, repo_root, worktree_path, events_log_path, tail_command_path (clickable file:// helper a user can open in a side terminal), events_tail, and \`next_event_line\` (cursor). **events_tail is empty while the run is running** — the captain coordinates and lets the user follow progress out-of-band via \`events_log_path\` or the \`tail.command\` helper. On terminal status (success | partial | error | cancelled), \`events_tail\` returns the recent tail of the full run log (capped to ${DEFAULT_MAX_EVENTS_TAIL} lines by default; \`max_events_tail\` adjusts the cap up to ${MAX_EVENTS_TAIL_CAP}; over-cap responses include a skipped-events marker and \`events_tail_skipped\`). Pass \`wait_for_change_ms: 30000\` to long-poll: the call blocks server-side until new events arrive or a terminal state is reached, so the captain reaches the terminal poll with sub-second latency rather than fixed-cadence snapshots. Long-poll waits are capped at 60000ms by the server.`;

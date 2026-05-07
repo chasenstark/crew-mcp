@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -315,6 +315,9 @@ describe('crew serve — run_agent tool', () => {
       expect(env.agent_id).toBe('mock-coder');
       expect(env.status).toBe('running');
       expect(env.events_log_path).toBe(join(h.crewHome, 'runs', env.run_id, 'events.log'));
+      // tail_command_path: the run-dir-local helper script the user
+      // can open in a side terminal to follow the run live.
+      expect(env.tail_command_path).toBe(join(h.crewHome, 'runs', env.run_id, 'tail.command'));
       // text is markdown, not stringified JSON.
       const text = (res.content as Array<{ text: string }>)[0].text;
       expect(text).not.toMatch(/^\s*\{/); // not a JSON blob
@@ -323,8 +326,51 @@ describe('crew serve — run_agent tool', () => {
       expect(text).toContain(env.worktree_path);
       expect(text).toContain(`tail -F ${env.events_log_path}`);
       expect(text).toContain('get_run_status');
+      // Clickable link only shows on macOS (Terminal.app handles
+      // .command). On other platforms the path is still emitted but
+      // without the file:// hyperlink wrapper.
+      if (process.platform === 'darwin') {
+        expect(text).toContain(`file://${encodeURI(env.tail_command_path)}`);
+        expect(text).toContain('Tail in Terminal');
+      } else {
+        expect(text).not.toContain('file://');
+      }
       // Wait so the lifecycle terminates before harness teardown — otherwise
       // the dispatcher's listeners outlive the test.
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('writes an executable tail.command helper that targets the run\'s events.log', async () => {
+    // The tail.command file is the load-bearing piece of the user's
+    // progress channel: a click (macOS) or a manual `bash <path>`
+    // (Linux) opens a side terminal that follows events.log live so
+    // the captain doesn't have to render progress into its reply.
+    // Asserts the file exists, is executable, and runs `tail -F`
+    // against the right log path with shell-quote-safe escaping.
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = res.structuredContent as RunEnvelope;
+
+      const tailPath = env.tail_command_path;
+      expect(existsSync(tailPath)).toBe(true);
+      // chmod 0755 — owner exec bit is the load-bearing one for
+      // double-click launching on macOS and `./tail.command` on Linux.
+      const mode = statSync(tailPath).mode;
+      expect(mode & 0o100).toBe(0o100);
+
+      const contents = readFileSync(tailPath, 'utf-8');
+      expect(contents.startsWith('#!/bin/bash\n')).toBe(true);
+      expect(contents).toContain(`exec tail -F '${env.events_log_path}'`);
+
+      // Cleanup.
       await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
@@ -1451,8 +1497,11 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       await waitFor(() => onOutputRef !== undefined);
 
       // Start a long-poll with no events yet; trigger a stream event
-      // mid-poll and observe that the call wakes promptly with the
-      // new line in events_tail (cursor-based).
+      // mid-poll and observe that the call wakes promptly. Under the
+      // terminal-only events_tail contract, the wake-up is signaled
+      // by `next_event_line` advancing — `events_tail` itself stays
+      // empty while the run is still `running` (the captain doesn't
+      // narrate progress; users follow events_log_path or tail.command).
       const pollPromise = h.client.callTool({
         name: 'get_run_status',
         arguments: {
@@ -1476,24 +1525,42 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       };
       // The wake should have fired well under the 5000ms cap.
       expect(elapsed).toBeLessThan(2000);
-      expect(s.events_tail).toContain('first chunk');
+      expect(s.status).toBe('running');
+      // Running poll-returns intentionally hide events_tail content.
+      expect(s.events_tail).toEqual([]);
+      // Cursor advanced past the emitted chunk so the eventual
+      // terminal poll-return knows where the log head sits.
       expect(s.next_event_line).toBe(1);
 
-      // Cleanup: complete the dispatch.
+      // Cleanup: complete the dispatch and verify the terminal
+      // poll-return DOES surface the chunk via events_tail.
       resolveAdapter();
-      await pollUntilTerminal(h.client, env.run_id);
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.events_tail).toContain('first chunk');
     } finally {
       await h.close();
     }
   });
 
-  it('cursor-based events_tail returns only new lines per poll', async () => {
+  it('keeps events_tail empty while running and surfaces the full tail on terminal', async () => {
+    // Captain-context conservation: while `status === "running"`, the
+    // cursor still advances (so external readers and the terminal poll
+    // see a coherent view), but `events_tail` stays empty so the
+    // captain isn't tempted to render plumbing into its reply. Once
+    // the run reaches terminal, `events_tail` carries the recent tail
+    // of the entire log — the captain's evidence base for its
+    // synthesized summary.
     let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
     const adapter = makeMockAdapter({
       name: 'mock-streaming',
       execute: async (task) => {
         const t = task as { onOutput?: (chunk: string) => void };
         onOutputRef = t.onOutput;
+        await slow;
         return {
           output: 'done',
           filesModified: [],
@@ -1512,7 +1579,8 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       await waitFor(() => onOutputRef !== undefined);
       onOutputRef?.('line 1');
       onOutputRef?.('line 2');
-      // Wait for events.log to flush.
+      // Wait for events.log to flush — assert via cursor advance,
+      // since events_tail itself stays empty while running.
       await waitFor(async () => {
         const r = await h.client.callTool({
           name: 'get_run_status',
@@ -1522,20 +1590,21 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
         return s.next_event_line >= 2;
       });
 
-      // First poll from cursor 0 should return both lines.
+      // Running poll from cursor 0: events_tail empty, cursor at 2.
       const first = await h.client.callTool({
         name: 'get_run_status',
         arguments: { run_id: env.run_id, since_event_line: 0 },
       });
       const f = first.structuredContent as {
+        status: string;
         events_tail: string[];
         next_event_line: number;
       };
-      expect(f.events_tail).toEqual(['line 1', 'line 2']);
+      expect(f.status).toBe('running');
+      expect(f.events_tail).toEqual([]);
       expect(f.next_event_line).toBe(2);
 
-      // Polling again from the returned cursor with no new events:
-      // empty events_tail, stable cursor.
+      // Polling again from the returned cursor: still empty, cursor stable.
       const second = await h.client.callTool({
         name: 'get_run_status',
         arguments: { run_id: env.run_id, since_event_line: f.next_event_line },
@@ -1547,262 +1616,157 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       expect(s2.events_tail).toEqual([]);
       expect(s2.next_event_line).toBe(2);
 
-      // Cleanup.
-      await pollUntilTerminal(h.client, env.run_id);
+      // Drive to terminal — now events_tail is populated with the
+      // full log tail regardless of cursor (the captain wants "what
+      // the run did", not "what happened since I last polled").
+      resolveAdapter();
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.status).toBe('success');
+      expect(final.events_tail).toEqual(['line 1', 'line 2']);
     } finally {
       await h.close();
     }
   });
 
-  it('caps events_tail per poll and advances the cursor to the log head', async () => {
+  // ---------------------------------------------------------------
+  // Cap tests — exercise the events_tail cap on the *terminal*
+  // poll-return (running poll-returns always emit []). Each test
+  // emits N lines, drives to terminal, then re-polls with a custom
+  // `max_events_tail` to assert the resulting cap behavior.
+  // ---------------------------------------------------------------
+
+  /**
+   * Helper: build a controllable mock adapter + the harness around it
+   * that emits the given lines via onOutput then completes. Returns
+   * the harness + the dispatched envelope so callers can re-poll the
+   * terminal state with a custom `max_events_tail`.
+   */
+  async function emitAndTerminate(
+    agentName: string,
+    lines: readonly string[],
+  ): Promise<{ h: Harness; env: RunEnvelope }> {
     let onOutputRef: ((chunk: string) => void) | undefined;
     let resolveAdapter!: () => void;
     const slow = new Promise<void>((r) => {
       resolveAdapter = r;
     });
     const adapter = makeMockAdapter({
-      name: 'mock-streaming',
+      name: agentName,
       execute: async (task) => {
         const t = task as { onOutput?: (chunk: string) => void };
         onOutputRef = t.onOutput;
         await slow;
-        return {
-          output: 'done',
-          filesModified: [],
-          status: 'success',
-          metadata: {},
-        };
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
       },
     });
     const h = await startHarness([adapter]);
-    try {
-      const run = await h.client.callTool({
-        name: 'run_agent',
-        arguments: { agent_id: 'mock-streaming', prompt: 'stream' },
+    const run = await h.client.callTool({
+      name: 'run_agent',
+      arguments: { agent_id: agentName, prompt: 'stream' },
+    });
+    const env = run.structuredContent as RunEnvelope;
+    await waitFor(() => onOutputRef !== undefined);
+    for (const line of lines) onOutputRef?.(line);
+    await waitFor(async () => {
+      const r = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id },
       });
-      const env = run.structuredContent as RunEnvelope;
-      await waitFor(() => onOutputRef !== undefined);
-      for (let i = 1; i <= 8; i += 1) {
-        onOutputRef?.(`[mock-streaming] message: line ${i}`);
-      }
-      await waitFor(async () => {
-        const r = await h.client.callTool({
-          name: 'get_run_status',
-          arguments: { run_id: env.run_id },
-        });
-        const s = r.structuredContent as { next_event_line: number };
-        return s.next_event_line >= 8;
-      });
+      const s = r.structuredContent as { next_event_line: number };
+      return s.next_event_line >= lines.length;
+    });
+    resolveAdapter();
+    await pollUntilTerminal(h.client, env.run_id);
+    return { h, env };
+  }
 
+  it('caps events_tail on the terminal poll and emits the skipped-events marker', async () => {
+    const lines = Array.from({ length: 8 }, (_, i) => `[mock-streaming] message: line ${i + 1}`);
+    const { h, env } = await emitAndTerminate('mock-streaming', lines);
+    try {
       const capped = await h.client.callTool({
         name: 'get_run_status',
-        arguments: {
-          run_id: env.run_id,
-          since_event_line: 0,
-          max_events_tail: 3,
-        },
+        arguments: { run_id: env.run_id, max_events_tail: 3 },
       });
       const c = capped.structuredContent as {
+        status: string;
         events_tail: string[];
         events_tail_skipped?: number;
-        next_event_line: number;
       };
+      expect(c.status).toBe('success');
+      // cap=3, lines=8 → reserve 1 slot for marker + 2 surviving = 3 total.
       expect(c.events_tail).toEqual([
         '(6 more events skipped)',
         '[mock-streaming] message: line 7',
         '[mock-streaming] message: line 8',
       ]);
       expect(c.events_tail_skipped).toBe(6);
-      expect(c.next_event_line).toBe(8);
-
-      const next = await h.client.callTool({
-        name: 'get_run_status',
-        arguments: { run_id: env.run_id, since_event_line: c.next_event_line },
-      });
-      const n = next.structuredContent as {
-        events_tail: string[];
-        next_event_line: number;
-      };
-      expect(n.events_tail).toEqual([]);
-      expect(n.next_event_line).toBe(8);
-
-      resolveAdapter();
-      await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
     }
   });
 
-  it('does not set events_tail_skipped when the delta fits under the cap', async () => {
+  it('does not set events_tail_skipped when the run log fits under the cap', async () => {
     // Regression: a captain reading `events_tail_skipped` to decide
-    // whether to render an "(N skipped)" hint must see *no* field when
-    // nothing was elided. Verify both the marker line and the field
-    // are absent when lines.length < cap.
-    let onOutputRef: ((chunk: string) => void) | undefined;
-    let resolveAdapter!: () => void;
-    const slow = new Promise<void>((r) => {
-      resolveAdapter = r;
-    });
-    const adapter = makeMockAdapter({
-      name: 'mock-undercap',
-      execute: async (task) => {
-        const t = task as { onOutput?: (chunk: string) => void };
-        onOutputRef = t.onOutput;
-        await slow;
-        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
-      },
-    });
-    const h = await startHarness([adapter]);
+    // whether to render an "(N skipped)" hint must see *no* field
+    // when nothing was elided. Verify both the marker line and the
+    // field are absent when lines.length < cap.
+    const lines = Array.from({ length: 4 }, (_, i) => `[mock-undercap] message: line ${i + 1}`);
+    const { h, env } = await emitAndTerminate('mock-undercap', lines);
     try {
-      const run = await h.client.callTool({
-        name: 'run_agent',
-        arguments: { agent_id: 'mock-undercap', prompt: 'stream' },
-      });
-      const env = run.structuredContent as RunEnvelope;
-      await waitFor(() => onOutputRef !== undefined);
-      // Emit fewer lines than the cap (cap=10, lines=4).
-      for (let i = 1; i <= 4; i += 1) {
-        onOutputRef?.(`[mock-undercap] message: line ${i}`);
-      }
-      await waitFor(async () => {
-        const r = await h.client.callTool({
-          name: 'get_run_status',
-          arguments: { run_id: env.run_id },
-        });
-        return (r.structuredContent as { next_event_line: number }).next_event_line >= 4;
-      });
-
       const r = await h.client.callTool({
         name: 'get_run_status',
-        arguments: { run_id: env.run_id, since_event_line: 0, max_events_tail: 10 },
+        arguments: { run_id: env.run_id, max_events_tail: 10 },
       });
       const s = r.structuredContent as {
         events_tail: string[];
         events_tail_skipped?: number;
-        next_event_line: number;
       };
-      expect(s.events_tail).toEqual([
-        '[mock-undercap] message: line 1',
-        '[mock-undercap] message: line 2',
-        '[mock-undercap] message: line 3',
-        '[mock-undercap] message: line 4',
-      ]);
+      expect(s.events_tail).toEqual(lines);
       // Field omitted (not 0) when nothing was skipped.
       expect(s.events_tail_skipped).toBeUndefined();
-      expect(s.next_event_line).toBe(4);
-
-      resolveAdapter();
-      await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
     }
   });
 
-  it('does not skip when delta length exactly equals the cap', async () => {
+  it('does not skip when run-log length exactly equals the cap', async () => {
     // Boundary: lines.length === cap is the "fits exactly" case. The
     // cap fires only when lines.length > cap, so no marker should be
     // injected here even though we're right at the limit.
-    let onOutputRef: ((chunk: string) => void) | undefined;
-    let resolveAdapter!: () => void;
-    const slow = new Promise<void>((r) => {
-      resolveAdapter = r;
-    });
-    const adapter = makeMockAdapter({
-      name: 'mock-exact',
-      execute: async (task) => {
-        const t = task as { onOutput?: (chunk: string) => void };
-        onOutputRef = t.onOutput;
-        await slow;
-        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
-      },
-    });
-    const h = await startHarness([adapter]);
+    const lines = Array.from({ length: 5 }, (_, i) => `[mock-exact] message: line ${i + 1}`);
+    const { h, env } = await emitAndTerminate('mock-exact', lines);
     try {
-      const run = await h.client.callTool({
-        name: 'run_agent',
-        arguments: { agent_id: 'mock-exact', prompt: 'stream' },
-      });
-      const env = run.structuredContent as RunEnvelope;
-      await waitFor(() => onOutputRef !== undefined);
-      // Emit exactly cap=5 lines.
-      for (let i = 1; i <= 5; i += 1) {
-        onOutputRef?.(`[mock-exact] message: line ${i}`);
-      }
-      await waitFor(async () => {
-        const r = await h.client.callTool({
-          name: 'get_run_status',
-          arguments: { run_id: env.run_id },
-        });
-        return (r.structuredContent as { next_event_line: number }).next_event_line >= 5;
-      });
-
       const r = await h.client.callTool({
         name: 'get_run_status',
-        arguments: { run_id: env.run_id, since_event_line: 0, max_events_tail: 5 },
+        arguments: { run_id: env.run_id, max_events_tail: 5 },
       });
       const s = r.structuredContent as {
         events_tail: string[];
         events_tail_skipped?: number;
       };
-      expect(s.events_tail).toHaveLength(5);
-      expect(s.events_tail[0]).toBe('[mock-exact] message: line 1');
-      expect(s.events_tail[4]).toBe('[mock-exact] message: line 5');
+      expect(s.events_tail).toEqual(lines);
       expect(s.events_tail_skipped).toBeUndefined();
-
-      resolveAdapter();
-      await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
     }
   });
 
-  it('skips exactly one line when delta is cap+1', async () => {
-    // Boundary: cap+1. The marker takes one slot of the budget so the
-    // surviving tail is `cap-1` lines, and `events_tail_skipped` is
-    // the count of lines elided from the front (here, 2: the marker
-    // displaces one survivor when the cap is small).
-    let onOutputRef: ((chunk: string) => void) | undefined;
-    let resolveAdapter!: () => void;
-    const slow = new Promise<void>((r) => {
-      resolveAdapter = r;
-    });
-    const adapter = makeMockAdapter({
-      name: 'mock-plus1',
-      execute: async (task) => {
-        const t = task as { onOutput?: (chunk: string) => void };
-        onOutputRef = t.onOutput;
-        await slow;
-        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
-      },
-    });
-    const h = await startHarness([adapter]);
+  it('skips exactly the surplus when run-log length is cap+1', async () => {
+    // Boundary: cap+1. The marker takes one slot of the budget so
+    // the surviving tail is `cap-1` lines, and `events_tail_skipped`
+    // is the count of lines elided from the front (here, 2 — the
+    // marker displaces one survivor when the cap is tight).
+    const lines = Array.from({ length: 6 }, (_, i) => `[mock-plus1] message: line ${i + 1}`);
+    const { h, env } = await emitAndTerminate('mock-plus1', lines);
     try {
-      const run = await h.client.callTool({
-        name: 'run_agent',
-        arguments: { agent_id: 'mock-plus1', prompt: 'stream' },
-      });
-      const env = run.structuredContent as RunEnvelope;
-      await waitFor(() => onOutputRef !== undefined);
-      // Emit cap+1 = 6 lines.
-      for (let i = 1; i <= 6; i += 1) {
-        onOutputRef?.(`[mock-plus1] message: line ${i}`);
-      }
-      await waitFor(async () => {
-        const r = await h.client.callTool({
-          name: 'get_run_status',
-          arguments: { run_id: env.run_id },
-        });
-        return (r.structuredContent as { next_event_line: number }).next_event_line >= 6;
-      });
-
       const r = await h.client.callTool({
         name: 'get_run_status',
-        arguments: { run_id: env.run_id, since_event_line: 0, max_events_tail: 5 },
+        arguments: { run_id: env.run_id, max_events_tail: 5 },
       });
       const s = r.structuredContent as {
         events_tail: string[];
         events_tail_skipped?: number;
-        next_event_line: number;
       };
       // cap=5, lines=6 → budget=4 surviving + 1 marker line.
       expect(s.events_tail).toEqual([
@@ -1813,10 +1777,6 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
         '[mock-plus1] message: line 6',
       ]);
       expect(s.events_tail_skipped).toBe(2);
-      expect(s.next_event_line).toBe(6);
-
-      resolveAdapter();
-      await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
     }

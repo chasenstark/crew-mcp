@@ -126,6 +126,16 @@ export interface RunEnvelope {
   readonly agent_id?: string;
   readonly worktree_path: string;
   readonly events_log_path: string;
+  /**
+   * Absolute path to a generated `tail.command` shell script that
+   * tails `events_log_path` indefinitely. On macOS this is the
+   * extension Terminal.app registers as a launcher: a user can
+   * `open` the file or click a `file://` link to it and a Terminal
+   * window opens running the tail. The dispatch markdown surfaces a
+   * clickable link only on macOS; on other platforms the file is
+   * still a runnable shell script the user can invoke directly.
+   */
+  readonly tail_command_path: string;
   readonly status: RunStatus;
   readonly summary: string;
   readonly files_changed: readonly string[];
@@ -704,6 +714,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     agent_id: args.agentName,
     worktree_path: args.worktreePath,
     events_log_path: args.runStateStore.eventsLogPath(args.runId),
+    tail_command_path: args.runStateStore.tailCommandPath(args.runId),
     status: 'running',
     summary,
     files_changed: [],
@@ -734,12 +745,41 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
     '',
     `- Status: \`${env.status}\``,
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
-    `- Tail: \`tail -F ${env.events_log_path}\` (capital F so it waits for the file to be created)`,
+  ];
+  // The clickable `file://` link only does something useful on macOS,
+  // where Terminal.app is the registered handler for `.command` files.
+  // On Linux/Windows the helper file is still a runnable shell script,
+  // but `file://` links to it usually open in the OS's default text
+  // viewer rather than a terminal — so we just give the path. Both
+  // forms are listed; the macOS one is offered first because it's the
+  // lowest-friction option for users on macOS, and superfluous-but-
+  // harmless on other platforms.
+  if (process.platform === 'darwin') {
+    lines.push(
+      `- **Tail in Terminal**: [open in a side window](file://${encodeFileUriPath(env.tail_command_path)}) `
+        + '(macOS — clicking opens Terminal.app and runs `tail -F` against the events log)',
+    );
+  }
+  lines.push(
+    `- Tail manually: \`tail -F ${env.events_log_path}\` `
+      + '(capital `-F` so it waits for the file to be created)',
     `- Follow with: \`get_run_status({ run_id: "${env.run_id}", `
       + `wait_for_change_ms: 30000, since_event_line: <cursor> })\` `
       + '— start cursor at 0; advance via `next_event_line` on each response.',
-  ];
+  );
   return lines.join('\n');
+}
+
+/**
+ * Encode an absolute filesystem path for embedding in a `file://` URI.
+ * Spaces and other reserved characters need percent-encoding so the
+ * host's URI parser doesn't truncate at the first space — but path
+ * separators (`/`) must NOT be encoded. `encodeURI` matches that
+ * shape; `encodeURIComponent` would over-encode the slashes and break
+ * the path.
+ */
+function encodeFileUriPath(absPath: string): string {
+  return encodeURI(absPath);
 }
 
 function mdInlineCode(value: string): string {
@@ -1024,13 +1064,12 @@ interface GetRunStatusResponse {
   readonly events_log_path: string;
   /**
    * Count of older events.log lines that fell outside the per-poll cap
-   * and are therefore *not* present in `events_tail`. Set only when the
-   * cap fired — otherwise the field is omitted (and a captain can treat
-   * "absent" as "no skip"). The lines are not lost: the cursor
-   * (`next_event_line`) advances past them, and the full log lives at
-   * `events_log_path`. When set, `events_tail`'s first line is a human-
-   * readable marker `(N more events skipped)` so verbatim renderers
-   * surface the elision to the user.
+   * and are therefore *not* present in `events_tail`. Only meaningful
+   * on terminal poll-returns (running polls always emit
+   * `events_tail: []`). When set, `events_tail`'s first line is a
+   * human-readable marker `(N more events skipped)` so verbatim
+   * renderers surface the elision to the user. The full log always
+   * lives at `events_log_path`.
    */
   readonly events_tail_skipped?: number;
   readonly log_tail?: readonly string[];
@@ -1044,24 +1083,47 @@ function buildGetRunStatusResponse(
   logLines: number | undefined,
   maxEventsTail: number | undefined,
 ): ToolCallReturn {
-  const { lines, nextLine } = store.readEventsSince(runId, sinceLine);
-  // When the delta exceeds the cap, reserve one slot for the skipped-
-  // events marker so total array length stays at `maxTail`. The marker
-  // is the *first* line so verbatim renderers show "N skipped" before
-  // the surviving tail; this matches how captains describe elisions.
-  const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
-  const overCap = lines.length > maxTail;
-  const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
-  const skipped = overCap ? lines.length - eventLineBudget : 0;
-  const tailLines = eventLineBudget > 0 ? lines.slice(-eventLineBudget) : [];
-  const cappedLines = overCap
-    ? [`(${skipped} more events skipped)`, ...tailLines]
-    : lines;
+  // Captain-context conservation: while the run is running, `events_tail`
+  // is intentionally empty. Captains coordinate; they don't narrate. Users
+  // follow along via `events_log_path` (or the generated `tail.command`
+  // helper). The cursor (`next_event_line`) still advances so anything
+  // that *does* read events_tail later — most importantly, the terminal
+  // poll-return — has a coherent view.
+  const status = (state as { status?: string }).status ?? '';
+  const terminal = isTerminalRunStatus(status);
+
+  // Always advance the cursor relative to the requested sinceLine; the
+  // file is the source of truth and the cursor must match it regardless
+  // of whether we're emitting events_tail content this turn.
+  const { nextLine: cursorAfterDelta } = store.readEventsSince(runId, sinceLine);
+
+  let cappedLines: readonly string[] = [];
+  let skipped = 0;
+  if (terminal) {
+    // On terminal: ignore the cursor and return the recent tail of the
+    // entire log. The captain wants "what the run did" for its final
+    // summary, not "what happened since my last 30s long-poll" — those
+    // are usually the same anyway because terminal events fire close to
+    // last activity, but this gives a stable rendering surface even
+    // across long-quiet runs.
+    const allLines = store.readEventsSince(runId, 0).lines;
+    const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
+    const overCap = allLines.length > maxTail;
+    // Reserve one slot for the "(N skipped)" marker so total length
+    // stays at maxTail — keeps verbatim renderers honest about elision.
+    const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
+    skipped = overCap ? allLines.length - eventLineBudget : 0;
+    const tailLines = eventLineBudget > 0 ? allLines.slice(-eventLineBudget) : [];
+    cappedLines = overCap
+      ? [`(${skipped} more events skipped)`, ...tailLines]
+      : allLines;
+  }
+
   const payload: GetRunStatusResponse = {
     ...state,
     events_log_path: store.eventsLogPath(runId),
     events_tail: cappedLines,
-    next_event_line: nextLine,
+    next_event_line: cursorAfterDelta,
     ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
     // Backward-compat: the legacy `log_tail` field is still surfaced
     // for callers that pass `log_lines` but no cursor. Once captains

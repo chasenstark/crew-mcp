@@ -21,7 +21,7 @@
  * were written without it (the field is informational, not load-bearing).
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export type RunStatus =
@@ -163,7 +163,48 @@ export class RunStateStore {
       filesChanged: [],
     };
     this.writeAtomic(init.runId, state);
+    // Drop a one-click `tail.command` helper next to events.log. On macOS
+    // this is the file extension Terminal.app registers as a launcher: a
+    // user can `open` the file (or click a `file://` link to it) and a
+    // Terminal window opens running `tail -F` against the run's event log.
+    // On Linux/Windows the suffix carries no meaning, but the file is
+    // still a runnable shell script — the dispatch markdown only surfaces
+    // the clickable form on macOS.
+    this.writeTailCommandHelper(init.runId);
     return state;
+  }
+
+  /**
+   * Absolute path to the run's `tail.command` helper. Always present
+   * after `create()` (best-effort; failures during write are swallowed
+   * because the helper is a UX nicety, not a correctness requirement).
+   */
+  tailCommandPath(runId: string): string {
+    return join(this.runsBasePath, runId, 'tail.command');
+  }
+
+  /**
+   * Write `<run-dir>/tail.command` — a tiny shell script that tails the
+   * run's events.log indefinitely. Best-effort: any write/chmod failure
+   * is logged but doesn't abort the dispatch (the captain's
+   * coordination role is not gated on the user's progress channel
+   * existing).
+   */
+  private writeTailCommandHelper(runId: string): void {
+    const tailPath = this.tailCommandPath(runId);
+    const eventsLog = this.eventsLogPath(runId);
+    // `exec` keeps the shell PID == tail PID so closing Terminal.app's
+    // window cleanly stops the tail. The trailing single-quote-escaped
+    // path tolerates spaces in run-dir names.
+    const script = `#!/bin/bash\nexec tail -F '${eventsLog.replace(/'/g, "'\\''")}'\n`;
+    try {
+      mkdirSync(dirname(tailPath), { recursive: true });
+      writeFileSync(tailPath, script, 'utf-8');
+      chmodSync(tailPath, 0o755);
+    } catch {
+      // Helper is non-essential; swallow errors so dispatch isn't
+      // blocked by an unwritable filesystem (e.g., read-only mount).
+    }
   }
 
   /**

@@ -204,30 +204,53 @@ watching a render loop; silence reads as hung.
 
 ### The polling loop
 
-1. Dispatch. Confirm the run_id back to the user briefly (one line).
+**Your job is coordination, not narration.** While the run is
+running, you stay silent. The user has independent channels for
+following along — they don't need you to retell what the agent is
+doing turn-by-turn, and your context window is too valuable to
+spend re-reading and re-emitting each event line. Your responses
+during a dispatch should be: one dispatch confirmation, one
+terminal summary, one merge/iterate/discard prompt. That's the
+budget.
+
+1. Dispatch. Confirm the run_id back to the user **once**, briefly
+   (one line). Do NOT also relay the dispatch markdown's tail/follow
+   hints — those are already in the tool result the user can see.
 2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
    since_event_line: <last cursor> })`. Start the cursor at 0; on
    each response, update it from `next_event_line`.
-3. **Each response either has new content or the run terminated.**
-   Server-side the call blocks until either: (a) new events
-   appear, (b) the run reaches a terminal status, or (c) the 30s
-   wait expires. New `events_tail` lines are pre-rendered semantic
-   markdown like `[codex] command: read serve.ts`. Print them
-   verbatim, one per line. Do NOT paraphrase — the adapter already
-   did the summarization. Cap at ~10 lines per poll-return; if more
-   arrived, render the **last 10** (most recent) and say "(N more
-   events)" — newest activity is what the user wants to see.
+3. **The response while running has `events_tail: []` by design.**
+   Don't ask for it, don't render it. Just check `status`.
 4. **Immediately call `get_run_status` again** with the updated
-   cursor. Same turn. No wakeups, no scheduled returns.
+   cursor. Same turn. No wakeups, no scheduled returns. **No text
+   output between polls** — the polling loop is silent. (If
+   you've been polling for several minutes with no terminal, you
+   may emit one terse "still working" line every ~5 polls so the
+   user knows you're alive — but this is an upper bound, not a
+   per-poll obligation.)
 5. Exit the loop when `status` is `success | partial | error |
    cancelled` (or — for read-only runs — also `discarded`).
-6. Surface the final summary (latest prompt's `summary`) and ask
-   about merge / iterate / discard.
+6. **Now** the terminal poll-return contains a non-empty
+   `events_tail` — the recent tail of the full run log. Use it
+   for context when you write the summary, but **do not just dump
+   it back at the user verbatim**. Synthesize: "Done. Codex
+   reviewed 8 files and flagged 3 issues. Final summary: …" The
+   tail is your evidence, the synthesis is the deliverable.
+7. Ask about merge / iterate / discard.
 
-If a 30s poll returns with no new events, say one short line
-("still working, no new output yet") and re-poll in the same
-turn. The model's instinct to minimize idle cost by ending the
-turn is wrong here — override it.
+### How users follow progress (not your problem)
+
+Two side channels carry live progress without burning your context:
+
+- **The dispatch tool result** includes a `tail.command` link (on
+  macOS) and a `tail -F` snippet. The user clicks or runs it to
+  open a side terminal that streams the run's events live.
+- Some hosts also render MCP `notifications/progress` chunks in
+  their UI (a status line, an inline progress indicator). The
+  adapter emits these automatically.
+
+Both happen without you. Don't duplicate them by rendering events
+into your reply.
 
 ### Worked shape
 
@@ -235,30 +258,27 @@ turn is wrong here — override it.
 run_agent(...)              → { status: "running", run_id: R }
 "Dispatched as R. Watching."
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0})
-  → events_tail: [...], next_event_line: 4, status: "running"
-"<events_tail lines, verbatim>"
+  → events_tail: [], next_event_line: 4, status: "running"
+(no output)
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 4})
-  → events_tail: [...], next_event_line: 9, status: "running"
-"<events_tail lines, verbatim>"
+  → events_tail: [], next_event_line: 9, status: "running"
+(no output)
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 9})
-  → events_tail: [...], next_event_line: 11, status: "success",
-    summary: "..."
-"Done. <summary>. Merge / iterate / discard?"
+  → events_tail: [<last N events of full log>], next_event_line: 11,
+    status: "success", summary: "..."
+"Done. <one-paragraph synthesis informed by summary + events_tail>.
+Merge / iterate / discard?"
 ```
 
 All of that happens inside one captain turn. The user types
-nothing between the dispatch and the merge prompt.
+nothing between the dispatch and the merge prompt, and they read
+maybe 5 lines from you across the whole flow.
 
 ### Cancellation
 
 `cancel_run({ run_id })` aborts the in-flight dispatch. The status
-will land as `cancelled` on the next poll.
-
-### Progress streaming via MCP
-
-Some hosts also surface `notifications/progress` (chunks render
-inline in the host UI without you doing anything). That's parallel
-to — not a replacement for — the polling loop. Always poll.
+will land as `cancelled` on the next poll. Surface a short note
+("Cancelled.") and the partial summary if any.
 
 ## The tools
 

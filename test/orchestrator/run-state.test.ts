@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -57,6 +57,56 @@ describe('RunStateStore', () => {
       initialPrompt: 'p',
     });
     expect(existsSync(join(repoRoot, '.crew'))).toBe(false);
+  });
+
+  it('create() drops an executable tail.command helper next to events.log', () => {
+    // The tail.command file is the user-facing progress channel — a
+    // tiny shell script that, when opened (macOS double-click /
+    // Linux `bash <path>`), follows the run's events.log live in a
+    // side terminal. We assert: existence, expected path
+    // (`tailCommandPath` returns the canonical location), executable
+    // bit, shebang, and that the embedded path matches the run's
+    // events.log.
+    store.create({
+      runId: 'r-1',
+      agentId: 'a',
+      worktreePath: '/x',
+      initialPrompt: 'p',
+    });
+    const tailPath = store.tailCommandPath('r-1');
+    expect(tailPath).toBe(join(crewHome, 'runs', 'r-1', 'tail.command'));
+    expect(existsSync(tailPath)).toBe(true);
+    expect(statSync(tailPath).mode & 0o100).toBe(0o100);
+
+    const contents = readFileSync(tailPath, 'utf-8');
+    expect(contents.startsWith('#!/bin/bash\n')).toBe(true);
+    expect(contents).toContain(`exec tail -F '${store.eventsLogPath('r-1')}'`);
+  });
+
+  it('tail.command embeds the events.log path with single-quote escaping', () => {
+    // Defense against a run id that contains a single quote (rare but
+    // not impossible if a future runId scheme uses unusual characters).
+    // The script wraps the path in single quotes and `'\''` -escapes
+    // any quote in the path itself.
+    const trickyRunId = "r'1";
+    store.create({
+      runId: trickyRunId,
+      agentId: 'a',
+      worktreePath: '/x',
+      initialPrompt: 'p',
+    });
+    const tailPath = store.tailCommandPath(trickyRunId);
+    const contents = readFileSync(tailPath, 'utf-8');
+    // The single quote in the runId becomes part of the events.log
+    // path, which is then `'\''`-escaped inside the outer single
+    // quotes — confirming the path can't break out of the quoting.
+    expect(contents).toContain("'\\''");
+    // Sanity: the script can be parsed by bash without breaking out
+    // of the quoting (bash -n).
+    expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('node:child_process').execSync(`bash -n ${JSON.stringify(tailPath)}`);
+    }).not.toThrow();
   });
 
   it('read() returns undefined for unknown runs', () => {
