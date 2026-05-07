@@ -218,12 +218,18 @@ export interface Task {
     networkAccess?: boolean;
     /**
      * Additional filesystem roots that should be writable alongside the
-     * adapter's working directory. Codex maps these to repeated `--add-dir`
-     * flags, which feed its `sandbox_workspace_write.writable_roots` setting
-     * without replacing any user-configured roots. This is intentionally
-     * path-based instead of a boolean so callers can grant narrow git internals
-     * for an isolated worktree without opening the parent repository's entire
-     * `.git/` directory.
+     * adapter's working directory. Codex maps these to a single
+     * `-c sandbox_workspace_write.writable_roots=[...]` config override
+     * (not `--add-dir`, which 0.128.0 routes through a runtime-approval
+     * path that doesn't auto-approve in non-interactive `codex exec` —
+     * `git commit` to a linked-worktree gitdir was silently failing
+     * before the switch). This means crew's grant **replaces** the
+     * user's per-machine `writable_roots` for the dispatch; that's
+     * acceptable because the user's interactive codex config has no
+     * business leaking into a worktree-isolated run. This is
+     * intentionally path-based instead of a boolean so callers can
+     * grant narrow git internals for an isolated worktree without
+     * opening the parent repository's entire `.git/` directory.
      */
     writablePaths?: readonly string[];
     signal?: AbortSignal;

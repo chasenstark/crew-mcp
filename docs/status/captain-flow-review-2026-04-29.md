@@ -42,10 +42,8 @@ multi-client transports should revisit that storage.
 ## Update - 2026-05-06 Codex Worktree Commit Sandbox
 
 Codex write-mode dispatches now pass the run worktree's minimum git commit
-write surface as additional workspace-write roots, using Codex CLI's documented
-`--add-dir <DIR>` flag. This appends to Codex's
-`sandbox_workspace_write.writable_roots` behavior instead of replacing any
-user-configured writable roots:
+write surface as workspace-write roots, using a single
+`-c sandbox_workspace_write.writable_roots=[...]` config override:
 
 - The linked worktree gitdir from `<run>/worktree/.git`.
 - The common git object database (`.git/objects`).
@@ -57,6 +55,34 @@ hooks, config, non-crew branch refs, or other unrelated git internals. The
 practical ref/reflog grant is the `crew-run` namespace because current run
 branch names are `crew-run/<token>-<suffix>`, and `git commit` creates lock
 files beside the branch ref.
+
+### 2026-05-07 follow-up: switched grant flag from `--add-dir` to `-c`
+
+The first attempt (commit `dadb4b4`, 2026-05-06) used Codex CLI's documented
+`--add-dir <DIR>` flag, on the assumption that this would append to
+`sandbox_workspace_write.writable_roots` without replacing user config. In
+practice, dispatched runs still hit `Operation not permitted` writing
+`<host>/.git/worktrees/<wt>/index.lock`, and the codex error message said
+"outside the writable root."
+
+Investigation showed Codex 0.128.0 surfaces two distinct mechanisms:
+
+- `writable_roots` (config-loaded; baked into the seatbelt profile when it is
+  generated).
+- `additional_writable_root` (a runtime-approval modification of the active
+  permission profile, surfaced as `ActivePermissionProfileModification`).
+
+`--add-dir` drives the latter, and the runtime-approval channel does not
+auto-approve in non-interactive `codex exec` — so the grant silently fails
+for paths outside cwd. The 2026-05-07 fix (commit `2729658`) drops the
+`--add-dir` flags and emits a single
+`-c sandbox_workspace_write.writable_roots=[...]` config override instead,
+which puts the path into the seatbelt profile before sandbox enforcement
+starts. The trade-off is that the override **replaces** any
+user-per-machine `writable_roots` for the dispatch; this is acceptable
+because crew owns the sandbox contract for dispatched runs and the user's
+interactive codex config has no business leaking into a worktree-isolated
+run.
 
 ## Update - 2026-05-06 Codex Semantic Progress Parsing
 
