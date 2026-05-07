@@ -3,20 +3,21 @@
 **Status:** Phase 1 shipped 2026-05-06 — markdown initial response
 (`run_agent` / `continue_run` tool result) + `[<agent>] `-prefixed,
 line-split progress notifications bounded to 240 chars including the
-prefix. Phase 2 (sections 2 + 3) parked pending field-time with the new
-inline channel.
+prefix. Phase 2's coordination model landed in `1a95fac`: running
+polls return `events_tail: []`, captains coordinate rather than narrate,
+and users follow progress through the side-channel (`tail.command` /
+`events.log`). Section 3's host-progress diagnostic flag is superseded
+for now because the captain no longer branches on running `events_tail`.
 **Anchor commits:** `cc3bb09` — `feat(serve): async-first dispatch +
 long-poll get_run_status + drop subprocess timeout`. Phase 1 commit
 `c697efb`.
-**Trigger to unpark Phase 2:** the cost-vs-UX tradeoff that motivated
-sections 2 + 3 flipped once Phase 1 landed — #5 carries real inline
-signal at zero captain inference cost, so going quieter on poll-return
-no longer trades UX for cost. Re-evaluate after ~a week of dogfooding
-the new payload: do users still report "appears hung," do per-poll
-captain narrations still feel duplicative, does the captain need a
-reliable host-streams-progress signal to branch on. Sections 1 + 4
-remain on the original parked criteria (real cost pain or empirical
-data on per-host MCP timeouts).
+**Current dogfood trigger:** Phase 2 is no longer parked. Re-evaluate
+after field-time with the side-channel model: do users still report
+"appears hung," is `tail.command` discoverable enough on hosts without
+inline progress, and do we need a future host-progress diagnostic for
+some new branching behavior. Sections 1 + 4 remain on the original
+parked criteria (real cost pain or empirical data on per-host MCP
+timeouts).
 
 ## Phase 1 — shipped 2026-05-06
 
@@ -36,10 +37,11 @@ Two surfaces, no schema changes, no captain-context cost.
   on newlines (multi-line buffer flushes become multiple discrete
   notifications), drops empty lines, prefixes `[<agent>] `, and
   truncates the body as needed so the complete notification is at most
-  240 chars including prefix and `…`. `events_tail` retains the
-  verbatim chunk — only the host-UI surface is bounded. Cost: zero
-  captain inference tokens (`notifications/progress` is server→host UI,
-  not appended to the captain's conversation context).
+  240 chars including prefix and `…`. `events.log` retains the
+  verbatim chunk; `events_tail` now exposes the recent full-log tail
+  only on terminal polls. Cost: zero captain inference tokens
+  (`notifications/progress` is server→host UI, not appended to the
+  captain's conversation context).
 - **Verification scaffolding for `progressToken` presence.** Per-call
   info log unchanged (`progress token (agent=...): <value>`), but
   the FIRST occurrence each session now elevates to warn-level (on
@@ -47,10 +49,11 @@ Two surfaces, no schema changes, no captain-context cost.
   question has a hard-to-miss startup answer. State lives on
   `buildCrewMcpServer`, so tests start clean.
 
-Did NOT change: `events_tail` shape (still `string[]` of raw subprocess
-output), captain skill-body narration guidance, `MAX_LONG_POLL_MS`,
-or the request/response shape of `get_run_status`. Phase 2 is where
-those would move.
+Later change in `1a95fac`: `events_tail` is still a `string[]`, but it
+is terminal-only; running polls intentionally return `[]`. The captain
+skill body now tells captains to coordinate during the run and synthesize
+at terminal, not re-render progress verbatim. `MAX_LONG_POLL_MS` did not
+change.
 
 ## Context
 
@@ -76,16 +79,17 @@ on long runs:
 - Token cost during a 30s long-poll wait is zero (no inference
   happens while the tool call is in-flight). But each poll RETURN
   triggers one Claude turn (input = full context + new
-  events_tail; output = Claude's response). For a 30-min Codex
-  run with 30s polls, that's ~60 inference turns. With the 60s
-  cap, ~30. Per-turn cost is small; accumulated is real.
+  status/cursor snapshot; output = Claude's response). For a 30-min
+  run with 30s polls, that's ~60 inference turns. With the 60s cap,
+  ~30. Per-turn cost is small; accumulated is real, but running
+  polls no longer carry progress text in `events_tail`.
 - The user's host CLI shows a spinner during the in-flight tool
   call. Claude Code surfaces MCP `notifications/progress` inline
   inside that spinner area — so for hosts that supply
   `progressToken`, the user is already seeing live chunks during
   the long-poll wait. Codex (as of 2026-05, codex-cli 0.128.0)
-  doesn't supply `progressToken`, so the captain's `events_tail`
-  rendering is the only feedback channel there.
+  doesn't supply `progressToken`, so the generated `tail.command` /
+  `events.log` side-channel is the feedback path there.
 - The "conversation appears open" feel is just the spinner. It's
   correct; some users read it as hung.
 
@@ -110,21 +114,20 @@ with no other change.
   anyone? Need to test against codex + claude-code + gemini-cli
   empirically before bumping the global default.
 
-### 2. Skill-body nudge: stay quiet during silent long-polls
+### 2. Skill-body nudge: stay quiet during silent long-polls — landed
 
-**Post-Phase 1:** the framing here flips. Pre-#5 this section traded
-visibility for cost ("the user is *technically* seeing progress
-inline, so the captain doesn't need to re-render"). Post-#5 the inline
-channel actually carries labeled, bounded, multi-line signal — going
-quiet stops being a UX sacrifice and becomes a clean cost harvest.
-Pair tightly with section 3: the captain can only safely stay quiet
-on hosts that stream progress, so it needs a reliable signal to branch
-on. Ready to ship when we have field-evidence that #5's inline payload
-is doing the load-bearing work.
+`1a95fac` implemented the stronger version of this: `get_run_status`
+returns `events_tail: []` while the run is `running`, so the captain
+coordinates and does not narrate per-poll progress. Progress lives in
+host `notifications/progress` when available and in the generated
+`tail.command` / `events.log` side-channel for every host. Terminal
+polls still return the recent full-log tail so the captain has evidence
+for its final synthesis.
 
-When the host streams progress notifications inline, the captain
-re-rendering `events_tail` is duplicate output (and a Claude
-inference turn). Skill body could say:
+Historical proposal preserved: when the host streamed progress
+notifications inline, the captain re-rendering `events_tail` was
+duplicate output (and a Claude inference turn). The stronger
+terminal-only `events_tail` contract replaced this host-specific nudge.
 
 > If the user's host streams MCP `notifications/progress` inline
 > (Claude Code does; codex CLI 0.128.0 doesn't), you don't need to
@@ -133,43 +136,30 @@ inference turn). Skill body could say:
 > Silent polls with progress streaming is the right UX, not a
 > hung conversation.
 
-- **Pros:** reduces per-poll output tokens significantly. Claude
-  often won't speak at all on a poll-return that brought no new
-  status, just freshly-rendered chunks the user already saw.
-- **Cons:** the captain has to know whether the host streams
-  progress. Today the only signal is the operator-facing stderr
-  log we added (`progress token: <value>`). Captains can't read
-  stderr. Two options:
-  - Hardcode in the skill body the per-host status as of a
-    specific date (works today, ages poorly).
-  - Have `get_run_status` surface a `host_streams_progress: bool`
-    field so the captain can branch reliably. Cheap to add.
-- **Open question:** which option? Surface flag or static guidance?
+- **Outcome:** landed as a server-enforced running-poll contract, not
+  just captain guidance. The captain no longer needs to inspect host
+  progress support before staying quiet during running polls.
 
-### 3. Diagnostic surface in `get_run_status` response
+### 3. Diagnostic surface in `get_run_status` response — superseded
 
-**Post-Phase 1:** value goes up. Pre-#5 the captain's branch was
-roughly symmetric (raw chunks rendered similarly across hosts);
-post-#5 the two branches diverge meaningfully — inline-rendering hosts
-get rich live UX free while non-inline hosts (codex CLI 0.128.0) still
-need the captain to narrate verbatim. The flag becomes the right
-primitive for that fork. Section 2 is the consumer of this signal,
-so pair them.
+The proposed `host_streams_progress` flag is not needed for the model
+that landed in `1a95fac`: the captain no longer branches on whether to
+render running `events_tail`, because running `events_tail` is always
+empty. Revisit only if we reintroduce host-specific captain narration.
 
-Let `get_run_status` return a `host_streams_progress: bool`
-alongside the cursor + status. The captain reads it on each poll
-and decides whether to render `events_tail` or stay quiet. Server
-knows the answer because it's the one tracking
-`extra._meta?.progressToken` on each tool call.
+Historical proposal preserved: let `get_run_status` return a
+`host_streams_progress: bool` alongside the cursor + status. The
+captain would read it on each poll and decide whether to render
+`events_tail` or stay quiet. The terminal-only `events_tail` contract
+removed that branch.
 
 - Storage: per-run, set on the first
   `run_agent` / `continue_run` and persisted to state.json.
 - **Pros:** Claude doesn't have to guess.
 - **Cons:** another `RunStateV1` field. Marginal complexity for
   marginal benefit if (2) already covers the common case.
-- **Open question (resolved post-Phase 1):** surface flag, not static
-  guidance. Static guidance ages poorly as host-streaming behavior
-  drifts; the flag is cheap and stays correct.
+- **Outcome:** superseded until a future design needs host-specific
+  captain behavior again.
 
 ### 4. `wait_for_terminal_only` flag on `get_run_status`
 
@@ -205,17 +195,16 @@ and inference cost becomes load-bearing.
 
 ## Decision criteria when we revisit
 
-**Phase 2 (sections 2 + 3 paired)** — the post-#5 cost harvest.
-Re-evaluate after ~a week of dogfooding the new inline payload:
+**Phase 2 (sections 2 + 3 paired)** — landed/superseded by `1a95fac`.
+Dogfood the implemented side-channel model instead:
 
-- Does the captain's per-poll narration of `events_tail` still feel
-  duplicative against the rich inline progress? (If yes, ship 2 + 3.)
+- Does the absence of per-poll `events_tail` narration feel too quiet
+  on hosts without inline progress?
 - Are users still saying "appears hung" even with the labeled
-  `[<agent>] ` chunks streaming inline? (If yes, the inline channel
-  is doing its job and section 2 is safe to flip; if no, leave
-  parked — visible captain narration is buying real reassurance.)
+  `[<agent>] ` chunks streaming inline or the `tail.command` helper
+  available in the dispatch markdown?
 - Has any host besides codex CLI shown progress-notification gaps?
-  (Drives whether section 3's flag is load-bearing or theoretical.)
+  (Drives whether a future diagnostic flag becomes load-bearing again.)
 
 **Sections 1 + 4** — original criteria still apply:
 
