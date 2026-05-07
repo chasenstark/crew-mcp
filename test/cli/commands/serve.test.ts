@@ -22,6 +22,7 @@ import { z } from 'zod';
 
 import {
   buildCrewMcpServer,
+  fileUrlHref,
   formatProgressLines,
   type RunEnvelope,
 } from '../../../src/cli/commands/serve.js';
@@ -330,7 +331,7 @@ describe('crew serve — run_agent tool', () => {
       // .command). On other platforms the path is still emitted but
       // without the file:// hyperlink wrapper.
       if (process.platform === 'darwin') {
-        expect(text).toContain(`file://${encodeURI(env.tail_command_path)}`);
+        expect(text).toContain(fileUrlHref(env.tail_command_path));
         expect(text).toContain('Tail in Terminal');
       } else {
         expect(text).not.toContain('file://');
@@ -341,6 +342,12 @@ describe('crew serve — run_agent tool', () => {
     } finally {
       await h.close();
     }
+  });
+
+  it('encodes file:// markdown links with literal # and ? path characters', () => {
+    expect(fileUrlHref('/tmp/crew #run?leaf/tail.command')).toBe(
+      'file:///tmp/crew%20%23run%3Fleaf/tail.command',
+    );
   });
 
   it('writes an executable tail.command helper that targets the run\'s events.log', async () => {
@@ -935,6 +942,7 @@ describe('crew serve — get_run_status tool', () => {
         events_tail: string[];
         next_event_line: number;
         events_log_path: string;
+        tail_command_path: string;
       };
       expect(s.runId).toBe(runEnv.run_id);
       expect(s.agentId).toBe('mock-coder');
@@ -943,6 +951,7 @@ describe('crew serve — get_run_status tool', () => {
       expect(Array.isArray(s.events_tail)).toBe(true);
       expect(typeof s.next_event_line).toBe('number');
       expect(s.events_log_path).toBe(runEnv.events_log_path);
+      expect(s.tail_command_path).toBe(runEnv.tail_command_path);
     } finally {
       await h.close();
     }
@@ -1522,10 +1531,12 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
         status: string;
         events_tail: string[];
         next_event_line: number;
+        tail_command_path: string;
       };
       // The wake should have fired well under the 5000ms cap.
       expect(elapsed).toBeLessThan(2000);
       expect(s.status).toBe('running');
+      expect(s.tail_command_path).toBe(env.tail_command_path);
       // Running poll-returns intentionally hide events_tail content.
       expect(s.events_tail).toEqual([]);
       // Cursor advanced past the emitted chunk so the eventual
@@ -1536,6 +1547,7 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       // poll-return DOES surface the chunk via events_tail.
       resolveAdapter();
       const final = await pollUntilTerminal(h.client, env.run_id);
+      expect(final.state.tail_command_path).toBe(env.tail_command_path);
       expect(final.events_tail).toContain('first chunk');
     } finally {
       await h.close();

@@ -24,6 +24,8 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { logger } from '../utils/logger.js';
+
 export type RunStatus =
   | 'running'
   | 'success'
@@ -201,9 +203,10 @@ export class RunStateStore {
       mkdirSync(dirname(tailPath), { recursive: true });
       writeFileSync(tailPath, script, 'utf-8');
       chmodSync(tailPath, 0o755);
-    } catch {
-      // Helper is non-essential; swallow errors so dispatch isn't
-      // blocked by an unwritable filesystem (e.g., read-only mount).
+    } catch (err) {
+      logger.debug('Failed to write tail.command helper', { runId, tailPath, err });
+      // Helper is non-essential; don't block dispatch on an unwritable
+      // filesystem (e.g., read-only mount).
     }
   }
 
