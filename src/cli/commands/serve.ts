@@ -27,6 +27,7 @@ import { createBuiltinRegistry } from '../../adapters/registry.js';
 import type { TaskResult } from '../../adapters/types.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
+import { filterEventsTailNoise } from '../../orchestrator/events-filter.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import {
   listAgents,
@@ -1066,12 +1067,14 @@ function progressNotifierFrom(
  *
  * **Terminal-only fields** appear when `status` ∈ {success, partial,
  * error, cancelled, merged, merge_conflict, discarded}: `filesChanged`,
- * `prompts` (turn metadata + per-turn `summary`; the verbatim prompt
- * text is *not* surfaced — captains have the prompts they sent),
- * `summary` (top-level convenience for the last turn's adapter
- * output), and the conditional `lastError` / `mergeStatus` /
- * `warnings` / `readOnly`. `events_tail` carries the recent tail of
- * the full run log on terminal (capped per `max_events_tail`).
+ * `prompts` (turn metadata only — `{turn, startedAt, completedAt}`;
+ * per-turn summaries and verbatim prompts are durable in state.json
+ * but elided here so multi-turn polls don't re-ship prior output the
+ * captain already received in earlier tool returns), `summary`
+ * (top-level convenience for the last turn's adapter output), and
+ * the conditional `lastError` / `mergeStatus` / `warnings` /
+ * `readOnly`. `events_tail` carries the recent tail of the full run
+ * log on terminal (capped per `max_events_tail`).
  *
  * `log_tail` is retained for legacy snapshot callers that pass
  * `log_lines` without a cursor — modern captains use the cursor
@@ -1091,16 +1094,20 @@ interface GetRunStatusResponse {
 
 /**
  * Public projection of a per-turn record on terminal poll-returns.
- * Mirrors `PromptRecord` from run-state.ts minus the `prompt` field —
- * the verbatim prompt text is durable on disk in state.json but not
- * worth re-shipping over the wire on every poll (the captain already
- * has it in its own conversation history).
+ * Mirrors `PromptRecord` from run-state.ts minus `prompt` and
+ * `summary` — verbatim prompt text and per-turn output are durable
+ * on disk in state.json but not worth re-shipping on every poll.
+ * Top-level `summary` carries the latest turn's output for
+ * convenience; prior-turn summaries are recoverable from state.json
+ * if a captain ever needs them post-compaction. Multi-turn runs
+ * see the biggest savings — a 5-turn p90 run was previously
+ * shipping ~30K chars of redundant per-turn summaries on every
+ * terminal poll.
  */
 type TerminalPromptRecord = {
   readonly turn: number;
   readonly startedAt: string;
   readonly completedAt?: string;
-  readonly summary?: string;
 };
 
 function buildGetRunStatusResponse(
@@ -1137,7 +1144,13 @@ function buildGetRunStatusResponse(
     // are usually the same anyway because terminal events fire close to
     // last activity, but this gives a stable rendering surface even
     // across long-quiet runs.
-    const allLines = store.readEventsSince(runId, 0).lines;
+    //
+    // Filter pure adapter receipts (codex command-started / exit-0
+    // / item.* lines) before applying the cap so the budget gets
+    // spent on synthesis lines, not on `command: started ...` noise
+    // the captain reads and learns nothing from. events.log on disk
+    // is unchanged — users tailing `events_log_path` see everything.
+    const allLines = filterEventsTailNoise(store.readEventsSince(runId, 0).lines);
     const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
     const overCap = allLines.length > maxTail;
     // Reserve one slot for the "(N skipped)" marker so total length
@@ -1178,7 +1191,6 @@ function buildGetRunStatusResponse(
     turn: p.turn,
     startedAt: p.startedAt,
     ...(p.completedAt !== undefined ? { completedAt: p.completedAt } : {}),
-    ...(p.summary !== undefined ? { summary: p.summary } : {}),
   }));
   const lastSummary = state.prompts.length > 0
     ? state.prompts[state.prompts.length - 1]?.summary

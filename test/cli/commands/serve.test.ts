@@ -288,9 +288,15 @@ describe('crew serve — run_agent tool', () => {
       expect(existsSync(join(env.worktree_path, 'CHANGE.md'))).toBe(true);
       expect(existsSync(join(h.root, 'CHANGE.md'))).toBe(false);
       expect(final.state.filesChanged).toContain('CHANGE.md');
-      // Latest prompt's summary captures the adapter's output.
-      const prompts = final.state.prompts as Array<{ summary?: string }>;
-      expect(prompts[prompts.length - 1].summary).toBe('changed CHANGE.md');
+      // Top-level `summary` carries the latest turn's adapter output;
+      // per-turn `prompts[].summary` is intentionally elided from the
+      // wire (durable in state.json, not re-shipped on every poll).
+      const wire = final.state as {
+        summary?: string;
+        prompts: Array<{ turn: number; summary?: string }>;
+      };
+      expect(wire.summary).toBe('changed CHANGE.md');
+      expect(wire.prompts[wire.prompts.length - 1].summary).toBeUndefined();
     } finally {
       await h.close();
     }
@@ -969,11 +975,14 @@ describe('crew serve — get_run_status tool', () => {
       expect(s.filesChanged).toEqual([]);
       expect(s.summary).toBe('all done');
       expect(s.prompts).toHaveLength(1);
-      // Verbatim prompt text is intentionally absent from the wire
-      // payload — captains have what they sent. Per-turn metadata
-      // (turn, startedAt, summary) is preserved.
-      expect(s.prompts[0]).toMatchObject({ turn: 1, summary: 'all done' });
+      // Verbatim prompt text AND per-turn summary are intentionally
+      // elided from the wire payload — captains have what they sent
+      // (in their own conversation history), and the latest summary
+      // surfaces top-level. Per-turn metadata (turn, startedAt,
+      // completedAt) is preserved for ordering / display.
+      expect(s.prompts[0]).toMatchObject({ turn: 1 });
       expect(s.prompts[0].prompt).toBeUndefined();
+      expect(s.prompts[0].summary).toBeUndefined();
       expect(Array.isArray(s.events_tail)).toBe(true);
       expect(typeof s.next_event_line).toBe('number');
       // Static-field elision contract — hardcoded names so a future
@@ -1913,10 +1922,14 @@ describe('crew serve — lifecycle', () => {
     const f = final.structuredContent as {
       status: string;
       lastError?: string;
-      prompts: Array<{ summary?: string }>;
+      summary?: string;
+      prompts: Array<{ turn: number; summary?: string }>;
     };
     expect(f.status).toBe('cancelled');
-    expect(f.prompts[f.prompts.length - 1].summary).toMatch(/lifecycle test/);
+    // Top-level `summary` carries the cancellation reason text;
+    // per-turn `prompts[].summary` is elided from the wire.
+    expect(f.summary).toMatch(/lifecycle test/);
+    expect(f.prompts[f.prompts.length - 1].summary).toBeUndefined();
     expect(abortObserved).toBe(true);
 
     await client.close();

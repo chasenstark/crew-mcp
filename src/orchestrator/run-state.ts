@@ -276,6 +276,19 @@ export class RunStateStore {
    * Mark a run's last prompt as terminal — set completedAt + status +
    * summary + filesChanged. Used by run_agent and continue_run on
    * dispatch terminal events.
+   *
+   * Summary length is intentionally uncapped. A 70-run sample
+   * (May 2026) showed p50=2K, p90=5.9K, p99=9.9K, max=12K chars.
+   * Truncating risks hiding load-bearing verdicts at the end of long
+   * reviews; adapters are expected to front-load synthesis (verdict
+   * + key findings appear early), making uncapped acceptable for the
+   * captain's wire payload. The wire-side trim that DID land:
+   * `get_run_status` no longer re-ships per-turn `prompts[].summary`
+   * across multi-turn runs (top-level `summary` carries the latest
+   * turn). If a future captain hits real compaction problems on
+   * very long single-turn runs, revisit — candidate is to keep the
+   * top-level summary uncapped but add a `summary_truncated_at`
+   * marker when the adapter's output exceeds a configurable cap.
    */
   markTerminal(
     runId: string,
