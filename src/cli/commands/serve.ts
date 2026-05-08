@@ -1132,7 +1132,10 @@ function buildGetRunStatusResponse(
 
   let cappedLines: readonly string[] = [];
   let skipped = 0;
-  if (terminal) {
+  // Skip the tail build for discarded runs: the worktree is gone and the
+  // captain rarely wants forensics on a run the user explicitly threw
+  // away. `events_log_path` still resolves on disk if anyone needs it.
+  if (terminal && status !== 'discarded') {
     // On terminal: ignore the cursor and return the recent tail of the
     // entire log. The captain wants "what the run did" for its final
     // summary, not "what happened since my last 30s long-poll" — those

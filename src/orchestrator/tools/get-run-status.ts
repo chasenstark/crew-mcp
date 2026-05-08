@@ -26,11 +26,12 @@ import { z } from 'zod';
  * Default per-poll cap on `events_tail` lines. Caller can request a
  * different cap via `max_events_tail` up to {@link MAX_EVENTS_TAIL_CAP}.
  *
- * Sized to comfortably fit a captain's render budget (skill body caps
- * the rendered tail at ~10 lines) while still leaving headroom when
- * adapters emit a burst of events between polls.
+ * Defaults to 10: matches the skill body's documented render budget
+ * for the terminal tail (captains synthesize, not narrate). Burst
+ * runs that need forensic context can opt up via `max_events_tail`;
+ * the full `events_log_path` is always available on disk.
  */
-export const DEFAULT_MAX_EVENTS_TAIL = 50;
+export const DEFAULT_MAX_EVENTS_TAIL = 10;
 
 /**
  * Hard upper bound on `max_events_tail`. Protects the MCP wire payload
@@ -78,4 +79,4 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Poll the current state of a run by run_id. **Always poll** after run_agent / continue_run — those tools return status:"running" immediately and the captain drives the lifecycle from here. **Response is intentionally lean.** While running it returns only \`status\`, \`events_tail\` (always empty by design), and \`next_event_line\` (cursor). Static fields (\`run_id\`, \`agent_id\`, \`worktree_path\`, \`events_log_path\`, \`tail_command_path\`/\`tail_command_url\`) are returned in the run_agent / continue_run dispatch envelope — read them once there, not on every poll. On terminal status (success | partial | error | cancelled | merged | merge_conflict | discarded), the response additionally includes \`filesChanged\`, \`prompts\` (turn metadata + per-turn \`summary\`; verbatim prompt text is omitted — captains already have the prompts they sent), top-level \`summary\` (the last turn's adapter output), and conditionally \`lastError\`, \`mergeStatus\`, \`warnings\`, \`readOnly\`. The terminal \`events_tail\` carries the recent tail of the full run log (capped to ${DEFAULT_MAX_EVENTS_TAIL} lines by default; \`max_events_tail\` adjusts the cap up to ${MAX_EVENTS_TAIL_CAP}; over-cap responses include a skipped-events marker and \`events_tail_skipped\`). Pass \`wait_for_change_ms: 30000\` to long-poll: the call blocks server-side until new events arrive or a terminal state is reached, so the captain reaches the terminal poll with sub-second latency rather than fixed-cadence snapshots. Long-poll waits are capped at 60000ms by the server.`;
+  `Poll a run by run_id. Always poll after run_agent / continue_run — those return status:"running" immediately. Pass wait_for_change_ms: 30000 + since_event_line (from the prior response's next_event_line) to long-poll for live progress. While running, response is intentionally lean — only status + cursor; static fields like worktree_path / events_log_path live on the dispatch envelope. On terminal status, response adds summary (last turn's output), filesChanged, prompts, and events_tail (default ${DEFAULT_MAX_EVENTS_TAIL} lines; configurable via max_events_tail up to ${MAX_EVENTS_TAIL_CAP}).`;

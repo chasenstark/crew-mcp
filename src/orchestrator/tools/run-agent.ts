@@ -80,7 +80,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  '**Primary work primitive.** Delegate a bounded task to a named subagent. agent_id must come from list_agents; write the agent\'s prompt inline — do NOT route through plan_tasks for single-task work. working_directory defaults to the run worktree (or the host repo root when read_only=true). Set read_only=true for review/triage/Q&A dispatches that should not edit files; pair with working_directory pointed at the implementer\'s worktree to review another run\'s changes.';
+  'Delegate a task to a subagent in an isolated worktree. agent_id must come from list_agents. Set read_only=true for review/triage dispatches that should not edit files; pair with working_directory pointing at another run\'s worktree to review its changes.';
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;

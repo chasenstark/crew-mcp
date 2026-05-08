@@ -29,4 +29,4 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with a new prompt. The worktree from the original run is reused; the same agent is re-invoked. Returns the same envelope shape as run_agent. Use after run_agent when the user (or a reviewer) wants follow-up changes without spawning a fresh run.';
+  'Resume a run with a new prompt. Same agent, same worktree. Returns the same envelope as run_agent.';
