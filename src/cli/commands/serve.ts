@@ -725,7 +725,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
 
   const summary =
     `Dispatched. Poll get_run_status with run_id="${args.runId}" ` +
-    `(use wait_for_change_ms: 30000 + since_event_line cursor for live progress).`;
+    `passing wait_for_change_ms: 30000 (server blocks until progress or terminal) + since_event_line cursor.`;
   const env: RunEnvelope = {
     run_id: args.runId,
     agent_id: args.agentName,
