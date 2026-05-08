@@ -26,6 +26,7 @@ import {
   formatProgressLines,
   type RunEnvelope,
 } from '../../../src/cli/commands/serve.js';
+import { crewTailUrl } from '../../../src/cli/commands/tail-url.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
@@ -331,6 +332,8 @@ describe('crew serve — run_agent tool', () => {
       // the collapsed tool result).
       expect(env.tail_command_url).toBe(fileUrlHref(env.tail_command_path));
       expect(env.tail_command_url.startsWith('file://')).toBe(true);
+      expect(env.tail_url).toBe(crewTailUrl(env.events_log_path));
+      expect(env.tail_url.startsWith('crew-tail://')).toBe(true);
       // text is markdown, not stringified JSON.
       const text = (res.content as Array<{ text: string }>)[0].text;
       expect(text).not.toMatch(/^\s*\{/); // not a JSON blob
@@ -340,13 +343,15 @@ describe('crew serve — run_agent tool', () => {
       expect(text).toContain(`tail -F ${env.events_log_path}`);
       expect(text).toContain('get_run_status');
       // Clickable link only shows on macOS (Terminal.app handles
-      // .command). On other platforms the path is still emitted but
-      // without the file:// hyperlink wrapper.
+      // crew-tail:// when the optional handler is installed). On other
+      // platforms the manual tail line remains the portable path.
       if (process.platform === 'darwin') {
-        expect(text).toContain(fileUrlHref(env.tail_command_path));
+        expect(text).toContain(env.tail_url);
+        expect(text).not.toContain(fileUrlHref(env.tail_command_path));
         expect(text).toContain('Tail in Terminal');
       } else {
         expect(text).not.toContain('file://');
+        expect(text).not.toContain('crew-tail://');
       }
       // Wait so the lifecycle terminates before harness teardown — otherwise
       // the dispatcher's listeners outlive the test.
@@ -961,7 +966,7 @@ describe('crew serve — get_run_status tool', () => {
       // events_tail + the synthesis surface (filesChanged, prompts
       // metadata, top-level summary). Static fields (runId, agentId,
       // worktreePath, repoRoot, events_log_path, tail_command_path,
-      // schemaVersion, startedAt, completedAt) live on the dispatch
+      // tail_url, schemaVersion, startedAt, completedAt) live on the dispatch
       // envelope and are NOT re-shipped on every poll.
       const s = final.state as unknown as Record<string, unknown> & {
         status: string;
@@ -997,6 +1002,7 @@ describe('crew serve — get_run_status tool', () => {
         'completedAt',
         'events_log_path',
         'tail_command_path',
+        'tail_url',
       ]) {
         expect(s[field]).toBeUndefined();
       }

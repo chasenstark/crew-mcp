@@ -1,6 +1,7 @@
 import { program } from 'commander';
 import { agentsEditCommand } from './cli/commands/agents.js';
 import { installCommand } from './cli/commands/install.js';
+import { installTailHandlerCommand } from './cli/commands/install-tail-handler.js';
 import { serveCommand } from './cli/commands/serve.js';
 import { statusCommand } from './cli/commands/status.js';
 import { uninstallCommand } from './cli/commands/uninstall.js';
@@ -60,6 +61,28 @@ program
       autoApprove: opts.autoApprove,
     });
     if (result.installed.length === 0 && result.skipped.length > 0) {
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command('install-tail-handler')
+  .description('Install the optional macOS crew-tail:// Terminal handler')
+  .option('-y, --yes', 'Skip the prompt and trigger the Gatekeeper dialog')
+  .option('--no-gatekeeper', 'Install and register the handler without triggering Gatekeeper')
+  .option('--trigger-gatekeeper', 'Only open the installed handler to trigger Gatekeeper approval')
+  .action(async (opts: {
+    yes?: boolean;
+    gatekeeper?: boolean;
+    triggerGatekeeper?: boolean;
+  }) => {
+    applyDebugFlag();
+    const result = await installTailHandlerCommand({
+      yes: opts.yes,
+      gatekeeper: opts.gatekeeper,
+      triggerGatekeeper: opts.triggerGatekeeper,
+    });
+    if (!result.verified) {
       process.exitCode = 1;
     }
   });

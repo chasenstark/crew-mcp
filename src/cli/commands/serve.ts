@@ -66,6 +66,7 @@ import {
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
+import { crewTailUrl } from './tail-url.js';
 
 export const SERVE_VERSION = '0.2.0-dev';
 
@@ -153,6 +154,16 @@ export interface RunEnvelope {
    * the path themselves.
    */
   readonly tail_command_url: string;
+  /**
+   * Custom `crew-tail://` URL pointing directly at `events_log_path`.
+   * macOS-only: this requires the optional CrewTail LaunchServices handler
+   * to be installed with `crew-mcp install-tail-handler`. If the handler is
+   * absent (or the platform is not macOS), the manual `tail -F` line in the
+   * dispatch markdown remains the portable fallback. Kept separate from
+   * `tail_command_url` so older structured consumers can continue using the
+   * generated `tail.command` file URL.
+   */
+  readonly tail_url: string;
   readonly status: RunStatus;
   readonly summary: string;
   readonly files_changed: readonly string[];
@@ -733,13 +744,16 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
   const summary =
     `Dispatched. Poll get_run_status with run_id="${args.runId}" ` +
     `passing wait_for_change_ms: 30000 (server blocks until progress or terminal) + since_event_line cursor.`;
+  const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
+  const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
   const env: RunEnvelope = {
     run_id: args.runId,
     agent_id: args.agentName,
     worktree_path: args.worktreePath,
-    events_log_path: args.runStateStore.eventsLogPath(args.runId),
-    tail_command_path: args.runStateStore.tailCommandPath(args.runId),
-    tail_command_url: fileUrlHref(args.runStateStore.tailCommandPath(args.runId)),
+    events_log_path: eventsLogPath,
+    tail_command_path: tailCommandPath,
+    tail_command_url: fileUrlHref(tailCommandPath),
+    tail_url: crewTailUrl(eventsLogPath),
     status: 'running',
     summary,
     files_changed: [],
@@ -771,16 +785,15 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
     `- Status: \`${env.status}\``,
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
   ];
-  // The clickable `file://` link only does something useful on macOS,
-  // where Terminal.app is the registered handler for `.command` files.
-  // On Linux/Windows the helper file is still a runnable shell script,
-  // but `file://` links to it usually open in the OS's default text
-  // viewer rather than a terminal — so we just emit the manual tail
-  // line. Rationale comments live here, not in the user-visible
-  // markdown — captains read this on every dispatch.
+  // The clickable custom-scheme link only does something useful on macOS,
+  // where LaunchServices can route `crew-tail://` to the optional handler
+  // app. On Linux/Windows (and on macOS before installation), the manual
+  // tail line below stays the portable recovery path. Rationale comments
+  // live here, not in the user-visible markdown — captains read this on
+  // every dispatch.
   if (process.platform === 'darwin') {
     lines.push(
-      `- **Tail in Terminal**: [open in a side window](${env.tail_command_url})`,
+      `- **Tail in Terminal**: [open in a side window](${env.tail_url})`,
     );
   }
   lines.push(
@@ -1070,7 +1083,7 @@ function progressNotifierFrom(
  * the run is `running`, that's *all* — every other field is either
  * static (already returned in the run_agent / continue_run dispatch
  * envelope: run_id, agent_id, worktree_path, events_log_path,
- * tail_command_path, tail_command_url) or terminal-only.
+ * tail_command_path, tail_command_url, tail_url) or terminal-only.
  *
  * **Terminal-only fields** appear when `status` ∈ {success, partial,
  * error, cancelled, merged, merge_conflict, discarded}: `filesChanged`,
@@ -1127,9 +1140,10 @@ function buildGetRunStatusResponse(
 ): ToolCallReturn {
   // Captain-context conservation: while the run is running, `events_tail`
   // is intentionally empty. Captains coordinate; they don't narrate. Users
-  // follow along via the dispatch envelope's `tail_command_url` (or the
-  // generated `tail.command` helper). The cursor (`next_event_line`) still
-  // advances so anything that *does* read events_tail later — most
+  // follow along via the dispatch envelope's `tail_url` on macOS (or the
+  // generated `tail.command` helper / manual tail line elsewhere). The
+  // cursor (`next_event_line`) still advances so anything that *does* read
+  // events_tail later — most
   // importantly, the terminal poll-return — has a coherent view.
   const status = state.status;
   const terminal = isTerminalRunStatus(status);
@@ -1179,7 +1193,7 @@ function buildGetRunStatusResponse(
 
   // Running poll-return: minimum viable payload. The captain already
   // has run_id, agent_id, worktree_path, events_log_path,
-  // tail_command_path, tail_command_url from the dispatch envelope; we
+  // tail_command_path, tail_command_url, tail_url from the dispatch envelope; we
   // do not re-ship them on every long-poll wake-up.
   if (!terminal) {
     const payload: GetRunStatusResponse = {

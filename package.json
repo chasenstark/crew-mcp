@@ -20,6 +20,10 @@
   },
   "files": [
     "dist",
+    "scripts/tail-handler/handler.applescript",
+    "scripts/tail-handler/Info.plist.patch",
+    "scripts/tail-handler/build.sh",
+    "scripts/tail-handler/install.sh",
     "skills"
   ],
   "keywords": [
