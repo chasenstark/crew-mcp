@@ -5,9 +5,9 @@
 receipts`) introduced the response-side filter; this plan extended
 it to the wakeup + cursor-advance paths that the same commit left
 unchanged. **Related plan:** `noise-filter-at-source.md` (the
-upstream-at-adapter alternative — still active; kept as the proper
-end-state with this filter as defense-in-depth). **Sibling plan:**
-`long-poll-cost-tuning.md`.
+upstream-at-adapter alternative — parked 2026-05-08 since this
+filter resolved the captain-context burn; remaining benefits are
+operational polish). **Sibling plan:** `long-poll-cost-tuning.md`.
 
 ## What shipped
 
