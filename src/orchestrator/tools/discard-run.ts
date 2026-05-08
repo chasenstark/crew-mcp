@@ -17,4 +17,4 @@ export const discardRunInputSchema = z.object({
 export type DiscardRunInput = z.infer<typeof discardRunInputSchema>;
 
 export const DISCARD_RUN_DESCRIPTION =
-  "Abandon a run's worktree without merging. Idempotent — safe to call on an unknown run_id. Use when the user decides the run isn't valuable. Returns { run_id, ok: true }.";
+  "Abandon a run's worktree without merging. Idempotent. Use when the user decides the run isn't worth keeping. Returns { run_id, ok: true }.";

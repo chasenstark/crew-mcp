@@ -28,4 +28,4 @@ export const cancelRunInputSchema = z.object({
 export type CancelRunInput = z.infer<typeof cancelRunInputSchema>;
 
 export const CANCEL_RUN_DESCRIPTION =
-  'Abort an in-flight run. Signals the underlying subprocess to terminate; the run ends with status="cancelled". Idempotent — calling on a terminal/unknown run returns { ok: false, reason }. Worktree is preserved (call discard_run after for cleanup). Returns { run_id, ok, reason? }.';
+  'Abort an in-flight run. The run ends with status="cancelled". Idempotent — terminal/unknown runs return { ok: false, reason }. Worktree is preserved; call discard_run after for cleanup. Returns { run_id, ok, reason? }.';

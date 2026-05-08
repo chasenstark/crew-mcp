@@ -767,22 +767,17 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
   // where Terminal.app is the registered handler for `.command` files.
   // On Linux/Windows the helper file is still a runnable shell script,
   // but `file://` links to it usually open in the OS's default text
-  // viewer rather than a terminal — so we just give the path. Both
-  // forms are listed; the macOS one is offered first because it's the
-  // lowest-friction option for users on macOS, and superfluous-but-
-  // harmless on other platforms.
+  // viewer rather than a terminal — so we just emit the manual tail
+  // line. Rationale comments live here, not in the user-visible
+  // markdown — captains read this on every dispatch.
   if (process.platform === 'darwin') {
     lines.push(
-      `- **Tail in Terminal**: [open in a side window](${env.tail_command_url}) `
-        + '(macOS — clicking opens Terminal.app and runs `tail -F` against the events log)',
+      `- **Tail in Terminal**: [open in a side window](${env.tail_command_url})`,
     );
   }
   lines.push(
-    `- Tail manually: \`tail -F ${env.events_log_path}\` `
-      + '(capital `-F` so it waits for the file to be created)',
-    `- Follow with: \`get_run_status({ run_id: "${env.run_id}", `
-      + `wait_for_change_ms: 30000, since_event_line: <cursor> })\` `
-      + '— start cursor at 0; advance via `next_event_line` on each response.',
+    `- Tail manually: \`tail -F ${env.events_log_path}\``,
+    `- Follow with: \`get_run_status({ run_id: "${env.run_id}", wait_for_change_ms: 30000, since_event_line: <cursor> })\``,
   );
   return lines.join('\n');
 }
