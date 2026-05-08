@@ -242,4 +242,66 @@ describe('RunStateStore', () => {
     store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     expect(store.tailEvents('r-1')).toEqual([]);
   });
+
+  // readSignalEventsSince — used by get_run_status's long-poll fast-
+  // return to skip waking when only adapter receipts have arrived
+  // since the cursor. Cursor advances over receipts (matches the raw
+  // file offset) but the returned `lines` are signal-only.
+  // See docs/plans/active/noise-symmetric-filter.md.
+  describe('readSignalEventsSince', () => {
+    it('drops codex receipt lines from the returned slice', () => {
+      store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      store.appendEvent('r-1', '[codex] command: started rg foo');
+      store.appendEvent('r-1', '[codex] command: rg foo (exit 0)');
+      store.appendEvent('r-1', '[codex] event: item.started/web_search');
+      store.appendEvent('r-1', '[codex] message: real synthesis here');
+      const result = store.readSignalEventsSince('r-1', 0);
+      expect(result.lines).toEqual(['[codex] message: real synthesis here']);
+      // Cursor matches raw file offset — 4 lines in events.log.
+      expect(result.nextLine).toBe(4);
+    });
+
+    it('keeps non-zero command exits (signals a failure)', () => {
+      store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      store.appendEvent('r-1', '[codex] command: started npm test');
+      store.appendEvent('r-1', '[codex] command: npm test (exit 1)');
+      const result = store.readSignalEventsSince('r-1', 0);
+      // exit 0 is a receipt; exit 1 stays.
+      expect(result.lines).toEqual(['[codex] command: npm test (exit 1)']);
+      expect(result.nextLine).toBe(2);
+    });
+
+    it('returns lines:[] but nextLine still advances when window is all receipts', () => {
+      store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      store.appendEvent('r-1', '[codex] command: started rg foo');
+      store.appendEvent('r-1', '[codex] command: rg foo (exit 0)');
+      const result = store.readSignalEventsSince('r-1', 0);
+      // Caller's "do I have signal?" check sees an empty lines array
+      // and falls through to long-poll wait, but the cursor still
+      // matches the on-disk file so the next poll's bookkeeping is
+      // coherent.
+      expect(result.lines).toEqual([]);
+      expect(result.nextLine).toBe(2);
+    });
+
+    it('honors sinceLine cursor on the raw file offset', () => {
+      store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      store.appendEvent('r-1', '[codex] command: started rg foo');
+      store.appendEvent('r-1', '[codex] message: synthesis A');
+      store.appendEvent('r-1', '[codex] command: rg foo (exit 0)');
+      store.appendEvent('r-1', '[codex] message: synthesis B');
+      // Skip the first two raw lines: the slice should contain the
+      // exit-0 receipt (which is filtered) and synthesis B.
+      const result = store.readSignalEventsSince('r-1', 2);
+      expect(result.lines).toEqual(['[codex] message: synthesis B']);
+      expect(result.nextLine).toBe(4);
+    });
+
+    it('returns {lines:[], nextLine:0} when log does not exist', () => {
+      store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      const result = store.readSignalEventsSince('r-1', 0);
+      expect(result.lines).toEqual([]);
+      expect(result.nextLine).toBe(0);
+    });
+  });
 });

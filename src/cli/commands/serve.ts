@@ -536,9 +536,16 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         );
       }
 
-      // Already-have-data path: if the events log already advanced past
-      // the captain's cursor, return immediately without waiting.
-      const head = runStateStore.readEventsSince(args.run_id, cursor);
+      // Already-have-data path: if the events log already has *signal*
+      // lines past the captain's cursor, return immediately without
+      // waiting. Lines the noise filter would drop (codex receipts:
+      // command-started / exit-0 / item.* lifecycle frames) don't
+      // count — they'd round-trip the captain a payload of
+      // events_tail: [] and a bumped cursor, which is strictly worse
+      // than a long-poll wait. The cursor still advances on the next
+      // poll because buildGetRunStatusResponse reads the raw file via
+      // readEventsSince. See docs/plans/active/noise-symmetric-filter.md.
+      const head = runStateStore.readSignalEventsSince(args.run_id, cursor);
       if (head.lines.length > 0) {
         return buildGetRunStatusResponse(
           state,
@@ -1245,8 +1252,18 @@ async function waitForRunChange(args: {
     };
     const matches = (info: { runId?: string }): boolean => info.runId === args.runId;
     subs.push(
+      // Stream wake-ups gate on signal: a chunk that the noise filter
+      // would drop (codex receipt lines like "command: started ...",
+      // "(exit 0)", or item.* lifecycle frames) does NOT resolve the
+      // long-poll. The dispatcher still fires `run:stream` for every
+      // chunk and `events.log` still records it; we just don't wake
+      // the captain on noise. Terminal events are unconditional —
+      // see the three handlers below. See
+      // docs/plans/active/noise-symmetric-filter.md.
       args.dispatcher.onEvent('run:stream', (info) => {
-        if (matches(info)) finish();
+        if (!matches(info)) return;
+        if (filterEventsTailNoise([info.chunk]).length === 0) return;
+        finish();
       }),
       args.dispatcher.onEvent('run:complete', (info) => {
         if (matches(info)) finish();

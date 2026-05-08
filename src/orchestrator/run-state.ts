@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, appen
 import { dirname, join } from 'node:path';
 
 import { logger } from '../utils/logger.js';
+import { filterEventsTailNoise } from './events-filter.js';
 
 export type RunStatus =
   | 'running'
@@ -404,6 +405,30 @@ export class RunStateStore {
     const all = content.split('\n').filter((l) => l.length > 0);
     const start = Math.max(0, sinceLine);
     return { lines: all.slice(start), nextLine: all.length };
+  }
+
+  /**
+   * Cursor-based read with adapter-noise filtering applied to the
+   * returned lines. The cursor (`nextLine`) advances against the *raw*
+   * file offset — same as {@link readEventsSince} — so callers paging
+   * by line index stay in sync with the on-disk log even when the
+   * filter drops every line in a window.
+   *
+   * Returns the same `{ lines, nextLine }` shape as `readEventsSince`,
+   * but `lines` excludes pure adapter receipts (see
+   * `events-filter.ts`). Used by `get_run_status`'s long-poll fast-
+   * return path so a burst of receipt lines doesn't trip a no-signal
+   * wake-up: if every new line in the window would be filtered, the
+   * fast-return falls through to the long-poll wait. `events.log` on
+   * disk is unchanged; `events_log_path` consumers (tail -F users)
+   * still see full chronology.
+   */
+  readSignalEventsSince(runId: string, sinceLine = 0): {
+    readonly lines: string[];
+    readonly nextLine: number;
+  } {
+    const { lines, nextLine } = this.readEventsSince(runId, sinceLine);
+    return { lines: filterEventsTailNoise(lines), nextLine };
   }
 
   /**

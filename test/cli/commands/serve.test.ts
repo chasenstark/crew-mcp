@@ -1523,6 +1523,188 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
     }
   });
 
+  it('long-poll does NOT wake on adapter receipt chunks; wakes on the first signal chunk', async () => {
+    // Symmetric noise filter: codex emits ~88% receipt-style stream
+    // chunks (`command: started ...`, `(exit 0)`, `item.*` lifecycle
+    // frames). Today's e9cacf8 filter strips them from the response
+    // payload, but pre-fix the long-poll listener was waking on
+    // every chunk and the fast-return was treating the bumped
+    // cursor as "data to surface" — net: ~40 wakeups returning
+    // events_tail:[] for a chatty run. This test pins the new
+    // contract: receipts advance the cursor on disk but do NOT wake
+    // the captain; the first signal chunk does.
+    // See docs/plans/active/noise-symmetric-filter.md.
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-noisy',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-noisy', prompt: 'noisy' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+
+      // Start the long-poll first; emit a burst of receipts; assert
+      // the poll is still pending (i.e. did not wake on receipts).
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 1500,
+          since_event_line: 0,
+        },
+      });
+
+      let resolved = false;
+      void pollPromise.then(() => {
+        resolved = true;
+      });
+
+      // Give the poll a tick to install its listener.
+      await new Promise((r) => setTimeout(r, 30));
+      // Burst of pure receipts.
+      onOutputRef?.('[codex] command: started rg foo');
+      onOutputRef?.('[codex] command: rg foo (exit 0)');
+      onOutputRef?.('[codex] event: item.started/web_search');
+      onOutputRef?.('[codex] event: item.completed/web_search');
+      // Wait long enough for the listener to (incorrectly, if buggy)
+      // wake on a receipt. The test is sensitive to this: if any
+      // receipt slips through, `resolved` flips here.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(resolved).toBe(false);
+
+      // Now emit a signal chunk; the poll should wake promptly.
+      onOutputRef?.('[codex] message: real synthesis');
+      const t0 = Date.now();
+      const res = await pollPromise;
+      const elapsed = Date.now() - t0;
+      // Signal woke the poll well under the 1500ms cap.
+      expect(elapsed).toBeLessThan(1000);
+      const s = res.structuredContent as {
+        status: string;
+        events_tail: string[];
+        next_event_line: number;
+      };
+      expect(s.status).toBe('running');
+      expect(s.events_tail).toEqual([]);
+      // Cursor reflects the raw file offset — 4 receipts + 1 signal.
+      expect(s.next_event_line).toBe(5);
+
+      resolveAdapter();
+      const final = await pollUntilTerminal(h.client, env.run_id);
+      // events_tail on terminal preserves the signal line and drops
+      // the receipts, matching the existing terminal-tail filter.
+      expect(final.events_tail).toContain('[codex] message: real synthesis');
+      expect(final.events_tail).not.toContain('[codex] command: started rg foo');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('long-poll fast-return waits when only receipts have arrived past the cursor', async () => {
+    // Companion to the wakeup test above: the fast-return path at
+    // serve.ts:541 must not short-circuit when every line past the
+    // cursor would be filtered. Otherwise a captain that polls AFTER
+    // a burst of receipts would round-trip immediately with
+    // events_tail: [] — same context burn the wakeup filter blocks.
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-noisy-precursor',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-noisy-precursor', prompt: 'noisy' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+
+      // Emit receipts BEFORE the captain polls. They advance the
+      // raw cursor; readSignalEventsSince returns lines:[] so the
+      // fast-return falls through to long-poll.
+      onOutputRef?.('[codex] command: started rg foo');
+      onOutputRef?.('[codex] command: rg foo (exit 0)');
+      // Wait for events.log to flush so the receipts are durable.
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        const s = r.structuredContent as { next_event_line: number };
+        return s.next_event_line >= 2;
+      });
+
+      const pollStart = Date.now();
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 1500,
+          since_event_line: 0,
+        },
+      });
+      let resolved = false;
+      void pollPromise.then(() => {
+        resolved = true;
+      });
+      // Short delay: if the fast-return short-circuited on the
+      // already-arrived receipts, the poll would resolve here.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(resolved).toBe(false);
+
+      // Signal arrives → poll resolves.
+      onOutputRef?.('[codex] message: real synthesis');
+      const res = await pollPromise;
+      const elapsed = Date.now() - pollStart;
+      expect(elapsed).toBeLessThan(1500);
+      const s = res.structuredContent as {
+        next_event_line: number;
+        events_tail: string[];
+      };
+      expect(s.events_tail).toEqual([]);
+      expect(s.next_event_line).toBe(3);
+
+      resolveAdapter();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('long-poll get_run_status wakes on stream events from an in-flight run', async () => {
     let onOutputRef: ((chunk: string) => void) | undefined;
     let resolveAdapter!: () => void;
