@@ -1,0 +1,14 @@
+Info.plist additions applied by build.sh after osacompile:
+
+  CFBundleIdentifier = com.crew.tail
+  CFBundleName = CrewTail
+  LSUIElement = true
+  CFBundleURLTypes = [
+    {
+      CFBundleURLName = com.crew.tail
+      CFBundleURLSchemes = [crew-tail]
+    }
+  ]
+
+build.sh uses /usr/libexec/PlistBuddy instead of applying a textual patch
+because osacompile's default Info.plist shape varies across macOS releases.

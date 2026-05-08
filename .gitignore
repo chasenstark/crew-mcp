@@ -3,7 +3,13 @@ dist/
 *.tsbuildinfo
 
 # scripts
-scripts/
+scripts/*
+!scripts/smoke/
+!scripts/smoke/**
+!scripts/tail-handler/
+!scripts/tail-handler/**
+scripts/tail-handler/build/
+scripts/tail-handler/*.app/
 
 # Crew state (project-specific, not committed)
 .crew/

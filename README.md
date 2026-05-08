@@ -45,6 +45,15 @@ crew-mcp verify
 crew-mcp uninstall --target codex
 ```
 
+On macOS, dispatch output can open a side Terminal window directly for live
+run logs through an optional `crew-tail://` handler. Install it once after
+linking; without it, the manual `tail -F` line printed in dispatch output
+remains the fallback.
+
+```sh
+crew-mcp install-tail-handler
+```
+
 Then restart your host CLI session. From inside it, ask things like
 "have Claude review this changelog parser" or "send this to Codex" —
 the skill loads and `mcp__crew__*` tools become available.

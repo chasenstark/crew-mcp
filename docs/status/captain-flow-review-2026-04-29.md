@@ -5,6 +5,23 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-08 CrewTail URL Scheme Handler
+
+Dispatch envelopes now include `tail_url` alongside the existing
+`tail_command_url`. `tail_url` points directly at the run's `events.log` with a
+`crew-tail://` custom scheme; `tail_command_url` remains a `file://` link to
+`tail.command` for structured consumers and backward compatibility.
+
+On macOS, dispatch markdown now links to `tail_url` so clicks can route through
+the optional `CrewTail.app` LaunchServices handler instead of being intercepted
+as editor-owned `file://` links. The manual `tail -F <events.log>` line remains
+the universal fallback, and non-darwin markdown still omits the clickable
+custom-scheme link.
+
+The handler is installed explicitly with `crew-mcp install-tail-handler`; it is
+source-built from `scripts/tail-handler/` via `osacompile`, ad-hoc signed, copied
+to `~/Applications/CrewTail.app`, and registered with LaunchServices.
+
 ## Update - 2026-05-06 MCP Progress Payload Hardening
 
 Phase 4 of per-adapter event parsing wired the semantic event stream into the
