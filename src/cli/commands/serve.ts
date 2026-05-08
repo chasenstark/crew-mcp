@@ -1060,37 +1060,56 @@ function progressNotifierFrom(
 }
 
 /**
- * `get_run_status` payload shape — the run's persisted state plus
- * cursor-driven events delta. `events_tail` contains only lines with
- * index >= the input `since_event_line`; `next_event_line` is the
- * cursor the captain passes back next call. `log_tail` is retained
- * for snapshot callers that haven't migrated to cursor semantics
- * (mirrors `tailEvents` output and only populated when the caller
- * passes `log_lines` and not `since_event_line`).
+ * `get_run_status` payload shape — intentionally lean to keep the
+ * captain's context window clean across long-poll loops.
+ *
+ * **Always present:** `status`, `events_tail`, `next_event_line`. While
+ * the run is `running`, that's *all* — every other field is either
+ * static (already returned in the run_agent / continue_run dispatch
+ * envelope: run_id, agent_id, worktree_path, events_log_path,
+ * tail_command_path, tail_command_url) or terminal-only.
+ *
+ * **Terminal-only fields** appear when `status` ∈ {success, partial,
+ * error, cancelled, merged, merge_conflict, discarded}: `filesChanged`,
+ * `prompts` (turn metadata + per-turn `summary`; the verbatim prompt
+ * text is *not* surfaced — captains have the prompts they sent),
+ * `summary` (top-level convenience for the last turn's adapter
+ * output), and the conditional `lastError` / `mergeStatus` /
+ * `warnings` / `readOnly`. `events_tail` carries the recent tail of
+ * the full run log on terminal (capped per `max_events_tail`).
+ *
+ * `log_tail` is retained for legacy snapshot callers that pass
+ * `log_lines` without a cursor — modern captains use the cursor
+ * exclusively via `next_event_line`.
  */
 interface GetRunStatusResponse {
-  // Spread of RunStateV1 — typed wide because the state shape is
-  // additive over time and we don't want to re-declare it here.
-  readonly [key: string]: unknown;
+  readonly status: string;
   readonly events_tail: readonly string[];
   readonly next_event_line: number;
-  readonly events_log_path: string;
-  readonly tail_command_path: string;
-  /**
-   * Count of older events.log lines that fell outside the per-poll cap
-   * and are therefore *not* present in `events_tail`. Only meaningful
-   * on terminal poll-returns (running polls always emit
-   * `events_tail: []`). When set, `events_tail`'s first line is a
-   * human-readable marker `(N more events skipped)` so verbatim
-   * renderers surface the elision to the user. The full log always
-   * lives at `events_log_path`.
-   */
+  // Terminal-only fields. Indexed-signature shape kept additive so the
+  // server can grow new terminal fields without revising every caller's
+  // type narrowing.
+  readonly [key: string]: unknown;
   readonly events_tail_skipped?: number;
   readonly log_tail?: readonly string[];
 }
 
+/**
+ * Public projection of a per-turn record on terminal poll-returns.
+ * Mirrors `PromptRecord` from run-state.ts minus the `prompt` field —
+ * the verbatim prompt text is durable on disk in state.json but not
+ * worth re-shipping over the wire on every poll (the captain already
+ * has it in its own conversation history).
+ */
+type TerminalPromptRecord = {
+  readonly turn: number;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+  readonly summary?: string;
+};
+
 function buildGetRunStatusResponse(
-  state: object,
+  state: RunStateV1,
   store: RunStateStore,
   runId: string,
   sinceLine: number,
@@ -1099,11 +1118,11 @@ function buildGetRunStatusResponse(
 ): ToolCallReturn {
   // Captain-context conservation: while the run is running, `events_tail`
   // is intentionally empty. Captains coordinate; they don't narrate. Users
-  // follow along via `events_log_path` (or the generated `tail.command`
-  // helper). The cursor (`next_event_line`) still advances so anything
-  // that *does* read events_tail later — most importantly, the terminal
-  // poll-return — has a coherent view.
-  const status = (state as { status?: string }).status ?? '';
+  // follow along via the dispatch envelope's `tail_command_url` (or the
+  // generated `tail.command` helper). The cursor (`next_event_line`) still
+  // advances so anything that *does* read events_tail later — most
+  // importantly, the terminal poll-return — has a coherent view.
+  const status = state.status;
   const terminal = isTerminalRunStatus(status);
 
   // Always advance the cursor relative to the requested sinceLine; the
@@ -1133,19 +1152,53 @@ function buildGetRunStatusResponse(
       : allLines;
   }
 
+  // Legacy snapshot tail — only populated for callers that passed
+  // `log_lines` without a cursor. Same in both running and terminal
+  // branches; computed once.
+  const legacyLogTail = sinceLine === 0 && logLines !== undefined
+    ? { log_tail: store.tailEvents(runId, logLines) }
+    : {};
+
+  // Running poll-return: minimum viable payload. The captain already
+  // has run_id, agent_id, worktree_path, events_log_path,
+  // tail_command_path, tail_command_url from the dispatch envelope; we
+  // do not re-ship them on every long-poll wake-up.
+  if (!terminal) {
+    const payload: GetRunStatusResponse = {
+      status,
+      events_tail: cappedLines,
+      next_event_line: cursorAfterDelta,
+      ...legacyLogTail,
+    };
+    return jsonContent(payload);
+  }
+
+  // Terminal poll-return: include the synthesis surface the captain
+  // needs for its end-of-run summary. Each conditional spread keeps
+  // unset fields off the wire entirely (avoids null/undefined noise).
+  const projectedPrompts: readonly TerminalPromptRecord[] = state.prompts.map((p) => ({
+    turn: p.turn,
+    startedAt: p.startedAt,
+    ...(p.completedAt !== undefined ? { completedAt: p.completedAt } : {}),
+    ...(p.summary !== undefined ? { summary: p.summary } : {}),
+  }));
+  const lastSummary = state.prompts.length > 0
+    ? state.prompts[state.prompts.length - 1]?.summary
+    : undefined;
+
   const payload: GetRunStatusResponse = {
-    ...state,
-    events_log_path: store.eventsLogPath(runId),
-    tail_command_path: store.tailCommandPath(runId),
+    status,
     events_tail: cappedLines,
     next_event_line: cursorAfterDelta,
+    filesChanged: state.filesChanged,
+    prompts: projectedPrompts,
+    ...(lastSummary !== undefined ? { summary: lastSummary } : {}),
+    ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
+    ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
+    ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
+    ...(state.readOnly ? { readOnly: state.readOnly } : {}),
     ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
-    // Backward-compat: the legacy `log_tail` field is still surfaced
-    // for callers that pass `log_lines` but no cursor. Once captains
-    // are all on cursor semantics this can be deleted.
-    ...(sinceLine === 0 && logLines !== undefined
-      ? { log_tail: store.tailEvents(runId, logLines) }
-      : {}),
+    ...legacyLogTail,
   };
   return jsonContent(payload);
 }

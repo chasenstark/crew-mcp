@@ -501,10 +501,21 @@ describe('crew serve — continue_run tool', () => {
       expect(calls).toHaveLength(2);
       expect(calls[0]).toBe(`turn-one@${firstEnv.worktree_path}`);
       expect(calls[1]).toBe(`turn-two@${firstEnv.worktree_path}`);
-      // state.json should record both turns.
-      const status = final.state as unknown as { prompts: Array<{ turn: number; prompt: string }> };
-      expect(status.prompts).toHaveLength(2);
-      expect(status.prompts.map((p) => p.prompt)).toEqual(['turn-one', 'turn-two']);
+      // state.json (durable record) holds both verbatim prompts.
+      // The wire payload from get_run_status no longer surfaces raw
+      // prompt text — captains already have what they sent — so we
+      // assert against the on-disk state.json instead.
+      const stateJsonPath = join(h.crewHome, 'runs', firstEnv.run_id, 'state.json');
+      const persisted = JSON.parse(readFileSync(stateJsonPath, 'utf-8')) as {
+        prompts: Array<{ turn: number; prompt: string }>;
+      };
+      expect(persisted.prompts).toHaveLength(2);
+      expect(persisted.prompts.map((p) => p.prompt)).toEqual(['turn-one', 'turn-two']);
+      // Wire payload still surfaces per-turn metadata (turn, summary)
+      // but elides the verbatim prompt text.
+      const wirePrompts = final.state.prompts as Array<{ turn: number; prompt?: string; summary?: string }>;
+      expect(wirePrompts).toHaveLength(2);
+      expect(wirePrompts.every((p) => p.prompt === undefined)).toBe(true);
     } finally {
       await h.close();
     }
@@ -922,7 +933,7 @@ describe('crew serve — read_only runs', () => {
 });
 
 describe('crew serve — get_run_status tool', () => {
-  it('returns full state + log_tail for a completed run', async () => {
+  it('returns the lean terminal projection for a completed run', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
       execute: async (_task) => ({
@@ -940,24 +951,46 @@ describe('crew serve — get_run_status tool', () => {
       });
       const runEnv = run.structuredContent as RunEnvelope;
       const final = await pollUntilTerminal(h.client, runEnv.run_id);
-      const s = final.state as unknown as {
-        runId: string;
-        agentId: string;
+      // Lean terminal contract: the response carries status + cursor +
+      // events_tail + the synthesis surface (filesChanged, prompts
+      // metadata, top-level summary). Static fields (runId, agentId,
+      // worktreePath, repoRoot, events_log_path, tail_command_path,
+      // schemaVersion, startedAt, completedAt) live on the dispatch
+      // envelope and are NOT re-shipped on every poll.
+      const s = final.state as unknown as Record<string, unknown> & {
         status: string;
-        prompts: unknown[];
+        prompts: Array<Record<string, unknown>>;
         events_tail: string[];
         next_event_line: number;
-        events_log_path: string;
-        tail_command_path: string;
+        filesChanged: string[];
+        summary?: string;
       };
-      expect(s.runId).toBe(runEnv.run_id);
-      expect(s.agentId).toBe('mock-coder');
       expect(s.status).toBe('success');
+      expect(s.filesChanged).toEqual([]);
+      expect(s.summary).toBe('all done');
       expect(s.prompts).toHaveLength(1);
+      // Verbatim prompt text is intentionally absent from the wire
+      // payload — captains have what they sent. Per-turn metadata
+      // (turn, startedAt, summary) is preserved.
+      expect(s.prompts[0]).toMatchObject({ turn: 1, summary: 'all done' });
+      expect(s.prompts[0].prompt).toBeUndefined();
       expect(Array.isArray(s.events_tail)).toBe(true);
       expect(typeof s.next_event_line).toBe('number');
-      expect(s.events_log_path).toBe(runEnv.events_log_path);
-      expect(s.tail_command_path).toBe(runEnv.tail_command_path);
+      // Static-field elision contract — hardcoded names so a future
+      // regression that re-spreads RunStateV1 fails loudly here.
+      for (const field of [
+        'runId',
+        'agentId',
+        'schemaVersion',
+        'worktreePath',
+        'repoRoot',
+        'startedAt',
+        'completedAt',
+        'events_log_path',
+        'tail_command_path',
+      ]) {
+        expect(s[field]).toBeUndefined();
+      }
     } finally {
       await h.close();
     }
@@ -1533,17 +1566,20 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       const t0 = Date.now();
       const res = await pollPromise;
       const elapsed = Date.now() - t0;
-      const s = res.structuredContent as {
+      const s = res.structuredContent as Record<string, unknown> & {
         status: string;
         events_tail: string[];
         next_event_line: number;
-        tail_command_path: string;
       };
       // The wake should have fired well under the 5000ms cap.
       expect(elapsed).toBeLessThan(2000);
       expect(s.status).toBe('running');
-      expect(s.tail_command_path).toBe(env.tail_command_path);
-      // Running poll-returns intentionally hide events_tail content.
+      // Running poll-returns are lean by design: status, events_tail
+      // (empty), next_event_line — and nothing else. Static fields
+      // (run_id, tail_command_path, etc.) live on the dispatch envelope.
+      expect(s.tail_command_path).toBeUndefined();
+      expect(s.run_id).toBeUndefined();
+      expect(s.worktreePath).toBeUndefined();
       expect(s.events_tail).toEqual([]);
       // Cursor advanced past the emitted chunk so the eventual
       // terminal poll-return knows where the log head sits.
@@ -1553,7 +1589,6 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       // poll-return DOES surface the chunk via events_tail.
       resolveAdapter();
       const final = await pollUntilTerminal(h.client, env.run_id);
-      expect(final.state.tail_command_path).toBe(env.tail_command_path);
       expect(final.events_tail).toContain('first chunk');
     } finally {
       await h.close();
