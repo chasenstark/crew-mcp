@@ -1,59 +1,49 @@
-# Captain portability
+> **Current as of 2026-05-09.**
 
-Which captain CLIs work, at what version floor, with which
-tool-registration mechanism.
+## Load-bearing source anchors
 
-## Support matrix
+- Install command and per-host write path: `src/cli/commands/install.ts:130`, `src/cli/commands/install.ts:177`, `src/cli/commands/install.ts:252`, `src/cli/commands/install.ts:274`, `src/cli/commands/install.ts:279`, `src/cli/commands/install.ts:291`.
+- Host adapter interface: `src/install/hosts/types.ts:21`, `src/install/hosts/types.ts:28`, `src/install/hosts/types.ts:31`, `src/install/hosts/types.ts:40`.
+- Host paths: `src/install/hosts/claude-code.ts:45`, `src/install/hosts/claude-code.ts:46`, `src/install/hosts/codex.ts:80`, `src/install/hosts/codex.ts:81`, `src/install/hosts/gemini.ts:35`, `src/install/hosts/gemini.ts:36`.
+- Host registries: `src/install/hosts/index.ts:14`, `src/install/hosts/index.ts:20`.
+- Converter helpers: `src/orchestrator/mcp-registration.ts:33`, `src/orchestrator/mcp-registration.ts:55`, `src/orchestrator/mcp-registration.ts:100`, `src/orchestrator/mcp-registration.ts:160`, `src/orchestrator/mcp-registration.ts:217`.
+- Converter tests: `test/orchestrator/mcp-registration.test.ts:1`, `test/orchestrator/mcp-registration.test.ts:3`, `test/orchestrator/mcp-registration.test.ts:251`.
 
-| Captain CLI | Version floor | MCP wiring | Native resume | Notes |
-|-------------|---------------|------------|---------------|-------|
-| **claude-code** | 1.0.23+ | `--mcp-config <inline-json>` | `stream-json` stateful resume | Inline JSON via `toClaudeMcpConfigJson(catalog)`; no install-time file writes. |
-| **codex** | 0.121+ (tested) | `-c mcp_servers.<name>.*=...` argv | `exec resume <id>` | argv flags projected via `toCodexConfigOverrides(catalog)`. |
-| **gemini-cli** | 0.20.0+ | `--allowed-mcp-server-names <csv>` + file-based settings.json | `-o stream-json --resume <id>` | Allowed-names per invocation; settings.json kept in sync via preflight + `.crew/config.lock.json`. |
-| **generic** | — | none | none | No native MCP wiring; captain can call through `executeWithTools` but the per-invocation MCP payload is ignored. |
-| **openai-compatible** | — | none | none | Adapter does not yet participate in MCP registration. |
+# Captain Portability
 
-## The three converters
+## Current Framing
 
-One source — `ToolCatalog.toMcpRegistrationCatalog()` — drives three
-shapes:
+Captain portability in v0.2 is install-time host wiring. `installCommand()` is the entry point at `src/cli/commands/install.ts:130`, and it calls `installSingleTarget()` for each selected host at `src/cli/commands/install.ts:177`.
 
-- `toCodexConfigOverrides(catalog)` → `string[]` argv fragment.
-- `toClaudeMcpConfigJson(catalog)` → `string` inline JSON for
-  `--mcp-config`.
-- `toGeminiMcpSettings(catalog)` → `{settingsJson, allowedServerNames}`
-  for settings regen + per-invocation argv.
+`installSingleTarget()` renders and writes the skill file at `src/cli/commands/install.ts:266` through `src/cli/commands/install.ts:277`, merges the MCP block into the host config at `src/cli/commands/install.ts:279` through `src/cli/commands/install.ts:284`, and applies or clears auto-approval at `src/cli/commands/install.ts:286` through `src/cli/commands/install.ts:302`.
 
-`resolveCaptainConverter(adapter.name, catalog)` picks the right shape
-per captain. The session-loop attaches the resulting
-`McpRegistrationPayload` to `ToolLoopContext.mcpRegistration`. Adapters
-extract their own kind; unknown kinds are ignored (defense-in-depth).
+The host adapter contract is `HostAdapter` at `src/install/hosts/types.ts:21`. Host adapters provide `configPath()` at `src/install/hosts/types.ts:28`, `skillPath()` at `src/install/hosts/types.ts:31`, and `mergeMcpBlock()` at `src/install/hosts/types.ts:40`.
 
-## Drift discipline
+## Supported Hosts
 
-A parity test in `test/captain/mcp-registration.test.ts` asserts that
-adding or removing a server propagates uniformly through all three
-converters. A new captain CLI MUST come with:
+The installed host registry maps `claude-code`, `codex`, and `gemini` at `src/install/hosts/index.ts:14` through `src/install/hosts/index.ts:18`; `--target all` enumerates `ALL_HOST_IDS` at `src/install/hosts/index.ts:20`.
 
-1. Its own converter sibling (alongside the three above).
-2. A `resolveCaptainConverter` branch matching its adapter `name`.
-3. A per-adapter argv test that exercises the MCP flag placement.
+| Host | Config path | Skill path | Anchor |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude.json` | `~/.claude/skills/crew/SKILL.md` | `src/install/hosts/claude-code.ts:45`, `src/install/hosts/claude-code.ts:46` |
+| Codex | `~/.codex/config.toml` with `[mcp_servers.crew]` | `~/.codex/skills/crew/SKILL.md` | `src/install/hosts/codex.ts:80`, `src/install/hosts/codex.ts:81`, `src/install/hosts/codex.ts:44` |
+| Gemini CLI | `~/.gemini/settings.json` | `~/.gemini/extensions/crew/SKILL.md` | `src/install/hosts/gemini.ts:35`, `src/install/hosts/gemini.ts:36` |
 
-## Session resume + replay (N9 semantics)
+Claude Code's config merge writes an `mcpServers.crew` block with `command` and `args` at `src/install/hosts/claude-code.ts:48` through `src/install/hosts/claude-code.ts:56`. Codex renders a `[mcp_servers.crew]` block; the header pattern is `src/install/hosts/codex.ts:44`, and the merge path calls `renderCodexBlock()` at `src/install/hosts/codex.ts:83` through `src/install/hosts/codex.ts:85`. Gemini writes an `mcpServers.crew` object at `src/install/hosts/gemini.ts:38` through `src/install/hosts/gemini.ts:46`.
 
-All captain CLIs may reject a stored `providerSessionRef` mid-turn
-(version bump, server-side invalidation, etc.). The session-loop handles
-this with exactly ONE automatic replay per turn:
+## Legacy Converter Helpers
 
-1. First rejection → drop the ref, optionally re-probe the CLI version
-   tag, retry the turn with full-message-log context.
-2. Second consecutive rejection in the same turn → hard failure.
+`src/orchestrator/mcp-registration.ts` still contains converter helpers, but those helpers are not the `crew-mcp serve` install path. Their narrow input shape is the plain `ToolCatalog` interface at `src/orchestrator/mcp-registration.ts:33`.
 
-The first post-M3 turn on an existing session is expected to consume
-this replay because M3 bumps the tool-schema hash. M4-3's per-tool
-description refresh (the **Primary** / **Optional** prefixes) bumps the
-hash a second time on the M3→M4 upgrade; the wire format is unchanged,
-so the only user-visible effect is a single automatic replay on the
-first M4 turn. See `docs/plans/active/m4-exit-smoke-log.md` for the M4
-per-captain matrix. (MCP tool-list browsers surface the new prefix text:
-Claude Code and Gemini show descriptions; Codex hides them.)
+The retained converter functions are:
+
+| Helper | Shape | Anchor |
+| --- | --- | --- |
+| `toCodexConfigOverrides()` | `-c mcp_servers.<name>.*=...` argv fragments. | `src/orchestrator/mcp-registration.ts:55` |
+| `toClaudeMcpConfigJson()` | Inline Claude MCP JSON. | `src/orchestrator/mcp-registration.ts:100` |
+| `toGeminiMcpSettings()` | Gemini settings JSON plus allowed server names. | `src/orchestrator/mcp-registration.ts:217` |
+| `resolveCaptainConverter()` | Adapter-name switch over those helper shapes. | `src/orchestrator/mcp-registration.ts:160` |
+
+The tests live under `test/orchestrator/mcp-registration.test.ts`; imports start at `test/orchestrator/mcp-registration.test.ts:1` through `test/orchestrator/mcp-registration.test.ts:8`, and the `resolveCaptainConverter()` coverage starts at `test/orchestrator/mcp-registration.test.ts:251`.
+
+Do not describe these helpers as session-loop attachment. The v0.1 `SessionLoop` runtime has been archived; the current server runtime is `buildCrewMcpServer()` at `src/cli/commands/serve.ts:214`.
