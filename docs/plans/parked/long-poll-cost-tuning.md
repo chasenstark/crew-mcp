@@ -1,10 +1,12 @@
 # Long-poll cost + UX tuning
 
 **Status:** Parked 2026-05-09. Phases 1-2 + the side-channel /
-silent-polling UX shipped (anchors below). Remaining items —
-`MAX_LONG_POLL_MS` bump and a `wait_for_terminal_only` `get_run_status`
-mode — are explicitly cost-gated: revisit only if dogfood produces
-real cost pain or host-side timeouts on the current 60s long-poll.
+silent-polling UX shipped (anchors below). Section 4's
+`wait_for_terminal_only` `get_run_status` mode shipped in the current
+implementation pass; `MAX_LONG_POLL_MS` intentionally remains 60s.
+The remaining cost-gated item is only the wait-cap/env-override
+question: revisit if dogfood produces real cost pain or host-side
+timeouts on the current 60s long-poll.
 
 **Trigger to revisit:** measurable token cost from running polls
 holding the captain's context warm, OR host CLIs that close the
@@ -175,7 +177,7 @@ removed that branch.
 - **Outcome:** superseded until a future design needs host-specific
   captain behavior again.
 
-### 4. `wait_for_terminal_only` flag on `get_run_status`
+### 4. `wait_for_terminal_only` flag on `get_run_status` — shipped 2026-05-09
 
 A boolean that says "block until status is terminal; ignore
 stream events." For hosts that surface progress notifications
@@ -183,14 +185,21 @@ stream events." For hosts that surface progress notifications
 wants to know "is it done yet?" One long wait per poll instead of
 many.
 
+Implementation: `get_run_status` now accepts
+`wait_for_terminal_only?: boolean`. When set with
+`wait_for_change_ms`, the server skips the already-have-signal
+fast-return, subscribes only to `run:complete`, `run:failed`, and
+`run:cancelled`, and returns `{ status: "running", timed_out: true }`
+on timeout without `next_event_line` or `events_tail`. The captain
+skill body recommends this as the default wait loop and reuses the
+prior cursor across timed-out waits. The active implementation plan
+remains `docs/plans/active/await-run-terminal-wait.md` until this work
+receives an anchor commit and can be moved to `docs/plans/completed/`.
+
 - **Pros:** cleanest separation. Progress notifications = user
   UX; long-poll-on-terminal = captain bookkeeping.
-- **Cons:** API surface growth. Today the captain can simulate it
-  by passing a high `wait_for_change_ms` and ignoring intermediate
-  returns — but stream events still wake it, so it doesn't fully
-  reduce poll-return count.
-- **Open question:** is the API surface worth the simplicity? Or
-  is the simulation good enough?
+- **Outcome:** shipped as an option on the existing tool, not a new
+  `await_run` tool, so the live MCP tool surface stays stable.
 
 ### 5. Background-CLI dispatch (rejected for now)
 
@@ -220,17 +229,13 @@ Dogfood the implemented side-channel model instead:
 - Has any host besides codex CLI shown progress-notification gaps?
   (Drives whether a future diagnostic flag becomes load-bearing again.)
 
-**Sections 1 + 4** — original criteria still apply:
+**Section 1** — original criteria still apply:
 
 - Has long-run inference cost become load-bearing in real dogfooding
   (e.g., a multi-hour Codex run inflated costs noticeably)? Drives
   section 1 (`MAX_LONG_POLL_MS` bump).
 - Do we have empirical data on per-host MCP tool-call timeouts so
   we can pick a safe default? Same.
-- Does section 4's `wait_for_terminal_only` API actually simplify
-  captain code beyond what the long `wait_for_change_ms` simulation
-  gives us? Need a concrete code-shape comparison before adding API
-  surface.
 
 ## Out of scope
 

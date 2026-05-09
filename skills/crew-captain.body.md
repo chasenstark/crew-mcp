@@ -235,25 +235,28 @@ budget.
    — those are already in the tool result for the user who wants
    them.
 2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
-   since_event_line: <last cursor> })`. Start the cursor at 0; on
-   each response, update it from `next_event_line`.
-3. **The response while running has `events_tail: []` by design.**
-   Don't ask for it, don't render it. Just check `status`.
-4. **Immediately call `get_run_status` again** with the updated
-   cursor. Same turn. No wakeups, no scheduled returns. **No text
-   output between polls** — the polling loop is silent. (If
+   since_event_line: <last cursor>, wait_for_terminal_only: true })`.
+   Start the cursor at 0; on terminal responses, update it from
+   `next_event_line`.
+3. **The timeout response while still running is deliberately tiny:**
+   `{ status: "running", timed_out: true }`. It does not include
+   `next_event_line`, because terminal-only waits ignore stream cursors
+   until terminal. Keep using the cursor you already had.
+4. **Immediately call `get_run_status` again** with the same cursor
+   after `timed_out: true`. Same turn. No wakeups, no scheduled
+   returns. **No text output between polls** — the polling loop is silent. (If
    you've been polling for several minutes with no terminal, you
    may emit one terse "still working" line every ~5 polls so the
    user knows you're alive — but this is an upper bound, not a
    per-poll obligation.)
 5. Exit the loop when `status` is `success | partial | error |
    cancelled` (or — for read-only runs — also `discarded`).
-6. **Now** the terminal poll-return contains a non-empty
-   `events_tail` — the recent tail of the full run log. Use it
-   for context when you write the summary, but **do not just dump
-   it back at the user verbatim**. Synthesize: "Done. Codex
-   reviewed 8 files and flagged 3 issues. Final summary: …" The
-   tail is your evidence, the synthesis is the deliverable.
+6. Running polls had no tail at all; **now** the terminal
+   poll-return includes `events_tail` — the recent tail of the full
+   run log. Use it for context when you write the summary, but **do
+   not just dump it back at the user verbatim**. Synthesize: "Done.
+   Codex reviewed 8 files and flagged 3 issues. Final summary: …"
+   The tail is your evidence, the synthesis is the deliverable.
 7. Ask about merge / iterate / discard.
 
 ### How users follow progress (not your problem)
@@ -284,13 +287,16 @@ into your reply.
 run_agent(...)              → { status: "running", run_id: R,
                                 tail_url: "crew-tail:///..." }
 "Dispatched as `R` — [tail in side terminal](crew-tail:///...). Watching."
-get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0})
-  → events_tail: [], next_event_line: 4, status: "running"
+get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0,
+                wait_for_terminal_only: true})
+  → status: "running", timed_out: true
 (no output)
-get_run_status({R, wait_for_change_ms: 30000, since_event_line: 4})
-  → events_tail: [], next_event_line: 9, status: "running"
+get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0,
+                wait_for_terminal_only: true})
+  → status: "running", timed_out: true
 (no output)
-get_run_status({R, wait_for_change_ms: 30000, since_event_line: 9})
+get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0,
+                wait_for_terminal_only: true})
   → events_tail: [<last N events of full log>], next_event_line: 11,
     status: "success", summary: "..."
 "Done. <one-paragraph synthesis informed by summary + events_tail>.
@@ -306,6 +312,9 @@ maybe 5 lines from you across the whole flow.
 `cancel_run({ run_id })` aborts the in-flight dispatch. The status
 will land as `cancelled` on the next poll. Surface a short note
 ("Cancelled.") and the partial summary if any.
+With `wait_for_terminal_only: true` (the default), `cancel_run` wakes
+the in-flight `get_run_status` call and returns the terminal
+`cancelled` payload on that same poll — no special handling needed.
 
 ## The tools
 

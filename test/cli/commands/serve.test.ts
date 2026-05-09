@@ -1485,6 +1485,7 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       expect(env.status).toBe('running');
       expect(env.summary).toMatch(/Poll get_run_status/);
       expect(env.summary).toMatch(/wait_for_change_ms/);
+      expect(env.summary).toMatch(/wait_for_terminal_only/);
       // Polling resolves to terminal.
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
@@ -1523,6 +1524,51 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       const s = res.structuredContent as { status: string };
       expect(s.status).toBe('success');
       // < 1s proves we didn't actually wait the 5000ms.
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('terminal-only get_run_status resolves immediately when run already terminated', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast-terminal-only',
+      execute: async () => ({
+        output: 'done terminal-only',
+        filesModified: ['README.md'],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast-terminal-only', prompt: 'go' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const t0 = Date.now();
+      const res = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 5000,
+          wait_for_terminal_only: true,
+        },
+      });
+      const elapsed = Date.now() - t0;
+      const s = res.structuredContent as {
+        status: string;
+        timed_out?: true;
+        summary?: string;
+        filesChanged?: string[];
+      };
+      expect(s.status).toBe('success');
+      expect(s.timed_out).toBeUndefined();
+      expect(s.summary).toBe('done terminal-only');
+      expect(s.filesChanged).toEqual(['README.md']);
       expect(elapsed).toBeLessThan(1000);
     } finally {
       await h.close();
@@ -1625,6 +1671,240 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
     }
   });
 
+  it('terminal-only long-poll does not wake on stream chunks from an in-flight run', async () => {
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-terminal-only-streaming',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-terminal-only-streaming', prompt: 'stream' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 1500,
+          since_event_line: 0,
+          wait_for_terminal_only: true,
+        },
+      });
+      let resolved = false;
+      void pollPromise.then(() => {
+        resolved = true;
+      });
+
+      await new Promise((r) => setTimeout(r, 30));
+      onOutputRef?.('[mock] message: still working');
+      await new Promise((r) => setTimeout(r, 200));
+      expect(resolved).toBe(false);
+
+      resolveAdapter();
+      const res = await pollPromise;
+      const s = res.structuredContent as {
+        status: string;
+        timed_out?: true;
+        events_tail: string[];
+        summary?: string;
+      };
+      expect(s.status).toBe('success');
+      expect(s.timed_out).toBeUndefined();
+      expect(s.summary).toBe('done');
+      expect(s.events_tail).toContain('[mock] message: still working');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('terminal-only long-poll returns terminal payload when the run completes', async () => {
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-terminal-only-complete',
+      execute: async () => {
+        await slow;
+        return {
+          output: 'terminal summary',
+          filesModified: ['src/index.ts'],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-terminal-only-complete', prompt: 'complete' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 5000,
+          since_event_line: 0,
+          wait_for_terminal_only: true,
+        },
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      const t0 = Date.now();
+      resolveAdapter();
+      const res = await pollPromise;
+      const elapsed = Date.now() - t0;
+      const s = res.structuredContent as {
+        status: string;
+        timed_out?: true;
+        summary?: string;
+        filesChanged?: string[];
+        events_tail: string[];
+      };
+      expect(elapsed).toBeLessThan(1000);
+      expect(s.status).toBe('success');
+      expect(s.timed_out).toBeUndefined();
+      expect(s.summary).toBe('terminal summary');
+      expect(s.filesChanged).toEqual(['src/index.ts']);
+      expect(Array.isArray(s.events_tail)).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('terminal-only long-poll returns terminal cancelled payload when cancel_run wakes it', async () => {
+    let abortFired = false;
+    const adapter = makeMockAdapter({
+      name: 'mock-terminal-only-cancel',
+      execute: async (task) => {
+        const t = task as { constraints?: { signal?: AbortSignal } };
+        return new Promise<TaskResult>((_resolve, reject) => {
+          t.constraints?.signal?.addEventListener('abort', () => {
+            abortFired = true;
+            reject(new Error('aborted'));
+          });
+        });
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-terminal-only-cancel', prompt: 'cancel' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 5000,
+          since_event_line: 0,
+          wait_for_terminal_only: true,
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 30));
+      const t0 = Date.now();
+      const cancel = await h.client.callTool({
+        name: 'cancel_run',
+        arguments: { run_id: env.run_id },
+      });
+      expect((cancel.structuredContent as { ok: boolean }).ok).toBe(true);
+
+      const res = await pollPromise;
+      const elapsed = Date.now() - t0;
+      const s = res.structuredContent as {
+        status: string;
+        timed_out?: true;
+        summary?: string;
+        filesChanged?: string[];
+        events_tail?: string[];
+        next_event_line?: number;
+      };
+      expect(elapsed).toBeLessThan(1000);
+      expect(abortFired).toBe(true);
+      expect(s.status).toBe('cancelled');
+      expect(s.timed_out).toBeUndefined();
+      expect(s.summary).toBe('cancel_run requested');
+      expect(s.filesChanged).toEqual([]);
+      expect(Array.isArray(s.events_tail)).toBe(true);
+      expect(typeof s.next_event_line).toBe('number');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('terminal-only long-poll timeout returns a lean timed_out payload', async () => {
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-terminal-only-timeout',
+      execute: async () => {
+        await slow;
+        return {
+          output: 'eventual done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-terminal-only-timeout', prompt: 'timeout' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      const res = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 100,
+          since_event_line: 0,
+          wait_for_terminal_only: true,
+        },
+      });
+      expect(res.structuredContent).toEqual({
+        status: 'running',
+        timed_out: true,
+      });
+      const s = res.structuredContent as {
+        next_event_line?: number;
+        events_tail?: string[];
+      };
+      expect(s.next_event_line).toBeUndefined();
+      expect(s.events_tail).toBeUndefined();
+
+      resolveAdapter();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('long-poll fast-return waits when only receipts have arrived past the cursor', async () => {
     // Companion to the wakeup test above: the fast-return path at
     // serve.ts:541 must not short-circuit when every line past the
@@ -1706,6 +1986,75 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
 
       resolveAdapter();
       await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('terminal-only long-poll skips the already-have-signal fast-return', async () => {
+    let onOutputRef: ((chunk: string) => void) | undefined;
+    let resolveAdapter!: () => void;
+    const slow = new Promise<void>((r) => {
+      resolveAdapter = r;
+    });
+    const adapter = makeMockAdapter({
+      name: 'mock-terminal-only-precursor',
+      execute: async (task) => {
+        const t = task as { onOutput?: (chunk: string) => void };
+        onOutputRef = t.onOutput;
+        await slow;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-terminal-only-precursor', prompt: 'signal first' },
+      });
+      const env = run.structuredContent as RunEnvelope;
+      await waitFor(() => onOutputRef !== undefined);
+      onOutputRef?.('[mock] message: signal before poll');
+      await waitFor(async () => {
+        const r = await h.client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        const s = r.structuredContent as { next_event_line: number };
+        return s.next_event_line >= 1;
+      });
+
+      const pollPromise = h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: env.run_id,
+          wait_for_change_ms: 1500,
+          since_event_line: 0,
+          wait_for_terminal_only: true,
+        },
+      });
+      let resolved = false;
+      void pollPromise.then(() => {
+        resolved = true;
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(resolved).toBe(false);
+
+      resolveAdapter();
+      const res = await pollPromise;
+      const s = res.structuredContent as {
+        status: string;
+        events_tail: string[];
+        timed_out?: true;
+      };
+      expect(s.status).toBe('success');
+      expect(s.timed_out).toBeUndefined();
+      expect(s.events_tail).toContain('[mock] message: signal before poll');
     } finally {
       await h.close();
     }
@@ -2043,6 +2392,23 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
     ).not.toThrow();
     expect(() =>
       getRunStatusInputSchema.parse({ run_id: 'r', max_events_tail: 0 }),
+    ).toThrow();
+  });
+
+  it('accepts wait_for_terminal_only in the get_run_status schema', () => {
+    expect(() =>
+      getRunStatusInputSchema.parse({
+        run_id: 'r',
+        wait_for_change_ms: 30000,
+        since_event_line: 0,
+        wait_for_terminal_only: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      getRunStatusInputSchema.parse({
+        run_id: 'r',
+        wait_for_terminal_only: 'true',
+      }),
     ).toThrow();
   });
 });
