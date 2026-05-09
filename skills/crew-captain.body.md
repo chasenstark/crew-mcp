@@ -4,14 +4,6 @@
   source of truth for the orchestration playbook — edit here, re-run
   `crew-mcp install` to propagate.
 
-  Inherited ~80% from v0.1's `src/captain/prompts/captain-system.ts` (see
-  the v0.1-tui git tag). Edits per docs/plans/completed/mcp-pivot/PRODUCT_VISION.md:
-    - retired tools dropped (finish, message_user, ask_user, plan_tasks,
-      analyze_output, compress_context)
-    - reframed from "you are the captain" to portable instructions
-    - dispatch-vs-inline heuristic added up top
-    - escape-hatch paragraph added for missing-tools failure mode
-    - explicit merge-boundary safety rule
 -->
 
 ## Crew — orchestration playbook
@@ -61,6 +53,38 @@ matches one of these signals:
 
 If you're unsure, default to inline. Dispatching for trivial work
 defeats the point of the user staying in their primary CLI.
+
+### Don't dispatch to your own host product
+
+Crew exists to bridge **between** agent products (Claude ↔ Codex ↔
+Gemini ↔ local). It is not the right tool for spawning another
+instance of the host you're already running in. If you're Claude
+Code and the user says "have Claude review this", **use your
+native subagent mechanism (the `Agent` / `Task` tool) directly** —
+do not `run_agent` to `claude-code`. Same applies symmetrically:
+Codex → Codex, Gemini → Gemini should go through the host's
+own subagent path, not crew.
+
+Why this matters:
+
+- **Quota.** Both calls bill the same subscription / API key. A
+  crew dispatch to your own product double-charges the user for
+  the same model family.
+- **Latency.** Native subagents skip the worktree allocation
+  (~30–60s) and the merge/discard ceremony.
+- **Context.** Native subagents return their result inline with
+  no merge step; crew runs require an explicit merge or discard.
+
+The only legitimate reason to crew-dispatch to your own host is
+when the user specifically wants **worktree isolation** for a
+same-product run (e.g., "fork a Claude run in a worktree so I
+can keep working on main"). If the user names that explicitly,
+proceed. Otherwise: native subagent. If you're not sure which
+the user wants, ask one short question.
+
+When `list_agents` shows your own host product, treat it as
+"available for explicit isolation requests only" rather than a
+default routing target.
 
 ## Decision order — the spine
 
@@ -130,8 +154,8 @@ subject from them: short imperative (≤72 chars), describing what
 the run accomplished, not that it was a crew run.
 
 > Good: `commit_title: "fix(parser): handle empty-line input
-> correctly"` `commit_body: "Adds the empty-line guard to
-> parseLine() with a regression test."`
+correctly"` `commit_body: "Adds the empty-line guard to
+parseLine() with a regression test."`
 >
 > Bad: `commit_title: "Codex did the parser fix"`
 >
@@ -160,10 +184,12 @@ them hold.
 4. **You don't know which agent fits.** Ask the user rather than
    guessing. Picking the wrong agent costs the user a 30–60s
    round-trip and a discard.
-5. **The agent you'd dispatch to is the same product as the host
-   CLI.** E.g. dispatching to `claude-code` from inside Claude
-   Code — both consume the same subscription quota. Warn the user
-   and offer a different agent before dispatching.
+5. **The user named the same product as the host CLI without an
+   explicit isolation reason.** Don't dispatch — see _"Don't
+   dispatch to your own host product"_ above. Use the host's
+   native subagent mechanism instead, or ask whether they want
+   worktree isolation (the only reason to route same-product
+   work through crew).
 
 The rubric only fires **after** you've decided to dispatch. If a
 dispatch signal already applies and the four items above are clean —
@@ -219,7 +245,7 @@ budget.
    result. The `run_agent` envelope returns `tail_url` — a custom
    `crew-tail://` URL that opens Terminal.app running `tail -F` via
    the optional macOS handler (installed with `crew-mcp
-   install-tail-handler`). Paste it verbatim into a markdown link.
+install-tail-handler`). Paste it verbatim into a markdown link.
    Always use `tail_url`, not `tail_command_url`: the `file://`
    variant gets intercepted by Claude Code and opens in the editor
    instead of a side terminal. (`tail_command_url` is preserved on
@@ -234,8 +260,9 @@ budget.
    markdown (worktree path, follow-up `get_run_status` hints, etc.)
    — those are already in the tool result for the user who wants
    them.
+
 2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
-   since_event_line: <last cursor>, wait_for_terminal_only: true })`.
+since_event_line: <last cursor>, wait_for_terminal_only: true })`.
    Start the cursor at 0; on terminal responses, update it from
    `next_event_line`.
 3. **The timeout response while still running is deliberately tiny:**
@@ -250,7 +277,7 @@ budget.
    user knows you're alive — but this is an upper bound, not a
    per-poll obligation.)
 5. Exit the loop when `status` is `success | partial | error |
-   cancelled` (or — for read-only runs — also `discarded`).
+cancelled` (or — for read-only runs — also `discarded`).
 6. Running polls had no tail at all; **now** the terminal
    poll-return includes `events_tail` — the recent tail of the full
    run log. Use it for context when you write the summary, but **do
@@ -399,8 +426,8 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
      native knob; claude-code / gemini-cli / openai-compatible
      ignore the constraint, but the call is harmless).
   2. Restate it in the prompt in one short line, e.g. `Apply
-     <level> reasoning effort: <one phrase about what that means
-     for this task>.`
+<level> reasoning effort: <one phrase about what that means
+for this task>.`
 
   Without the prompt line, dispatching `effort: "high"` to
   claude-code does nothing — for those adapters the prompt is the
