@@ -1,3 +1,5 @@
+> **Current as of 2026-05-09.**
+
 # Repository Guidelines
 
 ## General Practices
@@ -7,8 +9,8 @@ There are no production users, so we do not have to worry about being backward c
 - Keep `docs/status/captain-flow-review-2026-04-29.md` current as the durable
   baseline for captain-flow state, responsiveness work, smoke evidence, and
   next priorities.
-- Before starting substantial work on the captain runtime, adapters, CLI/UI
-  responsiveness, progress reporting, MCP/tool-loop behavior, or related
+- Before starting substantial work on the MCP server runtime, adapters,
+  dispatch lifecycle, progress reporting, MCP/tool-loop behavior, or related
   architecture docs, read that status file and reconcile the work against its
   current findings.
 - Update the status file in the same change when work materially changes any of
@@ -20,103 +22,74 @@ There are no production users, so we do not have to worry about being backward c
 
 ## Project Structure & Module Organization
 - `src/` contains production TypeScript code.
-- `src/cli/` holds terminal entrypoints and Ink UI (`commands/` and `ui/`).
-- `src/captain/` contains the captain runtime:
-  - `tools/` — 8-tool surface (catalog.ts + one file per tool); the single
-    source of truth fed to each captain CLI via `mcp-registration.ts`.
-  - `prompts/captain-system.ts` — the captain system prompt renderer.
-  - `session.ts`, `session-loop.ts`, `session-store.ts`,
-    `tool-dispatcher.ts` — durable conversation + event loop + dispatcher.
-  - `events.ts` — shared `PipelineEvents` + minimal `AgentRegistry` types
-    (relocated from the deleted `pipeline.ts` during M4-4).
-  - `mcp-registration.ts` — Claude / Gemini / Codex argv converters.
-  - `catalog-lock.ts` — `.crew/config.lock.json` cache for Gemini settings regen.
-  - `judgment-runner.ts` — the production runner (session-loop over the
-    8-tool surface; the legacy 11-verb controller was removed in M4-5).
-  - `steps/` — `decompose` / `ingest` / `summarize` helpers, wrapped by
-    the optional `plan_tasks` / `analyze_output` / `compress_context`
-    tools. `run-structured-step.ts` is their shared executor; the
-    earlier `dispatch.ts` / `judge.ts` / `report.ts` step files were
-    removed in M4-6.
+- `src/index.ts` defines the `crew-mcp` binary and the live command surface:
+  `serve`, `status`, `install`, `install-tail-handler`, `verify`,
+  `agents edit`, and `uninstall`. The old v0.1 `crew run`, `init`,
+  `config`, `profile`, `state reset`, and `resume` commands are retired.
+- `src/cli/` holds command entrypoints in `commands/` plus
+  `step-status.ts`. There is no Ink UI or `src/cli/ui/` tree.
+- `src/orchestrator/` owns the MCP tool schemas/barrel, dispatcher-facing
+  tool implementations, run state, event filtering, catalog lock helpers, and
+  legacy MCP registration converters. Production dispatch for `run_agent`
+  uses `adapter.execute()`; `executeWithTools` is a legacy/fallback path.
+- `src/orchestrator/tools/` is the seven-tool surface:
+  `list_agents`, `run_agent`, `continue_run`, `merge_run`, `discard_run`,
+  `get_run_status`, and `cancel_run`. The retired v0.1 tools
+  `ask_user`, `message_user`, `finish`, `plan_tasks`, `analyze_output`, and
+  `compress_context` are documented in `src/orchestrator/tools/index.ts:6`
+  through `src/orchestrator/tools/index.ts:8`.
+- `src/install/` handles install-time host wiring: host adapters under
+  `hosts/`, skill rendering, install manifests, binary resolution, interactive
+  target selection, and tool-catalog parity for `crew-mcp install` /
+  `crew-mcp verify`.
 - `src/adapters/` contains agent integrations (Claude Code, Codex, Gemini,
-  generic, openai-compatible).
-- `src/workflow/` handles config types/loading/defaults (PresetConfig +
-  captain.preset live here).
-- `src/state/` stores workflow persistence logic (schema v5 — v4-to-v5
-  migration in `migrations/`); `src/git/` manages worktrees (per-run layout
-  under `.crew/runs/<runId>/worktree/`).
-- `test/` mirrors runtime modules (`test/workflow`, `test/cli`, `test/captain`, etc.).
-- `test/fixtures/captain/fake-adapter.ts` — reusable fake captain for
-  end-to-end tests.
-- `defaults/workflow.yaml` is the default config template used at init.
+  generic, openai-compatible) plus legacy tool-loop abstractions.
+- `src/agent-prefs/` stores per-machine agent preferences, and
+  `src/provider-session.ts` contains provider session compatibility helpers.
+- `src/workflow/` handles workflow config types, loading, defaults, codecs,
+  and config path registry logic.
+- `src/git/` manages worktrees for per-run isolation under
+  `.crew/runs/<runId>/worktree/`.
+- `src/utils/` contains shared utilities such as logging and filesystem
+  helpers.
+- `test/` mirrors runtime modules (`test/orchestrator`, `test/install`,
+  `test/cli`, `test/adapters`, `test/workflow`, etc.). The lingering
+  `test/fixtures/captain/fake-adapter.ts` fixture remains for legacy
+  tool-loop tests, not because `src/captain/` still exists.
+- `defaults/workflow.yaml` is the default workflow config template.
 
-### Adding a new captain tool
-1. Add a new file under `src/captain/tools/` with the zod input schema +
-   handler signature (pattern: `src/captain/tools/run-agent.ts`).
-2. Register the action-catalog entry in `src/captain/tools/catalog.ts`
-   (update `M3_TOOL_NAMES` + `DESCRIPTIONS` + `INPUT_SCHEMAS`).
-3. Wire the scheduler branch in
-   `src/captain/judgment-runner.ts:buildM3SessionLoopPair` if the tool
-   needs dispatcher lifecycle (long-running) or session mutation.
-4. Add a tool-specific test under `test/captain/tools/` and a catalog
-   test that asserts it's exposed via `toActionCatalog()`.
+### Adding a new MCP tool
+Follow `docs/architecture/tools.md` for the full contract. The short version:
 
-### Adding a new captain CLI
-1. Add an adapter under `src/adapters/<name>.ts` implementing
-   `AgentAdapter.executeWithTools` + honoring
-   `ToolLoopContext.mcpRegistration`.
-2. Add the CLI-specific converter in `src/captain/mcp-registration.ts`
-   (alongside `toClaudeMcpConfigJson` / `toGeminiMcpSettings` /
-   `toCodexConfigOverrides`).
-3. Extend `resolveCaptainConverter` so session-loop picks the right
-   payload shape for the adapter's `name` field.
-4. Add adapter MCP argv tests under `test/adapters/<name>.mcp.test.ts`.
+1. Add or update the tool implementation under `src/orchestrator/tools/`.
+2. Register the live MCP handler in `src/cli/commands/serve.ts`.
+3. Add the install-time parity entry to `CATALOG_TOOLS` in
+   `src/install/tool-catalog.ts`.
+4. Extend `test/install/tool-catalog.test.ts` so the live server and static
+   install catalog stay aligned.
 
-### Adding a new preset
-A preset is a YAML block under `presets:` in `workflow.yaml`:
+### Adding a new host adapter
+Follow `docs/architecture/captain-portability.md` for install-time host
+wiring. The short version:
 
-```yaml
-presets:
-  my-preset:
-    description: >-
-      One-line summary of what this preset changes.
-    hint: >-
-      Free-form prose nudge — rendered verbatim into the captain's system
-      prompt. Use complete sentences; describe WHEN to apply the nudge.
-    suggested_agent_roles:
-      - reviewer
-      - security
-```
-
-Four fields, all optional but at least one of `hint` /
-`suggested_agent_roles` carries weight. The `hint` is prompt-only soft
-policy — no tool surface changes, no `providerSessionRef` invalidation.
-
-Do NOT add `steps`, `conditions`, `max_passes`, or `max_iterations`
-fields. Those were explicitly rejected in vision §7.5 to prevent the
-preset format from ballooning into a workflow DSL. See
-`docs/architecture/presets.md`.
-
-### Slash-command prefixes (reserved)
-The `/` prefix space is project-owned. Reserved prefixes:
-
-- `/config` — persistent workflow.yaml edits
-- `/cancel` — cancel in-flight tool calls or the whole run
-- `/preset` — session-scoped preset override
-
-When adding a new slash command, ensure the prefix doesn't collide with
-these. Routing in `src/cli/ui/App.tsx` goes `/config` → `/preset` →
-`/cancel` in explicit order; placing a new command outside those
-branches requires updating that order deliberately.
+1. Add `src/install/hosts/<name>.ts` implementing `HostAdapter`.
+2. Register the adapter in `src/install/hosts/index.ts` and include it in the
+   relevant target lists.
+3. Add or update tests covering config path, skill path, MCP block merge, and
+   catalog/skill parity behavior for that host.
 
 ## Build, Test, and Development Commands
-- `npm run build` — bundle with `tsup` into `dist/`.
-- `npm run dev` — watch mode build during active development.
-- `npm test` — run Vitest in watch mode.
-- `npm run test:run` — one-shot test run (CI-style).
-- `npm run lint` — TypeScript strict check (`tsc --noEmit`).
-- `crew run` — start interactive mode.
-- `crew run "<prompt>"` — non-interactive workflow execution.
+- `npm run build` - bundle with `tsup` into `dist/`.
+- `npm run dev` - watch mode build during active development.
+- `npm test` - run Vitest.
+- `npm run test:run` - one-shot Vitest run (CI-style).
+- `npm run lint` - TypeScript strict check (`tsc --noEmit`).
+- `npm run refresh` - build, `npm link`, and reinstall Crew into all supported
+  hosts with `crew-mcp install -t all`.
+- `crew-mcp serve` - run the stdio MCP server used by host CLIs.
+- `crew-mcp install -t <host|all>` - install the MCP server and skill into a
+  supported host CLI.
+- `crew-mcp verify` - check installed skill and MCP tool catalog parity.
 
 ## Coding Style & Naming Conventions
 - Language: TypeScript (ESM), strict mode enabled in `tsconfig.json`.
@@ -124,14 +97,17 @@ branches requires updating that order deliberately.
 - Keep imports explicit with `.js` extension in TS source (existing project pattern).
 - Naming:
   - `camelCase` for variables/functions.
-  - `PascalCase` for React/Ink components.
+  - `PascalCase` for types, interfaces, and classes.
   - kebab-case filenames for most modules (for example `step-status.ts`).
-- Keep functions small and composable; centralize shared logic in `src/utils/` or domain modules.
+- Keep functions small and composable; centralize shared logic in `src/utils/`
+  or domain modules.
 
 ## Testing Guidelines
-- Framework: Vitest (`vitest` + `ink-testing-library` for UI components).
-- Test files use `*.test.ts` / `*.test.tsx` and should mirror source paths.
-- Add tests for new behavior and regressions, especially around session-loop routing, tool-schema stability, config loading, and CLI/UI command handling.
+- Framework: Vitest.
+- Test files use `*.test.ts` and should mirror source paths.
+- Add tests for new behavior and regressions, especially around MCP tool
+  schema stability, install-time catalog parity, host config rendering, config
+  loading, adapter dispatch, and CLI command handling.
 - Run `npm run test:run && npm run lint` before opening a PR.
 
 ## Commit & Pull Request Guidelines
@@ -141,7 +117,7 @@ branches requires updating that order deliberately.
   - Problem summary and approach.
   - Key files changed.
   - Test evidence (`npm run test:run`, `npm run lint`).
-  - Terminal screenshots or output snippets for CLI/UI behavior changes.
+  - Terminal screenshots or output snippets for CLI behavior changes.
 
 ## Configuration & Safety Notes
 - Config/state lives under `.crew/` (project-local) and `~/.crew/` (global).
@@ -149,6 +125,15 @@ branches requires updating that order deliberately.
 - This project uses CLI-based auth for providers; avoid introducing API-key-only workflows unless discussed first.
 
 ## Architecture References
-- Runner lifecycle/core split: `docs/architecture/runners.md`
-- Adapter tool-loop abstractions: `docs/architecture/adapters.md`
-- Config path registry contract: `docs/architecture/config-registry.md`
+- Runtime overview and current command/tool anchors:
+  `docs/architecture/README.md`
+- MCP tool surface and add-a-tool workflow:
+  `docs/architecture/tools.md`
+- Adapter dispatch and legacy tool-loop abstractions:
+  `docs/architecture/adapters.md`
+- Install-time host wiring and legacy converter helpers:
+  `docs/architecture/captain-portability.md`
+- Workflow config path registry contract:
+  `docs/architecture/config-registry.md`
+- Historical v0.1 runner/session context:
+  `docs/plans/v0.1-archive/`
