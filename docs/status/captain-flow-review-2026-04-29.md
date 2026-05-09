@@ -5,6 +5,18 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-09 Architecture Docs Drift Refresh
+
+The live architecture docs under `docs/architecture/` were rewritten against the
+v0.2 MCP-server runtime and now use dated source-anchor headers. The v0.1
+runner/session/preset docs were moved to `docs/plans/v0.1-archive/` as
+historical artifacts.
+
+Supersedes one stale detail in the 2026-05-06 note below: the live
+`get_run_status.max_events_tail` default is now 10 lines, capped at 500
+(`src/orchestrator/tools/get-run-status.ts:34`, `:42`), not the earlier
+50-line default.
+
 ## Update - 2026-05-08 CrewTail URL Scheme Handler
 
 Dispatch envelopes now include `tail_url` alongside the existing

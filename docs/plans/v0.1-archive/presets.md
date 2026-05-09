@@ -1,3 +1,5 @@
+> **Historical artifact.** Archived 2026-05-09. This document describes v0.1 runtime captain presets; current install-time skill rendering and config-path behavior live in `docs/architecture/config-registry.md` and `docs/architecture/README.md`.
+
 # Presets
 
 A preset is a named bundle of soft-policy nudges for the captain,

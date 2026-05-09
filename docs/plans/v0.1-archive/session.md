@@ -1,3 +1,5 @@
+> **Historical artifact.** Archived 2026-05-09. This document describes the v0.1 captain session loop that no longer exists; current run-state and async dispatch notes live in `docs/architecture/README.md` under "Current Runtime", "Run State", and "Dispatch Lifecycle".
+
 # Captain session runtime
 
 The M3 captain runtime is event-driven. Three modules anchor it:

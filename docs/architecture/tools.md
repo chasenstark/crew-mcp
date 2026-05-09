@@ -1,97 +1,66 @@
-# Captain tool surface
+> **Current as of 2026-05-09.**
 
-M3 replaced the 11-verb controller with an 8-tool surface the captain
-drives via each CLI's native tool-loop. M4 tightened that surface into
-"write your prompt inline; call wrappers only when you genuinely need
-them." The tool names + schemas are declared in one place —
-`src/captain/tools/catalog.ts` — and projected into three shapes:
+## Load-bearing source anchors
 
-1. `CaptainActionServer` (the `mcp__crew__<name>`-prefixed tool list the
-   captain sees).
-2. Per-CLI MCP wiring (Claude inline JSON, Gemini allowed-names, Codex
-   argv overrides — see `docs/architecture/captain-portability.md`).
-3. The prompt-side "agent inventory" block rendered into
-   `buildCaptainSystemPrompt` (`src/captain/prompts/captain-system.ts`).
+- Live server registration: `src/cli/commands/serve.ts:241`, `src/cli/commands/serve.ts:260`, `src/cli/commands/serve.ts:303`, `src/cli/commands/serve.ts:391`, `src/cli/commands/serve.ts:489`, `src/cli/commands/serve.ts:521`, `src/cli/commands/serve.ts:594`.
+- Install-time catalog parity: `src/install/tool-catalog.ts:1`, `src/install/tool-catalog.ts:26`, `test/install/tool-catalog.test.ts:20`, `test/install/tool-catalog.test.ts:29`.
+- Tool schemas: `src/orchestrator/tools/run-agent.ts:48`, `src/orchestrator/tools/continue-run.ts:17`, `src/orchestrator/tools/merge-run.ts:33`, `src/orchestrator/tools/get-run-status.ts:34`, `src/orchestrator/tools/get-run-status.ts:42`, `src/orchestrator/tools/get-run-status.ts:44`, `src/orchestrator/tools/cancel-run.ts:24`.
+- Async dispatch and status envelope: `src/cli/commands/serve.ts:711`, `src/cli/commands/serve.ts:729`, `src/cli/commands/serve.ts:749`, `src/cli/commands/serve.ts:1082`, `src/cli/commands/serve.ts:1088`, `src/cli/commands/serve.ts:1141`.
+- Retired v0.1 surface: `src/orchestrator/tools/index.ts:6`, `src/orchestrator/tools/index.ts:7`, `src/orchestrator/tools/index.ts:8`.
 
-## The 8 tools
+# MCP Tool Surface
 
-M4-3 tags each tool with a **Primary** or **Optional** marker so the
-captain sees the hierarchy both in the MCP tool list (adapters that
-surface descriptions) and in the rendered captain-system prompt. The
-prefixes live in the per-tool `<NAME>_DESCRIPTION` exports — a single
-source of truth.
+## Current Catalog
 
-| Tool | Dispatch kind | Description |
-|------|---------------|-------------|
-| `run_agent` | dispatched | **Primary work primitive.** Delegate a bounded task to a named subagent. Allocates `~/.crew/runs/<runId>/worktree/`; the dispatcher's terminal-event listener cleans up. Write the agent's prompt inline — do NOT route through `plan_tasks` for single-task work. Input: `{agent_id, prompt, working_directory?, model?, effort?, read_only?}`. `effort` (`low|medium|high|xhigh|max`) overrides the per-machine default in `~/.crew/agents.json`. The fresh worktree mirrors the host repo's uncommitted state (untracked-non-gitignored + tracked-modified files copied; tracked-deleted files removed) — the agent sees the same in-progress files the user does. `continue_run` re-syncs each turn so user edits between turns flow through. `read_only: true` skips worktree allocation entirely — the agent runs against `working_directory` (defaulting to the host repo root) without FS isolation; `merge_run` refuses, `discard_run` is metadata-only, post-run dirty-tree probe records `warnings` on the run state if the agent edited despite the contract. **Async-first as of 2026-05-05:** always returns `{ status: "running", run_id }` immediately; the captain drives lifecycle via long-polled `get_run_status`. Streams chunks via `notifications/progress` when client supplies a `progressToken` (parallel UX channel). |
-| `list_agents` | synchronous | Return the current agent inventory: `{name, strengths[], effort?, model?, adapter, available, version?, authenticated?, error?, quota?, aliases?}`. `strengths` are soft routing hints; `effort` is the per-machine default for adapters with a native reasoning-effort knob (codex); `model` is the per-machine default when the user has set one. |
-| `cancel_run` | synchronous | Abort an in-flight run. Looks up the run by `run_id`, signals the underlying subprocess via AbortController; the existing lifecycle listener marks the run terminal with `status: "cancelled"`. Idempotent — returns `{ ok: false, reason }` for terminal/unknown runs. Worktree preserved (call `discard_run` after for cleanup). |
-| `ask_user` | dispatched | Block until the user answers. Use to clarify scope, resolve ambiguity, or align on approach — not only when blocked. Schedule via the ask-user coordinator; user_message events resolve in FIFO order. |
-| `message_user` | synchronous | Append an assistant-visible message without ending the turn. |
-| `plan_tasks` | synchronous | **Optional.** Wrapper over the `decompose` step helper. Useful for genuinely multi-step work; for single-task work dispatch directly through `run_agent`. Free-form `role` strings post-M3 (no hard enum). |
-| `analyze_output` | synchronous | **Optional.** Wrapper over `ingest`. Skip for typical cases — reason about the raw `tool_result` inline. |
-| `compress_context` | synchronous | **Optional.** Wrapper over `summarize`. Reach for this when the operating guardrails render the compression advisory (session > 15 messages since last compression AND > 100 KB of log). |
-| `finish` | synchronous | Emit the final report and terminate the session. Call this when the user's request is addressed and (for planned work) the result is verified; do not wait for an unsolicited review. Implementation is `dispatchFinish(session, loop, input)` — appends summary as an assistant message and calls `SessionLoop.requestExit(summary)` so the loop exits on its next scheduleNextTurn check. |
+The live catalog has seven MCP tools. `crew-mcp serve` registers those tools directly in `src/cli/commands/serve.ts`, and `crew-mcp install` mirrors the same names through `CATALOG_TOOLS` at `src/install/tool-catalog.ts:26`.
 
-## When to use wrappers
+| Tool | Input source | Runtime path | Anchor |
+| --- | --- | --- | --- |
+| `list_agents` | Empty passthrough schema. | Direct server handler. | `src/cli/commands/serve.ts:241`, `src/orchestrator/tools/list-agents.ts:35` |
+| `run_agent` | `{agent_id, prompt, working_directory?, model?, effort?, read_only?}`. | Starts dispatcher work for a fresh run. | `src/cli/commands/serve.ts:260`, `src/orchestrator/tools/run-agent.ts:48`, `src/cli/commands/serve.ts:290` |
+| `continue_run` | `{run_id, prompt, model?, effort?}`. | Starts dispatcher work for an existing run. | `src/cli/commands/serve.ts:303`, `src/orchestrator/tools/continue-run.ts:17`, `src/cli/commands/serve.ts:378` |
+| `merge_run` | `{run_id, target_branch?, force?, commit_title?, commit_body?}`. | Direct server handler. | `src/cli/commands/serve.ts:391`, `src/orchestrator/tools/merge-run.ts:33` |
+| `discard_run` | `{run_id}`. | Direct server handler. | `src/cli/commands/serve.ts:489`, `src/orchestrator/tools/discard-run.ts:13` |
+| `get_run_status` | `{run_id, since_event_line?, wait_for_change_ms?, log_lines?, max_events_tail?}`. | Direct server handler, with snapshot and long-poll modes. | `src/cli/commands/serve.ts:521`, `src/orchestrator/tools/get-run-status.ts:44` |
+| `cancel_run` | `{run_id}`. | Direct server handler that aborts an in-flight dispatcher task. | `src/cli/commands/serve.ts:594`, `src/orchestrator/tools/cancel-run.ts:24` |
 
-M4-1 + M4-3 reframe the three wrappers (`plan_tasks`, `analyze_output`,
-`compress_context`) as opt-in optimizations rather than default
-waypoints. Rules of thumb:
+`src/install/tool-catalog.ts:1` documents that the static install catalog is used by `crew-mcp install` and `crew-mcp verify`. The parity test builds a fresh server at `test/install/tool-catalog.test.ts:20`, calls `listTools()` at `test/install/tool-catalog.test.ts:29`, and compares those names with `CATALOG_TOOLS` at `test/install/tool-catalog.test.ts:31`.
 
-- **`plan_tasks`**: earn it when you genuinely need a structured plan —
-  a multi-subagent flow with dependencies, or a request complex enough
-  that writing one plan up-front saves multiple inline prompts. Skip it
-  on single-task requests.
-- **`analyze_output`**: earn it when you need structured findings
-  (severity-tagged review findings, concerns with machine-readable
-  shape) or when an agent's output is too long to reason about inline.
-  Skip it for typical tool results — the captain reads them directly.
-- **`compress_context`**: earn it when the session-loop advisory fires
-  (the captain-system prompt grows a bullet pointing at the accumulation
-  of history). Before then, the thresholds aren't crossed and the
-  wrapper costs a turn without measurable benefit.
+## Retired v0.1 Tools
 
-## Invariants
+`ask_user`, `message_user`, `finish`, `plan_tasks`, `analyze_output`, and `compress_context` are not live MCP tools in v0.2. The barrel comment records those retired names at `src/orchestrator/tools/index.ts:6` through `src/orchestrator/tools/index.ts:8`; the live registrations in `src/cli/commands/serve.ts` contain only the seven tools listed above.
 
-- Every captain turn sees exactly these 8 tools, prefixed with
-  `mcp__crew__`. `ToolCatalog.toolNames()` is stable across runs.
-- `ToolCatalog.getToolSchemaHash()` depends ONLY on (name, description,
-  input schema) per tool. Preset hint edits and agent-inventory shifts do
-  NOT bump the hash — the hash gates `providerSessionRef` invalidation,
-  so preserving it across those deltas keeps native-resume sticky.
-- `run_agent` mints a fresh `runId = randomUUID()` per call. Successful
-  default-worktree executions with reported or git-detected edits merge via
-  `WorktreeManager.mergeRunWorktree` before the dispatcher emits the
-  terminal event; then the dispatcher's `run:complete` / `run:failed` /
-  `run:cancelled` listeners fire
-  `worktreeManager.cleanupByRunId(runId)` exactly once. No finally blocks
-  inside the tool's `run()` to avoid double-cleanup.
-- `read_only: true` runs skip allocation entirely: no branch is created,
-  `worktreePath` in `RunStateV1` is informational (the agent's CWD,
-  not a worktree we own), the dispatcher's terminal listener still
-  fires but `cleanupByRunId` is bypassed in `discard_run`. The
-  read-only bit is sticky across `continue_run` — the resumed turn
-  reads `state.readOnly` and threads it back into
-  `buildAdapterDispatchTask` so the post-run dirty-tree probe stays
-  aligned with the original contract.
+## Dispatch Tools
 
-## Adding a tool
+`run_agent` and `continue_run` are the only tools that start dispatcher work. `run_agent` calls `runDispatchAndRespond()` at `src/cli/commands/serve.ts:290`; `continue_run` calls it at `src/cli/commands/serve.ts:378`.
 
-1. Create the tool file under `src/captain/tools/`:
-   - Zod input schema — exported as `<name>InputSchema`
-   - Description string — exported as `<NAME>_DESCRIPTION`
-   - Handler (for sync) or `plan*` helper (for dispatched)
-2. Register the tool in `src/captain/tools/catalog.ts`:
-   - Append to `M3_TOOL_NAMES`
-   - Add an import-line for the schema + description and wire into
-     `DESCRIPTIONS` + `INPUT_SCHEMAS`. `catalog.ts` is the router — do not
-     re-declare the schema here (see `test/captain/tools/catalog.test.ts`
-     "catalog schema + description parity" which locks this by identity).
-3. Route it in `src/captain/judgment-runner.ts:handleM3ToolCallFromAdapter`
-   (for sync) or `buildM3SessionLoopPair.scheduler` (for dispatched).
-4. Write a test under `test/captain/tools/<name>.test.ts` and extend
-   `test/captain/tools/catalog.test.ts` to assert it appears in
-   `toActionCatalog()`.
+Both dispatch tools return immediately through the async-first helper. `runDispatchAndRespond()` documents the async-first model at `src/cli/commands/serve.ts:711`, starts the dispatcher at `src/cli/commands/serve.ts:742`, and returns the structured `RunEnvelope` at `src/cli/commands/serve.ts:749`.
 
-Full walkthrough in `AGENTS.md` § "Adding a new captain tool".
+The dispatch envelope includes `agent_id`, `events_log_path`, `tail_command_path`, and `tail_command_url` at `src/cli/commands/serve.ts:751` through `src/cli/commands/serve.ts:755`. It also includes `status: "running"` at `src/cli/commands/serve.ts:757`.
+
+`continue_run` supports per-call `model` and `effort` overrides; the schema declares those fields at `src/orchestrator/tools/continue-run.ts:20` and `src/orchestrator/tools/continue-run.ts:26`. The server resolves those overrides before building the dispatch task at `src/cli/commands/serve.ts:334` through `src/cli/commands/serve.ts:343`.
+
+## Status Tool
+
+`get_run_status` has snapshot behavior when `wait_for_change_ms` is absent or zero, and long-poll behavior when it is positive; the handler branches on `useLongPoll` at `src/cli/commands/serve.ts:534` through `src/cli/commands/serve.ts:539`.
+
+While the run is `running`, the response is intentionally lean: `status`, `events_tail`, and `next_event_line` are the only always-present fields according to `src/cli/commands/serve.ts:1082` through `src/cli/commands/serve.ts:1086`, and running poll returns suppress `events_tail` content at `src/cli/commands/serve.ts:1141` through `src/cli/commands/serve.ts:1147`.
+
+Terminal responses add `filesChanged`, `prompts`, `summary`, conditional `lastError`, `mergeStatus`, `warnings`, `readOnly`, and capped `events_tail`; those terminal-only fields are documented at `src/cli/commands/serve.ts:1088` through `src/cli/commands/serve.ts:1097`.
+
+`max_events_tail` defaults to `10` and caps at `500`; the constants are `DEFAULT_MAX_EVENTS_TAIL` at `src/orchestrator/tools/get-run-status.ts:34` and `MAX_EVENTS_TAIL_CAP` at `src/orchestrator/tools/get-run-status.ts:42`. The input schema exposes `max_events_tail` at `src/orchestrator/tools/get-run-status.ts:76`.
+
+## Merge, Discard, Cancel
+
+`merge_run` is the explicit branch-mutation boundary. Its schema includes `force`, `commit_title`, and `commit_body` at `src/orchestrator/tools/merge-run.ts:36`, `src/orchestrator/tools/merge-run.ts:45`, and `src/orchestrator/tools/merge-run.ts:51`; the server passes those values into `mergeRunWorktree()` at `src/cli/commands/serve.ts:429` through `src/cli/commands/serve.ts:434`.
+
+On successful merge, the server marks the run merged at `src/cli/commands/serve.ts:437` and performs best-effort worktree cleanup at `src/cli/commands/serve.ts:447`. On discard, the server marks state discarded at `src/cli/commands/serve.ts:509`; write-mode runs clean the worktree first at `src/cli/commands/serve.ts:506` through `src/cli/commands/serve.ts:507`.
+
+`cancel_run` finds an in-flight dispatcher task by `run_id` at `src/cli/commands/serve.ts:604` through `src/cli/commands/serve.ts:606`; the underlying schema is only `run_id` at `src/orchestrator/tools/cancel-run.ts:24` through `src/orchestrator/tools/cancel-run.ts:26`.
+
+## Adding A Tool
+
+1. Add or update the tool implementation under `src/orchestrator/tools/`; the current tool barrel exports schemas and descriptions from that directory at `src/orchestrator/tools/index.ts:10` through `src/orchestrator/tools/index.ts:53`.
+2. Register the live MCP tool in `src/cli/commands/serve.ts`; the existing seven registration blocks start at `src/cli/commands/serve.ts:241`, `src/cli/commands/serve.ts:260`, `src/cli/commands/serve.ts:303`, `src/cli/commands/serve.ts:391`, `src/cli/commands/serve.ts:489`, `src/cli/commands/serve.ts:521`, and `src/cli/commands/serve.ts:594`.
+3. Add the install-time parity entry to `CATALOG_TOOLS` at `src/install/tool-catalog.ts:26`; the comment at `src/install/tool-catalog.ts:11` states that new tools must be added to both `serve.ts` and the static catalog.
+4. Extend parity coverage in `test/install/tool-catalog.test.ts`; the current test asserts `listTools()` and `CATALOG_TOOLS` stay aligned at `test/install/tool-catalog.test.ts:29` through `test/install/tool-catalog.test.ts:32`.

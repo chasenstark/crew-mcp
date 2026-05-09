@@ -1,3 +1,5 @@
+> **Historical artifact.** Archived 2026-05-09. This document describes the v0.1 runner stack that no longer exists; current runtime notes live in `docs/architecture/README.md` under "Current Runtime" and "Dispatch Lifecycle".
+
 # Runner Architecture
 
 ## Overview
