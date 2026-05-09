@@ -216,11 +216,18 @@ budget.
 1. Dispatch. Confirm the run_id back to the user **once**, briefly,
    and **include a clickable tail link inline** so the user can open
    a side terminal without expanding the (collapsed-by-default) tool
-   result. The `run_agent` envelope returns `tail_command_url` —
-   paste it verbatim into a markdown link. Format:
+   result. The `run_agent` envelope returns `tail_url` — a custom
+   `crew-tail://` URL that opens Terminal.app running `tail -F` via
+   the optional macOS handler (installed with `crew-mcp
+   install-tail-handler`). Paste it verbatim into a markdown link.
+   Always use `tail_url`, not `tail_command_url`: the `file://`
+   variant gets intercepted by Claude Code and opens in the editor
+   instead of a side terminal. (`tail_command_url` is preserved on
+   the envelope for back-compat structured consumers; it is not the
+   inline-link choice.) Format:
 
    ```
-   Dispatched as `<run_id>` — [tail in side terminal](<tail_command_url>). Watching.
+   Dispatched as `<run_id>` — [tail in side terminal](<tail_url>). Watching.
    ```
 
    That's a single line. Don't relay the rest of the dispatch
@@ -254,11 +261,16 @@ budget.
 Two side channels carry live progress without burning your context:
 
 - **The inline tail link in your dispatch confirmation** — the
-  `[tail in side terminal](<tail_command_url>)` markdown link you
-  emit (step 1) opens a side terminal on macOS via Terminal.app's
-  `.command` handler. This is the user's main progress channel;
-  surfacing it inline is the whole point of including the link in
-  your reply rather than relying on the tool-result panel.
+  `[tail in side terminal](<tail_url>)` markdown link you emit
+  (step 1) opens a side terminal on macOS via the `crew-tail://`
+  handler. This is the user's main progress channel; surfacing it
+  inline is the whole point of including the link in your reply
+  rather than relying on the tool-result panel. If the handler
+  isn't installed, the click does nothing useful — but the same is
+  true of the `file://` fallback (Claude Code intercepts it into
+  the editor), so `tail_url` is still the right choice; the user
+  can manually run the `tail -F` command from the tool-result panel
+  in that case.
 - Some hosts also render MCP `notifications/progress` chunks in
   their UI (a status line, an inline progress indicator). The
   adapter emits these automatically.
@@ -270,8 +282,8 @@ into your reply.
 
 ```
 run_agent(...)              → { status: "running", run_id: R,
-                                tail_command_url: "file:///..." }
-"Dispatched as `R` — [tail in side terminal](file:///...). Watching."
+                                tail_url: "crew-tail:///..." }
+"Dispatched as `R` — [tail in side terminal](crew-tail:///...). Watching."
 get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0})
   → events_tail: [], next_event_line: 4, status: "running"
 (no output)

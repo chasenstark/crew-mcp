@@ -57,6 +57,10 @@ There are no production users, so we do not have to worry about being backward c
   `test/fixtures/captain/fake-adapter.ts` fixture remains for legacy
   tool-loop tests, not because `src/captain/` still exists.
 - `defaults/workflow.yaml` is the default workflow config template.
+- `skills/` holds the captain skill body (`crew-captain.body.md`) that
+  `src/install/skill-renderer.ts` writes into each host. Captains read this
+  verbatim — it shapes how they format dispatch confirmations, polling
+  loops, merge prompts, etc. Keep it in sync with the runtime contract.
 
 ### Adding a new MCP tool
 Follow `docs/architecture/tools.md` for the full contract. The short version:
@@ -77,6 +81,16 @@ wiring. The short version:
    relevant target lists.
 3. Add or update tests covering config path, skill path, MCP block merge, and
    catalog/skill parity behavior for that host.
+
+### Changing the dispatch envelope, tool surface, or polling contract
+Captains in every host read `skills/crew-captain.body.md` verbatim, so any
+change to the shape of what `run_agent` / `continue_run` / `get_run_status`
+return — or to the recommended captain workflow (dispatch-confirmation
+format, polling cadence, merge prompts, etc.) — must update the skill body
+in the same change. Tests assert the structured envelope and the rendered
+markdown, but they do not catch drift between the runtime and the
+captain's prose instructions; reviewers should verify the skill body
+explicitly when the envelope or workflow shifts.
 
 ## Build, Test, and Development Commands
 - `npm run build` - bundle with `tsup` into `dist/`.
