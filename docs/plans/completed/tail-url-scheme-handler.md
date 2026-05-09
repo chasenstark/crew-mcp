@@ -1,9 +1,16 @@
 # Custom `crew-tail://` URL scheme so dispatch links open Terminal
 
-**Status:** Active, drafted 2026-05-08. **Anchor commits:** none yet —
-the pieces this builds on are the existing `tail.command` helper
-(`src/orchestrator/run-state.ts:196`) and the captain-facing dispatch
-markdown line (`src/cli/commands/serve.ts:783`).
+**Status:** Shipped 2026-05-09. **Anchor commits:** `13e8298` (2026-05-08)
+— `feat(tail): clickable crew-tail:// links open Terminal via CrewTail
+handler` shipped the URL scheme, the `CrewTail.app` AppleScript handler,
+the `crew-mcp install-tail-handler` subcommand, and the new `tail_url`
+field on `DispatchEnvelope` with the server-rendered markdown switched
+over. `f2994f4` (2026-05-09) — `feat(skill): captains use tail_url
+(crew-tail://) for inline dispatch link` closed the gap by updating
+`skills/crew-captain.body.md` so captains paste `tail_url` (not the
+file:// `tail_command_url` which Claude Code intercepts) into the
+inline dispatch confirmation; the original plan called out the server
+markdown but missed the skill body.
 
 ## Why this plan exists
 

@@ -1,5 +1,19 @@
 # Architecture docs drift — May 2026 audit
 
+> **Status:** Shipped 2026-05-09. **Anchor commit:** `30f9b6c` —
+> `docs(architecture): refresh against v0.2 MCP-server runtime`.
+> Executed via Codex run `6e496561` against the per-doc fix list
+> below. Result: `runners.md`, `session.md`, `presets.md` archived
+> under `docs/plans/v0.1-archive/`; `README.md`, `tools.md`,
+> `adapters.md`, `captain-portability.md`, `config-registry.md`
+> rewritten with dated `Current as of` banners and load-bearing
+> source-anchor blocks; `docs/status/captain-flow-review-2026-04-29.md`
+> reconciled (`max_events_tail` default is 10, not 50).
+>
+> Originally parked 2026-05-08 — see the parking rationale and
+> trigger conditions preserved below — and unparked 2026-05-09
+> when the user opted to take the dedicated pass.
+
 > **PARKED 2026-05-08.** The drift is real and the audit findings
 > are accurate, but nobody is currently being misled by the stale
 > docs in a way that costs the project — the codebase has moved

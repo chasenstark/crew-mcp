@@ -20,6 +20,24 @@ There are no production users, so we do not have to worry about being backward c
 - If a change intentionally leaves the status file stale, call that out in the
   PR or handoff with the reason and the follow-up needed.
 
+## Plan Lifecycle
+- Plans live under `docs/plans/` in one of three directories: `active/`
+  (in flight), `parked/` (paused with a documented trigger to revisit),
+  and `completed/` (executed and shipped).
+- When a plan is executed, move the file from `active/` (or `parked/`)
+  to `completed/` in the same change that lands the work. Prepend a
+  status header at the top of the file: `**Status:** Shipped <date>.
+  **Anchor commit:** <sha> — <one-line summary>.` If the plan landed
+  across multiple commits, list each anchor commit. The original plan
+  body stays intact below the header so the rationale and decisions
+  remain greppable.
+- Do not delete plans that are completed, parked, or superseded — the
+  trail is part of the project's institutional memory. Move and
+  annotate; never remove.
+- If a plan is partially executed and the rest is deferred, leave it in
+  `active/` (or move to `parked/` with a trigger note) and document
+  what shipped + what remains in a dated update at the top.
+
 ## Project Structure & Module Organization
 - `src/` contains production TypeScript code.
 - `src/index.ts` defines the `crew-mcp` binary and the live command surface:
