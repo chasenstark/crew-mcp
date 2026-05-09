@@ -97,6 +97,8 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('## Escape hatch');
     expect(out).toContain('## Dispatch-vs-inline');
     expect(out).toContain('## Merge boundary');
+    expect(out).toContain('wait_for_terminal_only: true');
+    expect(out).toContain('timed_out: true');
 
     // Tool list rendered
     for (const tool of TOOLS) {

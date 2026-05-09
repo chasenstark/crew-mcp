@@ -547,39 +547,51 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         );
       }
 
-      // Already-have-data path: if the events log already has *signal*
-      // lines past the captain's cursor, return immediately without
-      // waiting. Lines the noise filter would drop (codex receipts:
-      // command-started / exit-0 / item.* lifecycle frames) don't
-      // count — they'd round-trip the captain a payload of
-      // events_tail: [] and a bumped cursor, which is strictly worse
-      // than a long-poll wait. The cursor still advances on the next
-      // poll because buildGetRunStatusResponse reads the raw file via
-      // readEventsSince. See docs/plans/active/noise-symmetric-filter.md.
-      const head = runStateStore.readSignalEventsSince(args.run_id, cursor);
-      if (head.lines.length > 0) {
-        return buildGetRunStatusResponse(
-          state,
-          runStateStore,
-          args.run_id,
-          cursor,
-          args.log_lines,
-          args.max_events_tail,
-        );
+      const terminalOnly = args.wait_for_terminal_only === true;
+
+      if (!terminalOnly) {
+        // Already-have-data path: if the events log already has *signal*
+        // lines past the captain's cursor, return immediately without
+        // waiting. Lines the noise filter would drop (codex receipts:
+        // command-started / exit-0 / item.* lifecycle frames) don't
+        // count — they'd round-trip the captain a payload of
+        // events_tail: [] and a bumped cursor, which is strictly worse
+        // than a long-poll wait. The cursor still advances on the next
+        // poll because buildGetRunStatusResponse reads the raw file via
+        // readEventsSince. Terminal-only waits skip this fast-return
+        // entirely because the caller asked to wake only on terminal.
+        // See docs/plans/active/noise-symmetric-filter.md.
+        const head = runStateStore.readSignalEventsSince(args.run_id, cursor);
+        if (head.lines.length > 0) {
+          return buildGetRunStatusResponse(
+            state,
+            runStateStore,
+            args.run_id,
+            cursor,
+            args.log_lines,
+            args.max_events_tail,
+          );
+        }
       }
 
       // Long-poll: subscribe to dispatcher events for this run; resolve
       // on the first stream/terminal event or after wait_for_change_ms.
+      // In terminal-only mode, omit the stream subscription so chunks do
+      // not wake the captain.
       // The clamp prevents a misbehaving captain from holding the
       // request open longer than the host's MCP tool-call timeout.
       const waitMs = Math.min(args.wait_for_change_ms ?? 0, MAX_LONG_POLL_MS);
-      await waitForRunChange({
+      const timedOut = await waitForRunChange({
         dispatcher,
         runId: args.run_id,
         waitMs,
+        terminalOnly,
       });
 
       const fresh = runStateStore.read(args.run_id) ?? state;
+      if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
+        return jsonContent({ status: 'running', timed_out: true });
+      }
       return buildGetRunStatusResponse(
         fresh,
         runStateStore,
@@ -743,7 +755,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
 
   const summary =
     `Dispatched. Poll get_run_status with run_id="${args.runId}" ` +
-    `passing wait_for_change_ms: 30000 (server blocks until progress or terminal) + since_event_line cursor.`;
+    `passing wait_for_change_ms: 30000, wait_for_terminal_only: true, and since_event_line cursor.`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
   const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
   const env: RunEnvelope = {
@@ -798,7 +810,7 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
   }
   lines.push(
     `- Tail manually: \`tail -F ${env.events_log_path}\``,
-    `- Follow with: \`get_run_status({ run_id: "${env.run_id}", wait_for_change_ms: 30000, since_event_line: <cursor> })\``,
+    `- Follow with: \`get_run_status({ run_id: "${env.run_id}", wait_for_change_ms: 30000, since_event_line: <cursor>, wait_for_terminal_only: true })\``,
   );
   return lines.join('\n');
 }
@@ -1079,11 +1091,13 @@ function progressNotifierFrom(
  * `get_run_status` payload shape — intentionally lean to keep the
  * captain's context window clean across long-poll loops.
  *
- * **Always present:** `status`, `events_tail`, `next_event_line`. While
- * the run is `running`, that's *all* — every other field is either
- * static (already returned in the run_agent / continue_run dispatch
- * envelope: run_id, agent_id, worktree_path, events_log_path,
- * tail_command_path, tail_command_url, tail_url) or terminal-only.
+ * **Always present:** `status`, `events_tail`, `next_event_line`,
+ * except terminal-only wait timeouts, which intentionally return only
+ * `{status:"running", timed_out:true}`. While the run is `running`,
+ * that's *all* — every other field is either static (already returned
+ * in the run_agent / continue_run dispatch envelope: run_id, agent_id,
+ * worktree_path, events_log_path, tail_command_path, tail_command_url,
+ * tail_url) or terminal-only.
  *
  * **Terminal-only fields** appear when `status` ∈ {success, partial,
  * error, cancelled, merged, merge_conflict, discarded}: `filesChanged`,
@@ -1104,6 +1118,7 @@ interface GetRunStatusResponse {
   readonly status: string;
   readonly events_tail: readonly string[];
   readonly next_event_line: number;
+  readonly timed_out?: true;
   // Terminal-only fields. Indexed-signature shape kept additive so the
   // server can grow new terminal fields without revising every caller's
   // type narrowing.
@@ -1247,49 +1262,59 @@ function isTerminalRunStatus(status: string): boolean {
 }
 
 /**
- * Block until the dispatcher fires any of stream/complete/failed/
- * cancelled for `runId`, OR `waitMs` elapses — whichever happens
- * first. Listeners self-dispose on either path. The captain's
- * long-poll resolves and the next `get_run_status` snapshot read
- * picks up the latest state + new events.
+ * Block until the dispatcher fires a watched event for `runId`, OR
+ * `waitMs` elapses — whichever happens first. Returns true when the
+ * wait elapsed rather than an event waking it. Normal long-polls watch
+ * signal stream chunks plus terminal events; terminal-only long-polls
+ * omit the stream subscription entirely so stream chunks never wake
+ * the captain. Listeners self-dispose on either path. The next
+ * `get_run_status` snapshot read picks up the latest state + events.
  */
 async function waitForRunChange(args: {
   dispatcher: ToolDispatcher;
   runId: string;
   waitMs: number;
-}): Promise<void> {
+  terminalOnly: boolean;
+}): Promise<boolean> {
   const subs: Array<{ dispose(): void }> = [];
-  await new Promise<void>((resolve) => {
-    const finish = (): void => {
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (timedOut: boolean): void => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) clearTimeout(timer);
       for (const s of subs) s.dispose();
-      resolve();
+      resolve(timedOut);
     };
     const matches = (info: { runId?: string }): boolean => info.runId === args.runId;
-    subs.push(
+    if (!args.terminalOnly) {
       // Stream wake-ups gate on signal: a chunk that the noise filter
       // would drop (codex receipt lines like "command: started ...",
       // "(exit 0)", or item.* lifecycle frames) does NOT resolve the
       // long-poll. The dispatcher still fires `run:stream` for every
       // chunk and `events.log` still records it; we just don't wake
-      // the captain on noise. Terminal events are unconditional —
-      // see the three handlers below. See
+      // the captain on noise. Terminal-only waits skip this
+      // subscription entirely. See
       // docs/plans/active/noise-symmetric-filter.md.
-      args.dispatcher.onEvent('run:stream', (info) => {
+      subs.push(args.dispatcher.onEvent('run:stream', (info) => {
         if (!matches(info)) return;
         if (filterEventsTailNoise([info.chunk]).length === 0) return;
-        finish();
-      }),
+        finish(false);
+      }));
+    }
+    subs.push(
       args.dispatcher.onEvent('run:complete', (info) => {
-        if (matches(info)) finish();
+        if (matches(info)) finish(false);
       }),
       args.dispatcher.onEvent('run:failed', (info) => {
-        if (matches(info)) finish();
+        if (matches(info)) finish(false);
       }),
       args.dispatcher.onEvent('run:cancelled', (info) => {
-        if (matches(info)) finish();
+        if (matches(info)) finish(false);
       }),
     );
-    setTimeout(finish, args.waitMs);
+    timer = setTimeout(() => finish(true), args.waitMs);
   });
 }
 

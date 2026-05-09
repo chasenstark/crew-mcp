@@ -5,6 +5,26 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-09 Terminal-Only Get Run Status Wait
+
+`get_run_status` now has a `wait_for_terminal_only?: boolean` input flag.
+When set with `wait_for_change_ms`, the server waits only for terminal
+dispatcher events (`run:complete`, `run:failed`, `run:cancelled`) and does
+not subscribe to `run:stream`; stream chunks continue to flow through progress
+notifications and `events.log`/tail side channels without waking the captain.
+
+The long-poll cap remains `MAX_LONG_POLL_MS = 60_000`. On terminal-only
+timeout while the run is still running, the response is deliberately lean:
+`{ status: "running", timed_out: true }` with no `next_event_line` or
+`events_tail`. Captains keep the cursor they already had and re-call the same
+terminal-only wait. Already-terminal runs still return the normal terminal
+payload immediately.
+
+The captain skill body's default polling loop now calls
+`get_run_status({ run_id, wait_for_change_ms: 30000, since_event_line: cursor,
+wait_for_terminal_only: true })`, preserving the tail-link, silent-running,
+and terminal-synthesis guidance.
+
 ## Update - 2026-05-09 Architecture Docs Drift Refresh
 
 The live architecture docs under `docs/architecture/` were rewritten against the
