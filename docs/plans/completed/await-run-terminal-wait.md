@@ -1,8 +1,8 @@
 # Get-run-status terminal-only wait
 
-**Status:** Active implementation 2026-05-09. Do not move to
-`docs/plans/completed/` until the implementing commit exists, so the
-required plan-lifecycle anchor SHA can be recorded.
+**Status:** Shipped 2026-05-09. **Anchor commit:** 218ad98 —
+`feat(get_run_status): add wait_for_terminal_only flag for
+terminal-only long-poll`.
 **Created:** 2026-05-09.
 **Related:** `docs/plans/parked/long-poll-cost-tuning.md`,
 `docs/status/captain-flow-review-2026-04-29.md`.
