@@ -1,3 +1,7 @@
+**Status:** Superseded 2026-05-09. Findings folded into `docs/plans/active/perf-context-audit-merged.md`, which prioritizes by agreement → feasibility → impact across this report and the Codex parallel audit. Kept here for the original prose, file:line references, and rationale.
+
+---
+
 # Perf + context audit — crew-mcp (Claude, 2026-05-09)
 
 A whole-codebase, code-architect-level read of `src/`, the captain skill body, and the
