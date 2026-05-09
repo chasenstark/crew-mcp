@@ -18,7 +18,7 @@
 > - Codex's round-1 finding "per-adapter event parsing should not
 >   be killed globally — keep for non-app hosts" is now the
 >   load-bearing direction. See
->   `docs/plans/active/per-adapter-event-parsing.md`.
+>   `docs/plans/completed/per-adapter-event-parsing.md`.
 >
 > **Revisit if**: a future need surfaces for rich, host-rendered
 > live UI specifically (interactive controls, live charts, dense
@@ -37,7 +37,7 @@
 **Status:** Proposed 2026-05-06; revised twice (v2 after codex run
 `31fe58a5`, v3 after codex run `abe8fa74`). **Parked 2026-05-06**
 after round-3 review (run `325c38af`) revealed the cost model was
-wrong. Superseded by `docs/plans/active/per-adapter-event-parsing.md`.
+wrong. Superseded by `docs/plans/completed/per-adapter-event-parsing.md`.
 **Anchor commits:** `c697efb` (Phase 1 of long-poll-cost-tuning —
 markdown initial response + prefixed/folded progress chunks);
 `cc3bb09` (async-first dispatch).
@@ -165,7 +165,7 @@ each. Changes:
   spec.
 - **Per-adapter event parsing fallback is now concrete.** v2 said
   "spin off as separate future plan if Spike A fails." **v3
-  names the plan**: `docs/plans/active/per-adapter-event-parsing.md`
+  names the plan**: `docs/plans/completed/per-adapter-event-parsing.md`
   (to be created if Spike A fails) covering adapter event
   normalization (codex JSON event lines → structured records;
   claude-code stream-json similarly), captain narration rules,
@@ -468,7 +468,7 @@ If the spike passes:
 
 - **Per-adapter event parsing** is **kept on the table for
   non-app hosts** as a separate future plan
-  (`docs/plans/active/per-adapter-event-parsing.md`, to be
+  (`docs/plans/completed/per-adapter-event-parsing.md`, to be
   created if and only if Spike A fails or Codex CLI users
   surface a need). Scope: codex JSON event lines → structured
   records; claude-code stream-json similarly; gemini
@@ -745,4 +745,4 @@ Reviews and prior plans:
 
 - Codex review of v1 (run `31fe58a5`, 2026-05-06; discarded).
 - Codex review of v2 (run `abe8fa74`, 2026-05-06; discarded).
-- `docs/plans/active/long-poll-cost-tuning.md`
+- `docs/plans/parked/long-poll-cost-tuning.md`

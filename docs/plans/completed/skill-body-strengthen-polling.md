@@ -92,7 +92,7 @@ leak to optimize away.
 If you find yourself reasoning about "prompt-cache windows" or
 "saving tokens by waking up later": **stop**. That trade-off has
 already been considered (see
-`docs/plans/active/long-poll-cost-tuning.md` in the crew-mcp
+`docs/plans/parked/long-poll-cost-tuning.md` in the crew-mcp
 repo) and explicitly rejected as the default. The user is
 watching a render loop; silence reads as hung.
 
@@ -161,7 +161,7 @@ to — not a replacement for — the polling loop. Always poll.
   alternative is generic prose the captain reinterprets, which
   is exactly the failure mode we're patching.
 - **Pointer back into crew-mcp repo from skill.** The drafted
-  text references `docs/plans/active/long-poll-cost-tuning.md`
+  text references `docs/plans/parked/long-poll-cost-tuning.md`
   in the crew-mcp repo. Captains running in arbitrary host repos
   can't follow that path. That's intentional — the pointer is a
   signal to the captain that the trade-off has been adjudicated,

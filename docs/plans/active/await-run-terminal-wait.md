@@ -2,7 +2,7 @@
 
 **Status:** Proposed.
 **Created:** 2026-05-09.
-**Related:** `docs/plans/active/long-poll-cost-tuning.md`,
+**Related:** `docs/plans/parked/long-poll-cost-tuning.md`,
 `docs/status/captain-flow-review-2026-04-29.md`.
 
 ## Problem
@@ -153,7 +153,7 @@ and expose it as a normal tool result.
    - Keep the tail-link guidance and merge/discard confirmation rules.
 
 6. Update docs:
-   - Update `docs/plans/active/long-poll-cost-tuning.md` to mark the
+   - Update `docs/plans/parked/long-poll-cost-tuning.md` to mark the
      terminal-only wait path as the chosen direction.
    - Update `docs/status/captain-flow-review-2026-04-29.md` if the
      implementation materially changes the current captain-flow

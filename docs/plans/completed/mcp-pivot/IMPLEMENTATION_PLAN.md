@@ -1,5 +1,13 @@
 # Crew v2 — Implementation Plan
 
+> **Status:** Shipped. The v0.2 MCP-server pivot is the live
+> architecture; the captain runtime described in v0.1 was removed
+> and replaced with `crew-mcp serve` + the captain skill installed
+> into the user's host CLI. For the current state of the runtime,
+> see `docs/architecture/README.md`. The milestone trail through
+> M1–M3.5 is preserved under `docs/plans/completed/`. M4 (eval +
+> field report) is the only forward-looking piece still open.
+
 > Pivot from v0.1 (Terminal UI + captain LLM) to v2 (MCP server +
 > captain skill installed into the user's existing AI coding CLI).
 > See [PRODUCT_VISION.md](./PRODUCT_VISION.md) for the why; this
@@ -31,8 +39,8 @@ The original `crew` repo is frozen at the `v0.1-tui` git tag.
 | M0 | ✓ shipped | `ab06fe4`, `9002ae7`, `bd63fa2`, `b27249d` | (in-commit messages) |
 | M1 | ✓ shipped | `21e3c76` | `docs/plans/completed/m1-status.md` |
 | M2 | ✓ shipped | `8eaa29e`, `a584910` | `docs/plans/completed/m2-status.md` |
-| M3 | ✓ shipped | `205e8fa`, `220588d` | `docs/plans/active/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md` |
-| M3.5 | ✓ shipped | `1833a4f` (relocate) + `a35ec5f` (skill ask-user rubric) + `2359ec1` (Finding 5: Codex skill path) | `docs/plans/active/m3.5-relocate-runtime-state.md` |
+| M3 | ✓ shipped | `205e8fa`, `220588d` | `docs/plans/completed/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md` |
+| M3.5 | ✓ shipped | `1833a4f` (relocate) + `a35ec5f` (skill ask-user rubric) + `2359ec1` (Finding 5: Codex skill path) | `docs/plans/completed/m3.5-relocate-runtime-state.md` |
 | M4 | proposed (plan drafted) | TBD | `docs/plans/active/m4-eval-and-field-report.md` — A/B eval + 2-week dogfooding + FIELD_REPORT.md + `v0.2.0` tag |
 
 ### Decisions made during implementation that aren't in the original plan below
@@ -493,7 +501,7 @@ merge, discard, status) is host-controllable.
 
 > **Status: ✓ shipped.** Anchor commits `205e8fa` (substance) +
 > `220588d` (UX fixes from local smoke). Status docs:
-> `docs/plans/active/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md`.
+> `docs/plans/completed/m3-status.md` + `docs/status/v0.2-smoke-2026-05-04.md`.
 > Notable deviations: hand-rolled TOML merge instead of adding a
 > parser dep (preserves user comments); install at install-time runs
 > the full skill render but does NOT call `host_cli mcp list` as a

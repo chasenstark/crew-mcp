@@ -3,7 +3,7 @@
 Phase 0 capture date: 2026-05-06.
 
 This document is the gating fixture taxonomy for
-`docs/plans/active/per-adapter-event-parsing.md`. It intentionally documents
+`docs/plans/completed/per-adapter-event-parsing.md`. It intentionally documents
 raw adapter subprocess event shapes only. Adapter implementation changes belong
 to later phases.
 

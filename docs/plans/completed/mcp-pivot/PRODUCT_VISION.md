@@ -1,5 +1,9 @@
 # Crew v2 — Product Vision
 
+> **Status:** Shipped. The v0.2 vision described here is the live
+> architecture. For the current runtime, see
+> `docs/architecture/README.md`.
+
 > An MCP server + portable captain skill that turns any AI coding CLI
 > into the orchestrator of a worktree-isolated multi-agent crew.
 

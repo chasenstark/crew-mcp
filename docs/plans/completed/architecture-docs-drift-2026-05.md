@@ -4,7 +4,7 @@
 > `docs(architecture): refresh against v0.2 MCP-server runtime`.
 > Executed via Codex run `6e496561` against the per-doc fix list
 > below. Result: `runners.md`, `session.md`, `presets.md` archived
-> under `docs/plans/v0.1-archive/`; `README.md`, `tools.md`,
+> under `docs/architecture/v0.1-archive/`; `README.md`, `tools.md`,
 > `adapters.md`, `captain-portability.md`, `config-registry.md`
 > rewritten with dated `Current as of` banners and load-bearing
 > source-anchor blocks; `docs/status/captain-flow-review-2026-04-29.md`
@@ -352,7 +352,7 @@ doc back in sync with the live tree.
 ## Open questions
 
 - Do we keep `runners.md` and `session.md` as historical
-  artifacts under `docs/plans/v0.1-archive/`? The v0.2 retirement
+  artifacts under `docs/architecture/v0.1-archive/`? The v0.2 retirement
   is a significant moment in the project; a "what changed and
   why" archive doc is cheap to keep. Recommend yes — move them
   rather than deleting outright. Add a one-line README at the

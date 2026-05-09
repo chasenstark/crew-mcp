@@ -1,13 +1,25 @@
 # Per-adapter event parsing
 
-**Status:** Proposed 2026-05-06; revised 2026-05-06 (v2) after
-codex round-1 review (run `c0cc53a8`, discarded). Replaces the
+**Status:** Shipped (partial) 2026-05; remainder superseded.
+**Anchor commits:** `3274e35` (Codex semantic events), `0f3c35e` /
+`43d3591` (Claude Code semantic events), `49a5dd6`
+(`events_log_path` + tail cap), `e9cacf8` / `bf9f71c` (response-side
++ symmetric noise filter), `f2994f4` (silent-polling skill body
+update). What remains: optional Gemini live streaming and the
+original "captain renders events per running poll" UX. Both
+superseded — the captain UX moved to silent polling + tail
+side-channel via `tail_url` (`crew-tail://`) per the completed
+`tail-url-scheme-handler.md` plan, and Gemini's JSON-at-exit shape
+is good enough without live streaming.
+
+Originally proposed 2026-05-06; revised 2026-05-06 (v2) after
+codex round-1 review (run `c0cc53a8`, discarded). Replaced the
 parked MCP Apps plan
 (`docs/plans/parked/mcp-apps-dispatch-ux.md`) as the
-universal-host approach to subagent insight.
-**Anchor commits:** `c697efb` (Phase 1 of long-poll-cost-tuning —
-markdown initial response + prefixed/folded progress chunks);
-`cc3bb09` (async-first dispatch).
+universal-host approach to subagent insight. Original anchor
+commits at proposal time: `c697efb` (Phase 1 of
+long-poll-cost-tuning — markdown initial response + prefixed/folded
+progress chunks); `cc3bb09` (async-first dispatch).
 **Status-doc reconciliation:** if implemented, update
 `docs/status/captain-flow-review-2026-04-29.md` (per AGENTS.md
 rule that captain-flow changes reconcile that doc).
@@ -302,7 +314,7 @@ implement against.
   passthrough.
 - Document the per-adapter taxonomy table (event type →
   semantic line) in
-  `docs/plans/active/per-adapter-event-parsing/taxonomies.md`
+  `docs/plans/completed/per-adapter-event-parsing/taxonomies.md`
   or as fixture-adjacent comments.
 - Identify any taxonomy drift between current binary and
   existing fixtures.

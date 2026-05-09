@@ -5,7 +5,7 @@
   `crew-mcp install` to propagate.
 
   Inherited ~80% from v0.1's `src/captain/prompts/captain-system.ts` (see
-  the v0.1-tui git tag). Edits per docs/plans/mcp-pivot/PRODUCT_VISION.md:
+  the v0.1-tui git tag). Edits per docs/plans/completed/mcp-pivot/PRODUCT_VISION.md:
     - retired tools dropped (finish, message_user, ask_user, plan_tasks,
       analyze_output, compress_context)
     - reframed from "you are the captain" to portable instructions
@@ -198,7 +198,7 @@ leak to optimize away.
 If you find yourself reasoning about "prompt-cache windows" or
 "saving tokens by waking up later": **stop**. That trade-off has
 already been considered (see
-`docs/plans/active/long-poll-cost-tuning.md` in the crew-mcp
+`docs/plans/parked/long-poll-cost-tuning.md` in the crew-mcp
 repo) and explicitly rejected as the default. The user is
 watching a render loop; silence reads as hung.
 

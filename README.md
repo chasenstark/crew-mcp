@@ -19,9 +19,9 @@ orchestration verbs and the playbook.
 
 See:
 
-- [docs/plans/mcp-pivot/PRODUCT_VISION.md](./docs/plans/mcp-pivot/PRODUCT_VISION.md) — the why
-- [docs/plans/mcp-pivot/IMPLEMENTATION_PLAN.md](./docs/plans/mcp-pivot/IMPLEMENTATION_PLAN.md) — the how
-- [docs/plans/mcp-pivot/HISTORICAL_CONTEXT.md](./docs/plans/mcp-pivot/HISTORICAL_CONTEXT.md) — what came before
+- [docs/plans/completed/mcp-pivot/PRODUCT_VISION.md](./docs/plans/completed/mcp-pivot/PRODUCT_VISION.md) — the why
+- [docs/plans/completed/mcp-pivot/IMPLEMENTATION_PLAN.md](./docs/plans/completed/mcp-pivot/IMPLEMENTATION_PLAN.md) — the how
+- [docs/plans/completed/mcp-pivot/HISTORICAL_CONTEXT.md](./docs/plans/completed/mcp-pivot/HISTORICAL_CONTEXT.md) — what came before
 
 ## Install (from source)
 

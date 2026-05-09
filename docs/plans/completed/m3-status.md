@@ -1,7 +1,9 @@
 # M3 Status — Skill + Install + Verify
 
-**Status:** shipped. Ready for v0.2.0 once M4 (field report) lands.
-**Tag:** none yet (v0.2.0 ships at end of M4).
+**Status:** Shipped 2026-05. **Anchor commit:** `9ce5519` —
+`feat(install): M3 — skill body + per-host templates +
+install/verify/uninstall`. Ready for v0.2.0 once M4 (field report)
+lands. **Tag:** none yet (v0.2.0 ships at end of M4).
 
 ## What landed
 

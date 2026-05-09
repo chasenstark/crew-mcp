@@ -1,5 +1,10 @@
 # Crew v0.1 — Historical Context
 
+> **Status:** Historical. v0.1 was retired by the v0.2 MCP-server
+> pivot; this doc is preserved as the retrospective that informed
+> that decision. The v0.1 architecture docs themselves live under
+> `docs/architecture/v0.1-archive/`.
+
 > Retrospective on the original Terminal-UI version of crew, what
 > worked, what didn't, and what the v0.1 → v2 inversion taught us.
 > See [PRODUCT_VISION.md](./PRODUCT_VISION.md) for v2; see the

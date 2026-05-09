@@ -3,7 +3,7 @@
 **Status:** proposed.
 **Anchor commit(s):** TBD.
 **Predecessor:** M3.5 (shipped, see
-`docs/plans/active/m3.5-relocate-runtime-state.md`) plus the
+`docs/plans/completed/m3.5-relocate-runtime-state.md`) plus the
 queued ask-user enforcement edit (a35ec5f) and Finding 5 fix
 (2359ec1).
 **Closes the v0.2 milestone train.** Tag `v0.2.0` lands here.

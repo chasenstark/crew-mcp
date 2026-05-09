@@ -17,7 +17,7 @@ program
 // v2 entry points: `crew-mcp serve` (M1, stdio MCP server) and the
 // `crew-mcp install` / `crew-mcp verify` / `crew-mcp uninstall` commands (M3).
 // The v0.1 commands (`run`, `init`, `config`, `profile`, `state reset`,
-// `resume`) are removed — see docs/plans/mcp-pivot/IMPLEMENTATION_PLAN.md.
+// `resume`) are removed — see docs/plans/completed/mcp-pivot/IMPLEMENTATION_PLAN.md.
 
 const applyDebugFlag = (): void => {
   if (program.opts<{ debug?: boolean }>().debug) {

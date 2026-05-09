@@ -168,4 +168,4 @@ explicitly when the envelope or workflow shifts.
 - Workflow config path registry contract:
   `docs/architecture/config-registry.md`
 - Historical v0.1 runner/session context:
-  `docs/plans/v0.1-archive/`
+  `docs/architecture/v0.1-archive/`

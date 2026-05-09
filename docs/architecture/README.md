@@ -33,7 +33,7 @@ The live runtime has three code-side layers:
 
 The production built-in agent registry registers Claude Code, Codex, and Gemini CLI at `src/adapters/registry.ts:192`, `src/adapters/registry.ts:193`, and `src/adapters/registry.ts:194`. Generic and OpenAI-compatible adapters exist in `src/adapters/`, but they are not registered by `createBuiltinRegistry()` at `src/adapters/registry.ts:190`.
 
-The archived v0.1 runner, session, and preset docs live under `docs/plans/v0.1-archive/`; they are historical reference, not current architecture.
+The archived v0.1 runner, session, and preset docs live under `docs/architecture/v0.1-archive/`; they are historical reference, not current architecture.
 
 ## Tool Surface
 

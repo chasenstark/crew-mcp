@@ -9,7 +9,7 @@ logs, and source code each time.
 
 The live architecture docs under `docs/architecture/` were rewritten against the
 v0.2 MCP-server runtime and now use dated source-anchor headers. The v0.1
-runner/session/preset docs were moved to `docs/plans/v0.1-archive/` as
+runner/session/preset docs were moved to `docs/architecture/v0.1-archive/` as
 historical artifacts.
 
 Supersedes one stale detail in the 2026-05-06 note below: the live

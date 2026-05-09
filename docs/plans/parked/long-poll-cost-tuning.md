@@ -1,5 +1,19 @@
 # Long-poll cost + UX tuning
 
+**Status:** Parked 2026-05-09. Phases 1-2 + the side-channel /
+silent-polling UX shipped (anchors below). Remaining items —
+`MAX_LONG_POLL_MS` bump and a `wait_for_terminal_only` `get_run_status`
+mode — are explicitly cost-gated: revisit only if dogfood produces
+real cost pain or host-side timeouts on the current 60s long-poll.
+
+**Trigger to revisit:** measurable token cost from running polls
+holding the captain's context warm, OR host CLIs that close the
+stdio MCP socket faster than 60s, OR a captain that finds itself
+narrating during running polls (which the silent-polling skill body
+was supposed to prevent).
+
+Originally:
+
 **Status:** Phase 1 shipped 2026-05-06 — markdown initial response
 (`run_agent` / `continue_run` tool result) + `[<agent>] `-prefixed,
 line-split progress notifications bounded to 240 chars including the
