@@ -44,7 +44,7 @@ target was explicitly rejected as requiring load-bearing cuts. Cut prose is
 preserved verbatim in `docs/captain-skill-body-cuts-2026-05-10.md` for
 historical reference.
 
-Item #19 (compact MCP content text) shipped in `__COMMIT__`: `jsonContent`
+Item #19 (compact MCP content text) shipped in `c1ecafc`: `jsonContent`
 now emits compact JSON, `list_agents` / `list_runs` share that helper, and
 `merge_run` / `discard_run` / `cancel_run` / `get_run_status` render short
 status markdown in `content[0].text` while keeping `structuredContent`
