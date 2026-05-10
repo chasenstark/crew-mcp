@@ -23,13 +23,13 @@ describe('claude-code stream parser', () => {
       .flatMap((line) => formatClaudeStreamLineForStream(line));
 
     expect(lines).toEqual([
-      expect.stringMatching(/^\[claude-code\] system: init claude-opus-4-7\[1m\] tools=\d+ mcp=5\/9$/),
-      '[claude-code] system: rate-limit allowed five_hour',
-      '[claude-code] thinking: thinking',
-      expect.stringMatching(/^\[claude-code\] tool: Read\(\{"file_path":"\/Users\/chasen\/\.crew\/runs\/.*\/README\.md"\}\)$/),
-      '[claude-code] result: ok',
-      expect.stringContaining('[claude-code] message: - MCP server that turns any AI coding CLI'),
-      '[claude-code] turn: completed',
+      expect.stringMatching(/^system: init claude-opus-4-7\[1m\] tools=\d+ mcp=5\/9$/),
+      'system: rate-limit allowed five_hour',
+      'thinking: thinking',
+      expect.stringMatching(/^tool: Read\(\{"file_path":"\/Users\/chasen\/\.crew\/runs\/.*\/README\.md"\}\)$/),
+      'result: ok',
+      expect.stringContaining('message: - MCP server that turns any AI coding CLI'),
+      'turn: completed',
     ]);
   });
 
@@ -46,9 +46,9 @@ describe('claude-code stream parser', () => {
     }));
 
     expect(lines).toEqual([
-      '[claude-code] thinking: Checking the repo shape.',
-      '[claude-code] tool: Read({"file_path":"README.md"})',
-      '[claude-code] message: Done.',
+      'thinking: Checking the repo shape.',
+      'tool: Read({"file_path":"README.md"})',
+      'message: Done.',
     ]);
   });
 
@@ -65,8 +65,8 @@ describe('claude-code stream parser', () => {
     }));
 
     expect(lines).toEqual([
-      '[claude-code] result: ok',
-      '[claude-code] result: error',
+      'result: ok',
+      'result: error',
     ]);
   });
 
@@ -81,46 +81,46 @@ describe('claude-code stream parser', () => {
         { name: 'drive', status: 'needs-auth' },
       ],
     }))).toEqual([
-      '[claude-code] system: init claude-sonnet-4-7 tools=2 mcp=1/2',
+      'system: init claude-sonnet-4-7 tools=2 mcp=1/2',
     ]);
 
     expect(formatClaudeStreamLineForStream(JSON.stringify({
       type: 'rate_limit_event',
       rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour' },
     }))).toEqual([
-      '[claude-code] system: rate-limit allowed five_hour',
+      'system: rate-limit allowed five_hour',
     ]);
 
     expect(formatClaudeStreamLineForStream(JSON.stringify({
       type: 'result',
       subtype: 'success',
       is_error: false,
-    }))).toEqual(['[claude-code] turn: completed']);
+    }))).toEqual(['turn: completed']);
 
     expect(formatClaudeStreamLineForStream(JSON.stringify({
       type: 'result',
       subtype: 'error',
       is_error: true,
       terminal_reason: 'permission denied',
-    }))).toEqual(['[claude-code] turn: failed permission denied']);
+    }))).toEqual(['turn: failed permission denied']);
   });
 
   it('emits bounded fallbacks for malformed, unknown, and unknown nested events', () => {
     expect(formatClaudeStreamLineForStream('not json')).toEqual([
-      '[claude-code] event: unknown',
+      'event: unknown',
     ]);
     expect(formatClaudeStreamLineForStream(JSON.stringify({ type: 'mystery' }))).toEqual([
-      '[claude-code] event: mystery',
+      'event: mystery',
     ]);
     expect(formatClaudeStreamLineForStream(JSON.stringify({
       type: 'assistant',
       message: { content: [{ type: 'image' }] },
     }))).toEqual([
-      '[claude-code] event: assistant/image',
+      'event: assistant/image',
     ]);
   });
 
-  it('bounds progress lines to the runtime max including the claude-code prefix', () => {
+  it('bounds adapter progress lines to the runtime max without an agent prefix', () => {
     const [line] = formatClaudeStreamLineForStream(JSON.stringify({
       type: 'assistant',
       message: {
@@ -128,7 +128,7 @@ describe('claude-code stream parser', () => {
       },
     }));
 
-    expect(line).toMatch(/^\[claude-code\] message: /);
+    expect(line).toMatch(/^message: /);
     expect(line.length).toBeLessThanOrEqual(240);
   });
 });

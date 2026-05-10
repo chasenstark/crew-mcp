@@ -68,44 +68,44 @@ describe('codex parser (live 0.121.0 item.completed envelope)', () => {
   describe('formatEventForStream', () => {
     it('formats top-level lifecycle and error events as semantic lines', () => {
       expect(formatEventForStream({ type: 'thread.started', thread_id: 't1' })).toBe(
-        '[codex] turn: thread started',
+        'turn: thread started',
       );
-      expect(formatEventForStream({ type: 'turn.started' })).toBe('[codex] turn: started');
-      expect(formatEventForStream({ type: 'turn.completed' })).toBe('[codex] turn: completed');
+      expect(formatEventForStream({ type: 'turn.started' })).toBe('turn: started');
+      expect(formatEventForStream({ type: 'turn.completed' })).toBe('turn: completed');
       expect(formatEventForStream({ type: 'turn.failed', reason: 'timeout' })).toBe(
-        '[codex] turn: failed (timeout)',
+        'turn: failed (timeout)',
       );
       expect(formatEventForStream({ type: 'error', message: 'auth failed' })).toBe(
-        '[codex] error: auth failed',
+        'error: auth failed',
       );
     });
 
     it('treats turn_id as optional for 0.128 lifecycle events', () => {
-      expect(formatEventForStream({ type: 'turn.started' })).toBe('[codex] turn: started');
-      expect(formatEventForStream({ type: 'turn.completed' })).toBe('[codex] turn: completed');
+      expect(formatEventForStream({ type: 'turn.started' })).toBe('turn: started');
+      expect(formatEventForStream({ type: 'turn.completed' })).toBe('turn: completed');
     });
 
     it('formats completed item envelopes as semantic lines', () => {
       expect(formatEventForStream({
         type: 'item.completed',
         item: { type: 'agent_message', text: 'hello' },
-      })).toBe('[codex] message: hello');
+      })).toBe('message: hello');
       expect(formatEventForStream({
         type: 'item.completed',
         item: { type: 'reasoning', text: 'thinking out loud' },
-      })).toBe('[codex] reasoning: thinking out loud');
+      })).toBe('reasoning: thinking out loud');
       expect(formatEventForStream({
         type: 'item.completed',
         item: { type: 'command_execution', command: 'grep -n oldName src/', exit_code: 0 },
-      })).toBe('[codex] command: grep -n oldName src/ (exit 0)');
+      })).toBe('command: grep -n oldName src/ (exit 0)');
       expect(formatEventForStream({
         type: 'item.completed',
         item: { type: 'file_change', path: 'src/foo.ts', action: 'modified' },
-      })).toBe('[codex] file: modified src/foo.ts');
+      })).toBe('file: modified src/foo.ts');
       expect(formatEventForStream({
         type: 'item.completed',
         item: { type: 'file_change', path: 'src/baz.ts', action: 'none' },
-      })).toBe('[codex] file: no change src/baz.ts');
+      })).toBe('file: no change src/baz.ts');
     });
 
     it('emits separate command start and command completion lines', () => {
@@ -119,7 +119,7 @@ describe('codex parser (live 0.121.0 item.completed envelope)', () => {
           exit_code: null,
           status: 'in_progress',
         },
-      })).toBe(`[codex] command: started ${command}`);
+      })).toBe(`command: started ${command}`);
       expect(formatEventForStream({
         type: 'item.completed',
         item: {
@@ -129,18 +129,18 @@ describe('codex parser (live 0.121.0 item.completed envelope)', () => {
           exit_code: 0,
           status: 'completed',
         },
-      })).toBe(`[codex] command: ${command} (exit 0)`);
+      })).toBe(`command: ${command} (exit 0)`);
     });
 
     it('uses bounded fallback lines for unknown events', () => {
       expect(formatEventForStream({ type: 'session.paused' })).toBe(
-        '[codex] event: session.paused',
+        'event: session.paused',
       );
       expect(formatEventForStream({
         type: 'item.completed',
         item: { type: 'unknown_item' },
-      })).toBe('[codex] event: item.completed/unknown_item');
-      expect(formatEventForStream({} as CodexEvent)).toBe('[codex] event: unknown');
+      })).toBe('event: item.completed/unknown_item');
+      expect(formatEventForStream({} as CodexEvent)).toBe('event: unknown');
     });
 
     it('isolates unexpected event objects that throw during formatting', () => {
@@ -149,15 +149,15 @@ describe('codex parser (live 0.121.0 item.completed envelope)', () => {
           throw new Error('bad event');
         },
       }) as CodexEvent;
-      expect(formatEventForStream(event)).toBe('[codex] event: unknown');
+      expect(formatEventForStream(event)).toBe('event: unknown');
     });
 
-    it('truncates extra-long summaries with the [codex] prefix included in the cap', () => {
+    it('truncates extra-long summaries within the adapter line cap', () => {
       const line = formatEventForStream({
         type: 'item.completed',
         item: { type: 'agent_message', text: 'x'.repeat(500) },
       });
-      expect(line.startsWith('[codex] message: ')).toBe(true);
+      expect(line.startsWith('message: ')).toBe(true);
       expect(line.length).toBeLessThanOrEqual(240);
       expect(line).toMatch(/\.\.\.$/);
     });
@@ -165,13 +165,13 @@ describe('codex parser (live 0.121.0 item.completed envelope)', () => {
     it('formats every event in the live 0.128 fixture without empty stream gaps', () => {
       const { events } = parseJsonl(loadFixture('codex-live-0.128.0.jsonl'));
       expect(events.map(formatEventForStream)).toEqual([
-        '[codex] turn: thread started',
-        '[codex] turn: started',
-        '[codex] message: I’ll read the repository README and pull out the project’s purpose at a high level.',
-        '[codex] command: started /bin/zsh -lc "sed -n \'1,220p\' README.md"',
-        '[codex] command: /bin/zsh -lc "sed -n \'1,220p\' README.md" (exit 0)',
-        '[codex] message: - `crew-mcp` is a pre-release MCP server plus “captain” skill for turning existing AI coding CLIs like Claude Code, Codex, and Gemini into multi-agent orchestrators. - It provides orchestration tools and a playbook while...',
-        '[codex] turn: completed',
+        'turn: thread started',
+        'turn: started',
+        'message: I’ll read the repository README and pull out the project’s purpose at a high level.',
+        'command: started /bin/zsh -lc "sed -n \'1,220p\' README.md"',
+        'command: /bin/zsh -lc "sed -n \'1,220p\' README.md" (exit 0)',
+        'message: - `crew-mcp` is a pre-release MCP server plus “captain” skill for turning existing AI coding CLIs like Claude Code, Codex, and Gemini into multi-agent orchestrators. - It provides orchestration tools and a playbook while keeping...',
+        'turn: completed',
       ]);
       expect(events.map(formatEventForStream).every((line) => line.length > 0)).toBe(true);
     });
@@ -224,8 +224,8 @@ describe('codex parser (live 0.121.0 item.completed envelope)', () => {
       ].join('\n'));
       expect(droppedLines).toBe(1);
       expect(events.map(formatEventForStream)).toEqual([
-        '[codex] turn: started',
-        '[codex] turn: completed',
+        'turn: started',
+        'turn: completed',
       ]);
     });
   });

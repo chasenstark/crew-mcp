@@ -6,8 +6,9 @@
  *
  * Currently codex-only because each adapter shapes its stream
  * differently:
- *   - Codex streams a structured event protocol via `[codex] command:`,
- *     `[codex] event:`, `[codex] message:`, `[codex] turn:` lines.
+ *   - Codex streams a structured event protocol that the server writes as
+ *     `[codex] command:`, `[codex] event:`, `[codex] message:`,
+ *     `[codex] turn:` lines.
  *     Sampling real runs found ~88% of lines were start/exit-0
  *     receipts; the captain reads those and learns nothing.
  *   - Claude-code, Gemini, OpenAI-compatible, and Generic adapters

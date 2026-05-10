@@ -581,7 +581,7 @@ describe('CodexAdapter', () => {
 
       expect(result.status).toBe('success');
       expect(onOutput).toHaveBeenCalledTimes(1);
-      expect(onOutput).toHaveBeenCalledWith('[codex] message: Final streamed chunk');
+      expect(onOutput).toHaveBeenCalledWith('message: Final streamed chunk');
     });
 
     it('passes --model when specified in task constraints', async () => {
