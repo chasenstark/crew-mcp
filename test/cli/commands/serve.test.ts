@@ -174,7 +174,7 @@ describe('crew serve — listTools surface', () => {
     await h.close();
   });
 
-  it('exposes the v2 tool surface (7 tools incl. cancel_run)', async () => {
+  it('exposes the v2 tool surface (8 tools incl. list_runs)', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -183,6 +183,7 @@ describe('crew serve — listTools surface', () => {
       'discard_run',
       'get_run_status',
       'list_agents',
+      'list_runs',
       'merge_run',
       'run_agent',
     ]);
