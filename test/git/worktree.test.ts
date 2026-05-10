@@ -98,6 +98,16 @@ describe('WorktreeManager', () => {
     };
   }
 
+  function createManagerForRoot(root: string, crewHome: string) {
+    tempDirs.push(root, crewHome);
+    return {
+      root,
+      crewHome,
+      manager: new WorktreeManager({ projectRoot: root, crewHome }),
+      rootGit: getGitClient(root),
+    };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     gitClients.clear();
@@ -312,6 +322,50 @@ describe('WorktreeManager', () => {
   });
 
   describe('Run-scoped API (M1.5-14)', () => {
+    it('prunes run worktrees once per project root instead of on every createRunWorktree call', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('owner-2')
+        .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
+
+      const { manager, rootGit } = createManager();
+      const pruneCallsBeforeCreates = rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsBeforeCreates).toHaveLength(1);
+
+      rootGit.raw.mockClear();
+
+      await manager.createRunWorktree('run-1');
+      await manager.createRunWorktree('run-2');
+
+      const pruneCallsDuringCreates = rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsDuringCreates).toHaveLength(0);
+    });
+
+    it('does not repeat the lazy prune for a second manager on the same project root', () => {
+      const root = mkdtempSync(join(tmpdir(), 'crew-worktree-manager-'));
+      const crewHomeA = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+      const crewHomeB = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+
+      const first = createManagerForRoot(root, crewHomeA);
+      const pruneCallsAfterFirst = first.rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsAfterFirst).toHaveLength(1);
+
+      first.rootGit.raw.mockClear();
+      createManagerForRoot(root, crewHomeB);
+
+      const pruneCallsAfterSecond = first.rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsAfterSecond).toHaveLength(0);
+    });
+
     it('two concurrent createRunWorktree with distinct runIds produce distinct paths', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-run-1')

@@ -40,6 +40,7 @@ interface TaskLockRecord {
 export class WorktreeManager {
   private static readonly LOCK_TIMEOUT_MS = 20_000;
   private static readonly LOCK_STALE_MS = 15_000;
+  private static readonly prunedProjectRoots = new Set<string>();
 
   private git: SimpleGit;
   private basePath: string;
@@ -82,6 +83,7 @@ export class WorktreeManager {
     mkdirSync(this.runMetadataPath, { recursive: true });
     this.runLockPath = join(this.runBasePath, '.locks');
     mkdirSync(this.runLockPath, { recursive: true });
+    this.pruneRunWorktreesOnce(projectRoot);
   }
 
   getProjectRoot(): string {
@@ -296,8 +298,6 @@ export class WorktreeManager {
 
   async createRunWorktree(runId: string): Promise<string> {
     return this.withRunLock(runId, async () => {
-      await this.git.raw(['worktree', 'prune']);
-
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
         return existing.worktreePath;
@@ -598,6 +598,16 @@ export class WorktreeManager {
       this.deleteWorktreeRecord(taskId);
       return undefined;
     }
+  }
+
+  private pruneRunWorktreesOnce(projectRoot: string): void {
+    if (WorktreeManager.prunedProjectRoots.has(projectRoot)) return;
+    WorktreeManager.prunedProjectRoots.add(projectRoot);
+    void this.git.raw(['worktree', 'prune']).catch((err) => {
+      logger.warn(
+        `Failed to prune stale git worktrees for ${projectRoot}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   private async cleanupRecordedWorktree(
