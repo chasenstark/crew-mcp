@@ -28,4 +28,4 @@ export const cancelRunInputSchema = z.object({
 export type CancelRunInput = z.infer<typeof cancelRunInputSchema>;
 
 export const CANCEL_RUN_DESCRIPTION =
-  'Abort an in-flight run. The run ends with status="cancelled". Idempotent — terminal/unknown runs return { ok: false, reason }. Worktree is preserved; call discard_run after for cleanup. Returns { run_id, ok, reason? }.';
+  'Abort an in-flight run by run_id when the user wants active work stopped. Successful cancellation marks the run status "cancelled" and preserves the worktree for inspection or later discard. Returns { run_id, ok, reason? }, with ok:false for unknown or already-terminal runs.';

@@ -40,9 +40,16 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     const catalogEntry = CATALOG_TOOLS.find((tool) => tool.name === 'get_run_status');
     expect(catalogEntry?.description).toBe(GET_RUN_STATUS_DESCRIPTION);
     expect(catalogEntry?.description).toContain('Read a run\'s current status by run_id');
-    expect(catalogEntry?.description).toContain('the captain confirms the dispatch, then ends the turn');
-    expect(catalogEntry?.description).toContain('advanced/legacy options for opt-in in-turn waiting');
+    expect(catalogEntry?.description).toContain('wait_for_change_ms / wait_for_terminal_only');
+    expect(catalogEntry?.description).toContain('timed_out');
+    expect(catalogEntry?.description).not.toContain('the captain confirms the dispatch');
     expect(catalogEntry?.description).not.toContain('Always poll after run_agent / continue_run');
     expect(catalogEntry?.description).not.toContain('Always pass wait_for_change_ms: 30000');
+  });
+
+  it('keeps installed tool descriptions concise', () => {
+    for (const tool of CATALOG_TOOLS) {
+      expect(tool.description.length, `${tool.name} description length`).toBeLessThanOrEqual(650);
+    }
   });
 });

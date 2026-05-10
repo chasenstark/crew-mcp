@@ -298,6 +298,11 @@ describe('RunStateStore', () => {
     expect(tail).toEqual(['line two', 'line three']);
   });
 
+  it('appendEvent() requires the run directory created by create()', () => {
+    expect(() => store.appendEvent('r-missing', 'line one')).toThrow(/ENOENT/);
+    expect(existsSync(join(crewHome, 'runs', 'r-missing'))).toBe(false);
+  });
+
   it('tailEvents() returns [] when log does not exist', () => {
     store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     expect(store.tailEvents('r-1')).toEqual([]);
