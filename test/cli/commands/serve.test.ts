@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -83,6 +83,20 @@ interface Harness {
   root: string;
   crewHome: string;
   close: () => Promise<void>;
+}
+
+function createDeferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 async function startHarness(
@@ -237,6 +251,89 @@ describe('crew serve — list_agents tool', () => {
     const structured = res.structuredContent as { agents: Array<{ available: boolean; error?: string }> };
     expect(structured.agents[0].available).toBe(false);
     expect(structured.agents[0].error).toBe('boom');
+  });
+});
+
+describe('crew serve — stale-run sweeper', () => {
+  it('marks current-repo running runs abandoned and leaves other/legacy records untouched', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-root-'));
+    const otherRoot = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-other-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const now = '2026-05-09T00:00:00.000Z';
+
+    const writeState = (
+      runId: string,
+      state: Record<string, unknown>,
+    ): void => {
+      const dir = join(runsDir, runId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          runId,
+          agentId: 'mock-coder',
+          status: 'running',
+          startedAt: now,
+          worktreePath: join(dir, 'worktree'),
+          prompts: [{ turn: 1, prompt: 'go', startedAt: now }],
+          filesChanged: [],
+          ...state,
+        }, null, 2),
+        'utf-8',
+      );
+    };
+
+    writeState('current-running', { repoRoot: root });
+    writeState('other-running', { repoRoot: otherRoot });
+    writeState('legacy-running', {});
+
+    try {
+      const first = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+      });
+      await first.server.close();
+
+      const current = JSON.parse(
+        readFileSync(join(runsDir, 'current-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string; completedAt?: string };
+      const other = JSON.parse(
+        readFileSync(join(runsDir, 'other-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+      const legacy = JSON.parse(
+        readFileSync(join(runsDir, 'legacy-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string; repoRoot?: string };
+
+      expect(current.status).toBe('error');
+      expect(current.lastError).toBe('abandoned (server restart)');
+      expect(current.completedAt).toBeDefined();
+      expect(other.status).toBe('running');
+      expect(other.lastError).toBeUndefined();
+      expect(legacy.status).toBe('running');
+      expect(legacy.repoRoot).toBeUndefined();
+      expect(legacy.lastError).toBeUndefined();
+
+      const completedAt = current.completedAt;
+      const second = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+      });
+      await second.server.close();
+      const currentAfterSecondBoot = JSON.parse(
+        readFileSync(join(runsDir, 'current-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string; completedAt?: string };
+      expect(currentAfterSecondBoot.status).toBe('error');
+      expect(currentAfterSecondBoot.lastError).toBe('abandoned (server restart)');
+      expect(currentAfterSecondBoot.completedAt).toBe(completedAt);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(otherRoot, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
   });
 });
 
@@ -547,6 +644,35 @@ describe('crew serve — continue_run tool', () => {
     }
   });
 
+  it('refuses to continue a currently running run', async () => {
+    const terminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => terminal.promise,
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const initial = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = initial.structuredContent as RunEnvelope;
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'next' },
+      });
+      expect(res.isError).toBe(true);
+      const text = (res.content as Array<{ text: string }>)[0].text;
+      expect(text).toBe('continue_run: run is currently running; call cancel_run first.');
+
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
+      await h.close();
+    }
+  });
+
   it('refuses to continue a discarded run', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
     try {
@@ -555,6 +681,7 @@ describe('crew serve — continue_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'first' },
       });
       const env = initial.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
       await h.client.callTool({
         name: 'discard_run',
         arguments: { run_id: env.run_id },
@@ -594,6 +721,7 @@ describe('crew serve — merge_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'add a file' },
       });
       const runEnv = res.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
       // Pre-merge: file is in worktree only.
       expect(existsSync(join(runEnv.worktree_path, 'NEW.md'))).toBe(true);
       expect(existsSync(join(h.root, 'NEW.md'))).toBe(false);
@@ -647,6 +775,7 @@ describe('crew serve — merge_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'p' },
       });
       const runEnv = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
       await h.client.callTool({ name: 'merge_run', arguments: { run_id: runEnv.run_id } });
       const second = await h.client.callTool({
         name: 'merge_run',
@@ -660,7 +789,36 @@ describe('crew serve — merge_run tool', () => {
     }
   });
 
-  it('reports conflict with conflicting files when host + worktree edit the same file', async () => {
+  it('refuses to merge a currently running run', async () => {
+    const terminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => terminal.promise,
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'p' },
+      });
+      const runEnv = run.structuredContent as RunEnvelope;
+      const merge = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect(merge.isError).toBe(true);
+      const text = (merge.content as Array<{ text: string }>)[0].text;
+      expect(text).toBe('merge_run: run is currently running; call cancel_run first.');
+
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
+      await pollUntilTerminal(h.client, runEnv.run_id);
+    } finally {
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
+      await h.close();
+    }
+  });
+
+  it('reports conflict and keeps merge_conflict recovery paths open', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
       execute: async (task) => {
@@ -680,6 +838,7 @@ describe('crew serve — merge_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'edit shared' },
       });
       const runEnv = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
 
       // Now edit shared.txt on host main with a CONFLICTING change AFTER
       // the worktree branched off, then commit.
@@ -694,10 +853,39 @@ describe('crew serve — merge_run tool', () => {
       const env = mergeRes.structuredContent as { status: string; conflicts?: string[] };
       expect(env.status).toBe('conflict');
       expect(env.conflicts).toContain('shared.txt');
+
+      const continueRes = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: runEnv.run_id, prompt: 'try something else' },
+      });
+      expect(continueRes.isError).toBe(true);
+      const continueText = (continueRes.content as Array<{ text: string }>)[0].text;
+      expect(continueText).toMatch(/merge_conflict/);
+
+      execSync('git merge --abort', { cwd: h.root });
+
+      const retry = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect(retry.isError).toBe(true);
+      const retryEnv = retry.structuredContent as { status: string; conflicts?: string[] };
+      expect(retryEnv.status).toBe('conflict');
+      expect(retryEnv.conflicts).toContain('shared.txt');
+
+      execSync('git merge --abort', { cwd: h.root });
+
+      const discard = await h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect(discard.isError).toBeFalsy();
+      const discardEnv = discard.structuredContent as { ok: boolean };
+      expect(discardEnv.ok).toBe(true);
     } finally {
       // Clean up the in-progress merge on the host so afterEach's rmSync works.
       try {
-        execSync('git merge --abort', { cwd: h.root });
+        execSync('git merge --abort', { cwd: h.root, stdio: 'ignore' });
       } catch {
         /* no in-progress merge */
       }
@@ -722,6 +910,7 @@ describe('crew serve — merge_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'noop' },
       });
       const runEnv = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
         arguments: { run_id: runEnv.run_id },
@@ -751,6 +940,7 @@ describe('crew serve — discard_run tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'do' },
       });
       const runEnv = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
       expect(existsSync(runEnv.worktree_path)).toBe(true);
 
       const discard = await h.client.callTool({
@@ -783,6 +973,35 @@ describe('crew serve — discard_run tool', () => {
       const env = res.structuredContent as { ok: boolean };
       expect(env.ok).toBe(true);
     } finally {
+      await h.close();
+    }
+  });
+
+  it('refuses to discard a currently running run', async () => {
+    const terminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => terminal.promise,
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'do' },
+      });
+      const runEnv = run.structuredContent as RunEnvelope;
+      const discard = await h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect(discard.isError).toBe(true);
+      const text = (discard.content as Array<{ text: string }>)[0].text;
+      expect(text).toBe('discard_run: run is currently running; call cancel_run first.');
+
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
+      await pollUntilTerminal(h.client, runEnv.run_id);
+    } finally {
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
       await h.close();
     }
   });
@@ -832,6 +1051,7 @@ describe('crew serve — read_only runs', () => {
         arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
       });
       const env = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
       const merge = await h.client.callTool({
         name: 'merge_run',
         arguments: { run_id: env.run_id },
@@ -857,6 +1077,7 @@ describe('crew serve — read_only runs', () => {
         arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
       });
       const env = run.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
       const discard = await h.client.callTool({
         name: 'discard_run',
         arguments: { run_id: env.run_id },
@@ -894,6 +1115,7 @@ describe('crew serve — read_only runs', () => {
         arguments: { agent_id: 'reviewer', prompt: 'turn-one', read_only: true },
       });
       const firstEnv = first.structuredContent as RunEnvelope;
+      await pollUntilTerminal(h.client, firstEnv.run_id);
       // continue_run does not accept read_only — but the bit is sticky from state.json.
       await h.client.callTool({
         name: 'continue_run',

@@ -10,6 +10,13 @@ POSIX-only historical hits are explicitly marked superseded by rev
 `merge_conflict` references now match the recovery contract."* See
 "Findings from review" below for the audit trail.
 
+**Update 2026-05-10:** Phase 1B server-side primitives shipped on the
+feature branch: running-guards for `continue_run`, `merge_run`, and
+`discard_run`; repoRoot-scoped stale-run sweeper at `buildCrewMcpServer`
+startup; and `merge-run.ts` conflict-recovery prose. Phase 1A surfaces
+(`list_runs`, catalog/barrel registration, and run-state contract docs)
+remain active/in parallel, and later phases remain unexecuted.
+
 Supersedes the rejection in section 5 of
 `docs/plans/parked/long-poll-cost-tuning.md` after a product-vision
 update: **chatting with the captain should always (or nearly always)

@@ -5,6 +5,21 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-10 Non-Blocking Captain Phase 1B Guards
+
+Phase 1B of `docs/plans/active/non-blocking-captain.md` added server-side
+guards for lifecycle tools while a run is in flight. `continue_run`,
+`merge_run`, and `discard_run` now refuse `status: "running"` and direct the
+captain to call `cancel_run` first. `continue_run` also refuses
+`merge_conflict`; `merge_run` and `discard_run` remain available on
+`merge_conflict` for the documented retry and cleanup recovery paths.
+
+`buildCrewMcpServer` now runs a repoRoot-scoped stale-run sweeper at startup.
+Only `running` records whose `repoRoot` matches the current project root are
+marked `error` with `lastError: "abandoned (server restart)"`; records from
+other repos and legacy records missing `repoRoot` are left untouched. The v1
+same-repo multi-session false-positive limitation remains accepted.
+
 ## Update - 2026-05-09 Terminal-Only Get Run Status Wait
 
 `get_run_status` now has a `wait_for_terminal_only?: boolean` input flag.
