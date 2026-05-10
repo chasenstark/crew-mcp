@@ -139,3 +139,19 @@ After non-blocking-captain shipped in full, both auditors (Codex xhigh + Claude 
 **Bundle change:** #3 dropped (legacy), N1 added, #4 narrowed to envelope-only.
 
 **Re-weights:** #3 M→L; #8 H→M-H; #19 M-H→H; #16 framing strengthened (now backed by public contract).
+
+## Closing the audit (2026-05-10)
+
+**Shipped:** 21 of 33 items across 5 batches. All H-impact wins captured (#1, #2, #4, #6, #9, #11, #19, N1–N3, N7), all of Tier 1, the load-bearing half of Tier 2 (#8, #9, #11), most of Tier 3 (#12, #13, #14), the highest-impact Tier 4 (#18, #19), and every Tier 5 item that was in-scope (N1, N2, N3, N5, N7).
+
+**Not shipped (12 items, all in the diminishing-returns zone):**
+- **Parked-conditional:** #10 (summary cap — needs compaction evidence), #25 (tool-loop transcript — dormant for host-as-captain).
+- **Speculative without trigger:** #15 (dispatcher EventEmitter map — architectural smell only), #16 (state.json schema split — wait until we add another field).
+- **M/M cleanups:** #20 (buffered event-log writes), #21 (double-parse adapter streams), #22 (async uncommitted mirror), #23 (Claude tool-use previews — Codex side done), #24 (schema dup in adapter prompts).
+- **Folded / coupled:** N4 (folded into #9), N6 (couples with #16), N8 (coupled with N1, sweeper-body work).
+
+These remain valid but the cost-to-ship outweighs the per-item savings now that the captain hot path, cold start, prompt storage, skill body, and tool response shape are all addressed. Re-open if a concrete pain point pulls one back in.
+
+**Not for this audit (out of scope):** captain-side per-turn inference cost from the non-blocking workflow (synthetic-turn billing, `list_runs` recovery turns) is real but is an Anthropic-API token concern, not a crew-server perf concern. Track separately if it becomes a budget item.
+
+**Closing this plan as completed.**
