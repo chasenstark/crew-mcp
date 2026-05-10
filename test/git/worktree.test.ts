@@ -427,9 +427,11 @@ describe('WorktreeManager', () => {
 
       expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
       // Fallback message when no commit_title is supplied:
-      // generic subject + Crew-Run trailer.
+      // generic subject + Crew-Run trailer. Merge target is the
+      // worktree's actual HEAD SHA, not the recorded branch ref —
+      // see the bug fix in mergeRunWorktree() for rationale.
       expect(rootGit.merge).toHaveBeenCalledWith([
-        'crew-run/run-1-aaaaaaaa',
+        'worktree-sha',
         '--no-ff',
         '-m',
         'Merge crew run run-1\n\nCrew-Run: run-1',
@@ -458,7 +460,7 @@ describe('WorktreeManager', () => {
 
       expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
       expect(rootGit.merge).toHaveBeenCalledWith([
-        'crew-run/run-1-aaaaaaaa',
+        'worktree-sha',
         '--no-ff',
         '-m',
         [
@@ -490,7 +492,7 @@ describe('WorktreeManager', () => {
       });
 
       expect(rootGit.merge).toHaveBeenCalledWith([
-        'crew-run/run-1-aaaaaaaa',
+        'worktree-sha',
         '--no-ff',
         '-m',
         'docs: update README install steps\n\nCrew-Run: run-1',
@@ -540,6 +542,45 @@ describe('WorktreeManager', () => {
       const result = await manager.mergeRunWorktree('run-1');
       expect(result).toEqual({ status: 'no-changes' });
       expect(rootGit.merge).not.toHaveBeenCalled();
+    });
+
+    it('mergeRunWorktree merges the worktree HEAD SHA, not record.branchName, so agent-switched branches still merge', async () => {
+      // Regression: codex sandbox forced a non-standard branch
+      // (`crew-run/list-runs-phase-1a`) inside the worktree. The recorded
+      // `crew-run/<run_id>-<suffix>` ref stayed at the initial commit, so
+      // merging the recorded branch was a silent no-op while the real work
+      // survived on a different ref. mergeRunWorktree must merge by the
+      // worktree's actual HEAD SHA so the work is captured regardless of
+      // which branch the agent committed on.
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      // Worktree HEAD points at a commit on a DIFFERENT branch than
+      // `record.branchName` (`crew-run/run-1-aaaaaaaa`). The recorded
+      // branch ref is stale at the initial commit; this SHA is where the
+      // agent actually committed.
+      wGit.revparse.mockResolvedValueOnce('actual-work-sha');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')              // resolveMergeTargetBranch
+        .mockResolvedValueOnce('main-head-sha')     // no-changes check: != actual-work-sha
+        .mockResolvedValueOnce('main')              // current-branch check
+        .mockResolvedValueOnce('post-merge-sha');   // commitSha after merge
+
+      const result = await manager.mergeRunWorktree('run-1');
+
+      expect(result).toEqual({ status: 'merged', commitSha: 'post-merge-sha' });
+      // The merge target must be the worktree's actual HEAD SHA — not
+      // `record.branchName` ('crew-run/run-1-aaaaaaaa'), which would
+      // silently no-op when the agent worked on a different branch.
+      expect(rootGit.merge).toHaveBeenCalledWith([
+        'actual-work-sha',
+        '--no-ff',
+        '-m',
+        'Merge crew run run-1\n\nCrew-Run: run-1',
+      ]);
     });
 
     it('mergeRunWorktree refuses dirty host worktree without force', async () => {

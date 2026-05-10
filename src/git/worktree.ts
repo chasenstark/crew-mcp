@@ -498,8 +498,14 @@ export class WorktreeManager {
       title: options.commitTitle,
       body: options.commitBody,
     });
+    // Merge by the worktree's actual HEAD SHA, not record.branchName.
+    // If the agent switched branches inside the worktree (e.g., a sandbox
+    // forced a non-standard branch name), the recorded branch ref is stuck
+    // at the initial commit and merging it would silently no-op while the
+    // real work survives on a different ref. The SHA from line 486 is
+    // canonical regardless of branch state.
     try {
-      await this.git.merge([record.branchName, '--no-ff', '-m', mergeMessage]);
+      await this.git.merge([worktreeHead, '--no-ff', '-m', mergeMessage]);
     } catch (err) {
       // simple-git throws on merge conflicts. Capture the conflicting
       // paths and leave the merge in-progress for the user to resolve
