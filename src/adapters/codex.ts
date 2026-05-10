@@ -11,11 +11,13 @@ import {
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { extractJson } from '../utils/json-parse.js';
+import { HealthCheckCache } from '../utils/health-check-cache.js';
 import type {
   AgentAdapter,
   AgentStrength,
   EffortLevel,
   ExecuteOptions,
+  HealthCheckOptions,
   HealthCheckResult,
   Task,
   TaskResult,
@@ -367,6 +369,7 @@ export class CodexAdapter implements AgentAdapter {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
+  private readonly healthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
     return typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId);
@@ -1307,7 +1310,11 @@ export class CodexAdapter implements AgentAdapter {
     return undefined;
   }
 
-  async healthCheck(): Promise<HealthCheckResult> {
+  async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
+    return this.healthCheckCache.get(options, () => this.probeHealth());
+  }
+
+  private async probeHealth(): Promise<HealthCheckResult> {
     try {
       const result = await execa(AgentId.CODEX, ['--version'], {
         timeout: 10_000,

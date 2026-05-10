@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync as realReadFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -98,8 +98,14 @@ describe('CodexAdapter', () => {
   beforeEach(() => {
     adapter = new CodexAdapter();
     vi.clearAllMocks();
+    delete process.env.CREW_HEALTHCHECK_TTL_MS;
     // Reset default for existsSync
     mockExistsSync.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.CREW_HEALTHCHECK_TTL_MS;
   });
 
   describe('properties', () => {
@@ -799,6 +805,109 @@ describe('CodexAdapter', () => {
 
       expect(result.available).toBe(false);
       expect(result.error).toContain('unknown command');
+    });
+
+    it('caches successful health checks within the TTL', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-10T00:00:00.000Z'));
+      mockExeca.mockResolvedValueOnce({
+        stdout: 'codex-cli 0.121.0',
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const first = await adapter.healthCheck();
+      const second = await adapter.healthCheck();
+
+      expect(first.available).toBe(true);
+      expect(second.version).toBe('0.121.0');
+      expect(mockExeca).toHaveBeenCalledTimes(1);
+    });
+
+    it('expires successful health checks after the TTL', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-10T00:00:00.000Z'));
+      mockExeca
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.121.0',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.122.0',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      await adapter.healthCheck();
+      vi.setSystemTime(new Date('2026-05-10T00:00:30.001Z'));
+      const result = await adapter.healthCheck();
+
+      expect(result.version).toBe('0.122.0');
+      expect(mockExeca).toHaveBeenCalledTimes(2);
+    });
+
+    it('bypasses the cache when refresh is requested', async () => {
+      mockExeca
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.121.0',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.122.0',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      await adapter.healthCheck();
+      const result = await adapter.healthCheck({ refresh: true });
+
+      expect(result.version).toBe('0.122.0');
+      expect(mockExeca).toHaveBeenCalledTimes(2);
+    });
+
+    it('caches failed health checks briefly', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-10T00:00:00.000Z'));
+      mockExeca
+        .mockRejectedValueOnce(new Error('ENOENT'))
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.121.0',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      const first = await adapter.healthCheck();
+      const second = await adapter.healthCheck();
+      vi.setSystemTime(new Date('2026-05-10T00:00:05.001Z'));
+      const third = await adapter.healthCheck();
+
+      expect(first.available).toBe(false);
+      expect(second.available).toBe(false);
+      expect(third.available).toBe(true);
+      expect(mockExeca).toHaveBeenCalledTimes(2);
+    });
+
+    it('disables health-check caching when CREW_HEALTHCHECK_TTL_MS is 0', async () => {
+      process.env.CREW_HEALTHCHECK_TTL_MS = '0';
+      mockExeca
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.121.0',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: 'codex-cli 0.122.0',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      await adapter.healthCheck();
+      const result = await adapter.healthCheck();
+
+      expect(result.version).toBe('0.122.0');
+      expect(mockExeca).toHaveBeenCalledTimes(2);
     });
   });
 });
