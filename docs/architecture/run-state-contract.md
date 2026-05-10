@@ -69,3 +69,25 @@ Additional fields may be added in later schemas, but changes must preserve:
 
 `list_runs` relies on that stable subset when recovering runs after context
 loss.
+
+## Server-Owner PID
+
+`serverPid` (optional) records the PID of the `crew-mcp serve` process that
+owns the run while it is `running`. The stale-run sweeper at server startup
+uses this to distinguish "abandoned by a crashed prior server" from "currently
+being managed by another live server" — which is the normal case, since every
+host MCP connection (Claude Code, Codex, Gemini) spawns its own crew-mcp
+process. Without this check, a sibling server's startup sweep would mark
+in-flight runs as `error: "abandoned (server restart)"` mid-execution.
+
+The sweeper skips records whose `serverPid` resolves to a live OS process
+(`process.kill(pid, 0)` succeeds, or fails with `EPERM` — which means the
+process exists but we lack signal permission). It only marks records as
+abandoned when the PID is set AND `process.kill(pid, 0)` reports `ESRCH`.
+
+Records without `serverPid` (legacy, written before the field existed) are
+also skipped. The sweeper has no way to know whether they're still owned
+by an active server, so it leaves them alone rather than risk killing
+in-flight work. Users can `discard_run` such records manually if they
+turn out to be truly stale. Writers always populate the field going forward;
+the legacy-record exception is a one-time transition cost.

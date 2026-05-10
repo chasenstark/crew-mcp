@@ -1336,6 +1336,19 @@ function markAbandonedRunningRuns(args: {
     if (state.status !== 'running') continue;
     if (state.repoRoot === undefined) continue;
     if (resolveComparableRepoRoot(state.repoRoot) !== currentRepoRoot) continue;
+    // Multi-server safety: every dispatched agent's MCP connection
+    // spawns its own crew-mcp server. Without this gate, each
+    // sub-server's startup sweep would mark its sibling agents'
+    // in-flight runs as abandoned within seconds of dispatch.
+    //
+    // Skip if serverPid is missing (legacy records pre-dating the
+    // field — we don't know if they're still owned, so don't kill
+    // them; user can `discard_run` manually if truly stale) OR if
+    // serverPid resolves to a live process. Only sweep records we
+    // can prove are abandoned (PID set, ESRCH on lookup).
+    if (state.serverPid === undefined || isProcessAlive(state.serverPid)) {
+      continue;
+    }
 
     try {
       args.runStateStore.markTerminal(runId, {
@@ -1349,6 +1362,28 @@ function markAbandonedRunningRuns(args: {
         `stale-run sweeper: failed to mark ${runId} abandoned: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+}
+
+/**
+ * Returns true iff the OS reports the given PID as a live process
+ * we either own or can observe. `process.kill(pid, 0)`:
+ *   - returns void if the process exists and we have permission to signal it,
+ *   - throws ESRCH if the process doesn't exist,
+ *   - throws EPERM if the process exists but we lack signal permission.
+ * Both "alive" cases mean "don't sweep" — only ESRCH (or other unexpected
+ * errors, treated conservatively as alive) lets the run be marked abandoned.
+ */
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    // EPERM (or anything else unexpected) → conservatively treat as alive.
+    return true;
   }
 }
 

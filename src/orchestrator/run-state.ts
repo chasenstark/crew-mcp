@@ -79,6 +79,17 @@ export interface RunStateV1 {
    * before this field existed (treated as `false` when absent).
    */
   readonly readOnly?: boolean;
+  /**
+   * PID of the `crew-mcp serve` process that owns this run while it
+   * is running. Used by the stale-run sweeper to distinguish
+   * "abandoned by a crashed prior server" from "currently being
+   * managed by another live server" (which is normal — every host MCP
+   * connection spawns its own server). Optional for backward
+   * compatibility with state.json files written before this field
+   * existed (sweeper falls back to the old mark-anyway behavior in
+   * that case).
+   */
+  readonly serverPid?: number;
   readonly prompts: readonly PromptRecord[];
   readonly filesChanged: readonly string[];
   readonly lastError?: string;
@@ -156,6 +167,7 @@ export class RunStateStore {
       startedAt: now,
       worktreePath: init.worktreePath,
       repoRoot: this.repoRoot,
+      serverPid: process.pid,
       ...(init.readOnly ? { readOnly: true } : {}),
       prompts: [
         {

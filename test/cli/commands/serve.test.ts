@@ -255,12 +255,15 @@ describe('crew serve — list_agents tool', () => {
 });
 
 describe('crew serve — stale-run sweeper', () => {
-  it('marks current-repo running runs abandoned and leaves other/legacy records untouched', async () => {
+  it('marks current-repo running runs abandoned (dead serverPid) and leaves other/legacy records untouched', async () => {
     const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-root-'));
     const otherRoot = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-other-'));
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-home-'));
     const runsDir = join(crewHome, 'runs');
     const now = '2026-05-09T00:00:00.000Z';
+    // PID virtually certain to be unused (past every modern kernel's
+    // pid_max). Used to simulate a crashed prior server.
+    const DEAD_PID = 2_000_000_000;
 
     const writeState = (
       runId: string,
@@ -285,8 +288,8 @@ describe('crew serve — stale-run sweeper', () => {
       );
     };
 
-    writeState('current-running', { repoRoot: root });
-    writeState('other-running', { repoRoot: otherRoot });
+    writeState('current-running', { repoRoot: root, serverPid: DEAD_PID });
+    writeState('other-running', { repoRoot: otherRoot, serverPid: DEAD_PID });
     writeState('legacy-running', {});
 
     try {
@@ -332,6 +335,74 @@ describe('crew serve — stale-run sweeper', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(otherRoot, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('skips runs whose recorded serverPid is still alive (multi-server safety)', async () => {
+    // Regression: every dispatched agent's MCP connection spawns its own
+    // crew-mcp server, which would otherwise mark its sibling agents'
+    // in-flight runs as abandoned. Records that include a serverPid the
+    // OS reports as alive must be left untouched.
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-pid-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-pid-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const now = '2026-05-09T00:00:00.000Z';
+
+    const writeState = (
+      runId: string,
+      serverPid: number | undefined,
+    ): void => {
+      const dir = join(runsDir, runId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          runId,
+          agentId: 'mock-coder',
+          status: 'running',
+          startedAt: now,
+          worktreePath: join(dir, 'worktree'),
+          repoRoot: root,
+          ...(serverPid !== undefined ? { serverPid } : {}),
+          prompts: [{ turn: 1, prompt: 'go', startedAt: now }],
+          filesChanged: [],
+        }, null, 2),
+        'utf-8',
+      );
+    };
+
+    // Use the test process's own PID as a guaranteed-alive PID. Use a
+    // PID that is virtually certain to be unused (Linux/macOS PIDs are
+    // bounded; 2_000_000_000 is past every modern kernel's pid_max).
+    const ALIVE_PID = process.pid;
+    const DEAD_PID = 2_000_000_000;
+
+    writeState('alive-pid-running', ALIVE_PID);
+    writeState('dead-pid-running', DEAD_PID);
+
+    try {
+      const server = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+      });
+      await server.server.close();
+
+      const alive = JSON.parse(
+        readFileSync(join(runsDir, 'alive-pid-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+      const dead = JSON.parse(
+        readFileSync(join(runsDir, 'dead-pid-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+
+      expect(alive.status).toBe('running');
+      expect(alive.lastError).toBeUndefined();
+      expect(dead.status).toBe('error');
+      expect(dead.lastError).toBe('abandoned (server restart)');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
     }
   });
