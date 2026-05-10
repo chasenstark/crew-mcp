@@ -18,6 +18,16 @@ interface MockGitClient {
 
 const gitClients = new Map<string, MockGitClient>();
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function createGitClient(cwd: string): MockGitClient {
   return {
     raw: vi.fn(async (args: string[]) => {
@@ -493,6 +503,84 @@ describe('WorktreeManager', () => {
         'Merge crew run run-1\n\nCrew-Run: run-1',
       ]);
       expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
+    });
+
+    it('mergeRunWorktree starts independent status and HEAD reads concurrently and preserves the merge result', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+
+      const worktreeStatus = deferred<{
+        modified: string[];
+        created: string[];
+        not_added: string[];
+        deleted: string[];
+        renamed: never[];
+      }>();
+      const hostStatus = deferred<{
+        modified: string[];
+        created: string[];
+        not_added: string[];
+        deleted: string[];
+        renamed: never[];
+      }>();
+      const worktreeHead = deferred<string>();
+      const targetHead = deferred<string>();
+
+      wGit.status.mockImplementationOnce(() => worktreeStatus.promise);
+      rootGit.status.mockImplementationOnce(() => hostStatus.promise);
+      wGit.revparse.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'HEAD') return worktreeHead.promise;
+        if (args[0] === '--abbrev-ref') return 'crew-run/run-1-aaaaaaaa';
+        return 'main';
+      });
+      rootGit.revparse.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'main') return targetHead.promise;
+        if (args[0] === 'HEAD') return 'merged-sha';
+        return 'main';
+      });
+
+      const merge = manager.mergeRunWorktree('run-1');
+
+      await vi.waitFor(() => {
+        expect(wGit.status).toHaveBeenCalledTimes(1);
+        expect(rootGit.status).toHaveBeenCalledTimes(2);
+      });
+      expect(wGit.revparse).not.toHaveBeenCalled();
+
+      worktreeStatus.resolve({
+        modified: [],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      hostStatus.resolve({
+        modified: [],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+
+      await vi.waitFor(() => {
+        expect(wGit.revparse).toHaveBeenCalledWith(['HEAD']);
+        expect(rootGit.revparse).toHaveBeenCalledWith(['main']);
+      });
+
+      worktreeHead.resolve('worktree-sha');
+      targetHead.resolve('target-sha');
+
+      await expect(merge).resolves.toEqual({ status: 'merged', commitSha: 'merged-sha' });
+      expect(rootGit.merge).toHaveBeenCalledWith([
+        'worktree-sha',
+        '--no-ff',
+        '-m',
+        'Merge crew run run-1\n\nCrew-Run: run-1',
+      ]);
     });
 
     it('mergeRunWorktree uses captain-supplied commit_title + commit_body in the merge commit', async () => {

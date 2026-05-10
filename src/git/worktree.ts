@@ -458,7 +458,10 @@ export class WorktreeManager {
     const target = await this.resolveMergeTargetBranch(options.targetBranch);
 
     const wGit = simpleGit(record.worktreePath);
-    const worktreeStatus = await wGit.status();
+    const [worktreeStatus, mainStatus] = await Promise.all([
+      wGit.status(),
+      this.git.status(),
+    ]);
     if (this.statusChangedFiles(worktreeStatus).length > 0) {
       await wGit.add('.');
       // Reuse the commit_title for the pre-merge auto-commit so the
@@ -469,7 +472,6 @@ export class WorktreeManager {
       await wGit.commit(autoCommitMsg);
     }
 
-    const mainStatus = await this.git.status();
     if (
       !options.force
       && this.statusChangedFiles(mainStatus).length > 0
@@ -483,8 +485,12 @@ export class WorktreeManager {
     // If the worktree has the same HEAD as the target, there's nothing to
     // merge. Surface that explicitly so the host CLI doesn't generate an
     // empty merge commit.
-    const worktreeHead = (await wGit.revparse(['HEAD'])).trim();
-    const targetHead = (await this.git.revparse([target])).trim();
+    const [worktreeHeadRaw, targetHeadRaw] = await Promise.all([
+      wGit.revparse(['HEAD']),
+      this.git.revparse([target]),
+    ]);
+    const worktreeHead = worktreeHeadRaw.trim();
+    const targetHead = targetHeadRaw.trim();
     if (worktreeHead === targetHead) {
       return { status: 'no-changes' };
     }
