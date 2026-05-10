@@ -111,6 +111,40 @@ export interface RunStateV1 {
 
 const SCHEMA_VERSION = 1 as const;
 
+/**
+ * Upper bound on per-prompt storage in `state.json`. Verbatim prompts are
+ * persisted forever on disk; capping prevents an unbounded prompt (giant
+ * paste, JSON-stringified structured input, etc.) from bloating state.json
+ * across server restarts. Wire payloads already elide prompt text — this
+ * cap is purely a disk-hygiene measure. Override via
+ * `CREW_PROMPT_STORAGE_CAP_CHARS` (0 disables); default 16K characters.
+ */
+const DEFAULT_PROMPT_STORAGE_CAP_CHARS = 16 * 1024;
+
+function getPromptStorageCap(): number {
+  const raw = process.env.CREW_PROMPT_STORAGE_CAP_CHARS;
+  if (raw === undefined) return DEFAULT_PROMPT_STORAGE_CAP_CHARS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_PROMPT_STORAGE_CAP_CHARS;
+  return Math.floor(parsed);
+}
+
+/**
+ * Truncate a prompt string for storage, appending a marker that records the
+ * original byte length so a reader can tell the prompt was clipped. Returns
+ * the input unchanged when the cap is 0 (disabled) or the prompt fits.
+ */
+export function truncatePromptForStorage(prompt: string): string {
+  const cap = getPromptStorageCap();
+  if (cap === 0 || prompt.length <= cap) return prompt;
+  const originalBytes = Buffer.byteLength(prompt, 'utf-8');
+  const marker = `\n[... truncated for storage; original was ${originalBytes} bytes]`;
+  // Reserve room for the marker; if the cap is so small the marker doesn't
+  // fit, return just the marker (user explicitly asked for tiny storage).
+  const budget = Math.max(0, cap - marker.length);
+  return prompt.slice(0, budget) + marker;
+}
+
 function isEnoent(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
 }
@@ -181,7 +215,7 @@ export class RunStateStore {
       prompts: [
         {
           turn: 1,
-          prompt: init.initialPrompt,
+          prompt: truncatePromptForStorage(init.initialPrompt),
           startedAt: now,
         },
       ],
@@ -301,7 +335,7 @@ export class RunStateStore {
       serverPid: process.pid,
       prompts: [
         ...s.prompts,
-        { turn: s.prompts.length + 1, prompt, startedAt: now },
+        { turn: s.prompts.length + 1, prompt: truncatePromptForStorage(prompt), startedAt: now },
       ],
     }));
   }

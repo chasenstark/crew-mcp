@@ -189,6 +189,48 @@ describe('RunStateStore', () => {
     expect(next.prompts[1].prompt).toBe('second');
   });
 
+  it('create() truncates oversized initial prompts with a marker (Tier 3 #14)', () => {
+    // 20 KB prompt — exceeds the 16 KB default cap.
+    const oversized = 'x'.repeat(20_480);
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: oversized });
+    const state = store.read('r-1');
+    expect(state).toBeDefined();
+    const stored = state!.prompts[0].prompt;
+    // Bounded by the 16 KB cap (small slop for the appended marker).
+    expect(stored.length).toBeLessThanOrEqual(16 * 1024);
+    expect(stored).toMatch(/\[\.\.\. truncated for storage; original was \d+ bytes\]$/);
+    // Prefix preserved.
+    expect(stored.startsWith('xxxxxxxxxx')).toBe(true);
+  });
+
+  it('appendPrompt() truncates oversized continuation prompts with a marker (Tier 3 #14)', () => {
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
+    store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
+    const oversized = 'y'.repeat(20_480);
+    const next = store.appendPrompt('r-1', oversized);
+    const stored = next.prompts[1].prompt;
+    expect(stored.length).toBeLessThanOrEqual(16 * 1024);
+    expect(stored).toMatch(/\[\.\.\. truncated for storage; original was \d+ bytes\]$/);
+    expect(stored.startsWith('yyyyyyyyyy')).toBe(true);
+    // First prompt was small and untouched.
+    expect(next.prompts[0].prompt).toBe('first');
+  });
+
+  it('truncate is configurable via CREW_PROMPT_STORAGE_CAP_CHARS (0 disables)', () => {
+    const original = process.env.CREW_PROMPT_STORAGE_CAP_CHARS;
+    try {
+      process.env.CREW_PROMPT_STORAGE_CAP_CHARS = '0';
+      const big = 'z'.repeat(20_480);
+      store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: big });
+      const state = store.read('r-1');
+      expect(state!.prompts[0].prompt).toBe(big);
+      expect(state!.prompts[0].prompt).not.toMatch(/truncated for storage/);
+    } finally {
+      if (original === undefined) delete process.env.CREW_PROMPT_STORAGE_CAP_CHARS;
+      else process.env.CREW_PROMPT_STORAGE_CAP_CHARS = original;
+    }
+  });
+
   it('appendPrompt() refreshes serverPid to the current process (continue_run sweeper safety)', () => {
     // Regression: continued runs were carrying the original (possibly
     // dead) server's serverPid forward. A sibling crew-mcp serve
