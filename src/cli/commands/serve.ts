@@ -1,10 +1,11 @@
 // `crew-mcp serve` — the v2 stdio MCP server entry point.
 //
 // The host CLI (Claude Code / Codex / Gemini) spawns this command at session
-// start via its MCP config block. We expose v2's full 6-tool surface over
+// start via its MCP config block. We expose v2's full 8-tool surface over
 // stdio:
 //
 //   list_agents      — synchronous probe of the agent registry
+//   list_runs        — recover persisted run records for the current repo
 //   run_agent        — dispatch into a fresh worktree (block-and-stream
 //                      with 60s async-fallback)
 //   continue_run     — re-invoke the agent in an existing worktree
@@ -33,6 +34,11 @@ import {
   listAgents,
   LIST_AGENTS_DESCRIPTION,
 } from '../../orchestrator/tools/list-agents.js';
+import {
+  listRuns,
+  listRunsInputSchema,
+  LIST_RUNS_DESCRIPTION,
+} from '../../orchestrator/tools/list-runs.js';
 import {
   buildAdapterDispatchTask,
   planRunAgent,
@@ -249,6 +255,22 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       // have edited it between dispatches without restarting serve.
       const agentPrefs = readAgentPrefsFile(crewHome);
       const out = await listAgents({ registry, agentPrefs });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
+        structuredContent: out as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
+  // ---- list_runs -------------------------------------------------------
+  server.registerTool(
+    'list_runs',
+    {
+      description: LIST_RUNS_DESCRIPTION,
+      inputSchema: listRunsInputSchema.shape,
+    },
+    async (args) => {
+      const out = listRuns(args, { crewHome, repoRoot: projectRoot });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
         structuredContent: out as unknown as Record<string, unknown>,

@@ -18,6 +18,7 @@ import {
   DISCARD_RUN_DESCRIPTION,
   GET_RUN_STATUS_DESCRIPTION,
   LIST_AGENTS_DESCRIPTION,
+  LIST_RUNS_DESCRIPTION,
   MERGE_RUN_DESCRIPTION,
   RUN_AGENT_DESCRIPTION,
 } from '../orchestrator/tools/index.js';
@@ -25,6 +26,7 @@ import type { SkillTool } from './skill-renderer.js';
 
 export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'list_agents', description: LIST_AGENTS_DESCRIPTION },
+  { name: 'list_runs', description: LIST_RUNS_DESCRIPTION },
   { name: 'run_agent', description: RUN_AGENT_DESCRIPTION },
   { name: 'continue_run', description: CONTINUE_RUN_DESCRIPTION },
   { name: 'merge_run', description: MERGE_RUN_DESCRIPTION },

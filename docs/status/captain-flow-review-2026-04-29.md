@@ -5,6 +5,22 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-10 list_runs Recovery Surface
+
+Phase 1A of the non-blocking captain plan added the `list_runs` MCP tool and
+documented the public `state.json` contract. `list_runs` walks
+`<crewHome>/runs/`, filters implicitly to the current `crew-mcp serve` repo
+root, can opt into legacy records without `repoRoot`, supports status arrays,
+`completedAfter`, and `limit`, and returns newest-first run summaries with
+`lastError` fallback when no prompt summary exists.
+
+The run-state contract is now documented at
+`docs/architecture/run-state-contract.md`, including atomic tmp-plus-rename
+writes, the distinction between `markTerminal()` statuses
+(`success`, `partial`, `error`, `cancelled`) and post-terminal user actions
+(`merged`, `merge_conflict`, `discarded`), and the guarantee that the top-level
+`status` string remains stable for simple readers such as `crew-wait`.
+
 ## Update - 2026-05-09 Terminal-Only Get Run Status Wait
 
 `get_run_status` now has a `wait_for_terminal_only?: boolean` input flag.
