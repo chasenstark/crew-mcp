@@ -1277,7 +1277,7 @@ function buildGetRunStatusResponse(
   // Always advance the cursor relative to the requested sinceLine; the
   // file is the source of truth and the cursor must match it regardless
   // of whether we're emitting events_tail content this turn.
-  const { nextLine: cursorAfterDelta } = store.readEventsSince(runId, sinceLine);
+  let cursorAfterDelta: number;
 
   let cappedLines: readonly string[] = [];
   let skipped = 0;
@@ -1297,17 +1297,21 @@ function buildGetRunStatusResponse(
     // spent on synthesis lines, not on `command: started ...` noise
     // the captain reads and learns nothing from. events.log on disk
     // is unchanged — users tailing `events_log_path` see everything.
-    const allLines = filterEventsTailNoise(store.readEventsSince(runId, 0).lines);
     const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
-    const overCap = allLines.length > maxTail;
+    const tail = store.readFilteredTailFromEnd(runId, maxTail);
+    cursorAfterDelta = tail.totalLineCount;
+    const overCap = tail.totalFilteredCount > maxTail;
     // Reserve one slot for the "(N skipped)" marker so total length
     // stays at maxTail — keeps verbatim renderers honest about elision.
     const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
-    skipped = overCap ? allLines.length - eventLineBudget : 0;
-    const tailLines = eventLineBudget > 0 ? allLines.slice(-eventLineBudget) : [];
+    skipped = overCap ? tail.totalFilteredCount - eventLineBudget : 0;
+    const tailLines = eventLineBudget > 0 ? tail.lines.slice(-eventLineBudget) : [];
     cappedLines = overCap
       ? [`(${skipped} more events skipped)`, ...tailLines]
-      : allLines;
+      : tail.lines;
+  } else {
+    const { nextLine } = store.readEventsSince(runId, sinceLine);
+    cursorAfterDelta = nextLine;
   }
 
   // Legacy snapshot tail — only populated for callers that passed

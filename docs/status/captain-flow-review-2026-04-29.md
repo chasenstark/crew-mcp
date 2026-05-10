@@ -21,6 +21,12 @@ and backs off toward a 5s cap while state contents do not change. The Node
 process cold-start cost per dispatch is unchanged; that remains the accepted
 tradeoff for Claude Code's per-invocation synthetic-turn completion behavior.
 
+Item #8 (events.log incremental reads) shipped in `__COMMIT__`: the terminal
+tail reader now scans `events.log` once in bounded chunks, retains only the
+filtered tail ring, and shares that pass with `next_event_line` cursor
+advancement on terminal `get_run_status` calls. The per-run mtime/byte-offset
+cursor cache remains deferred per the audit.
+
 ## Update - 2026-05-10 Deferred Stale-Run Sweeper (Tier 5 N2)
 
 `buildCrewMcpServer` now schedules the repoRoot-scoped stale-run sweeper with

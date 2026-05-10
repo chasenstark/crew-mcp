@@ -14,6 +14,7 @@ vi.mock('../../src/orchestrator/notifications.js', () => ({
 }));
 
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
+import { filterEventsTailNoise } from '../../src/orchestrator/events-filter.js';
 import { logger } from '../../src/utils/logger.js';
 
 describe('RunStateStore', () => {
@@ -369,6 +370,150 @@ describe('RunStateStore', () => {
 
     expect(() => store.tailEvents('r-1')).toThrow(/EACCES|permission/i);
     expect(() => store.readEventsSince('r-1')).toThrow(/EACCES|permission/i);
+    expect(() => store.readFilteredTailFromEnd('r-1', 10)).toThrow(/EACCES|permission/i);
+  });
+
+  describe('readFilteredTailFromEnd', () => {
+    const chunkBytes = 64 * 1024;
+
+    function createRun(runId = 'r-tail'): string {
+      store.create({ runId, agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      return runId;
+    }
+
+    function writeRawEvents(runId: string, content: string): void {
+      writeFileSync(store.eventsLogPath(runId), content, 'utf-8');
+    }
+
+    function writeEventLines(runId: string, lines: readonly string[], trailingNewline = true): void {
+      writeRawEvents(runId, `${lines.join('\n')}${trailingNewline ? '\n' : ''}`);
+    }
+
+    function expectFilteredTailParity(runId: string, n: number): void {
+      const legacyAll = store.readEventsSince(runId, 0).lines;
+      const filtered = filterEventsTailNoise(legacyAll);
+      const result = store.readFilteredTailFromEnd(runId, n);
+      expect(result.lines).toEqual(filtered.slice(-n));
+      expect(result.totalLineCount).toBe(legacyAll.length);
+      expect(result.totalFilteredCount).toBe(filtered.length);
+      expect(result.filteredOutCount).toBe(legacyAll.length - filtered.length);
+    }
+
+    it('returns empty counts when events.log does not exist', () => {
+      const runId = createRun();
+      expect(store.readFilteredTailFromEnd(runId, 10)).toEqual({
+        lines: [],
+        totalLineCount: 0,
+        totalFilteredCount: 0,
+        filteredOutCount: 0,
+      });
+    });
+
+    it('returns empty counts for a zero-byte events.log', () => {
+      const runId = createRun();
+      writeRawEvents(runId, '');
+      expect(store.readFilteredTailFromEnd(runId, 10)).toEqual({
+        lines: [],
+        totalLineCount: 0,
+        totalFilteredCount: 0,
+        filteredOutCount: 0,
+      });
+    });
+
+    it('returns all filtered lines when the file is smaller than one chunk', () => {
+      const runId = createRun();
+      writeEventLines(runId, [
+        '[codex] command: started rg foo',
+        '[codex] message: kept one',
+        '[codex] event: item.completed/web_search',
+        '[codex] command: npm test (exit 1)',
+        '[mock] final summary',
+      ]);
+
+      const result = store.readFilteredTailFromEnd(runId, 10);
+      expect(result.lines).toEqual([
+        '[codex] message: kept one',
+        '[codex] command: npm test (exit 1)',
+        '[mock] final summary',
+      ]);
+      expect(result.totalLineCount).toBe(5);
+      expect(result.totalFilteredCount).toBe(3);
+      expect(result.filteredOutCount).toBe(2);
+    });
+
+    it('handles multi-chunk files whose final line has no trailing newline', () => {
+      const runId = createRun();
+      const lines = Array.from({ length: 900 }, (_, i) =>
+        i % 6 === 0
+          ? `[codex] command: started rg ${i} ${'x'.repeat(90)}`
+          : `[mock] message ${i} ${'y'.repeat(90)}`,
+      );
+      lines.push(`[mock] final partial ${'z'.repeat(90)}`);
+      writeEventLines(runId, lines, false);
+
+      expect(statSync(store.eventsLogPath(runId)).size).toBeGreaterThan(chunkBytes);
+      expectFilteredTailParity(runId, 10);
+      expect(store.readFilteredTailFromEnd(runId, 1).lines).toEqual([lines[lines.length - 1]]);
+    });
+
+    it('reconstructs a line split across a chunk boundary', () => {
+      const runId = createRun();
+      const prefixLabel = '[mock] prefix ';
+      const prefixLine = `${prefixLabel}${'p'.repeat(chunkBytes - 100 - prefixLabel.length)}`;
+      const crossingLine = `{"event":"${'q'.repeat(190)}"}`;
+      const afterLine = '[mock] after crossing';
+      writeEventLines(runId, [prefixLine, crossingLine, afterLine]);
+
+      expect(Buffer.byteLength(`${prefixLine}\n`, 'utf-8')).toBe(chunkBytes - 99);
+      expectFilteredTailParity(runId, 2);
+      expect(store.readFilteredTailFromEnd(runId, 2).lines).toEqual([crossingLine, afterLine]);
+    });
+
+    it('finds filtered signal lines before a long receipt-only suffix', () => {
+      const runId = createRun();
+      const signalLines = [
+        '[codex] message: kept one',
+        '[codex] message: kept two',
+        '[codex] message: kept three',
+      ];
+      const receiptLines = Array.from({ length: 1_000 }, (_, i) =>
+        `[codex] command: started rg noisy-${i} ${'r'.repeat(80)}`,
+      );
+      writeEventLines(runId, [...signalLines, ...receiptLines]);
+
+      expect(statSync(store.eventsLogPath(runId)).size).toBeGreaterThan(chunkBytes);
+      const result = store.readFilteredTailFromEnd(runId, 2);
+      expect(result.lines).toEqual(signalLines.slice(-2));
+      expect(result.totalLineCount).toBe(signalLines.length + receiptLines.length);
+      expect(result.totalFilteredCount).toBe(signalLines.length);
+      expect(result.filteredOutCount).toBe(receiptLines.length);
+    });
+
+    it('does not mangle UTF-8 when a multi-byte character crosses a chunk boundary', () => {
+      const runId = createRun();
+      const prefixLine = 'a'.repeat(chunkBytes - 3);
+      const unicodeLine = '🚀 non-ascii summary text';
+      writeEventLines(runId, [prefixLine, unicodeLine], false);
+
+      expect(Buffer.byteLength(`${prefixLine}\n`, 'utf-8')).toBe(chunkBytes - 2);
+      expectFilteredTailParity(runId, 1);
+      expect(store.readFilteredTailFromEnd(runId, 1).lines).toEqual([unicodeLine]);
+    });
+
+    it('matches the legacy full-read filtered tail for varied caps and file sizes', () => {
+      const runId = createRun();
+      const lines = Array.from({ length: 1_250 }, (_, i) => {
+        if (i % 11 === 0) return `[codex] event: item.started/web_search ${i}`;
+        if (i % 7 === 0) return `[codex] command: rg ${i} (exit 0)`;
+        return `[mock] message ${i} ${'m'.repeat(70)}`;
+      });
+      writeEventLines(runId, lines);
+
+      expect(statSync(store.eventsLogPath(runId)).size).toBeGreaterThan(chunkBytes);
+      for (const n of [1, 3, 10, 500]) {
+        expectFilteredTailParity(runId, n);
+      }
+    });
   });
 
   // readSignalEventsSince — used by get_run_status's long-poll fast-
