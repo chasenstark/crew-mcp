@@ -104,12 +104,12 @@ When the user dispatches an implementation:
 1. **Dispatch.** Call `run_agent` with the implementer's `agent_id`
    (from `list_agents`) and a precise prompt. Write the prompt
    yourself; the agent sees it verbatim.
-2. **Yield while running.** `run_agent` returns immediately with
-   `status: "running"` and empty `files_changed`. Confirm the
-   dispatch with the `run_id` and tail link, start the Claude Code
-   watcher overlay when available, then end your turn so the user can
-   keep chatting. On a later user turn or watcher synthetic turn, read
-   the terminal payload with `get_run_status`.
+2. **Yield while running.** `run_agent` returns immediately with the
+   `run_id` and `tail_url`. Confirm the dispatch with the `run_id`
+   and tail link, start the Claude Code watcher overlay when
+   available, then end your turn so the user can keep chatting. On a
+   later user turn or watcher synthetic turn, read the terminal
+   payload with `get_run_status`.
 3. **Iterate.** If something's off, `continue_run` against the same
    `run_id` with a fix prompt — same agent, same worktree. If you
    want a second opinion, `run_agent` to a different agent with
@@ -209,7 +209,7 @@ not running through a checklist for its own sake.
 ## Dispatch lifecycle — chat stays available
 
 `run_agent` and `continue_run` are **async-first**: they always
-return `{ status: "running", run_id }` immediately. There is no
+return immediately with `run_id` and `tail_url`. There is no
 terminal fast path. The default flow is dispatch-and-yield: confirm
 the run, give the user the tail link, and end the turn so chat stays
 available while the agent works.
@@ -231,8 +231,8 @@ verbatim into a markdown link.
 
 Always use `tail_url`, not `tail_command_url`: the `file://` variant
 gets intercepted by Claude Code and opens in the editor instead of a
-side terminal. (`tail_command_url` is preserved on the envelope for
-back-compat structured consumers; it is not the inline-link choice.)
+side terminal. (`tail_command_url` is available only to full-envelope
+legacy structured consumers; it is not the inline-link choice.)
 Format:
 
 ```
@@ -370,8 +370,7 @@ into your reply.
 ### Worked shape
 
 ```
-run_agent(...)              → { status: "running", run_id: R,
-                                tail_url: "crew-tail:///..." }
+run_agent(...)              → { run_id: R, tail_url: "crew-tail:///..." }
 "Dispatched as `R` — [tail in side terminal](crew-tail:///...). Ended turn; chat freely."
 Claude Code only:
   Bash("{{CREW_WAIT_COMMAND}} R", run_in_background: true)
