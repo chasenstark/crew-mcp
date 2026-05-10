@@ -128,52 +128,12 @@ export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled
 export interface RunEnvelope {
   readonly run_id: string;
   /**
-   * The adapter id that's running this dispatch (e.g., "codex",
-   * "claude-code", "gemini"). Surfaced so the captain (and any host
-   * UI reading `structuredContent`) can label the run without
-   * round-tripping back through state.json. Optional for backward
-   * compat — older callers that constructed envelopes without it
-   * still type-check.
-   */
-  readonly agent_id?: string;
-  readonly worktree_path: string;
-  readonly events_log_path: string;
-  /**
-   * Absolute path to a generated `tail.command` shell script that
-   * tails `events_log_path` indefinitely. On macOS this is the
-   * extension Terminal.app registers as a launcher: a user can
-   * `open` the file or click a `file://` link to it and a Terminal
-   * window opens running the tail. The dispatch markdown surfaces a
-   * clickable link only on macOS; on other platforms the file is
-   * still a runnable shell script the user can invoke directly.
-   */
-  readonly tail_command_path: string;
-  /**
-   * Pre-encoded `file://` URL pointing at `tail_command_path`. Provided
-   * as a separate field so captains can paste it verbatim into a
-   * markdown link without having to re-implement path encoding (we
-   * use `pathToFileURL().href` here so paths with `#`, `?`, spaces, or
-   * unicode round-trip correctly).
-   *
-   * Why this exists alongside `tail_command_path`: the captain's
-   * one-line dispatch confirmation needs to surface a clickable link
-   * inline in the conversation (the dispatch tool result is collapsed
-   * by default in Claude Code, so a link buried there is invisible).
-   * Centralizing the URL form here keeps captains from URL-encoding
-   * the path themselves.
-   */
-  readonly tail_command_url: string;
-  /**
-   * Custom `crew-tail://` URL pointing directly at `events_log_path`.
-   * macOS-only: this requires the optional CrewTail LaunchServices handler
-   * to be installed with `crew-mcp install-tail-handler`. If the handler is
-   * absent (or the platform is not macOS), the manual `tail -F` line in the
-   * dispatch markdown remains the portable fallback. Kept separate from
-   * `tail_command_url` so older structured consumers can continue using the
-   * generated `tail.command` file URL.
+   * Custom `crew-tail://` URL pointing directly at the run's events.log.
+   * This is the one path-like field captains need in structuredContent by
+   * default; markdown still carries the human-facing worktree and manual
+   * tail details.
    */
   readonly tail_url: string;
-  readonly status: RunStatus;
   readonly summary: string;
   readonly files_changed: readonly string[];
   /**
@@ -184,6 +144,49 @@ export interface RunEnvelope {
    * summary text.
    */
   readonly warnings?: readonly string[];
+  /**
+   * Full-envelope opt-in fields. Set CREW_FULL_ENVELOPE=1 to restore
+   * the pre-trim structuredContent for legacy structured consumers.
+   */
+  readonly status?: RunStatus;
+  /**
+   * The adapter id that's running this dispatch (e.g., "codex",
+   * "claude-code", "gemini"). Surfaced so the captain (and any host
+   * UI reading `structuredContent`) can label the run without
+   * round-tripping back through state.json. Optional for backward
+   * compat — older callers that constructed envelopes without it
+   * still type-check.
+   */
+  readonly agent_id?: string;
+  readonly worktree_path?: string;
+  readonly events_log_path?: string;
+  /**
+   * Absolute path to a generated `tail.command` shell script that
+   * tails `events_log_path` indefinitely. On macOS this is the
+   * extension Terminal.app registers as a launcher: a user can
+   * `open` the file or click a `file://` link to it and a Terminal
+   * window opens running the tail. The dispatch markdown surfaces a
+   * clickable link only on macOS; on other platforms the file is
+   * still a runnable shell script the user can invoke directly.
+   */
+  readonly tail_command_path?: string;
+  /**
+   * Pre-encoded `file://` URL pointing at `tail_command_path`. Provided
+   * as a separate field so captains can paste it verbatim into a
+   * markdown link without having to re-implement path encoding (we
+   * use `pathToFileURL().href` here so paths with `#`, `?`, spaces, or
+   * unicode round-trip correctly).
+   */
+  readonly tail_command_url?: string;
+}
+
+export interface FullRunEnvelope extends RunEnvelope {
+  readonly status: RunStatus;
+  readonly agent_id?: string;
+  readonly worktree_path: string;
+  readonly events_log_path: string;
+  readonly tail_command_path: string;
+  readonly tail_command_url: string;
 }
 
 export interface MergeEnvelope {
@@ -628,10 +631,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         terminalOnly,
       });
 
-      const fresh = runStateStore.read(args.run_id) ?? state;
-      if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
+      if (terminalOnly && timedOut && !isTerminalRunStatus(state.status)) {
         return jsonContent({ status: 'running', timed_out: true });
       }
+      const fresh = runStateStore.read(args.run_id) ?? state;
       return buildGetRunStatusResponse(
         fresh,
         runStateStore,
@@ -798,7 +801,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     `(Claude Code) or after this dispatch returns (Codex/Gemini); user is free to chat.`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
   const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
-  const env: RunEnvelope = {
+  const env: FullRunEnvelope = {
     run_id: args.runId,
     agent_id: args.agentName,
     worktree_path: args.worktreePath,
@@ -812,7 +815,20 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
   };
   return {
     content: [{ type: 'text' as const, text: renderDispatchMarkdown(env) }],
-    structuredContent: env as unknown as Record<string, unknown>,
+    structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
+  };
+}
+
+function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
+  if (process.env.CREW_FULL_ENVELOPE === '1') {
+    return env;
+  }
+  return {
+    run_id: env.run_id,
+    tail_url: env.tail_url,
+    summary: env.summary,
+    files_changed: env.files_changed,
+    ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
   };
 }
 
@@ -830,7 +846,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
  * `run_id` reliably — it appears in a backticked code span the
  * model can pluck verbatim.
  */
-function renderDispatchMarkdown(env: RunEnvelope): string {
+function renderDispatchMarkdown(env: FullRunEnvelope): string {
   const lines = [
     `**Dispatched** ${mdInlineCode(env.agent_id ?? 'agent')} as run \`${env.run_id}\`.`,
     '',
@@ -1102,7 +1118,7 @@ function progressNotifierFrom(
     logger.warn(
       'progressToken absent on first dispatch without a token this server session ' +
       `(agent=${agentId}). Inline notifications/progress will not fire for this call. ` +
-      'The dispatch envelope\'s tail.command / events.log side-channel and any ' +
+      'The dispatch markdown\'s tail.command / events.log side-channel and any ' +
       'later get_run_status / list_runs reads are the live progress paths. ' +
       'Known: codex CLI 0.128.0 omits the token; Claude Code supplies it.',
     );
@@ -1137,9 +1153,9 @@ function progressNotifierFrom(
  * except terminal-only wait timeouts, which intentionally return only
  * `{status:"running", timed_out:true}`. While the run is `running`,
  * that's *all* — every other field is either static (already returned
- * in the run_agent / continue_run dispatch envelope: run_id, agent_id,
- * worktree_path, events_log_path, tail_command_path, tail_command_url,
- * tail_url) or terminal-only.
+ * in the run_agent / continue_run dispatch result: run_id and tail_url
+ * in structuredContent by default, plus human-facing worktree/tail
+ * details in markdown) or terminal-only.
  *
  * **Terminal-only fields** appear when `status` ∈ {success, partial,
  * error, cancelled, merged, merge_conflict, discarded}: `filesChanged`,
@@ -1197,7 +1213,7 @@ function buildGetRunStatusResponse(
 ): ToolCallReturn {
   // Captain-context conservation: while the run is running, `events_tail`
   // is intentionally empty. Captains coordinate; they don't narrate. Users
-  // follow along via the dispatch envelope's `tail_url` on macOS (or the
+  // follow along via the dispatch result's `tail_url` on macOS (or the
   // generated `tail.command` helper / manual tail line elsewhere). The
   // cursor (`next_event_line`) still advances so anything that *does* read
   // events_tail later — most
@@ -1249,9 +1265,9 @@ function buildGetRunStatusResponse(
     : {};
 
   // Running poll-return: minimum viable payload. The captain already
-  // has run_id, agent_id, worktree_path, events_log_path,
-  // tail_command_path, tail_command_url, tail_url from the dispatch envelope; we
-  // do not re-ship them on every long-poll wake-up.
+  // has run_id/tail_url from dispatch structuredContent and the
+  // worktree/manual-tail details from dispatch markdown; we do not
+  // re-ship them on every long-poll wake-up.
   if (!terminal) {
     const payload: GetRunStatusResponse = {
       status,

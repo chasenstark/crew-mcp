@@ -24,12 +24,14 @@ import {
   buildCrewMcpServer,
   fileUrlHref,
   formatProgressLines,
+  type FullRunEnvelope,
   type RunEnvelope,
 } from '../../../src/cli/commands/serve.js';
 import { crewTailUrl } from '../../../src/cli/commands/tail-url.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
+import { RunStateStore } from '../../../src/orchestrator/run-state.js';
 import {
   getRunStatusInputSchema,
   MAX_EVENTS_TAIL_CAP,
@@ -101,9 +103,16 @@ function createDeferred<T = void>(): {
 
 async function startHarness(
   adapters: AgentAdapter[],
+  options: { fullEnvelope?: boolean } = {},
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
+  const previousFullEnvelope = process.env.CREW_FULL_ENVELOPE;
+  if (options.fullEnvelope ?? true) {
+    process.env.CREW_FULL_ENVELOPE = '1';
+  } else {
+    delete process.env.CREW_FULL_ENVELOPE;
+  }
   execSync('git init -q', { cwd: root });
   execSync('git config user.email test@crew.local', { cwd: root });
   execSync('git config user.name test', { cwd: root });
@@ -132,6 +141,11 @@ async function startHarness(
     close: async () => {
       await client.close();
       await server.close();
+      if (previousFullEnvelope === undefined) {
+        delete process.env.CREW_FULL_ENVELOPE;
+      } else {
+        process.env.CREW_FULL_ENVELOPE = previousFullEnvelope;
+      }
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
     },
@@ -462,7 +476,7 @@ describe('crew serve — run_agent tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'add CHANGE.md' },
       });
-      const env = res.structuredContent as RunEnvelope;
+      const env = res.structuredContent as FullRunEnvelope;
       expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
       // Async-first: run_agent always returns running; poll for terminal.
       expect(env.status).toBe('running');
@@ -487,12 +501,49 @@ describe('crew serve — run_agent tool', () => {
     }
   });
 
+  it('returns a trimmed structured dispatch envelope by default', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter], { fullEnvelope: false });
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      expect(Object.keys(env).sort()).toEqual([
+        'files_changed',
+        'run_id',
+        'summary',
+        'tail_url',
+      ]);
+      expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(env.tail_url).toBe(crewTailUrl(join(h.crewHome, 'runs', env.run_id, 'events.log')));
+      expect(env.summary).toContain(`Dispatched as "${env.run_id}"`);
+      expect(env.files_changed).toEqual([]);
+      expect(env.status).toBeUndefined();
+      expect(env.agent_id).toBeUndefined();
+      expect(env.worktree_path).toBeUndefined();
+      expect(env.events_log_path).toBeUndefined();
+      expect(env.tail_command_path).toBeUndefined();
+      expect(env.tail_command_url).toBeUndefined();
+
+      const text = (res.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain(`**Dispatched** \`mock-coder\` as run \`${env.run_id}\`.`);
+      expect(text).toContain(`tail -F ${join(h.crewHome, 'runs', env.run_id, 'events.log')}`);
+      expect(text).toContain('- Worktree: `');
+
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('returns markdown text plus structuredContent (not raw JSON) on dispatch', async () => {
     // #1: hosts collapse MCP tool calls to a one-line title and only
     // show the result when the user expands. Markdown reads as a
     // status report there; raw JSON reads as noise. The structured
-    // payload still travels via structuredContent for programmatic
-    // consumers.
+    // payload can be expanded with CREW_FULL_ENVELOPE=1 for legacy
+    // programmatic consumers.
     const adapter = makeMockAdapter({ name: 'mock-coder' });
     const h = await startHarness([adapter]);
     try {
@@ -500,9 +551,9 @@ describe('crew serve — run_agent tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'go' },
       });
-      const env = res.structuredContent as RunEnvelope;
-      // structuredContent unchanged — captain (and any host UI) can still
-      // pluck run_id / agent_id / worktree_path programmatically.
+      const env = res.structuredContent as FullRunEnvelope;
+      // CREW_FULL_ENVELOPE=1 restores the legacy structuredContent shape
+      // for any host UI that still plucks path fields programmatically.
       expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
       expect(env.agent_id).toBe('mock-coder');
       expect(env.status).toBe('running');
@@ -568,7 +619,7 @@ describe('crew serve — run_agent tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'go' },
       });
-      const env = res.structuredContent as RunEnvelope;
+      const env = res.structuredContent as FullRunEnvelope;
 
       const tailPath = env.tail_command_path;
       expect(existsSync(tailPath)).toBe(true);
@@ -603,7 +654,7 @@ describe('crew serve — run_agent tool', () => {
           working_directory: worktreePath,
         },
       });
-      const env = res.structuredContent as RunEnvelope;
+      const env = res.structuredContent as FullRunEnvelope;
       const text = (res.content as Array<{ text: string }>)[0].text;
       expect(text).toContain('**Dispatched** `` mock`coder line `` as run `');
       expect(text).toContain(
@@ -632,7 +683,7 @@ describe('crew serve — run_agent tool', () => {
       });
       // Async-first: run_agent itself succeeds even when the dispatch
       // will fail. Adapter errors surface via get_run_status terminal.
-      const env = res.structuredContent as RunEnvelope;
+      const env = res.structuredContent as FullRunEnvelope;
       expect(env.status).toBe('running');
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('error');
@@ -675,7 +726,7 @@ describe('crew serve — continue_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'turn-one' },
       });
-      const firstEnv = first.structuredContent as RunEnvelope;
+      const firstEnv = first.structuredContent as FullRunEnvelope;
       // Wait for turn 1 to terminate before continuing — continue_run
       // doesn't gate on terminal but the adapter mock isn't reentrant.
       await pollUntilTerminal(h.client, firstEnv.run_id);
@@ -683,7 +734,7 @@ describe('crew serve — continue_run tool', () => {
         name: 'continue_run',
         arguments: { run_id: firstEnv.run_id, prompt: 'turn-two' },
       });
-      const secondEnv = second.structuredContent as RunEnvelope;
+      const secondEnv = second.structuredContent as FullRunEnvelope;
       expect(secondEnv.run_id).toBe(firstEnv.run_id);
       expect(secondEnv.worktree_path).toBe(firstEnv.worktree_path);
       expect(secondEnv.status).toBe('running');
@@ -746,7 +797,7 @@ describe('crew serve — continue_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'first' },
       });
-      const env = initial.structuredContent as RunEnvelope;
+      const env = initial.structuredContent as FullRunEnvelope;
       const res = await h.client.callTool({
         name: 'continue_run',
         arguments: { run_id: env.run_id, prompt: 'next' },
@@ -770,7 +821,7 @@ describe('crew serve — continue_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'first' },
       });
-      const env = initial.structuredContent as RunEnvelope;
+      const env = initial.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
       await h.client.callTool({
         name: 'discard_run',
@@ -810,7 +861,7 @@ describe('crew serve — merge_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'add a file' },
       });
-      const runEnv = res.structuredContent as RunEnvelope;
+      const runEnv = res.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
       // Pre-merge: file is in worktree only.
       expect(existsSync(join(runEnv.worktree_path, 'NEW.md'))).toBe(true);
@@ -864,7 +915,7 @@ describe('crew serve — merge_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'p' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
       await h.client.callTool({ name: 'merge_run', arguments: { run_id: runEnv.run_id } });
       const second = await h.client.callTool({
@@ -891,7 +942,7 @@ describe('crew serve — merge_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'p' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       const merge = await h.client.callTool({
         name: 'merge_run',
         arguments: { run_id: runEnv.run_id },
@@ -927,7 +978,7 @@ describe('crew serve — merge_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'edit shared' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
 
       // Now edit shared.txt on host main with a CONFLICTING change AFTER
@@ -999,7 +1050,7 @@ describe('crew serve — merge_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'noop' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
@@ -1029,7 +1080,7 @@ describe('crew serve — discard_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'do' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
       expect(existsSync(runEnv.worktree_path)).toBe(true);
 
@@ -1079,7 +1130,7 @@ describe('crew serve — discard_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'do' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       const discard = await h.client.callTool({
         name: 'discard_run',
         arguments: { run_id: runEnv.run_id },
@@ -1113,7 +1164,7 @@ describe('crew serve — read_only runs', () => {
         name: 'run_agent',
         arguments: { agent_id: 'reviewer', prompt: 'review please', read_only: true },
       });
-      const env = res.structuredContent as RunEnvelope;
+      const env = res.structuredContent as FullRunEnvelope;
       expect(env.status).toBe('running');
       expect(env.worktree_path).toBe(h.root);
       const final = await pollUntilTerminal(h.client, env.run_id);
@@ -1140,7 +1191,7 @@ describe('crew serve — read_only runs', () => {
         name: 'run_agent',
         arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
       const merge = await h.client.callTool({
         name: 'merge_run',
@@ -1166,7 +1217,7 @@ describe('crew serve — read_only runs', () => {
         name: 'run_agent',
         arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
       const discard = await h.client.callTool({
         name: 'discard_run',
@@ -1204,7 +1255,7 @@ describe('crew serve — read_only runs', () => {
         name: 'run_agent',
         arguments: { agent_id: 'reviewer', prompt: 'turn-one', read_only: true },
       });
-      const firstEnv = first.structuredContent as RunEnvelope;
+      const firstEnv = first.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, firstEnv.run_id);
       // continue_run does not accept read_only — but the bit is sticky from state.json.
       await h.client.callTool({
@@ -1236,7 +1287,7 @@ describe('crew serve — read_only runs', () => {
         name: 'run_agent',
         arguments: { agent_id: 'reviewer', prompt: 'p', read_only: true },
       });
-      const env = res.structuredContent as RunEnvelope;
+      const env = res.structuredContent as FullRunEnvelope;
       expect(env.status).toBe('running');
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
@@ -1272,7 +1323,7 @@ describe('crew serve — get_run_status tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-coder', prompt: 'go' },
       });
-      const runEnv = run.structuredContent as RunEnvelope;
+      const runEnv = run.structuredContent as FullRunEnvelope;
       const final = await pollUntilTerminal(h.client, runEnv.run_id);
       // Lean terminal contract: the response carries status + cursor +
       // events_tail + the synthesis surface (filesChanged, prompts
@@ -1358,7 +1409,7 @@ describe('crew serve — cancel_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'mock-cancellable', prompt: 'hang forever' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       expect(env.status).toBe('running');
 
       const cancel = await h.client.callTool({
@@ -1412,7 +1463,7 @@ describe('crew serve — cancel_run tool', () => {
         name: 'run_agent',
         arguments: { agent_id: 'fast', prompt: 'finish quickly' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       expect(env.status).toBe('running');
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
@@ -1752,7 +1803,7 @@ describe('crew serve — progress notifications', () => {
         undefined,
         { onprogress: () => undefined },
       );
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => progress.length >= 2, 1000);
       expect(progress.map((p) => p.message)).toHaveLength(2);
       for (const message of progress.map((p) => p.message ?? '')) {
@@ -1791,7 +1842,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-fast', prompt: 'go' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       // Async-first: run_agent never inlines a terminal envelope —
       // the captain ends the turn and reads status on demand later.
       expect(env.status).toBe('running');
@@ -1824,7 +1875,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-fast', prompt: 'go' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       // Wait for terminal first.
       await pollUntilTerminal(h.client, env.run_id);
       // Now a long-poll with a generous wait should still return fast
@@ -1860,7 +1911,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-fast-terminal-only', prompt: 'go' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
 
       const t0 = Date.now();
@@ -1925,7 +1976,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-noisy', prompt: 'noisy' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
 
       // Start the long-poll first; emit a burst of receipts; assert
@@ -2011,7 +2062,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-terminal-only-streaming', prompt: 'stream' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
 
       const pollPromise = h.client.callTool({
@@ -2073,7 +2124,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-terminal-only-complete', prompt: 'complete' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       const pollPromise = h.client.callTool({
         name: 'get_run_status',
         arguments: {
@@ -2126,7 +2177,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-terminal-only-cancel', prompt: 'cancel' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       const pollPromise = h.client.callTool({
         name: 'get_run_status',
         arguments: {
@@ -2191,7 +2242,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-terminal-only-timeout', prompt: 'timeout' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
+      const readSpy = vi.spyOn(RunStateStore.prototype, 'read');
+      const readsBeforeStatusCall = readSpy.mock.calls.length;
       const res = await h.client.callTool({
         name: 'get_run_status',
         arguments: {
@@ -2211,6 +2264,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       };
       expect(s.next_event_line).toBeUndefined();
       expect(s.events_tail).toBeUndefined();
+      expect(readSpy.mock.calls.length - readsBeforeStatusCall).toBe(1);
+      readSpy.mockRestore();
 
       resolveAdapter();
       await pollUntilTerminal(h.client, env.run_id);
@@ -2250,7 +2305,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-noisy-precursor', prompt: 'noisy' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
 
       // Emit receipts BEFORE the captain polls. They advance the
@@ -2331,7 +2386,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-terminal-only-precursor', prompt: 'signal first' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
       onOutputRef?.('[mock] message: signal before poll');
       await waitFor(async () => {
@@ -2400,7 +2455,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-streaming', prompt: 'stream' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       // Wait briefly for the adapter to capture onOutput.
       await waitFor(() => onOutputRef !== undefined);
 
@@ -2488,7 +2543,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         name: 'run_agent',
         arguments: { agent_id: 'mock-streaming', prompt: 'stream' },
       });
-      const env = run.structuredContent as RunEnvelope;
+      const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
       onOutputRef?.('line 1');
       onOutputRef?.('line 2');
@@ -2557,7 +2612,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
   async function emitAndTerminate(
     agentName: string,
     lines: readonly string[],
-  ): Promise<{ h: Harness; env: RunEnvelope }> {
+  ): Promise<{ h: Harness; env: FullRunEnvelope }> {
     let onOutputRef: ((chunk: string) => void) | undefined;
     let resolveAdapter!: () => void;
     const slow = new Promise<void>((r) => {
@@ -2577,7 +2632,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       name: 'run_agent',
       arguments: { agent_id: agentName, prompt: 'stream' },
     });
-    const env = run.structuredContent as RunEnvelope;
+    const env = run.structuredContent as FullRunEnvelope;
     await waitFor(() => onOutputRef !== undefined);
     for (const line of lines) onOutputRef?.(line);
     await waitFor(async () => {
@@ -2746,6 +2801,8 @@ describe('crew serve — lifecycle', () => {
     });
     const root = mkdtempSync(join(tmpdir(), 'crew-serve-cancel-'));
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-cancel-home-'));
+    const previousFullEnvelope = process.env.CREW_FULL_ENVELOPE;
+    process.env.CREW_FULL_ENVELOPE = '1';
     execSync('git init -q', { cwd: root });
     execSync('git config user.email test@crew.local', { cwd: root });
     execSync('git config user.name test', { cwd: root });
@@ -2767,7 +2824,7 @@ describe('crew serve — lifecycle', () => {
       name: 'run_agent',
       arguments: { agent_id: 'mock-slow', prompt: 'never returns' },
     });
-    const env = run.structuredContent as RunEnvelope;
+    const env = run.structuredContent as FullRunEnvelope;
     expect(env.status).toBe('running');
 
     // Wait for the dispatcher to start the task before cancelling.
@@ -2802,6 +2859,11 @@ describe('crew serve — lifecycle', () => {
 
     await client.close();
     await server.close();
+    if (previousFullEnvelope === undefined) {
+      delete process.env.CREW_FULL_ENVELOPE;
+    } else {
+      process.env.CREW_FULL_ENVELOPE = previousFullEnvelope;
+    }
     rmSync(root, { recursive: true, force: true });
     rmSync(crewHome, { recursive: true, force: true });
   });

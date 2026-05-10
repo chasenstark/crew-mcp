@@ -5,6 +5,21 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-10 Dispatch Envelope Trim
+
+Dispatch `structuredContent` now defaults to the captain-essential fields:
+`run_id`, `tail_url`, `summary`, `files_changed`, and optional `warnings`.
+The prior full structured envelope fields (`agent_id`, `status`,
+`worktree_path`, `events_log_path`, `tail_command_path`, and
+`tail_command_url`) remain available for legacy structured consumers only when
+`CREW_FULL_ENVELOPE=1` is set.
+
+The human-facing dispatch markdown is unchanged: it still includes the
+worktree line, the macOS `tail_url` link when applicable, and the manual
+`tail -F <events.log>` fallback. Captains should continue using the markdown
+tail link / `tail_url` for dispatch confirmation and `get_run_status` for
+terminal payloads.
+
 ## Update - 2026-05-10 crew-wait Binary + Claude Allowlist Overlay (phase 3)
 
 Phase 3 of the non-blocking captain plan added the packaged `crew-wait`
