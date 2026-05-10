@@ -1,23 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import * as fs from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { listRuns } from '../../../src/orchestrator/tools/list-runs.js';
+import {
+  clearListRunsCachesForTest,
+  listRuns,
+  setListRunsFsForTest,
+} from '../../../src/orchestrator/tools/list-runs.js';
 import type { RunStateV1, RunStatus } from '../../../src/orchestrator/run-state.js';
 
 describe('listRuns', () => {
   let crewHome: string;
   let repoRoot: string;
   let otherRepoRoot: string;
+  let resetListRunsFs: (() => void) | undefined;
 
   beforeEach(() => {
+    clearListRunsCachesForTest();
     crewHome = mkdtempSync(join(tmpdir(), 'crew-list-runs-home-'));
     repoRoot = mkdtempSync(join(tmpdir(), 'crew-list-runs-repo-'));
     otherRepoRoot = mkdtempSync(join(tmpdir(), 'crew-list-runs-other-'));
   });
 
   afterEach(() => {
+    resetListRunsFs?.();
+    resetListRunsFs = undefined;
+    clearListRunsCachesForTest();
     rmSync(crewHome, { recursive: true, force: true });
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(otherRepoRoot, { recursive: true, force: true });
@@ -122,6 +132,95 @@ describe('listRuns', () => {
       { run_id: 'sweeper-marked-error', summary: 'abandoned (server restart)' },
       { run_id: 'adapter-error', summary: 'adapter summary wins' },
     ]);
+  });
+
+  it('resolves the current repoRoot once per call regardless of matching record count', () => {
+    const resolvedRepoRoot = realpathSync(repoRoot);
+    writeState({ runId: 'run-1', status: 'running', repoRoot: resolvedRepoRoot });
+    writeState({ runId: 'run-2', status: 'running', repoRoot: resolvedRepoRoot });
+    writeState({ runId: 'run-3', status: 'running', repoRoot: resolvedRepoRoot });
+    clearListRunsCachesForTest();
+    const realpathCalls: string[] = [];
+    resetListRunsFs = setListRunsFsForTest({
+      realpathSync(path) {
+        realpathCalls.push(path);
+        return fs.realpathSync(path);
+      },
+    });
+
+    const out = listRuns({}, { crewHome, repoRoot: resolvedRepoRoot });
+
+    expect(out.runs.map((run) => run.run_id)).toEqual(['run-3', 'run-2', 'run-1']);
+    expect(realpathCalls).toEqual([resolvedRepoRoot]);
+  });
+
+  it('reuses cached per-record repoRoot realpaths on later calls in the same process', () => {
+    const resolvedRepoRoot = realpathSync(repoRoot);
+    const resolvedOtherRepoRoot = realpathSync(otherRepoRoot);
+    writeState({ runId: 'current-repo-run', status: 'running', repoRoot: resolvedRepoRoot });
+    writeState({ runId: 'other-repo-run', status: 'running', repoRoot: resolvedOtherRepoRoot });
+    clearListRunsCachesForTest();
+    const realpathCalls: string[] = [];
+    resetListRunsFs = setListRunsFsForTest({
+      realpathSync(path) {
+        realpathCalls.push(path);
+        return fs.realpathSync(path);
+      },
+    });
+
+    expect(
+      listRuns({}, { crewHome, repoRoot: resolvedRepoRoot }).runs.map((run) => run.run_id),
+    ).toEqual(['current-repo-run']);
+    expect(realpathCalls).toEqual([resolvedRepoRoot, resolvedOtherRepoRoot]);
+
+    realpathCalls.length = 0;
+    expect(
+      listRuns({}, { crewHome, repoRoot: resolvedRepoRoot }).runs.map((run) => run.run_id),
+    ).toEqual(['current-repo-run']);
+    expect(realpathCalls).toEqual([]);
+  });
+
+  it('re-parses cached state when state.json mtime changes', () => {
+    writeState({ runId: 'run-updated', status: 'running', repoRoot });
+    clearListRunsCachesForTest();
+    const readFileCalls: string[] = [];
+    resetListRunsFs = setListRunsFsForTest({
+      readFileSync(path, encoding) {
+        readFileCalls.push(path);
+        return fs.readFileSync(path, encoding);
+      },
+    });
+
+    expect(listRuns({}, { crewHome, repoRoot }).runs).toMatchObject([
+      { run_id: 'run-updated', status: 'running' },
+    ]);
+    expect(readFileCalls).toHaveLength(1);
+
+    readFileCalls.length = 0;
+    expect(listRuns({}, { crewHome, repoRoot }).runs).toMatchObject([
+      { run_id: 'run-updated', status: 'running' },
+    ]);
+    expect(readFileCalls).toEqual([]);
+
+    writeState({
+      runId: 'run-updated',
+      status: 'error',
+      repoRoot,
+      completedAt: iso(5),
+      lastError: 'sweeper marked abandoned',
+      promptSummary: undefined,
+    });
+
+    readFileCalls.length = 0;
+    expect(listRuns({}, { crewHome, repoRoot }).runs).toMatchObject([
+      {
+        run_id: 'run-updated',
+        status: 'error',
+        completedAt: iso(5),
+        summary: 'sweeper marked abandoned',
+      },
+    ]);
+    expect(readFileCalls).toHaveLength(1);
   });
 
   function writeState(args: {
