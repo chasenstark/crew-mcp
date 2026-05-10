@@ -34,9 +34,13 @@ export function buildTerminalNotificationCommand(
   notification: TerminalNotification,
   platform: NodeJS.Platform = process.platform,
 ): NotificationCommand {
-  const runShort = notification.runId.slice(0, 8);
+  // Include the full run_id so users with multiple in-flight runs can
+  // unambiguously match the notification to the run. The 8-char prefix
+  // collides too easily across a busy crew home (we hit several
+  // collisions during plan dogfood), and the full UUID still fits on
+  // one line for every platform's notification surface.
   const title = oneLine(`crew: ${notification.agentId}`);
-  const text = oneLine(`run ${runShort} ${notification.status}`);
+  const text = oneLine(`run ${notification.runId} ${notification.status}`);
 
   if (platform === 'darwin') {
     return {
@@ -79,6 +83,12 @@ export function notifyTerminal(notification: TerminalNotification): void {
   if (!osNotificationsEnabled()) return;
 
   const command = buildTerminalNotificationCommand(notification);
+  const logContext = {
+    runId: notification.runId,
+    agentId: notification.agentId,
+    status: notification.status,
+    command: command.command,
+  };
 
   try {
     const child = spawn(command.command, [...command.args], {
@@ -86,20 +96,28 @@ export function notifyTerminal(notification: TerminalNotification): void {
       stdio: 'ignore',
     });
     child.on('error', (err) => {
-      logger.warn('Failed to fire OS notification for terminal run', {
-        runId: notification.runId,
-        agentId: notification.agentId,
-        status: notification.status,
-        err,
-      });
+      logger.warn('Failed to fire OS notification for terminal run', { ...logContext, err });
+    });
+    // Real-world failures (Linux DBus down, no DISPLAY, BurntToast
+    // module missing, osascript permission denied) often surface as
+    // non-zero exit codes AFTER spawn succeeds — the 'error' listener
+    // doesn't catch those. Log them so a silently-broken notification
+    // pipeline is at least observable in the server log.
+    child.on('exit', (code, signal) => {
+      if (code !== null && code !== 0) {
+        logger.warn('OS notification command exited non-zero', {
+          ...logContext,
+          exitCode: code,
+        });
+      } else if (signal !== null) {
+        logger.warn('OS notification command terminated by signal', {
+          ...logContext,
+          signal,
+        });
+      }
     });
     child.unref();
   } catch (err) {
-    logger.warn('Failed to fire OS notification for terminal run', {
-      runId: notification.runId,
-      agentId: notification.agentId,
-      status: notification.status,
-      err,
-    });
+    logger.warn('Failed to fire OS notification for terminal run', { ...logContext, err });
   }
 }

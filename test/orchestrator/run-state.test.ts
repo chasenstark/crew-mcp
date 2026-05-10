@@ -182,6 +182,42 @@ describe('RunStateStore', () => {
     expect(next.prompts[1].prompt).toBe('second');
   });
 
+  it('appendPrompt() refreshes serverPid to the current process (continue_run sweeper safety)', () => {
+    // Regression: continued runs were carrying the original (possibly
+    // dead) server's serverPid forward. A sibling crew-mcp serve
+    // startup would then run the sweeper, see a stale PID on a
+    // currently-active continuation, and mark it "abandoned (server
+    // restart)" mid-execution.
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
+    // Manually overwrite serverPid to simulate a dead PID inherited
+    // from a prior server that completed the run before crashing.
+    const DEAD_PID = 2_000_000_000;
+    const promotedToDead = store.update('r-1', (s) => ({ ...s, serverPid: DEAD_PID }));
+    expect(promotedToDead.serverPid).toBe(DEAD_PID);
+
+    store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
+    const next = store.appendPrompt('r-1', 'second');
+
+    expect(next.status).toBe('running');
+    expect(next.serverPid).toBe(process.pid);
+  });
+
+  it('markTerminal() does NOT re-fire notification when called on an already-terminal run', () => {
+    // Sweeper races and explicit retries must not double-notify the
+    // user. Notification fires on running → terminal transition only.
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    store.markTerminal('r-1', { status: 'success', summary: 'first', filesChanged: [] });
+    const firstCallCount = mockNotifyTerminal.mock.calls.length;
+    expect(firstCallCount).toBe(1);
+
+    // Re-call markTerminal on an already-terminal run (e.g., sweeper
+    // sees status:'success' but tries to mark again — should be a
+    // no-op for notification purposes).
+    store.markTerminal('r-1', { status: 'success', summary: 'duplicate', filesChanged: [] });
+
+    expect(mockNotifyTerminal.mock.calls.length).toBe(firstCallCount);
+  });
+
   it('markTerminal() sets status + completedAt + summary on the last prompt', () => {
     store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     const next = store.markTerminal('r-1', {

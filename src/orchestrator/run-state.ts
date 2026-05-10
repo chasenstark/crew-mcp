@@ -84,10 +84,15 @@ export interface RunStateV1 {
    * is running. Used by the stale-run sweeper to distinguish
    * "abandoned by a crashed prior server" from "currently being
    * managed by another live server" (which is normal — every host MCP
-   * connection spawns its own server). Optional for backward
-   * compatibility with state.json files written before this field
-   * existed (sweeper falls back to the old mark-anyway behavior in
-   * that case).
+   * connection spawns its own server). Refreshed on `appendPrompt()`
+   * so a `continue_run` re-claims ownership for the server processing
+   * the continuation.
+   *
+   * Optional for backward compatibility. The sweeper SKIPS records
+   * without `serverPid` (legacy / pre-fix) — it can't tell whether
+   * they're still owned, so it leaves them alone rather than risk
+   * killing in-flight work. Users can `discard_run` legacy records
+   * manually if they turn out to be truly stale.
    */
   readonly serverPid?: number;
   readonly prompts: readonly PromptRecord[];
@@ -272,6 +277,11 @@ export class RunStateStore {
   /**
    * Append a new prompt-record (continue_run case). Resets status to
    * 'running' and clears completedAt — the run is in-flight again.
+   * Also re-claims `serverPid` to the current process: the run's new
+   * owner is whichever `crew-mcp serve` instance is processing this
+   * `continue_run`. Without this refresh, a continued run would carry
+   * the original (possibly dead) server's PID, and the stale-run
+   * sweeper in any sibling server's startup would mark it abandoned.
    */
   appendPrompt(runId: string, prompt: string): RunStateV1 {
     const now = new Date().toISOString();
@@ -279,6 +289,7 @@ export class RunStateStore {
       ...s,
       status: 'running',
       completedAt: undefined,
+      serverPid: process.pid,
       prompts: [
         ...s.prompts,
         { turn: s.prompts.length + 1, prompt, startedAt: now },
@@ -321,6 +332,12 @@ export class RunStateStore {
     },
   ): RunStateV1 {
     const now = new Date().toISOString();
+    // Capture prior status BEFORE the update so we only notify on a
+    // genuine running → terminal transition. Re-calling markTerminal()
+    // on an already-terminal run (rare, but possible during retries
+    // or sweeper races) must not re-fire the OS notification.
+    const prior = this.read(runId);
+    const wasRunning = prior?.status === 'running';
     const next = this.update(runId, (s) => {
       const prompts = s.prompts.map((p, i): PromptRecord =>
         i === s.prompts.length - 1
@@ -340,11 +357,13 @@ export class RunStateStore {
         ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     });
-    notifyTerminal({
-      runId: next.runId,
-      agentId: next.agentId,
-      status: args.status,
-    });
+    if (wasRunning) {
+      notifyTerminal({
+        runId: next.runId,
+        agentId: next.agentId,
+        status: args.status,
+      });
+    }
     return next;
   }
 
