@@ -34,6 +34,7 @@ import { filterEventsTailNoise } from '../../orchestrator/events-filter.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import {
   listAgents,
+  listAgentsInputSchema,
   LIST_AGENTS_DESCRIPTION,
 } from '../../orchestrator/tools/list-agents.js';
 import {
@@ -252,12 +253,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     'list_agents',
     {
       description: LIST_AGENTS_DESCRIPTION,
+      inputSchema: listAgentsInputSchema.shape,
     },
-    async () => {
+    async (args) => {
       // Re-read on every call: the file is small and the user may
       // have edited it between dispatches without restarting serve.
       const agentPrefs = readAgentPrefsFile(crewHome);
-      const out = await listAgents({ registry, agentPrefs });
+      const out = await listAgents({ registry, agentPrefs, refresh: args.refresh });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
         structuredContent: out as unknown as Record<string, unknown>,

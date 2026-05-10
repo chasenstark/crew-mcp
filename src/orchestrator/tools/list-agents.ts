@@ -32,7 +32,9 @@ export interface AgentListSource {
   listAvailable(): AgentAdapter[];
 }
 
-export const listAgentsInputSchema = z.object({}).passthrough();
+export const listAgentsInputSchema = z.object({
+  refresh: z.boolean().optional(),
+}).passthrough();
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
@@ -84,6 +86,11 @@ export interface ListAgentsOutput {
 
 export interface ListAgentsContext {
   readonly registry: AdapterRegistry | AgentListSource;
+  /**
+   * When true, bypass adapter-side in-process health-check caches for this
+   * inventory call. Useful immediately after installing/logging into a CLI.
+   */
+  readonly refresh?: boolean;
   /**
    * Per-machine agent prefs snapshot. Caller (serve.ts) reads
    * `~/.crew/agents.json` and passes the result in. Omitting it means
@@ -139,7 +146,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
       } as const;
       let health: Awaited<ReturnType<typeof adapter.healthCheck>>;
       try {
-        health = await adapter.healthCheck();
+        health = await adapter.healthCheck({ refresh: ctx.refresh === true });
       } catch (err: unknown) {
         return {
           ...base,

@@ -1,11 +1,13 @@
 import { execa } from 'execa';
 import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
+import { HealthCheckCache } from '../utils/health-check-cache.js';
 
 import type {
   AgentAdapter,
   AgentStrength,
   ExecuteOptions,
+  HealthCheckOptions,
   HealthCheckResult,
   Task,
   TaskResult,
@@ -427,6 +429,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
+  private readonly healthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
     return typeof modelId === 'string'
@@ -1162,7 +1165,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     }
   }
 
-  async healthCheck(): Promise<HealthCheckResult> {
+  async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
+    return this.healthCheckCache.get(options, () => this.probeHealth());
+  }
+
+  private async probeHealth(): Promise<HealthCheckResult> {
     // Check version
     let version: string | undefined;
     try {

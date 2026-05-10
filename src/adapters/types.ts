@@ -150,7 +150,7 @@ export interface AgentAdapter {
    * model they're handed (e.g., generic command adapters) return true.
    */
   recognizesModel?(modelId: string): boolean;
-  healthCheck(): Promise<HealthCheckResult>;
+  healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult>;
 }
 
 /**
@@ -264,6 +264,15 @@ export interface HealthCheckResult {
   version?: string;
   authenticated: boolean;
   error?: string;
+}
+
+export interface HealthCheckOptions {
+  /**
+   * Bypass the in-process health-check cache for this call. Used by
+   * list_agents refresh requests when the captain needs current CLI/auth
+   * state immediately.
+   */
+  refresh?: boolean;
 }
 
 export interface ExecuteOptions {

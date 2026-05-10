@@ -1,6 +1,7 @@
 import { execa } from 'execa';
 import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
+import { HealthCheckCache } from '../utils/health-check-cache.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
@@ -16,6 +17,7 @@ import type {
   AgentAdapter,
   AgentStrength,
   ExecuteOptions,
+  HealthCheckOptions,
   HealthCheckResult,
   Task,
   TaskResult,
@@ -261,6 +263,7 @@ export class GeminiCliAdapter implements AgentAdapter {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: true,
   };
+  private readonly healthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
     return typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId);
@@ -419,7 +422,11 @@ export class GeminiCliAdapter implements AgentAdapter {
     }
   }
 
-  async healthCheck(): Promise<HealthCheckResult> {
+  async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
+    return this.healthCheckCache.get(options, () => this.probeHealth());
+  }
+
+  private async probeHealth(): Promise<HealthCheckResult> {
     try {
       const result = await execa('gemini', ['--version'], {
         timeout: 10_000,

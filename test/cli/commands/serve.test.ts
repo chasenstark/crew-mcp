@@ -252,6 +252,22 @@ describe('crew serve — list_agents tool', () => {
     expect(structured.agents[0].available).toBe(false);
     expect(structured.agents[0].error).toBe('boom');
   });
+
+  it('passes refresh through to adapter health checks', async () => {
+    const healthCheck = vi.fn(async () => ({
+      available: true,
+      authenticated: true,
+      version: '0.0.0-test',
+    }));
+    await h.close();
+    h = await startHarness([
+      makeMockAdapter({ name: 'refreshable', healthCheck }),
+    ]);
+
+    await h.client.callTool({ name: 'list_agents', arguments: { refresh: true } });
+
+    expect(healthCheck).toHaveBeenCalledWith({ refresh: true });
+  });
 });
 
 describe('crew serve — stale-run sweeper', () => {
