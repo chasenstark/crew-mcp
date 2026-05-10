@@ -30,6 +30,7 @@ import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
  */
 export interface AgentListSource {
   listAvailable(): AgentAdapter[];
+  loadAll?(): Promise<AgentAdapter[]>;
 }
 
 export const listAgentsInputSchema = z.object({
@@ -116,6 +117,9 @@ export interface ListAgentsContext {
  * response shape; errors become `available: false` with `error`.
  */
 export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutput> {
+  if (typeof ctx.registry.loadAll === 'function') {
+    await ctx.registry.loadAll();
+  }
   const adapters = ctx.registry.listAvailable();
   // listAvailable() returns AgentAdapter[] on AdapterRegistry and is expected
   // to be present on any AgentListSource; the type narrowing above covers

@@ -34,6 +34,26 @@ source of truth for Codex/Claude progress lines. `events_tail` now matches the
 server-rendered progress surface, while the adapter parsers remain responsible
 only for semantic `kind: summary` formatting.
 
+## Update - 2026-05-10 Lazy CLI Command + Adapter Loading (Tier 2 #11)
+
+Tier 2 item #11 from `docs/plans/active/perf-context-audit-merged.md`. The
+`crew-mcp` entrypoint now builds the Commander command shape without
+importing each command module; every subcommand action dynamically imports
+only the selected implementation. `install` no longer imports `serve.ts` just
+to record the version; both use the thin `src/cli/version.ts` constant.
+
+`AdapterRegistry` now registers lazy adapter entries instead of importing and
+constructing every built-in adapter at registry creation. `load(name)` loads
+and caches the requested adapter module, while `loadAll()` is used by
+`list_agents` / health-check paths where loading all adapters is expected.
+The MCP server still registers the full tool names and schemas eagerly at
+startup; only adapter modules and non-selected CLI command implementations are
+deferred.
+
+Timing evidence from rebuilt `dist/` on this machine (15 runs, first
+discarded): `node dist/index.js serve --help` mean moved from 128ms to 38ms;
+`node dist/index.js install --help` mean moved from 128ms to 38ms.
+
 ## Update - 2026-05-10 Dispatch Envelope Trim
 
 Dispatch `structuredContent` now defaults to the captain-essential fields:

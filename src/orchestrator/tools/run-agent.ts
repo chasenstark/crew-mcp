@@ -43,6 +43,7 @@ import type { WorktreeManager } from '../../git/worktree.js';
  */
 export interface RegistryForRunAgent {
   get(name: string): AgentAdapter | undefined;
+  load?(name: string): Promise<AgentAdapter | undefined>;
   listAvailable?(): AgentAdapter[];
   list?(): { name: string; strengths: readonly string[] | string[] }[];
 }
@@ -154,7 +155,7 @@ export async function planRunAgent(
   toolCallId: string,
   ctx: RunAgentHandlerContext,
 ): Promise<RunAgentPlan> {
-  const adapter = ctx.registry.get(input.agent_id);
+  const adapter = await getRegistryAdapter(ctx.registry, input.agent_id);
   if (!adapter) {
     const reg = ctx.registry as { listAvailable?: () => AgentAdapter[]; list?: () => Array<{ name: string }> };
     const fromListAvailable =
@@ -219,6 +220,16 @@ export async function planRunAgent(
       input: { ...input },
     }),
   };
+}
+
+async function getRegistryAdapter(
+  registry: AdapterRegistry | RegistryForRunAgent,
+  name: string,
+): Promise<AgentAdapter | undefined> {
+  if (typeof registry.load === 'function') {
+    return registry.load(name);
+  }
+  return registry.get(name);
 }
 
 /**

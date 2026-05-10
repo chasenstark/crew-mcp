@@ -75,9 +75,10 @@ import {
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
+import { CREW_MCP_VERSION } from '../version.js';
 import { crewTailUrl } from './tail-url.js';
 
-export const SERVE_VERSION = '0.2.0-dev';
+export const SERVE_VERSION = CREW_MCP_VERSION;
 
 /**
  * Server-side cap on the long-poll wait that `get_run_status` honors
@@ -397,7 +398,9 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           `Cannot continue run "${args.run_id}" with status "${state.status}".`,
         );
       }
-      const adapter = registry.get(state.agentId);
+      const adapter = typeof registry.load === 'function'
+        ? await registry.load(state.agentId)
+        : registry.get(state.agentId);
       if (!adapter) {
         return errorContent(
           `Agent "${state.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,

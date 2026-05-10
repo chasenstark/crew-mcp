@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { SERVE_VERSION } from './serve.js';
+import { CREW_MCP_VERSION } from '../version.js';
 import { createBuiltinRegistry } from '../../adapters/registry.js';
 import {
   seedAgentPrefsFile,
@@ -356,7 +356,7 @@ export async function installSingleTarget(args: {
   const entry: InstalledTarget = {
     configPath,
     skillPath,
-    version: SERVE_VERSION,
+    version: CREW_MCP_VERSION,
     installedAt: new Date().toISOString(),
     serverCommand: crewBin,
     serverArgs: [...crewArgs],

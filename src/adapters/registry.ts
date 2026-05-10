@@ -1,9 +1,10 @@
-import type { AgentAdapter, AgentStrength, HealthCheckResult } from './types.js';
-import { ClaudeCodeAdapter } from './claude-code.js';
-import { CodexAdapter } from './codex.js';
-import { GeminiCliAdapter } from './gemini-cli.js';
-import { GenericAdapter } from './generic.js';
-import { OpenAiCompatibleAdapter } from './openai-compatible.js';
+import type {
+  AgentAdapter,
+  AgentStrength,
+  CaptainCapabilities,
+  EffortLevel,
+  HealthCheckResult,
+} from './types.js';
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
 
@@ -11,9 +12,89 @@ export interface RegistryHealthReport {
   [adapterName: string]: HealthCheckResult;
 }
 
+type BuiltinAdapterId =
+  | AdapterId.CLAUDE_CODE
+  | AdapterId.CODEX
+  | AdapterId.GEMINI_CLI;
+
+interface LazyAdapterMetadata {
+  readonly name: string;
+  readonly aliases?: readonly string[];
+  readonly strengths: readonly AgentStrength[];
+  readonly defaultEffort?: EffortLevel;
+  readonly supportsJsonSchema: boolean;
+  readonly captainCapabilities?: CaptainCapabilities;
+  readonly recognizesModel?: (modelId: string) => boolean;
+  readonly hasExecuteWithSchema?: boolean;
+  readonly hasExecuteWithTools?: boolean;
+  readonly hasGetCliVersionTag?: boolean;
+}
+
+type LazyAdapterLoader = () => Promise<AgentAdapter>;
+
+interface AdapterEntry {
+  readonly name: string;
+  readonly aliases?: readonly string[];
+  adapter?: AgentAdapter;
+  readonly proxy: AgentAdapter;
+  readonly loader?: LazyAdapterLoader;
+  loadPromise?: Promise<AgentAdapter>;
+}
+
+const CAPTAIN_TOOL_LOOP_CAPABILITIES: CaptainCapabilities = {
+  supportsToolLoop: true,
+  supportsStructuredDecisions: true,
+  supportsPauseForUserInput: true,
+};
+
+const GENERIC_CAPABILITIES: CaptainCapabilities = {
+  supportsToolLoop: false,
+  supportsStructuredDecisions: true,
+  supportsPauseForUserInput: false,
+};
+
+const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = {
+  [AdapterId.CLAUDE_CODE]: {
+    name: AdapterId.CLAUDE_CODE,
+    aliases: ['claude'],
+    strengths: ['careful-reasoning', 'code-review', 'documentation'],
+    supportsJsonSchema: true,
+    captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    recognizesModel: (modelId) =>
+      typeof modelId === 'string'
+      && (/^claude-/.test(modelId) || modelId === 'sonnet' || modelId === 'opus'),
+    hasExecuteWithSchema: true,
+    hasExecuteWithTools: true,
+    hasGetCliVersionTag: true,
+  },
+  [AdapterId.CODEX]: {
+    name: AdapterId.CODEX,
+    strengths: ['fast-iteration', 'autonomous-loops', 'code-implementation'],
+    defaultEffort: 'medium',
+    supportsJsonSchema: true,
+    captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    recognizesModel: (modelId) =>
+      typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
+    hasExecuteWithSchema: true,
+    hasExecuteWithTools: true,
+    hasGetCliVersionTag: true,
+  },
+  [AdapterId.GEMINI_CLI]: {
+    name: AdapterId.GEMINI_CLI,
+    strengths: ['long-context', 'broad-codebase-triage', 'multimodal-input'],
+    supportsJsonSchema: false,
+    captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    recognizesModel: (modelId) =>
+      typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId),
+    hasExecuteWithSchema: true,
+    hasExecuteWithTools: true,
+    hasGetCliVersionTag: true,
+  },
+};
+
 export class AdapterRegistry {
   /** Maps adapter `name` (canonical id) → adapter. */
-  private adapters = new Map<string, AgentAdapter>();
+  private adapters = new Map<string, AdapterEntry>();
   /**
    * Maps alias → canonical adapter name. Lookups via `get` / `getOrThrow`
    * fall through to this map when the requested key isn't a canonical
@@ -23,37 +104,71 @@ export class AdapterRegistry {
   private aliasToName = new Map<string, string>();
 
   register(adapter: AgentAdapter): void {
-    if (this.adapters.has(adapter.name) || this.aliasToName.has(adapter.name)) {
+    const entry: AdapterEntry = {
+      name: adapter.name,
+      aliases: adapter.aliases,
+      adapter,
+      proxy: adapter,
+    };
+    this.registerEntry(entry);
+  }
+
+  registerLazy(metadata: LazyAdapterMetadata, loader: LazyAdapterLoader): void {
+    let loadActual: () => Promise<AgentAdapter>;
+    const proxy = createLazyAdapterProxy(metadata, () => loadActual());
+    const entry: AdapterEntry = {
+      name: metadata.name,
+      aliases: metadata.aliases,
+      proxy,
+      loader,
+    };
+    loadActual = () => this.loadEntry(entry);
+    this.registerEntry(entry);
+  }
+
+  private registerEntry(entry: AdapterEntry): void {
+    if (this.adapters.has(entry.name) || this.aliasToName.has(entry.name)) {
       throw new Error(
-        `Adapter id "${adapter.name}" collides with an existing registration.`,
+        `Adapter id "${entry.name}" collides with an existing registration.`,
       );
     }
-    for (const alias of adapter.aliases ?? []) {
+    for (const alias of entry.aliases ?? []) {
       if (this.adapters.has(alias) || this.aliasToName.has(alias)) {
         throw new Error(
-          `Alias "${alias}" for adapter "${adapter.name}" collides with an existing registration.`,
+          `Alias "${alias}" for adapter "${entry.name}" collides with an existing registration.`,
         );
       }
     }
-    this.adapters.set(adapter.name, adapter);
-    for (const alias of adapter.aliases ?? []) {
-      this.aliasToName.set(alias, adapter.name);
+    this.adapters.set(entry.name, entry);
+    for (const alias of entry.aliases ?? []) {
+      this.aliasToName.set(alias, entry.name);
     }
   }
 
   get(name: string): AgentAdapter | undefined {
-    const direct = this.adapters.get(name);
-    if (direct) return direct;
-    const canonical = this.aliasToName.get(name);
-    return canonical ? this.adapters.get(canonical) : undefined;
+    const entry = this.resolveEntry(name);
+    if (!entry) return undefined;
+    this.startLoad(entry);
+    return entry.adapter ?? entry.proxy;
+  }
+
+  async load(name: string): Promise<AgentAdapter | undefined> {
+    const entry = this.resolveEntry(name);
+    if (!entry) return undefined;
+    return this.loadEntry(entry);
+  }
+
+  async loadAll(): Promise<AgentAdapter[]> {
+    return Promise.all(
+      [...this.adapters.values()].map((entry) => this.loadEntry(entry)),
+    );
   }
 
   getOrThrow(name: string): AgentAdapter {
     const adapter = this.get(name);
     if (!adapter) {
-      const known = [...this.adapters.keys(), ...this.aliasToName.keys()];
       throw new Error(
-        `Adapter "${name}" not found. Available adapters: ${known.join(', ')}`,
+        `Adapter "${name}" not found. Available adapters: ${this.knownNames().join(', ')}`,
       );
     }
     return adapter;
@@ -64,7 +179,9 @@ export class AdapterRegistry {
     const entries = [...this.adapters.entries()];
 
     const results = await Promise.allSettled(
-      entries.map(([, adapter]) => adapter.healthCheck()),
+      entries.map(([, entry]) =>
+        this.loadEntry(entry).then((adapter) => adapter.healthCheck()),
+      ),
     );
 
     for (let i = 0; i < entries.length; i++) {
@@ -89,8 +206,85 @@ export class AdapterRegistry {
   }
 
   listAvailable(): AgentAdapter[] {
-    return [...this.adapters.values()];
+    return [...this.adapters.values()].map((entry) => entry.adapter ?? entry.proxy);
   }
+
+  private resolveEntry(name: string): AdapterEntry | undefined {
+    const direct = this.adapters.get(name);
+    if (direct) return direct;
+    const canonical = this.aliasToName.get(name);
+    return canonical ? this.adapters.get(canonical) : undefined;
+  }
+
+  private startLoad(entry: AdapterEntry): void {
+    if (!entry.loader || entry.adapter) return;
+    void this.loadEntry(entry).catch(() => undefined);
+  }
+
+  private loadEntry(entry: AdapterEntry): Promise<AgentAdapter> {
+    if (entry.adapter) return Promise.resolve(entry.adapter);
+    if (!entry.loader) return Promise.resolve(entry.proxy);
+    entry.loadPromise ??= entry.loader().then((adapter) => {
+      if (adapter.name !== entry.name) {
+        throw new Error(
+          `Lazy adapter "${entry.name}" loaded adapter "${adapter.name}".`,
+        );
+      }
+      entry.adapter = adapter;
+      return adapter;
+    });
+    return entry.loadPromise;
+  }
+
+  private knownNames(): string[] {
+    return [...this.adapters.keys(), ...this.aliasToName.keys()];
+  }
+}
+
+function createLazyAdapterProxy(
+  metadata: LazyAdapterMetadata,
+  load: () => Promise<AgentAdapter>,
+): AgentAdapter {
+  const proxy: AgentAdapter = {
+    name: metadata.name,
+    aliases: metadata.aliases,
+    strengths: [...metadata.strengths],
+    defaultEffort: metadata.defaultEffort,
+    supportsJsonSchema: metadata.supportsJsonSchema,
+    captainCapabilities: metadata.captainCapabilities,
+    execute: async (task) => (await load()).execute(task),
+    healthCheck: async (options) => (await load()).healthCheck(options),
+  };
+
+  if (metadata.recognizesModel) {
+    proxy.recognizesModel = metadata.recognizesModel;
+  }
+  if (metadata.hasExecuteWithSchema) {
+    proxy.executeWithSchema = (async (prompt, schema, options) => {
+      const adapter = await load();
+      if (!adapter.executeWithSchema) {
+        throw new Error(`Adapter "${metadata.name}" does not support schema execution.`);
+      }
+      return adapter.executeWithSchema(prompt, schema, options);
+    }) as NonNullable<AgentAdapter['executeWithSchema']>;
+  }
+  if (metadata.hasExecuteWithTools) {
+    proxy.executeWithTools = async (tools, messages, onToolCall, context) => {
+      const adapter = await load();
+      if (!adapter.executeWithTools) {
+        throw new Error(`Adapter "${metadata.name}" does not support tool execution.`);
+      }
+      return adapter.executeWithTools(tools, messages, onToolCall, context);
+    };
+  }
+  if (metadata.hasGetCliVersionTag) {
+    proxy.getCliVersionTag = async () => {
+      const adapter = await load();
+      return adapter.getCliVersionTag?.();
+    };
+  }
+
+  return proxy;
 }
 
 /**
@@ -127,27 +321,49 @@ export function createRegistryFromConfig(
           `Agent "${name}" uses adapter "${AdapterId.GENERIC}" but no command is configured.`,
         );
       }
+      const strengths = toStrengths(config);
 
-      registry.register(
-        new GenericAdapter({
+      registry.registerLazy(
+        {
           name,
-          command: config.command,
-          argsTemplate: config.args ?? ['{{prompt}}'],
-          strengths: toStrengths(config),
-        }),
+          strengths,
+          supportsJsonSchema: false,
+          captainCapabilities: GENERIC_CAPABILITIES,
+        },
+        async () => {
+          const { GenericAdapter } = await import('./generic.js');
+          return new GenericAdapter({
+            name,
+            command: config.command!,
+            argsTemplate: config.args ?? ['{{prompt}}'],
+            strengths,
+          });
+        },
       );
       continue;
     }
 
     if (adapterType === AdapterId.OPENAI_COMPATIBLE) {
-      registry.register(
-        new OpenAiCompatibleAdapter({
+      const strengths = toStrengths(config);
+      registry.registerLazy(
+        {
           name,
-          model: config.model,
-          apiBase: config.apiBase,
-          apiKey: config.apiKey,
-          strengths: toStrengths(config),
-        }),
+          strengths,
+          supportsJsonSchema: false,
+          captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+          hasExecuteWithSchema: true,
+          hasExecuteWithTools: true,
+        },
+        async () => {
+          const { OpenAiCompatibleAdapter } = await import('./openai-compatible.js');
+          return new OpenAiCompatibleAdapter({
+            name,
+            model: config.model,
+            apiBase: config.apiBase,
+            apiKey: config.apiKey,
+            strengths,
+          });
+        },
       );
       continue;
     }
@@ -162,7 +378,10 @@ export function createRegistryFromConfig(
           `Built-in adapter "${adapterType}" must be configured under key "${adapterType}" (received "${name}").`,
         );
       }
-      registry.register(createBuiltinAdapter(adapterType));
+      registry.registerLazy(
+        BUILTIN_ADAPTER_METADATA[adapterType],
+        createBuiltinAdapterLoader(adapterType),
+      );
       continue;
     }
 
@@ -174,23 +393,39 @@ export function createRegistryFromConfig(
   return registry;
 }
 
-function createBuiltinAdapter(adapterType: AdapterId): AgentAdapter {
+function createBuiltinAdapterLoader(adapterType: BuiltinAdapterId): LazyAdapterLoader {
   switch (adapterType) {
     case AdapterId.CLAUDE_CODE:
-      return new ClaudeCodeAdapter();
+      return async () => {
+        const { ClaudeCodeAdapter } = await import('./claude-code.js');
+        return new ClaudeCodeAdapter();
+      };
     case AdapterId.CODEX:
-      return new CodexAdapter();
+      return async () => {
+        const { CodexAdapter } = await import('./codex.js');
+        return new CodexAdapter();
+      };
     case AdapterId.GEMINI_CLI:
-      return new GeminiCliAdapter();
-    default:
-      throw new Error(`"${adapterType}" is not a built-in adapter.`);
+      return async () => {
+        const { GeminiCliAdapter } = await import('./gemini-cli.js');
+        return new GeminiCliAdapter();
+      };
   }
 }
 
 export function createBuiltinRegistry(): AdapterRegistry {
   const registry = new AdapterRegistry();
-  registry.register(new ClaudeCodeAdapter());
-  registry.register(new CodexAdapter());
-  registry.register(new GeminiCliAdapter());
+  registry.registerLazy(
+    BUILTIN_ADAPTER_METADATA[AdapterId.CLAUDE_CODE],
+    createBuiltinAdapterLoader(AdapterId.CLAUDE_CODE),
+  );
+  registry.registerLazy(
+    BUILTIN_ADAPTER_METADATA[AdapterId.CODEX],
+    createBuiltinAdapterLoader(AdapterId.CODEX),
+  );
+  registry.registerLazy(
+    BUILTIN_ADAPTER_METADATA[AdapterId.GEMINI_CLI],
+    createBuiltinAdapterLoader(AdapterId.GEMINI_CLI),
+  );
   return registry;
 }
