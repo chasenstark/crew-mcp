@@ -21,6 +21,21 @@ writes, the distinction between `markTerminal()` statuses
 (`merged`, `merge_conflict`, `discarded`), and the guarantee that the top-level
 `status` string remains stable for simple readers such as `crew-wait`.
 
+## Update - 2026-05-10 Chat-Available Dispatch Skill Body (phase 2)
+
+Phase 2 of `docs/plans/active/non-blocking-captain.md` rewrote the captain
+skill's default dispatch lifecycle from same-turn long-polling to
+dispatch-and-yield. Captains now confirm the `run_id`, include the tail link,
+spawn the Claude Code `crew-wait` watcher overlay when available, and end the
+turn so the user can keep chatting. Codex/Gemini default recovery happens on
+the next captain turn by checking known pending run IDs with `get_run_status`
+and using `list_runs` after `/clear` or unknown references.
+
+`get_run_status` is now described as an on-demand status read. Its
+`wait_for_change_ms` and `wait_for_terminal_only` options remain available as
+advanced/legacy opt-in waiting primitives, but they are no longer the default
+captain flow.
+
 ## Update - 2026-05-10 Lifecycle Running-Guards + Stale-Run Sweeper (phase 1B)
 
 Phase 1B of `docs/plans/active/non-blocking-captain.md` added server-side
@@ -51,10 +66,10 @@ timeout while the run is still running, the response is deliberately lean:
 terminal-only wait. Already-terminal runs still return the normal terminal
 payload immediately.
 
-The captain skill body's default polling loop now calls
-`get_run_status({ run_id, wait_for_change_ms: 30000, since_event_line: cursor,
-wait_for_terminal_only: true })`, preserving the tail-link, silent-running,
-and terminal-synthesis guidance.
+Superseded by the 2026-05-10 Phase 2 update above: the captain skill no longer
+uses this terminal-only polling loop as its default flow. The
+`wait_for_terminal_only` capability remains available for advanced/legacy
+opt-in waits.
 
 ## Update - 2026-05-09 Architecture Docs Drift Refresh
 

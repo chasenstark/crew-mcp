@@ -741,9 +741,9 @@ interface DispatchAndRespondArgs {
   /**
    * Optional MCP progress notifier — when supplied, each adapter
    * onOutput chunk fires `notifications/progress` so the host CLI
-   * can render live streaming output. Absent when the client did
-   * not include a `progressToken` in the request `_meta`. Callers
-   * build this via `progressNotifierFrom(extra)`.
+   * can render live streaming output during the tool call. Absent
+   * when the client did not include a `progressToken` in the request
+   * `_meta`. Callers build this via `progressNotifierFrom(extra)`.
    */
   progress?: ProgressNotifier;
 }
@@ -761,20 +761,20 @@ interface ProgressNotifier {
 /**
  * Async-first dispatch — pre-2026-05 this raced a sync window against
  * the terminal event so fast runs could return inline; now it always
- * returns `status: "running"` immediately and the captain drives the
- * lifecycle via `get_run_status` (long-polled, cursor-based).
+ * returns `status: "running"` immediately and the captain yields the
+ * turn after dispatch. Lifecycle listeners keep state.json current
+ * while the user can keep chatting.
  *
  * Why: the prior model produced a 60s opening blackout for every
  * dispatch on hosts that don't surface MCP progress notifications
  * (codex), and snapshot polling at 10–20s cadence felt like a hung
  * UI even when the agent was actively working. Async-first lets the
- * captain start a tight long-poll loop inside `get_run_status` that
- * surfaces new events.log lines with sub-second latency.
+ * captain hand chat back to the user while progress remains available
+ * via the tail side channel and later status reads.
  *
  * The lifecycle listeners installed here keep firing in the
  * background after we return — they own state.json writes on
- * terminal events. The captain's polls read state.json + events.log
- * (cursor-based) to follow along.
+ * terminal events. Later status reads observe state.json + events.log.
  */
 async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<ToolCallReturn> {
   // Install terminal-event listeners + start the dispatch; we don't
@@ -792,8 +792,8 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
   args.dispatcher.start(args.task);
 
   const summary =
-    `Dispatched. Poll get_run_status with run_id="${args.runId}" ` +
-    `passing wait_for_change_ms: 30000, wait_for_terminal_only: true, and since_event_line cursor.`;
+    `Dispatched as "${args.runId}". End your turn after spawning the watcher ` +
+    `(Claude Code) or after this dispatch returns (Codex/Gemini); user is free to chat.`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
   const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
   const env: RunEnvelope = {
@@ -848,7 +848,8 @@ function renderDispatchMarkdown(env: RunEnvelope): string {
   }
   lines.push(
     `- Tail manually: \`tail -F ${env.events_log_path}\``,
-    `- Follow with: \`get_run_status({ run_id: "${env.run_id}", wait_for_change_ms: 30000, since_event_line: <cursor>, wait_for_terminal_only: true })\``,
+    `- Next: end your turn after spawning the watcher (Claude Code) or after this dispatch returns (Codex/Gemini); user is free to chat.`,
+    `- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``,
   );
   return lines.join('\n');
 }

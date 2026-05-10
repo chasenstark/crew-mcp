@@ -104,9 +104,12 @@ When the user dispatches an implementation:
 1. **Dispatch.** Call `run_agent` with the implementer's `agent_id`
    (from `list_agents`) and a precise prompt. Write the prompt
    yourself; the agent sees it verbatim.
-2. **Read the result.** When `run_agent` returns, look at the diff
-   in `files_changed` and the agent's `summary`. Decide whether the
-   work satisfies the prompt before involving the user.
+2. **Yield while running.** `run_agent` returns immediately with
+   `status: "running"` and empty `files_changed`. Confirm the
+   dispatch with the `run_id` and tail link, start the Claude Code
+   watcher overlay when available, then end your turn so the user can
+   keep chatting. On a later user turn or watcher synthetic turn, read
+   the terminal payload with `get_run_status`.
 3. **Iterate.** If something's off, `continue_run` against the same
    `run_id` with a fix prompt — same agent, same worktree. If you
    want a second opinion, `run_agent` to a different agent with
@@ -203,88 +206,97 @@ for this, scope is just src/parser.ts, replace the regex
 implementation"), don't re-ask. The rubric is about catching gaps,
 not running through a checklist for its own sake.
 
-## Polling lifecycle — every dispatch
+## Dispatch lifecycle — chat stays available
 
 `run_agent` and `continue_run` are **async-first**: they always
-return `{ status: "running", run_id }` immediately. You drive the
-lifecycle from `get_run_status`. There is no "fast path" that
-returns terminal inline — even sub-second runs come back as
-`running` and you make one quick poll to terminal.
+return `{ status: "running", run_id }` immediately. There is no
+terminal fast path. The default flow is dispatch-and-yield: confirm
+the run, give the user the tail link, and end the turn so chat stays
+available while the agent works.
 
-### Hard rule: stay in the same turn
+**Your job is coordination, not narration.** During a dispatch, keep
+your visible output to one dispatch confirmation, one terminal
+summary, and one merge/iterate/discard prompt. The user has an
+independent progress channel through the tail link.
 
-While a run is `running`, **do not end your turn**. Do not use
-`ScheduleWakeup`, `/loop` dynamic mode, `CronCreate`, "I'll check
-back in N minutes" patterns, or any other mechanism that hands
-control back to the user and resumes later. The long-poll
-`get_run_status` call **is** the wait. Holding the turn open
-through repeated long-polls is the intended design — not a token
-leak to optimize away.
+### Step 1 dispatch confirmation
 
-If you find yourself reasoning about "prompt-cache windows" or
-"saving tokens by waking up later": **stop**. That trade-off has
-already been considered (see
-`docs/plans/parked/long-poll-cost-tuning.md` in the crew-mcp
-repo) and explicitly rejected as the default. The user is
-watching a render loop; silence reads as hung.
+Confirm the run_id back to the user **once**, briefly, and **include
+a clickable tail link inline** so the user can open a side terminal
+without expanding the (collapsed-by-default) tool result. The
+`run_agent` envelope returns `tail_url` — a custom `crew-tail://`
+URL that opens Terminal.app running `tail -F` via the optional macOS
+handler (installed with `crew-mcp install-tail-handler`). Paste it
+verbatim into a markdown link.
 
-### The polling loop
+Always use `tail_url`, not `tail_command_url`: the `file://` variant
+gets intercepted by Claude Code and opens in the editor instead of a
+side terminal. (`tail_command_url` is preserved on the envelope for
+back-compat structured consumers; it is not the inline-link choice.)
+Format:
 
-**Your job is coordination, not narration.** While the run is
-running, you stay silent. The user has independent channels for
-following along — they don't need you to retell what the agent is
-doing turn-by-turn, and your context window is too valuable to
-spend re-reading and re-emitting each event line. Your responses
-during a dispatch should be: one dispatch confirmation, one
-terminal summary, one merge/iterate/discard prompt. That's the
-budget.
+```
+Dispatched as `<run_id>` — [tail in side terminal](<tail_url>). Ended turn; chat freely.
+```
 
-1. Dispatch. Confirm the run_id back to the user **once**, briefly,
-   and **include a clickable tail link inline** so the user can open
-   a side terminal without expanding the (collapsed-by-default) tool
-   result. The `run_agent` envelope returns `tail_url` — a custom
-   `crew-tail://` URL that opens Terminal.app running `tail -F` via
-   the optional macOS handler (installed with `crew-mcp
-install-tail-handler`). Paste it verbatim into a markdown link.
-   Always use `tail_url`, not `tail_command_url`: the `file://`
-   variant gets intercepted by Claude Code and opens in the editor
-   instead of a side terminal. (`tail_command_url` is preserved on
-   the envelope for back-compat structured consumers; it is not the
-   inline-link choice.) Format:
+That's a single line. Don't relay the rest of the dispatch markdown
+(worktree path, status-read hints, etc.) — those are already in the
+tool result for the user who wants them.
 
-   ```
-   Dispatched as `<run_id>` — [tail in side terminal](<tail_url>). Watching.
-   ```
+### Background watcher overlay (Claude Code only)
 
-   That's a single line. Don't relay the rest of the dispatch
-   markdown (worktree path, follow-up `get_run_status` hints, etc.)
-   — those are already in the tool result for the user who wants
-   them.
+On Claude Code, immediately after `run_agent` / `continue_run`
+returns, spawn `crew-wait <run_id>` with `Bash` and
+`run_in_background: true`, then end your turn. `crew-wait` ships in
+the Phase 3 overlay; it watches `state.json` until the run reaches
+`success | partial | error | cancelled`, then exits. Claude Code
+turns that background completion into a synthetic captain turn.
 
-2. Call `get_run_status({ run_id, wait_for_change_ms: 30000,
-since_event_line: <last cursor>, wait_for_terminal_only: true })`.
-   Start the cursor at 0; on terminal responses, update it from
-   `next_event_line`.
-3. **The timeout response while still running is deliberately tiny:**
-   `{ status: "running", timed_out: true }`. It does not include
-   `next_event_line`, because terminal-only waits ignore stream cursors
-   until terminal. Keep using the cursor you already had.
-4. **Immediately call `get_run_status` again** with the same cursor
-   after `timed_out: true`. Same turn. No wakeups, no scheduled
-   returns. **No text output between polls** — the polling loop is silent. (If
-   you've been polling for several minutes with no terminal, you
-   may emit one terse "still working" line every ~5 polls so the
-   user knows you're alive — but this is an upper bound, not a
-   per-poll obligation.)
-5. Exit the loop when `status` is `success | partial | error |
-cancelled` (or — for read-only runs — also `discarded`).
-6. Running polls had no tail at all; **now** the terminal
-   poll-return includes `events_tail` — the recent tail of the full
-   run log. Use it for context when you write the summary, but **do
-   not just dump it back at the user verbatim**. Synthesize: "Done.
-   Codex reviewed 8 files and flagged 3 issues. Final summary: …"
-   The tail is your evidence, the synthesis is the deliverable.
-7. Ask about merge / iterate / discard.
+If spawning the watcher fails because the binary is missing, the
+permission allowlist rejects it, or the host is not Claude Code, fall
+back to the portable baseline: end your turn after the dispatch and
+check pending runs at the next user turn.
+
+### Foreground `crew-wait` opt-in (any host, gated on Phase 3 empirical test)
+
+When the user explicitly says they want to wait in-turn ("wait for
+this", "I'll wait"), or when Codex/Gemini in-turn waiting is
+preferable for the task, call `crew-wait <run_id>` as a foreground
+shell command. This blocks chat, but it uses one inference instead
+of an N-iteration MCP long-poll loop. This any-host behavior is
+allowed only after the Phase 3 foreground-wait empirical tests pass;
+otherwise treat it as Claude-only.
+
+After foreground `crew-wait` returns, call `get_run_status({ run_id })`
+for the rich terminal payload: summary, `files_changed`, prompts,
+warnings, and `events_tail`. The shell output is terminal metadata,
+not the full result.
+
+### Checking pending runs at turn start
+
+At the start of every captain turn, before answering the user's new
+message, check pending run state:
+
+1. For run IDs you remember from conversation context, call
+   `get_run_status({ run_id })`. If a run is still `running`, mention
+   it only when relevant; don't block the turn.
+2. Use `list_runs` as recovery after `/clear`, context loss, or when
+   the user references a run you don't recognize. It is implicitly
+   scoped to the current repo; use terminal status filters when you
+   need newly finished runs.
+
+When a run reaches `success | partial | error | cancelled`, synthesize
+from `summary`, `files_changed`, and `events_tail`. Do not dump the
+tail verbatim. Ask about merge / iterate / discard for implementer
+runs, or cleanup / keep-around for read-only runs.
+
+### Multiple terminations don't batch
+
+Claude Code watcher exits are not batched. If three runs finish close
+together, expect three separate synthetic turns. Handle each turn
+tightly: identify the run, summarize the terminal result, and ask the
+one relevant follow-up. Don't try to coalesce completions across
+synthetic turns; they don't queue together.
 
 ### How users follow progress (not your problem)
 
@@ -292,7 +304,7 @@ Two side channels carry live progress without burning your context:
 
 - **The inline tail link in your dispatch confirmation** — the
   `[tail in side terminal](<tail_url>)` markdown link you emit
-  (step 1) opens a side terminal on macOS via the `crew-tail://`
+  opens a side terminal on macOS via the `crew-tail://`
   handler. This is the user's main progress channel; surfacing it
   inline is the whole point of including the link in your reply
   rather than relying on the tool-result panel. If the handler
@@ -301,9 +313,10 @@ Two side channels carry live progress without burning your context:
   the editor), so `tail_url` is still the right choice; the user
   can manually run the `tail -F` command from the tool-result panel
   in that case.
-- Some hosts also render MCP `notifications/progress` chunks in
-  their UI (a status line, an inline progress indicator). The
-  adapter emits these automatically.
+- `tail.command` / `events.log` is the only default live-progress
+  UX. Inline MCP `notifications/progress` chunks only exist while a
+  tool call is in flight; the chat-available default flow ends the
+  tool turn, so those inline notifications don't fire.
 
 Both happen without you. Don't duplicate them by rendering events
 into your reply.
@@ -313,35 +326,31 @@ into your reply.
 ```
 run_agent(...)              → { status: "running", run_id: R,
                                 tail_url: "crew-tail:///..." }
-"Dispatched as `R` — [tail in side terminal](crew-tail:///...). Watching."
-get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0,
-                wait_for_terminal_only: true})
-  → status: "running", timed_out: true
-(no output)
-get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0,
-                wait_for_terminal_only: true})
-  → status: "running", timed_out: true
-(no output)
-get_run_status({R, wait_for_change_ms: 30000, since_event_line: 0,
-                wait_for_terminal_only: true})
-  → events_tail: [<last N events of full log>], next_event_line: 11,
-    status: "success", summary: "..."
+"Dispatched as `R` — [tail in side terminal](crew-tail:///...). Ended turn; chat freely."
+Claude Code only:
+  Bash("crew-wait R", run_in_background: true)
+end turn
+
+later user turn or watcher synthetic turn:
+get_run_status({ run_id: R })
+  → status: "success", summary: "...", files_changed: [...],
+    events_tail: [<last N events of full log>]
 "Done. <one-paragraph synthesis informed by summary + events_tail>.
 Merge / iterate / discard?"
 ```
 
-All of that happens inside one captain turn. The user types
-nothing between the dispatch and the merge prompt, and they read
-maybe 5 lines from you across the whole flow.
+The key is the turn break: after dispatch, the user can type
+anything while the worker runs. Terminal surfacing happens on a
+later user turn or on Claude Code's watcher-triggered synthetic turn.
 
 ### Cancellation
 
-`cancel_run({ run_id })` aborts the in-flight dispatch. The status
-will land as `cancelled` on the next poll. Surface a short note
-("Cancelled.") and the partial summary if any.
-With `wait_for_terminal_only: true` (the default), `cancel_run` wakes
-the in-flight `get_run_status` call and returns the terminal
-`cancelled` payload on that same poll — no special handling needed.
+`cancel_run({ run_id })` works any time while a dispatch is in
+flight. The run will land as `cancelled`; Claude Code's background
+watcher detects it like any other terminal status, and other hosts
+surface it on the next turn-start `get_run_status` / `list_runs`
+check. Surface a short note ("Cancelled.") and the partial summary if
+any.
 
 ## The tools
 

@@ -39,6 +39,7 @@ describe.skipIf(!hasBuild)('crew-mcp serve — subprocess wire protocol', () => 
         'discard_run',
         'get_run_status',
         'list_agents',
+        'list_runs',
         'merge_run',
         'run_agent',
       ]);
