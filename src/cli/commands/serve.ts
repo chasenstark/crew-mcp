@@ -19,6 +19,8 @@
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
 import { randomUUID } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, realpathSync, type Dirent } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -225,6 +227,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher();
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
+  markAbandonedRunningRuns({ crewHome, projectRoot, runStateStore });
   // Per-server one-shot loud-log state for progressToken presence/absence.
   // Crew's stdio MCP server is normally 1:1 with a single host client, so
   // per-server is effectively per-client today. If crew grows SSE or another
@@ -334,7 +337,14 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       if (!state) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
       }
-      if (state.status === 'discarded' || state.status === 'merged') {
+      if (state.status === 'running') {
+        return errorContent('continue_run: run is currently running; call cancel_run first.');
+      }
+      if (
+        state.status === 'discarded'
+        || state.status === 'merged'
+        || state.status === 'merge_conflict'
+      ) {
         return errorContent(
           `Cannot continue run "${args.run_id}" with status "${state.status}".`,
         );
@@ -421,6 +431,9 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       const state = runStateStore.read(args.run_id);
       if (!state) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
+      }
+      if (state.status === 'running') {
+        return errorContent('merge_run: run is currently running; call cancel_run first.');
       }
       if (state.readOnly) {
         // No worktree exists for read-only runs; merge is meaningless.
@@ -519,6 +532,9 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       // Idempotent: if state.json doesn't exist or run is already discarded,
       // succeed quietly.
       const state = runStateStore.read(args.run_id);
+      if (state?.status === 'running') {
+        return errorContent('discard_run: run is currently running; call cancel_run first.');
+      }
       try {
         if (state && state.status !== 'discarded') {
           // Read-only runs never allocated a worktree, so the
@@ -1281,6 +1297,66 @@ function isTerminalRunStatus(status: string): boolean {
     || status === 'merge_conflict'
     || status === 'discarded'
   );
+}
+
+function markAbandonedRunningRuns(args: {
+  crewHome: string;
+  projectRoot: string;
+  runStateStore: RunStateStore;
+}): void {
+  const runsDir = join(args.crewHome, 'runs');
+  const currentRepoRoot = resolveComparableRepoRoot(args.projectRoot);
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(runsDir, { withFileTypes: true });
+  } catch (err) {
+    logger.warn(
+      `stale-run sweeper: failed to read ${runsDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const runId = entry.name;
+    if (runId === '.meta' || runId === '.locks') continue;
+    const statePath = join(runsDir, runId, 'state.json');
+    if (!existsSync(statePath)) continue;
+    let state: RunStateV1;
+    try {
+      state = JSON.parse(readFileSync(statePath, 'utf-8')) as RunStateV1;
+    } catch (err) {
+      logger.warn(
+        `stale-run sweeper: failed to read state for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+
+    if (state.status !== 'running') continue;
+    if (state.repoRoot === undefined) continue;
+    if (resolveComparableRepoRoot(state.repoRoot) !== currentRepoRoot) continue;
+
+    try {
+      args.runStateStore.markTerminal(runId, {
+        status: 'error',
+        summary: 'abandoned (server restart)',
+        filesChanged: [],
+        lastError: 'abandoned (server restart)',
+      });
+    } catch (err) {
+      logger.warn(
+        `stale-run sweeper: failed to mark ${runId} abandoned: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+function resolveComparableRepoRoot(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 /**

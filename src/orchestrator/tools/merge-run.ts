@@ -24,8 +24,9 @@
  *     (the merged commit is permanently in the host's HEAD, so the
  *     worktree has no remaining value). state.json + events.log
  *     persist for archeology. On `conflict` or `no-changes` the
- *     worktree is preserved — the captain can resolve, retry, or
- *     iterate via continue_run, then explicitly discard_run.
+ *     worktree is preserved. On `conflict`, either resolve conflicts
+ *     in the host repo and retry `merge_run`, or `git merge --abort`
+ *     and `discard_run` to throw away the run.
  */
 
 import { z } from 'zod';
