@@ -5,6 +5,21 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-10 Deferred Stale-Run Sweeper (Tier 5 N2)
+
+`buildCrewMcpServer` now schedules the repoRoot-scoped stale-run sweeper with
+`setImmediate` instead of running it synchronously on the server construction
+path. Server-ready latency no longer grows with the number of historical
+`<crewHome>/runs/` records. A module-local single-flight promise prevents
+concurrent sweeps; strict callers can await the in-flight sweep through
+`getStaleRunSweep()`, while default tool calls continue without paying that
+wait.
+
+The accepted v1 tradeoff is a short race after server readiness: until the
+deferred sweep completes, `list_runs` can still observe abandoned records as
+`running`. The sweeper preserves the prior status transition behavior and still
+leaves records without `serverPid` untouched.
+
 ## Update - 2026-05-10 Dispatch Envelope Trim
 
 Dispatch `structuredContent` now defaults to the captain-essential fields:

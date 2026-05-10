@@ -121,6 +121,12 @@ export interface ServeOptions {
    */
   crewHome?: string;
 
+  /**
+   * Test seam: override the stale-run sweeper while preserving the same
+   * deferred scheduling path used in production.
+   */
+  staleRunSweeper?: (args: StaleRunSweepArgs) => void | Promise<void>;
+
 }
 
 export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled';
@@ -215,6 +221,40 @@ export interface CrewMcpServerInstance {
   readonly runStateStore: RunStateStore;
 }
 
+export type StaleRunSweepArgs = {
+  crewHome: string;
+  projectRoot: string;
+  runStateStore: RunStateStore;
+};
+
+let staleRunSweepPromise: Promise<void> | null = null;
+
+export function getStaleRunSweep(): Promise<void> | null {
+  return staleRunSweepPromise;
+}
+
+export function scheduleStaleRunSweep(
+  args: StaleRunSweepArgs,
+  sweep: (args: StaleRunSweepArgs) => void | Promise<void> = markAbandonedRunningRuns,
+): Promise<void> {
+  if (staleRunSweepPromise !== null) return staleRunSweepPromise;
+
+  staleRunSweepPromise = new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  })
+    .then(() => sweep(args))
+    .catch((err) => {
+      logger.warn(
+        `stale-run sweeper: failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    })
+    .finally(() => {
+      staleRunSweepPromise = null;
+    });
+
+  return staleRunSweepPromise;
+}
+
 /**
  * Build a fully-configured `McpServer` for crew without binding it to any
  * transport. The caller is responsible for `server.connect(transport)`.
@@ -231,7 +271,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher();
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
-  markAbandonedRunningRuns({ crewHome, projectRoot, runStateStore });
+  void scheduleStaleRunSweep(
+    { crewHome, projectRoot, runStateStore },
+    options.staleRunSweeper,
+  );
   // Per-server one-shot loud-log state for progressToken presence/absence.
   // Crew's stdio MCP server is normally 1:1 with a single host client, so
   // per-server is effectively per-client today. If crew grows SSE or another
@@ -1319,11 +1362,7 @@ function isTerminalRunStatus(status: string): boolean {
   );
 }
 
-function markAbandonedRunningRuns(args: {
-  crewHome: string;
-  projectRoot: string;
-  runStateStore: RunStateStore;
-}): void {
+function markAbandonedRunningRuns(args: StaleRunSweepArgs): void {
   const runsDir = join(args.crewHome, 'runs');
   const currentRepoRoot = resolveComparableRepoRoot(args.projectRoot);
   let entries: Dirent[];
