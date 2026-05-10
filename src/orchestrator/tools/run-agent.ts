@@ -377,9 +377,13 @@ export function buildAdapterDispatchTask(args: {
       }
 
       // v2: enrich filesModified from worktree status when the adapter ran
-      // inside its dedicated worktree AND the run didn't error. We do NOT
-      // merge — host CLI does that explicitly via merge_run.
+      // inside its dedicated worktree AND the run didn't error, unless the
+      // adapter declares its terminal `filesModified` list authoritative. We
+      // do NOT merge — host CLI does that explicitly via merge_run.
       if (args.effectiveWorkingDirectory !== args.worktreePath) {
+        return result;
+      }
+      if (args.adapter.filesModifiedReliable === true) {
         return result;
       }
       try {
