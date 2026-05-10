@@ -21,7 +21,7 @@
  * were written without it (the field is informational, not load-bearing).
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync, chmodSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { logger } from '../utils/logger.js';
@@ -110,6 +110,10 @@ export interface RunStateV1 {
 }
 
 const SCHEMA_VERSION = 1 as const;
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
+}
 
 export interface CreateRunStateInit {
   readonly runId: string;
@@ -236,8 +240,13 @@ export class RunStateStore {
    */
   read(runId: string): RunStateV1 | undefined {
     const path = this.statePath(runId);
-    if (!existsSync(path)) return undefined;
-    const raw = readFileSync(path, 'utf-8');
+    let raw: string;
+    try {
+      raw = readFileSync(path, 'utf-8');
+    } catch (err) {
+      if (isEnoent(err)) return undefined;
+      throw err;
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
@@ -416,8 +425,13 @@ export class RunStateStore {
    */
   tailEvents(runId: string, n = 50): string[] {
     const path = this.eventsLogPath(runId);
-    if (!existsSync(path)) return [];
-    const content = readFileSync(path, 'utf-8');
+    let content: string;
+    try {
+      content = readFileSync(path, 'utf-8');
+    } catch (err) {
+      if (isEnoent(err)) return [];
+      throw err;
+    }
     const lines = content.split('\n').filter((l) => l.length > 0);
     return lines.slice(-n);
   }
@@ -437,8 +451,13 @@ export class RunStateStore {
     readonly nextLine: number;
   } {
     const path = this.eventsLogPath(runId);
-    if (!existsSync(path)) return { lines: [], nextLine: 0 };
-    const content = readFileSync(path, 'utf-8');
+    let content: string;
+    try {
+      content = readFileSync(path, 'utf-8');
+    } catch (err) {
+      if (isEnoent(err)) return { lines: [], nextLine: 0 };
+      throw err;
+    }
     const all = content.split('\n').filter((l) => l.length > 0);
     const start = Math.max(0, sinceLine);
     return { lines: all.slice(start), nextLine: all.length };

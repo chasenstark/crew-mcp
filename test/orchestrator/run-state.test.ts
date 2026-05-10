@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -138,6 +138,13 @@ describe('RunStateStore', () => {
 
   it('read() returns undefined for unknown runs', () => {
     expect(store.read('nope')).toBeUndefined();
+  });
+
+  it('read() propagates non-ENOENT read errors', () => {
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    chmodSync(join(crewHome, 'runs', 'r-1', 'state.json'), 0o000);
+
+    expect(() => store.read('r-1')).toThrow(/EACCES|permission/i);
   });
 
   it('read() throws for unknown schemaVersion', () => {
@@ -306,6 +313,20 @@ describe('RunStateStore', () => {
   it('tailEvents() returns [] when log does not exist', () => {
     store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     expect(store.tailEvents('r-1')).toEqual([]);
+  });
+
+  it('readEventsSince() returns an empty cursor when log does not exist', () => {
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    expect(store.readEventsSince('r-1')).toEqual({ lines: [], nextLine: 0 });
+  });
+
+  it('event readers propagate non-ENOENT read errors', () => {
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    store.appendEvent('r-1', 'line one');
+    chmodSync(store.eventsLogPath('r-1'), 0o000);
+
+    expect(() => store.tailEvents('r-1')).toThrow(/EACCES|permission/i);
+    expect(() => store.readEventsSince('r-1')).toThrow(/EACCES|permission/i);
   });
 
   // readSignalEventsSince — used by get_run_status's long-poll fast-
