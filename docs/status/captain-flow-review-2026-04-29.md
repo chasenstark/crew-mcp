@@ -21,11 +21,28 @@ and backs off toward a 5s cap while state contents do not change. The Node
 process cold-start cost per dispatch is unchanged; that remains the accepted
 tradeoff for Claude Code's per-invocation synthetic-turn completion behavior.
 
-Item #8 (events.log incremental reads) shipped in `__COMMIT__`: the terminal
+Item #8 (events.log incremental reads) shipped in `55efdba`: the terminal
 tail reader now scans `events.log` once in bounded chunks, retains only the
 filtered tail ring, and shares that pass with `next_event_line` cursor
 advancement on terminal `get_run_status` calls. The per-run mtime/byte-offset
 cursor cache remains deferred per the audit.
+
+Item #9 (captain skill body condensation) shipped in `eecaa5f`: the canonical
+`skills/crew-captain.body.md` dropped from 508 → 437 lines (~14% / 3.5K
+bytes). Cuts targeted overlap (Decision-order spine vs Default flow
+walkthrough), repeated rationale (host-rationale bullets, merge-boundary
+good/bad/worse trio, "How users follow progress" rationale), and verbose
+guardrail prose (Effort table, Read-only caveats). All load-bearing rules
+were preserved verbatim or as load-bearing-equivalents:
+`{{CREW_WAIT_COMMAND}}` template variable, watcher allowlist warning,
+synthetic-turn parse contract, `list_runs` recovery fallback after `/clear`,
+multi-terminations-don't-batch, foreground opt-in hard-gate (Claude Code
+only), all 5 ask-user rubric items, all 4 read-only caveats, Worked shape
+code block, Cancellation. The pre-dispatch ask gate was strengthened per
+`feedback_skill_ask_user_enforcement` memory; the audit's 300-350 line
+target was explicitly rejected as requiring load-bearing cuts. Cut prose is
+preserved verbatim in `docs/captain-skill-body-cuts-2026-05-10.md` for
+historical reference.
 
 ## Update - 2026-05-10 Deferred Stale-Run Sweeper (Tier 5 N2)
 
