@@ -103,6 +103,24 @@ function createDeferred<T = void>(): {
   return { promise, resolve, reject };
 }
 
+function toolText(res: { content?: unknown }): string {
+  const content = res.content as Array<{ text?: unknown }> | undefined;
+  const text = content?.[0]?.text;
+  if (typeof text !== 'string') {
+    throw new Error('Expected first tool content item to be text.');
+  }
+  return text;
+}
+
+function expectStructuredJsonBytes(
+  res: { structuredContent?: unknown },
+  expected: unknown,
+): void {
+  const actualBytes = Buffer.from(JSON.stringify(res.structuredContent), 'utf8');
+  const expectedBytes = Buffer.from(JSON.stringify(expected), 'utf8');
+  expect(actualBytes.equals(expectedBytes)).toBe(true);
+}
+
 async function startHarness(
   adapters: AgentAdapter[],
   options: { fullEnvelope?: boolean } = {},
@@ -170,6 +188,7 @@ async function pollUntilTerminal(
   status: string;
   state: Record<string, unknown>;
   events_tail: readonly string[];
+  text: string;
 }> {
   const deadline = Date.now() + (options.timeoutMs ?? 5000);
   const interval = options.intervalMs ?? 5;
@@ -186,7 +205,7 @@ async function pollUntilTerminal(
       state.status !== 'running'
       && state.status !== undefined
     ) {
-      return { status: state.status, state, events_tail: state.events_tail };
+      return { status: state.status, state, events_tail: state.events_tail, text: toolText(res) };
     }
     await new Promise((r) => setTimeout(r, interval));
   }
@@ -256,6 +275,16 @@ describe('crew serve — list_agents tool', () => {
     expect(structured.agents.every((a) => a.available)).toBe(true);
   });
 
+  it('renders compact JSON content through jsonContent', async () => {
+    const res = await h.client.callTool({ name: 'list_agents', arguments: {} });
+    const structured = res.structuredContent as { agents: unknown[] };
+    const text = toolText(res);
+    expect(text).toBe(JSON.stringify(structured));
+    expect(text).not.toBe(JSON.stringify(structured, null, 2));
+    expect(text).not.toContain('\n');
+    expectStructuredJsonBytes(res, structured);
+  });
+
   it('reports adapter health failures as available: false (does not throw)', async () => {
     await h.close();
     h = await startHarness([
@@ -284,6 +313,46 @@ describe('crew serve — list_agents tool', () => {
     await h.client.callTool({ name: 'list_agents', arguments: { refresh: true } });
 
     expect(healthCheck).toHaveBeenCalledWith({ refresh: true });
+  });
+});
+
+describe('crew serve — list_runs tool', () => {
+  it('renders compact JSON content through jsonContent', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => ({
+        output: 'listed run',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const res = await h.client.callTool({ name: 'list_runs', arguments: {} });
+      const structured = res.structuredContent as {
+        runs: Array<{ run_id: string; status: string; summary?: string }>;
+      };
+      expect(structured.runs[0]).toMatchObject({
+        run_id: runEnv.run_id,
+        status: 'success',
+        summary: 'listed run',
+      });
+      const text = toolText(res);
+      expect(text).toBe(JSON.stringify(structured));
+      expect(text).not.toBe(JSON.stringify(structured, null, 2));
+      expect(text).not.toContain('\n');
+      expectStructuredJsonBytes(res, structured);
+    } finally {
+      await h.close();
+    }
   });
 });
 
@@ -955,6 +1024,14 @@ describe('crew serve — merge_run tool', () => {
       };
       expect(mergeEnv.status).toBe('merged');
       expect(mergeEnv.commit_sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(toolText(mergeRes)).toBe(
+        `**Merged** \`${runEnv.run_id}\` → \`${mergeEnv.commit_sha}\``,
+      );
+      expectStructuredJsonBytes(mergeRes, {
+        run_id: runEnv.run_id,
+        status: 'merged',
+        commit_sha: mergeEnv.commit_sha,
+      });
       // Post-merge: file lives in host HEAD.
       expect(existsSync(join(h.root, 'NEW.md'))).toBe(true);
       // Post-merge: worktree directory is auto-cleaned (the changes
@@ -1071,6 +1148,14 @@ describe('crew serve — merge_run tool', () => {
       const env = mergeRes.structuredContent as { status: string; conflicts?: string[] };
       expect(env.status).toBe('conflict');
       expect(env.conflicts).toContain('shared.txt');
+      expect(toolText(mergeRes)).toBe(
+        `**Conflict** on \`${runEnv.run_id}\` (1 files): shared.txt`,
+      );
+      expectStructuredJsonBytes(mergeRes, {
+        run_id: runEnv.run_id,
+        status: 'conflict',
+        conflicts: ['shared.txt'],
+      });
 
       const continueRes = await h.client.callTool({
         name: 'continue_run',
@@ -1135,6 +1220,11 @@ describe('crew serve — merge_run tool', () => {
       });
       const env = mergeRes.structuredContent as { status: string };
       expect(env.status).toBe('no-changes');
+      expect(toolText(mergeRes)).toBe(`**No changes** to merge from \`${runEnv.run_id}\``);
+      expectStructuredJsonBytes(mergeRes, {
+        run_id: runEnv.run_id,
+        status: 'no-changes',
+      });
     } finally {
       await h.close();
     }
@@ -1167,6 +1257,11 @@ describe('crew serve — discard_run tool', () => {
       });
       const env = discard.structuredContent as { ok: boolean };
       expect(env.ok).toBe(true);
+      expect(toolText(discard)).toBe(`**Discarded** \`${runEnv.run_id}\``);
+      expectStructuredJsonBytes(discard, {
+        run_id: runEnv.run_id,
+        ok: true,
+      });
       expect(existsSync(runEnv.worktree_path)).toBe(false);
 
       const status = await h.client.callTool({
@@ -1190,6 +1285,7 @@ describe('crew serve — discard_run tool', () => {
       expect(res.isError).toBeFalsy();
       const env = res.structuredContent as { ok: boolean };
       expect(env.ok).toBe(true);
+      expect(toolText(res)).toBe('**Discarded** `r-never-existed`');
     } finally {
       await h.close();
     }
@@ -1420,6 +1516,15 @@ describe('crew serve — get_run_status tool', () => {
       expect(s.filesChanged).toEqual([]);
       expect(s.summary).toBe('all done');
       expect(s.prompts).toHaveLength(1);
+      expect(final.text).toBe(`**\`${runEnv.run_id}\` success**\n> all done`);
+      expectStructuredJsonBytes({ structuredContent: s }, {
+        status: 'success',
+        events_tail: s.events_tail,
+        next_event_line: s.next_event_line,
+        filesChanged: [],
+        prompts: s.prompts,
+        summary: 'all done',
+      });
       // Verbatim prompt text AND per-turn summary are intentionally
       // elided from the wire payload — captains have what they sent
       // (in their own conversation history), and the latest summary
@@ -1494,6 +1599,11 @@ describe('crew serve — cancel_run tool', () => {
         arguments: { run_id: env.run_id },
       });
       expect((cancel.structuredContent as { ok: boolean }).ok).toBe(true);
+      expect(toolText(cancel)).toBe(`**Cancelled** \`${env.run_id}\``);
+      expectStructuredJsonBytes(cancel, {
+        run_id: env.run_id,
+        ok: true,
+      });
 
       // Wait for the dispatcher to finalize cancellation in run state.
       await waitFor(async () => {
@@ -1519,6 +1629,12 @@ describe('crew serve — cancel_run tool', () => {
       const body = result.structuredContent as { ok: boolean; reason?: string };
       expect(body.ok).toBe(false);
       expect(body.reason).toMatch(/Unknown run_id/);
+      expect(toolText(result)).toBe('`never-existed` not cancelled: Unknown run_id "never-existed".');
+      expectStructuredJsonBytes(result, {
+        run_id: 'never-existed',
+        ok: false,
+        reason: 'Unknown run_id "never-existed".',
+      });
     } finally {
       await h.close();
     }
@@ -1552,6 +1668,9 @@ describe('crew serve — cancel_run tool', () => {
       const body = cancel.structuredContent as { ok: boolean; reason?: string };
       expect(body.ok).toBe(false);
       expect(body.reason).toMatch(/not in-flight.*status="success"/);
+      expect(toolText(cancel)).toBe(
+        `\`${env.run_id}\` not cancelled: Run "${env.run_id}" is not in-flight (status="success").`,
+      );
     } finally {
       await h.close();
     }
@@ -2227,6 +2346,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(s.timed_out).toBeUndefined();
       expect(s.summary).toBe('terminal summary');
       expect(s.filesChanged).toEqual(['src/index.ts']);
+      expect(toolText(res)).toBe(
+        `**\`${env.run_id}\` success**\n1 files changed: src/index.ts\n> terminal summary`,
+      );
       expect(Array.isArray(s.events_tail)).toBe(true);
     } finally {
       await h.close();
@@ -2331,6 +2453,11 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         },
       });
       expect(res.structuredContent).toEqual({
+        status: 'running',
+        timed_out: true,
+      });
+      expect(toolText(res)).toBe(`\`${env.run_id}\` status: \`running\` (timed out)`);
+      expectStructuredJsonBytes(res, {
         status: 'running',
         timed_out: true,
       });
@@ -2565,6 +2692,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // The wake should have fired well under the 5000ms cap.
       expect(elapsed).toBeLessThan(2000);
       expect(s.status).toBe('running');
+      expect(toolText(res)).toBe(`\`${env.run_id}\` status: \`running\` (cursor: 1)`);
       // Running poll-returns are lean by design: status, events_tail
       // (empty), next_event_line — and nothing else. Static fields
       // (run_id, tail_command_path, etc.) live on the dispatch envelope.
@@ -2575,6 +2703,11 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // Cursor advanced past the emitted chunk so the eventual
       // terminal poll-return knows where the log head sits.
       expect(s.next_event_line).toBe(1);
+      expectStructuredJsonBytes(res, {
+        status: 'running',
+        events_tail: [],
+        next_event_line: 1,
+      });
 
       // Cleanup: complete the dispatch and verify the terminal
       // poll-return DOES surface the chunk via events_tail.
@@ -2747,6 +2880,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         '[mock-streaming] message: line 8',
       ]);
       expect(c.events_tail_skipped).toBe(6);
+      expect(toolText(capped)).toBe(`**\`${env.run_id}\` success**\n> done\n6 events skipped`);
+      expect(toolText(capped)).not.toContain('line 7');
       expect(readEventsSinceSpy).not.toHaveBeenCalled();
       expect(readFilteredTailSpy).toHaveBeenCalledTimes(1);
     } finally {

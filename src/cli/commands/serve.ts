@@ -308,10 +308,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       // have edited it between dispatches without restarting serve.
       const agentPrefs = readAgentPrefsFile(crewHome);
       const out = await listAgents({ registry, agentPrefs, refresh: args.refresh });
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
-        structuredContent: out as unknown as Record<string, unknown>,
-      };
+      return jsonContent(out);
     },
   );
 
@@ -324,10 +321,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     },
     async (args) => {
       const out = listRuns(args, { crewHome, repoRoot: projectRoot });
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(out, null, 2) }],
-        structuredContent: out as unknown as Record<string, unknown>,
-      };
+      return jsonContent(out);
     },
   );
 
@@ -545,7 +539,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
             status: 'merged',
             commit_sha: result.commitSha,
           };
-          return jsonContent(env);
+          return markdownContent(renderMergeMarkdown(env), env);
         }
         if (result.status === 'conflict') {
           runStateStore.markMergeConflict(args.run_id, {
@@ -557,14 +551,14 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
             status: 'conflict',
             conflicts: result.conflicts,
           };
-          return jsonContent(env, /* isError */ true);
+          return markdownContent(renderMergeMarkdown(env), env, /* isError */ true);
         }
         // no-changes
         const env: MergeEnvelope = {
           run_id: args.run_id,
           status: 'no-changes',
         };
-        return jsonContent(env);
+        return markdownContent(renderMergeMarkdown(env), env);
       } catch (err) {
         return errorContent(
           err instanceof Error ? err.message : `merge_run failed: ${String(err)}`,
@@ -604,7 +598,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         );
       }
       const env: DiscardEnvelope = { run_id: args.run_id, ok: true };
-      return jsonContent(env);
+      return markdownContent(renderDiscardMarkdown(env), env);
     },
   );
 
@@ -680,7 +674,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       });
 
       if (terminalOnly && timedOut && !isTerminalRunStatus(state.status)) {
-        return jsonContent({ status: 'running', timed_out: true });
+        return getRunStatusContent(args.run_id, { status: 'running', timed_out: true });
       }
       const fresh = runStateStore.read(args.run_id) ?? state;
       return buildGetRunStatusResponse(
@@ -714,12 +708,14 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         const reason = state
           ? `Run "${args.run_id}" is not in-flight (status="${state.status}").`
           : `Unknown run_id "${args.run_id}".`;
-        return jsonContent({ run_id: args.run_id, ok: false, reason });
+        const env = { run_id: args.run_id, ok: false, reason };
+        return markdownContent(renderCancelMarkdown(env), env);
       }
       // Trigger abort — the existing run:cancelled lifecycle listener
       // will mark the run terminal with status='cancelled'.
       dispatcher.cancel(inFlight.toolCallId, 'cancel_run requested');
-      return jsonContent({ run_id: args.run_id, ok: true });
+      const env = { run_id: args.run_id, ok: true };
+      return markdownContent(renderCancelMarkdown(env), env);
     },
   );
 
@@ -1332,7 +1328,7 @@ function buildGetRunStatusResponse(
       next_event_line: cursorAfterDelta,
       ...legacyLogTail,
     };
-    return jsonContent(payload);
+    return getRunStatusContent(runId, payload);
   }
 
   // Terminal poll-return: include the synthesis surface the captain
@@ -1361,7 +1357,7 @@ function buildGetRunStatusResponse(
     ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
     ...legacyLogTail,
   };
-  return jsonContent(payload);
+  return getRunStatusContent(runId, payload);
 }
 
 function isTerminalRunStatus(status: string): boolean {
@@ -1526,12 +1522,108 @@ async function waitForRunChange(args: {
   });
 }
 
-function jsonContent<T extends object>(value: T, isError = false): ToolCallReturn {
+function markdownContent<T extends object>(
+  text: string,
+  value: T,
+  isError = false,
+): ToolCallReturn {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }],
+    content: [{ type: 'text' as const, text }],
     structuredContent: value as unknown as Record<string, unknown>,
     isError,
   };
+}
+
+function jsonContent<T extends object>(value: T, isError = false): ToolCallReturn {
+  return markdownContent(JSON.stringify(value), value, isError);
+}
+
+function renderMergeMarkdown(env: MergeEnvelope): string {
+  if (env.status === 'merged') {
+    return `**Merged** ${mdInlineCode(env.run_id)} → ${mdInlineCode(env.commit_sha ?? '')}`;
+  }
+  if (env.status === 'conflict') {
+    const conflicts = env.conflicts ?? [];
+    return `**Conflict** on ${mdInlineCode(env.run_id)} (${conflicts.length} files): ${conflicts.join(', ')}`;
+  }
+  return `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
+}
+
+function renderDiscardMarkdown(env: DiscardEnvelope): string {
+  return `**Discarded** ${mdInlineCode(env.run_id)}`;
+}
+
+function renderCancelMarkdown(env: {
+  readonly run_id: string;
+  readonly ok: boolean;
+  readonly reason?: string;
+}): string {
+  if (env.ok) {
+    return `**Cancelled** ${mdInlineCode(env.run_id)}`;
+  }
+  return `${mdInlineCode(env.run_id)} not cancelled: ${env.reason ?? 'unknown reason'}`;
+}
+
+function getRunStatusContent<T extends object>(
+  runId: string,
+  payload: T,
+): ToolCallReturn {
+  return markdownContent(renderGetRunStatusMarkdown(runId, payload), payload);
+}
+
+function renderGetRunStatusMarkdown(
+  runId: string,
+  payload: {
+    readonly status?: unknown;
+    readonly timed_out?: unknown;
+    readonly next_event_line?: unknown;
+    readonly filesChanged?: unknown;
+    readonly summary?: unknown;
+    readonly events_tail_skipped?: unknown;
+  },
+): string {
+  const status = typeof payload.status === 'string' ? payload.status : 'unknown';
+  if (payload.timed_out === true) {
+    const cursor = typeof payload.next_event_line === 'number'
+      ? ` at cursor ${payload.next_event_line}`
+      : '';
+    return `${mdInlineCode(runId)} status: \`${status}\` (timed out${cursor})`;
+  }
+
+  if (!isTerminalRunStatus(status)) {
+    const cursor = typeof payload.next_event_line === 'number'
+      ? String(payload.next_event_line)
+      : 'unknown';
+    return `${mdInlineCode(runId)} status: \`${status}\` (cursor: ${cursor})`;
+  }
+
+  const lines = [`**${mdInlineCode(runId)} ${status}**`];
+  const filesChanged = Array.isArray(payload.filesChanged)
+    ? payload.filesChanged.filter((path): path is string => typeof path === 'string')
+    : [];
+  if (filesChanged.length > 0) {
+    const firstPaths = filesChanged.slice(0, 3).join(', ');
+    const more = filesChanged.length > 3
+      ? ` [+ ${filesChanged.length - 3} more]`
+      : '';
+    lines.push(`${filesChanged.length} files changed: ${firstPaths}${more}`);
+  }
+  if (typeof payload.summary === 'string') {
+    lines.push(`> ${truncateMarkdownSummary(payload.summary, 200)}`);
+  }
+  if (
+    typeof payload.events_tail_skipped === 'number'
+    && payload.events_tail_skipped > 0
+  ) {
+    lines.push(`${payload.events_tail_skipped} events skipped`);
+  }
+  return lines.join('\n');
+}
+
+function truncateMarkdownSummary(summary: string, maxChars: number): string {
+  const normalized = summary.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}...`;
 }
 
 function errorContent(message: string): ToolCallReturn {
