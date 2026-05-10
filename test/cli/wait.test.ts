@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   CrewWaitUnknownRunError,
   main,
+  nextCrewWaitPollIntervalMs,
   usage,
   waitForRunTerminal,
 } from '../../src/cli/wait.js';
@@ -21,42 +22,191 @@ describe('crew-wait', () => {
     }
   });
 
-  it('waits through a missing state.json race and prints terminal metadata', async () => {
+  it('detects terminal state written through atomic tmp-plus-rename', async () => {
     const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-'));
     cleanup.push(crewHome);
     const runId = 'run-123';
     const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      schemaVersion: 1,
+      runId,
+      agentId: 'codex',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      worktreePath: '/tmp/crew worktree',
+      prompts: [],
+      filesChanged: [],
+    });
+
     const stdout: string[] = [];
+    const watcher = createManualWatchFactory();
 
     setTimeout(() => {
-      mkdirSync(runDir, { recursive: true });
-      writeFileSync(
-        join(runDir, 'state.json'),
-        JSON.stringify({
-          schemaVersion: 1,
-          runId,
-          agentId: 'codex',
-          status: 'success',
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          worktreePath: '/tmp/crew worktree',
-          prompts: [],
-          filesChanged: [],
-        }),
-        'utf-8',
-      );
+      writeStateAtomic(runDir, {
+        schemaVersion: 1,
+        runId,
+        agentId: 'codex',
+        status: 'success',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        worktreePath: '/tmp/crew worktree',
+        prompts: [],
+        filesChanged: [],
+      });
+      watcher.emit(runDir, 'state.json');
     }, 25);
 
     await waitForRunTerminal({
       runId,
       crewHome,
       pollIntervalMs: 5,
+      watch: watcher.watch,
+      sleep: async () => {
+        throw new Error('unexpected polling fallback');
+      },
       writeStdout: (line) => stdout.push(line),
     });
 
     expect(stdout).toEqual([
       'CREW_WAIT_TERMINAL run_id=run-123 agent=codex status=success worktree=/tmp/crew worktree',
     ]);
+  });
+
+  it('waits through the initial missing state.json race and attaches when it appears', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-missing-'));
+    cleanup.push(crewHome);
+    const runId = 'run-missing';
+    const runDir = join(crewHome, 'runs', runId);
+    const stdout: string[] = [];
+    const watcher = createManualWatchFactory();
+
+    setTimeout(() => {
+      mkdirSync(runDir, { recursive: true });
+      writeStateAtomic(runDir, {
+        schemaVersion: 1,
+        runId,
+        agentId: 'claude-code',
+        status: 'success',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        worktreePath: '/tmp/late worktree',
+        prompts: [],
+        filesChanged: [],
+      });
+      watcher.emit(crewHome, 'runs');
+    }, 25);
+
+    await waitForRunTerminal({
+      runId,
+      crewHome,
+      pollIntervalMs: 5,
+      watch: watcher.watch,
+      sleep: async () => {
+        throw new Error('unexpected polling fallback');
+      },
+      writeStdout: (line) => stdout.push(line),
+    });
+
+    expect(stdout).toEqual([
+      'CREW_WAIT_TERMINAL run_id=run-missing agent=claude-code status=success worktree=/tmp/late worktree',
+    ]);
+  });
+
+  it('falls back to polling when fs.watch is unavailable', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-fallback-'));
+    cleanup.push(crewHome);
+    const runId = 'run-fallback';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    const stdout: string[] = [];
+    const sleeps: number[] = [];
+    let nowMs = 0;
+
+    await waitForRunTerminal({
+      runId,
+      crewHome,
+      pollIntervalMs: 10,
+      stateFirstAppearanceGraceMs: 1_000,
+      now: () => nowMs,
+      watch: () => {
+        throw new Error('watch unavailable');
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        nowMs += ms;
+        writeStateAtomic(runDir, {
+          schemaVersion: 1,
+          runId,
+          agentId: 'codex',
+          status: 'success',
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          worktreePath: '/tmp/fallback worktree',
+          prompts: [],
+          filesChanged: [],
+        });
+      },
+      writeStdout: (line) => stdout.push(line),
+    });
+
+    expect(sleeps).toEqual([10]);
+    expect(stdout).toEqual([
+      'CREW_WAIT_TERMINAL run_id=run-fallback agent=codex status=success worktree=/tmp/fallback worktree',
+    ]);
+  });
+
+  it('uses CREW_WAIT_POLL_INTERVAL_MS for fallback polling', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-env-fallback-'));
+    cleanup.push(crewHome);
+    const runId = 'run-env-fallback';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    const previous = process.env.CREW_WAIT_POLL_INTERVAL_MS;
+    process.env.CREW_WAIT_POLL_INTERVAL_MS = '17';
+    const sleeps: number[] = [];
+
+    try {
+      await waitForRunTerminal({
+        runId,
+        crewHome,
+        stateFirstAppearanceGraceMs: 1_000,
+        now: () => sleeps.reduce((sum, ms) => sum + ms, 0),
+        watch: () => {
+          throw new Error('watch unavailable');
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          writeStateAtomic(runDir, {
+            schemaVersion: 1,
+            runId,
+            agentId: 'codex',
+            status: 'success',
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            worktreePath: '/tmp/env fallback worktree',
+            prompts: [],
+            filesChanged: [],
+          });
+        },
+        writeStdout: () => {},
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CREW_WAIT_POLL_INTERVAL_MS;
+      } else {
+        process.env.CREW_WAIT_POLL_INTERVAL_MS = previous;
+      }
+    }
+
+    expect(sleeps).toEqual([17]);
+  });
+
+  it('backs off fallback polling up to the cap when state does not change', () => {
+    expect(nextCrewWaitPollIntervalMs(2_000, 2_000)).toBe(4_000);
+    expect(nextCrewWaitPollIntervalMs(4_000, 2_000)).toBe(5_000);
+    expect(nextCrewWaitPollIntervalMs(5_000, 2_000)).toBe(5_000);
+    expect(nextCrewWaitPollIntervalMs(10_000, 10_000)).toBe(10_000);
   });
 
   it('prints help and exits zero', async () => {
@@ -232,3 +382,40 @@ describe('crew-wait', () => {
     expect(writes.join('')).toMatch(/Usage: crew-wait <run_id>/);
   });
 });
+
+function writeStateAtomic(runDir: string, state: Record<string, unknown>): void {
+  const statePath = join(runDir, 'state.json');
+  const tmpPath = `${statePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
+  renameSync(tmpPath, statePath);
+}
+
+function createManualWatchFactory(): {
+  watch: (path: string, listener: (eventType: string, filename: string | Buffer | null) => void) => { close(): void };
+  emit: (path: string, filename: string) => void;
+} {
+  const watchers: Array<{
+    path: string;
+    closed: boolean;
+    listener: (eventType: string, filename: string | Buffer | null) => void;
+  }> = [];
+
+  return {
+    watch: (path, listener) => {
+      const watcher = { path, listener, closed: false };
+      watchers.push(watcher);
+      return {
+        close: () => {
+          watcher.closed = true;
+        },
+      };
+    },
+    emit: (path, filename) => {
+      for (const watcher of watchers) {
+        if (watcher.path === path && !watcher.closed) {
+          watcher.listener('rename', filename);
+        }
+      }
+    },
+  };
+}

@@ -1,11 +1,14 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, statSync, watch as fsWatch } from 'node:fs';
+import type { FSWatcher } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { resolveCrewHome } from '../utils/crew-home.js';
 
-const POLL_INTERVAL_MS = 1_000;
+const CREW_WAIT_POLL_INTERVAL_ENV = 'CREW_WAIT_POLL_INTERVAL_MS';
+const DEFAULT_POLL_INTERVAL_MS = 2_000;
+const MAX_POLL_INTERVAL_MS = 5_000;
 /**
  * Time to wait for `state.json` to appear before exiting with a
  * diagnostic. The producer normally writes state.json within
@@ -35,6 +38,21 @@ interface PersistedRunState {
   readonly worktreePath?: unknown;
 }
 
+interface StateSnapshot {
+  readonly state: PersistedRunState;
+  readonly raw: string;
+}
+
+interface WatchHandle {
+  close(): void;
+  on?(event: 'error', listener: (err: Error) => void): unknown;
+}
+
+export type CrewWaitWatchFactory = (
+  path: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+) => WatchHandle;
+
 export interface WaitForRunTerminalOptions {
   readonly runId: string;
   readonly crewHome?: string;
@@ -44,6 +62,7 @@ export interface WaitForRunTerminalOptions {
   readonly writeStderr?: (line: string) => void;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
+  readonly watch?: CrewWaitWatchFactory;
 }
 
 /**
@@ -66,36 +85,365 @@ export async function waitForRunTerminal(
   options: WaitForRunTerminalOptions,
 ): Promise<void> {
   const crewHome = options.crewHome ?? resolveCrewHome();
-  const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? resolvePollIntervalMs();
   const graceMs = options.stateFirstAppearanceGraceMs ?? STATE_FIRST_APPEARANCE_GRACE_MS;
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
   const writeStdout = options.writeStdout ?? ((line) => process.stdout.write(`${line}\n`));
-  const statePath = join(crewHome, 'runs', options.runId, 'state.json');
+  const runsPath = join(crewHome, 'runs');
+  const runPath = join(runsPath, options.runId);
+  const statePath = join(runPath, 'state.json');
   const startedAtMs = now();
 
-  for (;;) {
-    const state = await readStateIfPresent(statePath);
-    if (state && typeof state.status === 'string' && TERMINAL_STATUSES.has(state.status)) {
-      const runId = typeof state.runId === 'string' ? state.runId : options.runId;
-      const agent = typeof state.agentId === 'string' ? state.agentId : '';
-      const worktree = typeof state.worktreePath === 'string' ? state.worktreePath : '';
-      writeStdout(
-        `CREW_WAIT_TERMINAL run_id=${runId} agent=${agent} status=${state.status} worktree=${worktree}`,
-      );
+  const watchResult = await waitForRunTerminalWithWatch({
+    runId: options.runId,
+    crewHome,
+    runsPath,
+    runPath,
+    statePath,
+    graceMs,
+    startedAtMs,
+    now,
+    writeStdout,
+    watch: options.watch ?? defaultWatch,
+  });
+
+  if (watchResult.completed) {
+    return;
+  }
+
+  await waitForRunTerminalByPolling({
+    runId: options.runId,
+    statePath,
+    pollIntervalMs,
+    graceMs,
+    startedAtMs,
+    stateAppeared: watchResult.stateAppeared,
+    sleep,
+    now,
+    writeStdout,
+  });
+}
+
+export function nextCrewWaitPollIntervalMs(
+  currentMs: number,
+  baseMs: number,
+  maxMs = MAX_POLL_INTERVAL_MS,
+): number {
+  const normalizedBaseMs = Math.max(1, Math.floor(baseMs));
+  const normalizedCurrentMs = Math.max(normalizedBaseMs, Math.floor(currentMs));
+  const normalizedMaxMs = Math.max(normalizedBaseMs, Math.floor(maxMs));
+  return Math.min(normalizedCurrentMs * 2, normalizedMaxMs);
+}
+
+function resolvePollIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[CREW_WAIT_POLL_INTERVAL_ENV];
+  if (raw === undefined) {
+    return DEFAULT_POLL_INTERVAL_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_POLL_INTERVAL_MS;
+  }
+  return parsed;
+}
+
+interface WaitContext {
+  readonly runId: string;
+  readonly statePath: string;
+  readonly graceMs: number;
+  readonly startedAtMs: number;
+  readonly now: () => number;
+  readonly writeStdout: (line: string) => void;
+}
+
+interface WatchWaitContext extends WaitContext {
+  readonly crewHome: string;
+  readonly runsPath: string;
+  readonly runPath: string;
+  readonly watch: CrewWaitWatchFactory;
+}
+
+interface WatchWaitResult {
+  readonly completed: boolean;
+  readonly stateAppeared: boolean;
+}
+
+async function waitForRunTerminalWithWatch(
+  context: WatchWaitContext,
+): Promise<WatchWaitResult> {
+  return new Promise<WatchWaitResult>((resolve, reject) => {
+    let watcher: WatchHandle | undefined;
+    let watchedTarget: WatchTarget | undefined;
+    let settled = false;
+    let evaluating = false;
+    let evaluateAgain = false;
+    let stateAppeared = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = (): void => {
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = undefined;
+      }
+      if (watcher) {
+        watcher.close();
+        watcher = undefined;
+      }
+      watchedTarget = undefined;
+    };
+
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ completed: true, stateAppeared });
+    };
+
+    const fail = (err: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    const fallbackToPolling = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ completed: false, stateAppeared });
+    };
+
+    const armGraceTimer = (): void => {
+      if (stateAppeared || graceTimer) return;
+      const remainingMs = context.graceMs - (context.now() - context.startedAtMs);
+      if (remainingMs <= 0) {
+        fail(new CrewWaitUnknownRunError(context.runId, context.statePath));
+        return;
+      }
+      graceTimer = setTimeout(() => {
+        if (!stateAppeared) {
+          fail(new CrewWaitUnknownRunError(context.runId, context.statePath));
+        }
+      }, remainingMs);
+    };
+
+    const clearGraceTimer = (): void => {
+      if (!graceTimer) return;
+      clearTimeout(graceTimer);
+      graceTimer = undefined;
+    };
+
+    const ensureWatcher = (): boolean => {
+      const target = selectWatchTarget(context);
+      if (!target) return false;
+      if (watchedTarget?.path === target.path && watchedTarget.kind === target.kind) {
+        return true;
+      }
+
+      if (watcher) {
+        watcher.close();
+        watcher = undefined;
+      }
+
+      let nextWatcher: WatchHandle;
+      try {
+        nextWatcher = context.watch(target.path, (_eventType, filename) => {
+          if (!shouldHandleWatchEvent(target, context.runId, filename)) return;
+          void evaluate();
+        });
+      } catch {
+        return false;
+      }
+
+      nextWatcher.on?.('error', fallbackToPolling);
+      watcher = nextWatcher;
+      watchedTarget = target;
+      return true;
+    };
+
+    const evaluate = async (): Promise<void> => {
+      if (settled) return;
+      if (evaluating) {
+        evaluateAgain = true;
+        return;
+      }
+
+      evaluating = true;
+      try {
+        do {
+          evaluateAgain = false;
+          if (!ensureWatcher()) {
+            fallbackToPolling();
+            return;
+          }
+
+          const snapshot = await readStateSnapshotIfPresent(context.statePath);
+          if (settled) return;
+
+          if (snapshot) {
+            stateAppeared = true;
+            clearGraceTimer();
+            const line = terminalLine(snapshot.state, context.runId);
+            if (line) {
+              context.writeStdout(line);
+              finish();
+              return;
+            }
+          } else if (!stateAppeared && context.now() - context.startedAtMs >= context.graceMs) {
+            fail(new CrewWaitUnknownRunError(context.runId, context.statePath));
+            return;
+          }
+
+          if (!ensureWatcher()) {
+            fallbackToPolling();
+            return;
+          }
+        } while (evaluateAgain && !settled);
+      } catch (err) {
+        fail(err);
+      } finally {
+        evaluating = false;
+        if (evaluateAgain && !settled) {
+          void evaluate();
+        }
+      }
+    };
+
+    if (!ensureWatcher()) {
+      fallbackToPolling();
       return;
     }
+    armGraceTimer();
+    void evaluate();
+  });
+}
 
-    // Exit with a diagnostic if state.json never appears at all
-    // within the grace window. Once the file has appeared even once,
-    // we keep polling indefinitely — long-running agents are normal,
-    // and it's not crew-wait's job to time out the run itself.
-    if (state === undefined && now() - startedAtMs >= graceMs) {
-      throw new CrewWaitUnknownRunError(options.runId, statePath);
+interface PollingWaitContext extends WaitContext {
+  readonly pollIntervalMs: number;
+  readonly stateAppeared: boolean;
+  readonly sleep: (ms: number) => Promise<void>;
+}
+
+async function waitForRunTerminalByPolling(context: PollingWaitContext): Promise<void> {
+  let stateAppeared = context.stateAppeared;
+  let previousRaw: string | undefined;
+  let hasPreviousSnapshot = false;
+  let sleepMs = context.pollIntervalMs;
+
+  for (;;) {
+    const snapshot = await readStateSnapshotIfPresent(context.statePath);
+    const raw = snapshot?.raw;
+    const changed = !hasPreviousSnapshot || raw !== previousRaw;
+    if (changed) {
+      sleepMs = context.pollIntervalMs;
+    } else {
+      sleepMs = nextCrewWaitPollIntervalMs(sleepMs, context.pollIntervalMs);
+    }
+    hasPreviousSnapshot = true;
+    previousRaw = raw;
+
+    if (snapshot) {
+      stateAppeared = true;
+      const line = terminalLine(snapshot.state, context.runId);
+      if (line) {
+        context.writeStdout(line);
+        return;
+      }
     }
 
-    await sleep(pollIntervalMs);
+    if (snapshot === undefined && !stateAppeared && context.now() - context.startedAtMs >= context.graceMs) {
+      throw new CrewWaitUnknownRunError(context.runId, context.statePath);
+    }
+
+    await context.sleep(sleepMs);
   }
+}
+
+interface WatchTarget {
+  readonly path: string;
+  readonly kind: 'crew-home' | 'runs-dir' | 'run-dir';
+}
+
+function selectWatchTarget(context: WatchWaitContext): WatchTarget | undefined {
+  // Watch directories, not the state file inode: state.json is written
+  // through tmp-plus-rename, so file watchers detach on every update.
+  if (isDirectory(context.runPath)) {
+    return { path: context.runPath, kind: 'run-dir' };
+  }
+  if (isDirectory(context.runsPath)) {
+    return { path: context.runsPath, kind: 'runs-dir' };
+  }
+  if (isDirectory(context.crewHome)) {
+    return { path: context.crewHome, kind: 'crew-home' };
+  }
+  return undefined;
+}
+
+function shouldHandleWatchEvent(
+  target: WatchTarget,
+  runId: string,
+  filename: string | Buffer | null,
+): boolean {
+  const name = watchFilenameToString(filename);
+  if (name === undefined) return true;
+
+  switch (target.kind) {
+    case 'crew-home':
+      return name === 'runs';
+    case 'runs-dir':
+      return name === runId;
+    case 'run-dir':
+      return name === 'state.json' || name.startsWith('state.json.tmp');
+  }
+}
+
+function watchFilenameToString(filename: string | Buffer | null): string | undefined {
+  if (typeof filename === 'string') return filename;
+  if (Buffer.isBuffer(filename)) return filename.toString('utf-8');
+  return undefined;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function terminalLine(state: PersistedRunState, fallbackRunId: string): string | undefined {
+  if (typeof state.status !== 'string' || !TERMINAL_STATUSES.has(state.status)) {
+    return undefined;
+  }
+  const runId = typeof state.runId === 'string' ? state.runId : fallbackRunId;
+  const agent = typeof state.agentId === 'string' ? state.agentId : '';
+  const worktree = typeof state.worktreePath === 'string' ? state.worktreePath : '';
+  return `CREW_WAIT_TERMINAL run_id=${runId} agent=${agent} status=${state.status} worktree=${worktree}`;
+}
+
+function defaultWatch(
+  path: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+): FSWatcher {
+  return fsWatch(path, { persistent: true }, (eventType, filename) => {
+    listener(eventType, filename);
+  });
+}
+
+async function readStateSnapshotIfPresent(path: string): Promise<StateSnapshot | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf-8');
+  } catch (err) {
+    if (isNodeError(err) && err.code === 'ENOENT') return undefined;
+    throw err;
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(`Invalid crew run state at ${path}: expected JSON object`);
+  }
+  return { state: parsed as PersistedRunState, raw };
 }
 
 export function usage(): string {
@@ -119,21 +467,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
   await waitForRunTerminal({ runId: argv[0] });
   return 0;
-}
-
-async function readStateIfPresent(path: string): Promise<PersistedRunState | undefined> {
-  let raw: string;
-  try {
-    raw = await readFile(path, 'utf-8');
-  } catch (err) {
-    if (isNodeError(err) && err.code === 'ENOENT') return undefined;
-    throw err;
-  }
-  const parsed = JSON.parse(raw) as unknown;
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error(`Invalid crew run state at ${path}: expected JSON object`);
-  }
-  return parsed as PersistedRunState;
 }
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
