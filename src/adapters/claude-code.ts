@@ -423,6 +423,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     'documentation',
   ];
   readonly supportsJsonSchema = true;
+  // Current implementation extracts paths from final prose only. Claude tool
+  // events do not cover shell edits, git mv, or every write path we allow.
+  readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,

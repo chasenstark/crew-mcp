@@ -363,6 +363,10 @@ export class CodexAdapter implements AgentAdapter {
   // both directions. Per-call override comes via Task.constraints.effort.
   readonly defaultEffort: EffortLevel = 'medium';
   readonly supportsJsonSchema = true;
+  // Codex emits structured `file_change` events for in-band file edits; treat
+  // that terminal list as authoritative so an empty array means no file_change
+  // events were observed.
+  readonly filesModifiedReliable = true;
   readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,

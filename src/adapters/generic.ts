@@ -57,6 +57,8 @@ export class GenericAdapter implements AgentAdapter {
   readonly name: string;
   readonly strengths: AgentStrength[];
   readonly supportsJsonSchema = false;
+  // Arbitrary CLI commands have no uniform terminal file-change reporting.
+  readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
     supportsToolLoop: false,
     supportsStructuredDecisions: true,

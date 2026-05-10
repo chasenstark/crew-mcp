@@ -201,6 +201,45 @@ describe('planRunAgent', () => {
     expect(() => readFileSync(join(root, 'src', 'generated.ts'), 'utf-8')).toThrow();
   });
 
+  it('skips post-run worktree status when adapter filesModified is reliable', async () => {
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
+      const typedTask = task as { context: { workingDirectory: string } };
+      writeFileSync(join(typedTask.context.workingDirectory, 'reliable-empty.txt'), 'changed\n', 'utf-8');
+      return {
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      };
+    });
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      execute: executeMock,
+      filesModifiedReliable: true,
+    });
+    const getModifiedFilesByRun = vi.spyOn(worktreeManager, 'getModifiedFilesByRun');
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'create a file' },
+      'call-x',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.task.run({ signal: makeAbortSignal() });
+
+    expect(getModifiedFilesByRun).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      output: 'done',
+      filesModified: [],
+      status: 'success',
+    });
+    expect(readFileSync(join(plan.worktreePath, 'reliable-empty.txt'), 'utf-8')).toBe('changed\n');
+  });
+
   it('per-call model wins over agents.json prefs', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
       output: '',

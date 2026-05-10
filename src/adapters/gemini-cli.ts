@@ -258,6 +258,8 @@ export class GeminiCliAdapter implements AgentAdapter {
   // post-validates with Zod. Reporting false makes downstream code pick the
   // right branch (prompt-based structured output instead of native schema).
   readonly supportsJsonSchema = false;
+  // Gemini terminal execution does not currently parse a file-change stream.
+  readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,

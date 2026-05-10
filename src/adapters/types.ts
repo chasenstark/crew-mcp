@@ -129,6 +129,17 @@ export interface AgentAdapter {
    */
   readonly defaultEffort?: EffortLevel;
   readonly supportsJsonSchema: boolean;
+  /**
+   * True when `TaskResult.filesModified` is authoritative for this adapter,
+   * so the dispatch layer can skip its post-run git status fallback. A
+   * reliable adapter returning `[]` means "no files changed", not "unknown".
+   *
+   * This is about the adapter's observed terminal-result channel. For CLIs
+   * that only report in-band tool-use file changes, out-of-band shell edits
+   * may still be invisible and should keep the flag false unless the adapter
+   * has another complete source of truth.
+   */
+  readonly filesModifiedReliable?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
   executeWithSchema?<T extends z.ZodType>(
