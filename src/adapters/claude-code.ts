@@ -49,7 +49,6 @@ const ClaudeResponseSchema = z.object({
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
 
-const CLAUDE_PROGRESS_PREFIX = '[claude-code] ';
 const PROGRESS_LINE_MAX_LEN = 240;
 
 /**
@@ -119,7 +118,7 @@ function takeCodePointBudget(value: string, maxCodeUnits: number): string {
 }
 
 function claudeProgressLine(kind: string, summary: string): string {
-  const raw = `${CLAUDE_PROGRESS_PREFIX}${kind}: ${summary.replace(/\s+/g, ' ').trim()}`;
+  const raw = `${kind}: ${summary.replace(/\s+/g, ' ').trim()}`;
   if (raw.length <= PROGRESS_LINE_MAX_LEN) return raw;
   return `${takeCodePointBudget(raw, PROGRESS_LINE_MAX_LEN - 1)}…`;
 }

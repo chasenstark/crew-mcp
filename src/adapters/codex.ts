@@ -80,7 +80,6 @@ interface ParseJsonlResult {
 }
 
 const CODEX_STREAM_LINE_MAX_LEN = 240;
-const CODEX_STREAM_PREFIX = '[codex] ';
 const CODEX_STREAM_TRUNCATION_SUFFIX = '...';
 
 function parseJsonlEvent(line: string): CodexEvent | undefined {
@@ -127,7 +126,7 @@ function boundStreamLine(line: string): string {
 
 function codexStreamLine(kind: string, summary: string): string {
   const fallbackSummary = streamPreview(summary) || 'unknown';
-  return boundStreamLine(`${CODEX_STREAM_PREFIX}${kind}: ${fallbackSummary}`);
+  return boundStreamLine(`${kind}: ${fallbackSummary}`);
 }
 
 function codexEventFallback(event: unknown): string {

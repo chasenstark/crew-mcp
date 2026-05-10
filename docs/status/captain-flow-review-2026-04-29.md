@@ -20,6 +20,20 @@ deferred sweep completes, `list_runs` can still observe abandoned records as
 `running`. The sweeper preserves the prior status transition behavior and still
 leaves records without `serverPid` untouched.
 
+## Update - 2026-05-10 Server-Side Progress Prefix Authority (Tier 3 #13)
+
+Progress stream prefixes now have one authority: `crew-mcp serve`.
+Codex and Claude Code adapters emit semantic chunks such as
+`command: started ...` or `message: ...` without `[adapter]` prefixes. The
+server renders `[<agent>] ...` once via `formatProgressLines()`, writes those
+same bounded lines to `events.log`, and sends them through
+`notifications/progress`.
+
+This supersedes the May 6 detail that `events.log` was the adapter-emitted
+source of truth for Codex/Claude progress lines. `events_tail` now matches the
+server-rendered progress surface, while the adapter parsers remain responsible
+only for semantic `kind: summary` formatting.
+
 ## Update - 2026-05-10 Dispatch Envelope Trim
 
 Dispatch `structuredContent` now defaults to the captain-essential fields:

@@ -1800,10 +1800,9 @@ describe('crew serve — progress notifications', () => {
   });
 
   it('truncates over-long lines with an ellipsis suffix', async () => {
-    // #5 PROGRESS_LINE_MAX_LEN = 240. The verbatim chunk is still
-    // appended to events.log (events_tail surfaces it) — only the
-    // inline progress payload is bounded so the host UI stays
-    // readable.
+    // #5 PROGRESS_LINE_MAX_LEN = 240. Progress notifications and
+    // events.log share the same bounded server-side rendering so the
+    // host UI and event tail stay readable.
     const huge = 'x'.repeat(500);
     const adapter = makeMockAdapter({
       name: 'verbose',
@@ -1846,7 +1845,7 @@ describe('crew serve — progress notifications', () => {
     }
   });
 
-  it('keeps events_tail as adapter-emitted lines while progress notifications are split and bounded', async () => {
+  it('keeps events_tail aligned with split and bounded server-side progress lines', async () => {
     const firstRaw = 'a'.repeat(300);
     const secondRaw = 'b'.repeat(300);
     const rawChunk = `${firstRaw}\n${secondRaw}`;
@@ -1890,11 +1889,11 @@ describe('crew serve — progress notifications', () => {
       }
 
       const final = await pollUntilTerminal(h.client, env.run_id);
-      expect(final.events_tail).toEqual([firstRaw, secondRaw]);
-      for (const adapterLine of final.events_tail) {
-        expect(adapterLine.startsWith('[verbose] ')).toBe(false);
-        expect(adapterLine.endsWith('…')).toBe(false);
-        expect(adapterLine.length).toBe(300);
+      expect(final.events_tail).toEqual(progress.map((p) => p.message));
+      for (const line of final.events_tail) {
+        expect(line.startsWith('[verbose] ')).toBe(true);
+        expect(line.endsWith('…')).toBe(true);
+        expect(line.length).toBeLessThanOrEqual(240);
       }
     } finally {
       await h.close();
@@ -2034,7 +2033,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       resolveAdapter = r;
     });
     const adapter = makeMockAdapter({
-      name: 'mock-noisy',
+      name: 'codex',
       execute: async (task) => {
         const t = task as { onOutput?: (chunk: string) => void };
         onOutputRef = t.onOutput;
@@ -2051,7 +2050,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
-        arguments: { agent_id: 'mock-noisy', prompt: 'noisy' },
+        arguments: { agent_id: 'codex', prompt: 'noisy' },
       });
       const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
@@ -2075,10 +2074,10 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // Give the poll a tick to install its listener.
       await new Promise((r) => setTimeout(r, 30));
       // Burst of pure receipts.
-      onOutputRef?.('[codex] command: started rg foo');
-      onOutputRef?.('[codex] command: rg foo (exit 0)');
-      onOutputRef?.('[codex] event: item.started/web_search');
-      onOutputRef?.('[codex] event: item.completed/web_search');
+      onOutputRef?.('command: started rg foo');
+      onOutputRef?.('command: rg foo (exit 0)');
+      onOutputRef?.('event: item.started/web_search');
+      onOutputRef?.('event: item.completed/web_search');
       // Wait long enough for the listener to (incorrectly, if buggy)
       // wake on a receipt. The test is sensitive to this: if any
       // receipt slips through, `resolved` flips here.
@@ -2086,7 +2085,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(resolved).toBe(false);
 
       // Now emit a signal chunk; the poll should wake promptly.
-      onOutputRef?.('[codex] message: real synthesis');
+      onOutputRef?.('message: real synthesis');
       const t0 = Date.now();
       const res = await pollPromise;
       const elapsed = Date.now() - t0;
@@ -2157,7 +2156,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       });
 
       await new Promise((r) => setTimeout(r, 30));
-      onOutputRef?.('[mock] message: still working');
+      onOutputRef?.('message: still working');
       await new Promise((r) => setTimeout(r, 200));
       expect(resolved).toBe(false);
 
@@ -2172,7 +2171,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(s.status).toBe('success');
       expect(s.timed_out).toBeUndefined();
       expect(s.summary).toBe('done');
-      expect(s.events_tail).toContain('[mock] message: still working');
+      expect(s.events_tail).toContain('[mock-terminal-only-streaming] message: still working');
     } finally {
       await h.close();
     }
@@ -2363,7 +2362,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       resolveAdapter = r;
     });
     const adapter = makeMockAdapter({
-      name: 'mock-noisy-precursor',
+      name: 'codex',
       execute: async (task) => {
         const t = task as { onOutput?: (chunk: string) => void };
         onOutputRef = t.onOutput;
@@ -2380,7 +2379,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
-        arguments: { agent_id: 'mock-noisy-precursor', prompt: 'noisy' },
+        arguments: { agent_id: 'codex', prompt: 'noisy' },
       });
       const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
@@ -2388,8 +2387,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // Emit receipts BEFORE the captain polls. They advance the
       // raw cursor; readSignalEventsSince returns lines:[] so the
       // fast-return falls through to long-poll.
-      onOutputRef?.('[codex] command: started rg foo');
-      onOutputRef?.('[codex] command: rg foo (exit 0)');
+      onOutputRef?.('command: started rg foo');
+      onOutputRef?.('command: rg foo (exit 0)');
       // Wait for events.log to flush so the receipts are durable.
       await waitFor(async () => {
         const r = await h.client.callTool({
@@ -2419,7 +2418,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(resolved).toBe(false);
 
       // Signal arrives → poll resolves.
-      onOutputRef?.('[codex] message: real synthesis');
+      onOutputRef?.('message: real synthesis');
       const res = await pollPromise;
       const elapsed = Date.now() - pollStart;
       expect(elapsed).toBeLessThan(1500);
@@ -2465,7 +2464,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       });
       const env = run.structuredContent as FullRunEnvelope;
       await waitFor(() => onOutputRef !== undefined);
-      onOutputRef?.('[mock] message: signal before poll');
+      onOutputRef?.('message: signal before poll');
       await waitFor(async () => {
         const r = await h.client.callTool({
           name: 'get_run_status',
@@ -2500,7 +2499,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       };
       expect(s.status).toBe('success');
       expect(s.timed_out).toBeUndefined();
-      expect(s.events_tail).toContain('[mock] message: signal before poll');
+      expect(s.events_tail).toContain('[mock-terminal-only-precursor] message: signal before poll');
     } finally {
       await h.close();
     }
@@ -2581,7 +2580,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // poll-return DOES surface the chunk via events_tail.
       resolveAdapter();
       const final = await pollUntilTerminal(h.client, env.run_id);
-      expect(final.events_tail).toContain('first chunk');
+      expect(final.events_tail).toContain('[mock-streaming] first chunk');
     } finally {
       await h.close();
     }
@@ -2667,7 +2666,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       resolveAdapter();
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
-      expect(final.events_tail).toEqual(['line 1', 'line 2']);
+      expect(final.events_tail).toEqual(['[mock-streaming] line 1', '[mock-streaming] line 2']);
     } finally {
       await h.close();
     }
@@ -2978,6 +2977,12 @@ void readFileSync;
 describe('formatProgressLines (unit)', () => {
   it('prefixes a single-line chunk with the agent id', () => {
     expect(formatProgressLines('codex', 'hello')).toEqual(['[codex] hello']);
+  });
+
+  it('does not double-prefix legacy adapter-prefixed chunks', () => {
+    expect(formatProgressLines('codex', '[codex] command: started rg foo')).toEqual([
+      '[codex] command: started rg foo',
+    ]);
   });
 
   it('drops empty lines and trailing whitespace', () => {

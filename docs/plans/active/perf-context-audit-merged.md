@@ -6,6 +6,8 @@ Synthesis of the two parallel audits:
 
 **Revalidation note (2026-05-10).** After `docs/plans/completed/non-blocking-captain.md` shipped in full, both auditors (Codex xhigh + Claude code-architect) re-ran against the live tree at `main @ 3a28d1f`. Status annotations + new Tier 5 (non-blocking-captain–introduced findings) added below; bundle and ratings adjusted where consensus moved. See "Revalidation summary (2026-05-10)" for the audit trail.
 
+**Shipped note (2026-05-10).** Tier 3 #13 shipped in this change: Codex and Claude Code adapters now emit unprefixed semantic progress chunks; `crew-mcp serve` owns the single `[agent]` prefix for progress notifications and `events.log` / `events_tail`. Remaining open items in this plan are unchanged.
+
 ## Priority rule
 
 Tasks are ordered lexicographically by:
@@ -58,7 +60,7 @@ Within each agreement tier, items are sorted by effort, then impact.
 | # | Task | Eff | Imp | Status | Done | Source |
 |---|------|-----|-----|--------|------|--------|
 | 12 | **Replace `existsSync`+`readFileSync` with try/catch ENOENT.** Removes one syscall per `RunStateStore.read`. Refs: `run-state.ts:238–240, 419–421, 441–442`. Couples with #3 (now lower-impact). | S | L | 🟢 |  | Claude §2.11 |
-| 13 | **Strip vestigial adapter-side progress prefix.** `[codex] [codex] command: …` double-prefixing wastes ~10 chars per progress line. Refs: `claude-code.ts:50` (`CLAUDE_PROGRESS_PREFIX`), `codex.ts:81` (`CODEX_STREAM_PREFIX`), `serve.ts:1011`. With async-first dispatch, inline progress is no longer the default UX (`crew-captain.body.md:347–365` — tail is the path); this is cosmetic-only now. | S | L (cosmetic) | 🟢 |  | Claude §2.9 |
+| 13 | **Strip vestigial adapter-side progress prefix.** `[codex] [codex] command: …` double-prefixing wastes ~10 chars per progress line. Refs: `claude-code.ts:50` (`CLAUDE_PROGRESS_PREFIX`), `codex.ts:81` (`CODEX_STREAM_PREFIX`), `serve.ts:1011`. With async-first dispatch, inline progress is no longer the default UX (`crew-captain.body.md:347–365` — tail is the path); this is cosmetic-only now. | S | L (cosmetic) | 🟢 | ✅ this change | Claude §2.9 |
 | 14 | **Cap `RunStateV1.prompts[].prompt` storage.** Verbatim user prompts retained on disk forever; truncate at e.g. 16KB with marker. Refs: `run-state.ts:165–195` (`create`), `:286–298` (`appendPrompt`). Wire payloads now elide prompt text but disk growth + parse cost remain. | S | L | 🟢 |  | Claude §3.6 |
 | 15 | **Index dispatcher events by `runId`.** Per-runId `EventEmitter` map instead of single broadcaster + per-listener filter. Refs: `tool-dispatcher.ts:57–58, 77–83, 138–168`; listeners at `serve.ts:943–977, 1425–1438`. Architectural smell more than perf bug today. | M | L | 🟢 |  | Claude §2.7 |
 | 16 | **Split `state.json` disk schema from wire schema.** Force every new field to opt into wire visibility explicitly. **Higher value than originally framed:** `state.json` is now a documented public contract (`docs/architecture/run-state-contract.md`) and gained `serverPid` + `repoRoot` fields (load-bearing for the sweeper). Split must preserve atomic-write, terminal-status, schema-stability, and `repoRoot`/`serverPid` guarantees. Current ad-hoc projection sites: `serve.ts:1267–1289` (`get_run_status`), `list-runs.ts:99–110` (`list_runs`). | M | M | 🔵 |  | Claude §4.1 |

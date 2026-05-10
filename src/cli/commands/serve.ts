@@ -669,6 +669,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       const waitMs = Math.min(args.wait_for_change_ms ?? 0, MAX_LONG_POLL_MS);
       const timedOut = await waitForRunChange({
         dispatcher,
+        agentName: state.agentId,
         runId: args.run_id,
         waitMs,
         terminalOnly,
@@ -1016,8 +1017,11 @@ function installRunLifecycleListeners(args: {
       }),
       args.dispatcher.onEvent('run:stream', (info) => {
         if (info.toolCallId !== args.toolCallId) return;
+        const progressLines = formatProgressLines(args.agentName, info.chunk);
         try {
-          args.runStateStore.appendEvent(args.runId, info.chunk);
+          for (const line of progressLines) {
+            args.runStateStore.appendEvent(args.runId, line);
+          }
         } catch {
           // Log writes are best-effort; never let a write failure break dispatch.
         }
@@ -1026,11 +1030,10 @@ function installRunLifecycleListeners(args: {
         // (codex/claude-code/gemini-cli all do); we split multi-line
         // chunks so each rendered line is a discrete progress message
         // rather than a wall of text the host has to layout itself.
-        // events.log retains the raw chunk above (verbatim source of
-        // truth for events_tail); only the host UI surface gets the
-        // formatted lines.
+        // events.log and host UI share the same canonical server-side
+        // agent prefix so event tails and progress notifications match.
         if (args.progress) {
-          for (const line of formatProgressLines(args.agentName, info.chunk)) {
+          for (const line of progressLines) {
             args.progress.send(line);
           }
         }
@@ -1044,9 +1047,9 @@ function installRunLifecycleListeners(args: {
  * Picked so a chunk fits comfortably in Claude Code's inline progress
  * area (~one terminal line at default width) without truncating
  * anything that's actually load-bearing in adapter output. Bigger
- * payloads get truncated with an ellipsis suffix; the verbatim chunk
- * stays available through `events_tail`, so nothing is lost — only
- * the inline UX is bounded.
+ * payloads get truncated with an ellipsis suffix. The same bounded,
+ * prefixed lines are written to `events.log`, keeping `events_tail`
+ * and inline progress consistent.
  */
 const PROGRESS_LINE_MAX_LEN = 240;
 
@@ -1075,10 +1078,13 @@ export function formatProgressLines(agentName: string, chunk: string): string[] 
       continue;
     }
     const bodyBudget = PROGRESS_LINE_MAX_LEN - prefix.length;
+    const unprefixed = trimmed.startsWith(prefix)
+      ? trimmed.slice(prefix.length)
+      : trimmed;
     const body =
-      trimmed.length > bodyBudget
-        ? `${takeCodePointBudget(trimmed, bodyBudget - 1)}…`
-        : trimmed;
+      unprefixed.length > bodyBudget
+        ? `${takeCodePointBudget(unprefixed, bodyBudget - 1)}…`
+        : unprefixed;
     out.push(`${prefix}${body}`);
   }
   return out;
@@ -1464,6 +1470,7 @@ function resolveComparableRepoRoot(path: string): string {
  */
 async function waitForRunChange(args: {
   dispatcher: ToolDispatcher;
+  agentName: string;
   runId: string;
   waitMs: number;
   terminalOnly: boolean;
@@ -1491,7 +1498,8 @@ async function waitForRunChange(args: {
       // docs/plans/active/noise-symmetric-filter.md.
       subs.push(args.dispatcher.onEvent('run:stream', (info) => {
         if (!matches(info)) return;
-        if (filterEventsTailNoise([info.chunk]).length === 0) return;
+        const lines = formatProgressLines(args.agentName, info.chunk);
+        if (filterEventsTailNoise(lines).length === 0) return;
         finish(false);
       }));
     }
