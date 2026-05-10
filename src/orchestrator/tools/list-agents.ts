@@ -36,7 +36,7 @@ export const listAgentsInputSchema = z.object({}).passthrough();
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'Return the current agent inventory (name, strengths, effort, health, optional quota).';
+  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, strengths, default effort/model, adapter, availability, health details, and optional quota. Unavailable agents are included with available:false and an error instead of throwing.';
 
 export interface ListAgentsAgentEntry {
   readonly name: string;

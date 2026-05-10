@@ -55,4 +55,4 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a run's worktree into the host's HEAD. ALWAYS confirm with the user — this is the only tool that mutates the user's branch. Pass commit_title (and optional commit_body) for the merge commit; a `Crew-Run: <run_id>` trailer is auto-appended. force=true only when the user has accepted that uncommitted host changes will be left untouched. On `merged` the worktree auto-cleans; on `conflict` or `no-changes` it is preserved for resolution. Returns { status: 'merged' | 'conflict' | 'no-changes' }.";
+  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input takes run_id plus optional target_branch, force, commit_title, and commit_body; the merge commit automatically receives a `Crew-Run: <run_id>` trailer. Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up, while conflict/no-changes worktrees are preserved.";

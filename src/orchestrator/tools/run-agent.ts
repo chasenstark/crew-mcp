@@ -82,7 +82,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Delegate a task to a subagent in an isolated worktree. agent_id must come from list_agents. Set read_only=true for review/triage dispatches that should not edit files; pair with working_directory pointing at another run\'s worktree to review its changes.';
+  'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent verbatim. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope with status:"running", run_id, worktree_path, and tail links; read terminal results later with get_run_status.';
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;

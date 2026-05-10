@@ -30,4 +30,4 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume a run with a new prompt. Same agent, same worktree. Returns the same envelope as run_agent.';
+  'Resume an existing run with a new prompt when the same agent should continue in the same worktree. Input takes run_id, prompt, and optional model/effort overrides; read_only mode stays sticky from the original run. Returns the same async dispatch envelope as run_agent with status:"running"; read terminal results later with get_run_status.';
