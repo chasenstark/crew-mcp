@@ -5,6 +5,22 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-10 crew-wait Watch Notifications (Tier 5 N3/N7)
+
+`crew-wait <run_id>` remains a per-run process so Claude Code still receives one
+synthetic turn per backgrounded Bash invocation. The normal wait path now uses
+directory `fs.watch` notifications around `<crewHome>/runs/<run_id>/state.json`
+instead of a 1s polling loop. Directory watching preserves the atomic
+tmp-plus-rename state write contract and also covers the initial missing-file
+race by watching the nearest existing parent until the run directory/state file
+appears.
+
+Polling is now only a fallback for unsupported or failed `fs.watch` setup. The
+fallback base interval is 2s, configurable with `CREW_WAIT_POLL_INTERVAL_MS`,
+and backs off toward a 5s cap while state contents do not change. The Node
+process cold-start cost per dispatch is unchanged; that remains the accepted
+tradeoff for Claude Code's per-invocation synthetic-turn completion behavior.
+
 ## Update - 2026-05-10 Deferred Stale-Run Sweeper (Tier 5 N2)
 
 `buildCrewMcpServer` now schedules the repoRoot-scoped stale-run sweeper with
