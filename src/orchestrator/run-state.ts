@@ -26,6 +26,7 @@ import { dirname, join } from 'node:path';
 
 import { logger } from '../utils/logger.js';
 import { filterEventsTailNoise } from './events-filter.js';
+import { notifyTerminal } from './notifications.js';
 
 export type RunStatus =
   | 'running'
@@ -308,7 +309,7 @@ export class RunStateStore {
     },
   ): RunStateV1 {
     const now = new Date().toISOString();
-    return this.update(runId, (s) => {
+    const next = this.update(runId, (s) => {
       const prompts = s.prompts.map((p, i): PromptRecord =>
         i === s.prompts.length - 1
           ? { ...p, completedAt: now, summary: args.summary }
@@ -327,6 +328,12 @@ export class RunStateStore {
         ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     });
+    notifyTerminal({
+      runId: next.runId,
+      agentId: next.agentId,
+      status: args.status,
+    });
+    return next;
   }
 
   markMerged(runId: string, args: { target: string; commitSha: string }): RunStateV1 {

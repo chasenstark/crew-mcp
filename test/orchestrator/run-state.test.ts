@@ -7,6 +7,12 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+const mockNotifyTerminal = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/orchestrator/notifications.js', () => ({
+  notifyTerminal: mockNotifyTerminal,
+}));
+
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
 import { logger } from '../../src/utils/logger.js';
 
@@ -16,6 +22,7 @@ describe('RunStateStore', () => {
   let store: RunStateStore;
 
   beforeEach(() => {
+    mockNotifyTerminal.mockClear();
     crewHome = mkdtempSync(join(tmpdir(), 'crew-runstate-home-'));
     repoRoot = mkdtempSync(join(tmpdir(), 'crew-runstate-repo-'));
     store = new RunStateStore({ crewHome, repoRoot });
@@ -187,6 +194,23 @@ describe('RunStateStore', () => {
     expect(next.filesChanged).toEqual(['src/a.ts', 'src/b.ts']);
     expect(next.prompts[0].completedAt).toBeDefined();
     expect(next.prompts[0].summary).toBe('all done');
+  });
+
+  it('markTerminal() fires a terminal OS notification hook after state write', () => {
+    store.create({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    const next = store.markTerminal('r-1', {
+      status: 'error',
+      summary: 'failed',
+      filesChanged: [],
+    });
+
+    expect(next.status).toBe('error');
+    expect(store.read('r-1')?.status).toBe('error');
+    expect(mockNotifyTerminal).toHaveBeenCalledWith({
+      runId: 'r-1',
+      agentId: 'a',
+      status: 'error',
+    });
   });
 
   it('markTerminal() unions filesChanged across turns', () => {
