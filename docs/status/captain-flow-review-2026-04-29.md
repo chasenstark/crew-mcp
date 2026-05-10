@@ -5,6 +5,27 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-10 crew-wait Binary + Claude Allowlist Overlay (phase 3)
+
+Phase 3 of the non-blocking captain plan added the packaged `crew-wait`
+binary. `crew-wait <run_id>` resolves the active crew home through
+`resolveCrewHome()`, polls `<crewHome>/runs/<run_id>/state.json`, tolerates the
+initial missing-file race, and prints a single `CREW_WAIT_TERMINAL ...` metadata
+line when the run reaches `success`, `partial`, `error`, `cancelled`, or a
+post-terminal action state.
+
+Packaging now builds both `src/index.ts` and `src/cli/wait.ts`, and the npm bin
+map exposes `crew-mcp` plus `crew-wait`. Claude Code install adds an idempotent
+`Bash(crew-wait:*)` permission when `crew-wait` is PATH-visible, otherwise it
+falls back to an absolute path from the new platform-aware
+`resolveCrewWaitBinary()` helper; uninstall removes both PATH and absolute
+forms while leaving the npm package binary in place.
+
+The live Claude Code / Codex / Gemini empirical gates from the plan remain
+deferred from this sandbox: the implementation is ready for the captain to run
+the actual allowlist matcher, synthetic-turn stdout, and foreground wait tests
+inside those host runtimes before merge.
+
 ## Update - 2026-05-10 list_runs Recovery Surface (phase 1A)
 
 Phase 1A of the non-blocking captain plan added the `list_runs` MCP tool and

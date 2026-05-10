@@ -88,7 +88,10 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
           : configPath;
         if (existsSync(approvalFile)) {
           const before = readFileSync(approvalFile, 'utf-8');
-          const after = adapter.clearAutoApproval(before);
+          const afterAutoApproval = adapter.clearAutoApproval(before);
+          const after = targetId === 'claude-code'
+            ? removeClaudeCrewWaitPermissions(afterAutoApproval)
+            : afterAutoApproval;
           if (after !== before) {
             writeFileSync(approvalFile, after, 'utf-8');
           }
@@ -108,4 +111,47 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
   }
 
   return result;
+}
+
+function removeClaudeCrewWaitPermissions(existing: string): string {
+  if (existing.trim().length === 0) return existing;
+  let parsed: Record<string, unknown>;
+  try {
+    const value = JSON.parse(existing) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return existing;
+    }
+    parsed = value as Record<string, unknown>;
+  } catch {
+    return existing;
+  }
+
+  const permissions = parsed.permissions;
+  if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+    return existing;
+  }
+  const permissionsObject = permissions as Record<string, unknown>;
+  const allow = permissionsObject.allow;
+  if (!Array.isArray(allow)) return existing;
+
+  const filtered = allow.filter((entry) => (
+    typeof entry !== 'string' || !isCrewWaitBashPermission(entry)
+  ));
+  if (filtered.length === allow.length) return existing;
+  if (filtered.length === 0) {
+    delete permissionsObject.allow;
+  } else {
+    permissionsObject.allow = filtered;
+  }
+  if (Object.keys(permissionsObject).length === 0) {
+    delete parsed.permissions;
+  } else {
+    parsed.permissions = permissionsObject;
+  }
+  return JSON.stringify(parsed, null, 2) + '\n';
+}
+
+function isCrewWaitBashPermission(entry: string): boolean {
+  if (entry === 'Bash(crew-wait:*)') return true;
+  return /^Bash\(.+[\\/]crew-wait(?:\.(?:cmd|ps1|exe|bat))?:\*\)$/i.test(entry);
 }

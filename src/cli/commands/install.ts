@@ -39,6 +39,8 @@ import {
 } from '../../install/hosts/index.js';
 import {
   defaultCrewBinaryResolver,
+  isCrewWaitOnPath,
+  resolveCrewWaitBinary,
   type CrewBinaryResolver,
 } from '../../install/crew-binary.js';
 import {
@@ -88,6 +90,10 @@ export interface InstallOptions {
   packageRoot?: string;
   /** Override crew binary resolution (tests). */
   resolveCrewBinary?: CrewBinaryResolver;
+  /** Test seam for Claude Code `crew-wait` PATH discoverability. */
+  isCrewWaitOnPath?: () => boolean;
+  /** Test seam for Claude Code absolute `crew-wait` fallback resolution. */
+  resolveCrewWaitBinary?: () => string;
   /**
    * Test seam: override the interactive target selector. Defaults to
    * `selectTargets` from interactive-target.ts (readline-backed).
@@ -181,6 +187,8 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
         crewBin,
         crewArgs,
         autoApprove: opts.autoApprove ?? true,
+        isCrewWaitOnPath: opts.isCrewWaitOnPath ?? isCrewWaitOnPath,
+        resolveCrewWaitBinary: opts.resolveCrewWaitBinary ?? resolveCrewWaitBinary,
       });
 
       if (!opts.skipRunningCheck) {
@@ -260,6 +268,8 @@ export async function installSingleTarget(args: {
    * before each `mcp__crew__*` call. See InstallOptions.autoApprove.
    */
   autoApprove: boolean;
+  isCrewWaitOnPath?: () => boolean;
+  resolveCrewWaitBinary?: () => string;
 }): Promise<InstalledTarget> {
   const { adapter, home, packageRoot, crewBin, crewArgs, autoApprove } = args;
 
@@ -302,6 +312,29 @@ export async function installSingleTarget(args: {
     }
   }
 
+  if (adapter.id === 'claude-code') {
+    const approvalFile = adapter.permissionsPath ? adapter.permissionsPath(home) : configPath;
+    const approvalExisting = existsSync(approvalFile)
+      ? await readFile(approvalFile, 'utf-8')
+      : '';
+    const pathVisible = (args.isCrewWaitOnPath ?? isCrewWaitOnPath)();
+    const crewWaitBinary = pathVisible
+      ? 'crew-wait'
+      : (args.resolveCrewWaitBinary ?? resolveCrewWaitBinary)();
+    const approvalUpdated = addClaudePermission(
+      approvalExisting,
+      `Bash(${crewWaitBinary}:*)`,
+    );
+    if (approvalUpdated !== approvalExisting) {
+      mkdirSync(dirname(approvalFile), { recursive: true });
+      writeFileSync(approvalFile, approvalUpdated, 'utf-8');
+    }
+    logger.info(
+      'crew install: Claude Code crew-wait watcher allowlisted. '
+      + 'If you use a non-default CREW_HOME, export CREW_HOME in the shell environment Claude Code Bash inherits.',
+    );
+  }
+
   // 5. Update install manifest.
   const entry: InstalledTarget = {
     configPath,
@@ -315,6 +348,40 @@ export async function installSingleTarget(args: {
   await recordInstalledTarget(home, adapter.id, entry);
 
   return entry;
+}
+
+function addClaudePermission(existing: string, pattern: string): string {
+  const parsed = parseJsonObject(existing, 'Claude permissions');
+  const permissions = getObjectField(parsed, 'permissions');
+  const allow = Array.isArray(permissions.allow) ? [...permissions.allow] : [];
+  if (!allow.includes(pattern)) {
+    allow.push(pattern);
+  }
+  permissions.allow = allow;
+  parsed.permissions = permissions;
+  return JSON.stringify(parsed, null, 2) + '\n';
+}
+
+function parseJsonObject(raw: string, label: string): Record<string, unknown> {
+  if (raw.trim().length === 0) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('root is not a JSON object');
+    }
+    return parsed as Record<string, unknown>;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse ${label} as JSON: ${message}`);
+  }
+}
+
+function getObjectField(parent: Record<string, unknown>, key: string): Record<string, unknown> {
+  const current = parent[key];
+  if (!current || typeof current !== 'object' || Array.isArray(current)) {
+    return {};
+  }
+  return current as Record<string, unknown>;
 }
 
 /**
