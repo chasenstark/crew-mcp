@@ -24,6 +24,11 @@ const STUB_BIN = {
   command: '/usr/local/bin/node',
   args: ['/abs/path/dist/index.js', 'serve'] as const,
 };
+const STUB_CREW_WAIT = '/usr/local/bin/crew-wait';
+const CLAUDE_CREW_WAIT_ON_PATH = {
+  isCrewWaitOnPath: () => true,
+  resolveCrewWaitBinary: () => STUB_CREW_WAIT,
+};
 
 describe('install / verify / uninstall — happy path', () => {
   let home: string;
@@ -42,6 +47,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(result.installed).toEqual(['codex']);
     expect(result.skipped).toEqual([]);
@@ -77,6 +83,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(new Set(result.installed)).toEqual(
       new Set(['claude-code', 'codex', 'gemini']),
@@ -177,6 +184,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
 
     const after = JSON.parse(readFileSync(adapter.configPath(home), 'utf-8')) as Record<
@@ -195,6 +203,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const report = await verifyCommand({ home });
     expect(report.ok).toBe(true);
@@ -217,6 +226,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     rmSync(HOST_ADAPTERS.codex.skillPath(home));
 
@@ -232,6 +242,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const skillPath = HOST_ADAPTERS.codex.skillPath(home);
     const original = readFileSync(skillPath, 'utf-8');
@@ -251,6 +262,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const configPath = HOST_ADAPTERS.codex.configPath(home);
     writeFileSync(configPath, '# emptied\n', 'utf-8');
@@ -270,6 +282,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(existsSync(adapter.skillPath(home))).toBe(true);
 
@@ -414,11 +427,71 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const permissions = JSON.parse(readFileSync(adapter.permissionsPath!(home), 'utf-8')) as {
       permissions: { allow: string[] };
     };
     expect(permissions.permissions.allow).toContain('mcp__crew__*');
+    expect(permissions.permissions.allow).toContain('Bash(crew-wait:*)');
+  });
+
+  it('install adds the PATH crew-wait Bash allowlist for Claude Code', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => true,
+      resolveCrewWaitBinary: () => {
+        throw new Error('absolute resolver should not run when PATH check passes');
+      },
+    });
+
+    const permissions = JSON.parse(readFileSync(adapter.permissionsPath!(home), 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toContain('Bash(crew-wait:*)');
+  });
+
+  it('install falls back to an absolute crew-wait Bash allowlist for Claude Code', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => false,
+      resolveCrewWaitBinary: () => STUB_CREW_WAIT,
+    });
+
+    const permissions = JSON.parse(readFileSync(adapter.permissionsPath!(home), 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toContain(`Bash(${STUB_CREW_WAIT}:*)`);
+    expect(permissions.permissions.allow).not.toContain('Bash(crew-wait:*)');
+  });
+
+  it('install is idempotent for the Claude Code crew-wait Bash allowlist', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    const args = {
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
+    };
+    await installCommand(args);
+    await installCommand(args);
+
+    const permissions = JSON.parse(readFileSync(adapter.permissionsPath!(home), 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow.filter((entry) => entry === 'Bash(crew-wait:*)')).toHaveLength(1);
   });
 
   it('install (default) sets trust:true on Gemini', async () => {
@@ -429,6 +502,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const config = JSON.parse(readFileSync(adapter.configPath(home), 'utf-8')) as {
       mcpServers: { crew: { trust?: boolean } };
@@ -443,6 +517,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     await uninstallCommand({ target: 'codex', home });
     if (existsSync(HOST_ADAPTERS.codex.configPath(home))) {
@@ -469,6 +544,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     await uninstallCommand({ target: 'claude-code', home });
 
@@ -477,6 +553,35 @@ describe('install / verify / uninstall — happy path', () => {
     };
     expect(permissions.permissions.allow).toEqual(['Bash(git:*)', 'Read']);
     expect(permissions.permissions.allow).not.toContain('mcp__crew__*');
+    expect(permissions.permissions.allow).not.toContain('Bash(crew-wait:*)');
+  });
+
+  it('uninstall clears absolute crew-wait allowlist entries from Claude Code', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    const permissionsPath = adapter.permissionsPath!(home);
+    mkdirSync(dirname(permissionsPath), { recursive: true });
+    writeFileSync(
+      permissionsPath,
+      JSON.stringify({ permissions: { allow: ['Read'] } }),
+      'utf-8',
+    );
+
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => false,
+      resolveCrewWaitBinary: () => STUB_CREW_WAIT,
+    });
+    await uninstallCommand({ target: 'claude-code', home });
+
+    const permissions = JSON.parse(readFileSync(permissionsPath, 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toContain('Read');
+    expect(permissions.permissions.allow).not.toContain(`Bash(${STUB_CREW_WAIT}:*)`);
   });
 
   it('uninstall preserves unrelated mcpServers entries (claude-code)', async () => {
@@ -492,6 +597,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     await uninstallCommand({ target: 'claude-code', home });
 
@@ -510,6 +616,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       isInteractive: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
       selectTargets: async (hosts) => {
         receivedHosts = hosts;
         // Stub: pick claude-code regardless of detection.

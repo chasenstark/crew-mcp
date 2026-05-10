@@ -1,3 +1,6 @@
+import { accessSync, constants } from 'node:fs';
+import { delimiter, posix, win32 } from 'node:path';
+
 /**
  * Resolve the absolute crew binary the host CLI should spawn.
  *
@@ -43,3 +46,120 @@ export const defaultCrewBinaryResolver: CrewBinaryResolver = () => {
     args: [scriptPath, 'serve'],
   };
 };
+
+export interface ResolveCrewWaitBinaryOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly pathEnv?: string;
+  readonly access?: (candidate: string, mode: number) => void;
+}
+
+/**
+ * Resolve the `crew-wait` executable for Claude Code Bash allowlisting.
+ *
+ * The direct PATH lookup is preferred because it lets us allowlist the
+ * portable `crew-wait` command. If that fails, derive the sibling binary from
+ * the installed `crew-mcp` shim so npm-linked and globally-installed layouts
+ * still work.
+ */
+export function resolveCrewWaitBinary(options: ResolveCrewWaitBinaryOptions = {}): string {
+  const platform = options.platform ?? process.platform;
+  const pathEnv = options.pathEnv ?? process.env.PATH ?? '';
+  const access = options.access ?? accessSync;
+
+  const direct = firstExecutable(
+    pathCandidates('crew-wait', { platform, pathEnv }),
+    { platform, access },
+  );
+  if (direct) return direct;
+
+  const crewMcp = firstExecutable(
+    pathCandidates('crew-mcp', { platform, pathEnv }),
+    { platform, access },
+  );
+  if (crewMcp) {
+    const sibling = firstExecutable(
+      siblingCrewWaitCandidates(crewMcp, platform),
+      { platform, access },
+    );
+    if (sibling) return sibling;
+  }
+
+  throw new Error(
+    'Cannot resolve crew-wait binary. Install crew-mcp globally with `npm install -g crew-mcp`, then re-run `crew-mcp install`.',
+  );
+}
+
+export function isCrewWaitOnPath(options: ResolveCrewWaitBinaryOptions = {}): boolean {
+  const platform = options.platform ?? process.platform;
+  const pathEnv = options.pathEnv ?? process.env.PATH ?? '';
+  const access = options.access ?? accessSync;
+  return Boolean(
+    firstExecutable(pathCandidates('crew-wait', { platform, pathEnv }), { platform, access }),
+  );
+}
+
+function firstExecutable(
+  candidates: readonly string[],
+  args: {
+    readonly platform: NodeJS.Platform;
+    readonly access: (candidate: string, mode: number) => void;
+  },
+): string | undefined {
+  for (const candidate of candidates) {
+    try {
+      args.access(candidate, args.platform === 'win32' ? constants.F_OK : constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep walking PATH / sibling candidates.
+    }
+  }
+  return undefined;
+}
+
+function pathCandidates(
+  command: string,
+  args: {
+    readonly platform: NodeJS.Platform;
+    readonly pathEnv: string;
+  },
+): string[] {
+  const pathApi = args.platform === 'win32' ? win32 : posix;
+  const pathDelimiter = args.platform === 'win32' ? ';' : delimiter;
+  const dirs = args.pathEnv
+    .split(pathDelimiter)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  const names = args.platform === 'win32'
+    ? windowsCommandNames(command)
+    : [command];
+  const candidates: string[] = [];
+  for (const dir of dirs) {
+    for (const name of names) {
+      candidates.push(pathApi.join(dir, name));
+    }
+  }
+  return candidates;
+}
+
+function siblingCrewWaitCandidates(crewMcpPath: string, platform: NodeJS.Platform): string[] {
+  if (platform !== 'win32') {
+    return [posix.join(posix.dirname(crewMcpPath), 'crew-wait')];
+  }
+
+  const dir = win32.dirname(crewMcpPath);
+  const ext = win32.extname(crewMcpPath).toLowerCase();
+  const extensions = ext.length > 0
+    ? unique([ext, '.cmd', '.ps1', '.exe', '.bat', ''])
+    : ['.cmd', '.ps1', '.exe', '.bat', ''];
+  return extensions.map((candidateExt) => win32.join(dir, `crew-wait${candidateExt}`));
+}
+
+function windowsCommandNames(command: string): string[] {
+  const ext = win32.extname(command);
+  if (ext.length > 0) return [command];
+  return ['.cmd', '.ps1', '.exe', '.bat', ''].map((candidateExt) => `${command}${candidateExt}`);
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
