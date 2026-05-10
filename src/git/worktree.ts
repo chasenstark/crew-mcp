@@ -40,6 +40,7 @@ interface TaskLockRecord {
 export class WorktreeManager {
   private static readonly LOCK_TIMEOUT_MS = 20_000;
   private static readonly LOCK_STALE_MS = 15_000;
+  private static readonly prunedProjectRoots = new Set<string>();
 
   private git: SimpleGit;
   private basePath: string;
@@ -82,6 +83,7 @@ export class WorktreeManager {
     mkdirSync(this.runMetadataPath, { recursive: true });
     this.runLockPath = join(this.runBasePath, '.locks');
     mkdirSync(this.runLockPath, { recursive: true });
+    this.pruneRunWorktreesOnce(projectRoot);
   }
 
   getProjectRoot(): string {
@@ -296,8 +298,6 @@ export class WorktreeManager {
 
   async createRunWorktree(runId: string): Promise<string> {
     return this.withRunLock(runId, async () => {
-      await this.git.raw(['worktree', 'prune']);
-
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
         return existing.worktreePath;
@@ -458,7 +458,10 @@ export class WorktreeManager {
     const target = await this.resolveMergeTargetBranch(options.targetBranch);
 
     const wGit = simpleGit(record.worktreePath);
-    const worktreeStatus = await wGit.status();
+    const [worktreeStatus, mainStatus] = await Promise.all([
+      wGit.status(),
+      this.git.status(),
+    ]);
     if (this.statusChangedFiles(worktreeStatus).length > 0) {
       await wGit.add('.');
       // Reuse the commit_title for the pre-merge auto-commit so the
@@ -469,7 +472,6 @@ export class WorktreeManager {
       await wGit.commit(autoCommitMsg);
     }
 
-    const mainStatus = await this.git.status();
     if (
       !options.force
       && this.statusChangedFiles(mainStatus).length > 0
@@ -483,8 +485,12 @@ export class WorktreeManager {
     // If the worktree has the same HEAD as the target, there's nothing to
     // merge. Surface that explicitly so the host CLI doesn't generate an
     // empty merge commit.
-    const worktreeHead = (await wGit.revparse(['HEAD'])).trim();
-    const targetHead = (await this.git.revparse([target])).trim();
+    const [worktreeHeadRaw, targetHeadRaw] = await Promise.all([
+      wGit.revparse(['HEAD']),
+      this.git.revparse([target]),
+    ]);
+    const worktreeHead = worktreeHeadRaw.trim();
+    const targetHead = targetHeadRaw.trim();
     if (worktreeHead === targetHead) {
       return { status: 'no-changes' };
     }
@@ -598,6 +604,16 @@ export class WorktreeManager {
       this.deleteWorktreeRecord(taskId);
       return undefined;
     }
+  }
+
+  private pruneRunWorktreesOnce(projectRoot: string): void {
+    if (WorktreeManager.prunedProjectRoots.has(projectRoot)) return;
+    WorktreeManager.prunedProjectRoots.add(projectRoot);
+    void this.git.raw(['worktree', 'prune']).catch((err) => {
+      logger.warn(
+        `Failed to prune stale git worktrees for ${projectRoot}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   private async cleanupRecordedWorktree(

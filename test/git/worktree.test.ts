@@ -18,6 +18,16 @@ interface MockGitClient {
 
 const gitClients = new Map<string, MockGitClient>();
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function createGitClient(cwd: string): MockGitClient {
   return {
     raw: vi.fn(async (args: string[]) => {
@@ -89,6 +99,16 @@ describe('WorktreeManager', () => {
   function createManager() {
     const root = mkdtempSync(join(tmpdir(), 'crew-worktree-manager-'));
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+    tempDirs.push(root, crewHome);
+    return {
+      root,
+      crewHome,
+      manager: new WorktreeManager({ projectRoot: root, crewHome }),
+      rootGit: getGitClient(root),
+    };
+  }
+
+  function createManagerForRoot(root: string, crewHome: string) {
     tempDirs.push(root, crewHome);
     return {
       root,
@@ -312,6 +332,50 @@ describe('WorktreeManager', () => {
   });
 
   describe('Run-scoped API (M1.5-14)', () => {
+    it('prunes run worktrees once per project root instead of on every createRunWorktree call', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('owner-2')
+        .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
+
+      const { manager, rootGit } = createManager();
+      const pruneCallsBeforeCreates = rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsBeforeCreates).toHaveLength(1);
+
+      rootGit.raw.mockClear();
+
+      await manager.createRunWorktree('run-1');
+      await manager.createRunWorktree('run-2');
+
+      const pruneCallsDuringCreates = rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsDuringCreates).toHaveLength(0);
+    });
+
+    it('does not repeat the lazy prune for a second manager on the same project root', () => {
+      const root = mkdtempSync(join(tmpdir(), 'crew-worktree-manager-'));
+      const crewHomeA = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+      const crewHomeB = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+
+      const first = createManagerForRoot(root, crewHomeA);
+      const pruneCallsAfterFirst = first.rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsAfterFirst).toHaveLength(1);
+
+      first.rootGit.raw.mockClear();
+      createManagerForRoot(root, crewHomeB);
+
+      const pruneCallsAfterSecond = first.rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'prune',
+      );
+      expect(pruneCallsAfterSecond).toHaveLength(0);
+    });
+
     it('two concurrent createRunWorktree with distinct runIds produce distinct paths', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-run-1')
@@ -439,6 +503,84 @@ describe('WorktreeManager', () => {
         'Merge crew run run-1\n\nCrew-Run: run-1',
       ]);
       expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
+    });
+
+    it('mergeRunWorktree starts independent status and HEAD reads concurrently and preserves the merge result', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+
+      const worktreeStatus = deferred<{
+        modified: string[];
+        created: string[];
+        not_added: string[];
+        deleted: string[];
+        renamed: never[];
+      }>();
+      const hostStatus = deferred<{
+        modified: string[];
+        created: string[];
+        not_added: string[];
+        deleted: string[];
+        renamed: never[];
+      }>();
+      const worktreeHead = deferred<string>();
+      const targetHead = deferred<string>();
+
+      wGit.status.mockImplementationOnce(() => worktreeStatus.promise);
+      rootGit.status.mockImplementationOnce(() => hostStatus.promise);
+      wGit.revparse.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'HEAD') return worktreeHead.promise;
+        if (args[0] === '--abbrev-ref') return 'crew-run/run-1-aaaaaaaa';
+        return 'main';
+      });
+      rootGit.revparse.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'main') return targetHead.promise;
+        if (args[0] === 'HEAD') return 'merged-sha';
+        return 'main';
+      });
+
+      const merge = manager.mergeRunWorktree('run-1');
+
+      await vi.waitFor(() => {
+        expect(wGit.status).toHaveBeenCalledTimes(1);
+        expect(rootGit.status).toHaveBeenCalledTimes(2);
+      });
+      expect(wGit.revparse).not.toHaveBeenCalled();
+
+      worktreeStatus.resolve({
+        modified: [],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      hostStatus.resolve({
+        modified: [],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+
+      await vi.waitFor(() => {
+        expect(wGit.revparse).toHaveBeenCalledWith(['HEAD']);
+        expect(rootGit.revparse).toHaveBeenCalledWith(['main']);
+      });
+
+      worktreeHead.resolve('worktree-sha');
+      targetHead.resolve('target-sha');
+
+      await expect(merge).resolves.toEqual({ status: 'merged', commitSha: 'merged-sha' });
+      expect(rootGit.merge).toHaveBeenCalledWith([
+        'worktree-sha',
+        '--no-ff',
+        '-m',
+        'Merge crew run run-1\n\nCrew-Run: run-1',
+      ]);
     });
 
     it('mergeRunWorktree uses captain-supplied commit_title + commit_body in the merge commit', async () => {
