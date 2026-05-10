@@ -2727,6 +2727,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
   it('caps events_tail on the terminal poll and emits the skipped-events marker', async () => {
     const lines = Array.from({ length: 8 }, (_, i) => `[mock-streaming] message: line ${i + 1}`);
     const { h, env } = await emitAndTerminate('mock-streaming', lines);
+    const readEventsSinceSpy = vi.spyOn(RunStateStore.prototype, 'readEventsSince');
+    const readFilteredTailSpy = vi.spyOn(RunStateStore.prototype, 'readFilteredTailFromEnd');
     try {
       const capped = await h.client.callTool({
         name: 'get_run_status',
@@ -2745,7 +2747,11 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         '[mock-streaming] message: line 8',
       ]);
       expect(c.events_tail_skipped).toBe(6);
+      expect(readEventsSinceSpy).not.toHaveBeenCalled();
+      expect(readFilteredTailSpy).toHaveBeenCalledTimes(1);
     } finally {
+      readEventsSinceSpy.mockRestore();
+      readFilteredTailSpy.mockRestore();
       await h.close();
     }
   });

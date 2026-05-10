@@ -13,7 +13,7 @@
  *   - continue_run   → appendPrompt() then markTerminal() on next terminal
  *   - merge_run      → markMerged() / markMergeConflict()
  *   - discard_run    → markDiscarded() (the worktree is removed alongside)
- *   - get_run_status → read() + tailEvents()
+ *   - get_run_status → read() + readEventsSince() / readFilteredTailFromEnd()
  *
  * Schema is versioned (`schemaVersion`) but only V1 exists today. Reader
  * is strict: unknown schema versions throw rather than silently corrupt.
@@ -21,8 +21,21 @@
  * were written without it (the field is informational, not load-bearing).
  */
 
-import { mkdirSync, readFileSync, realpathSync, writeFileSync, appendFileSync, renameSync, chmodSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+  appendFileSync,
+  renameSync,
+  chmodSync,
+  openSync,
+  fstatSync,
+  readSync,
+  closeSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 import { logger } from '../utils/logger.js';
 import { filterEventsTailNoise } from './events-filter.js';
@@ -177,6 +190,18 @@ export interface RunStateStoreOptions {
    */
   readonly repoRoot: string;
 }
+
+export interface FilteredEventsTail {
+  readonly lines: readonly string[];
+  /** Raw non-empty events.log line count; equals the next_event_line cursor. */
+  readonly totalLineCount: number;
+  /** Count of raw lines that survived filterEventsTailNoise. */
+  readonly totalFilteredCount: number;
+  /** Count of raw lines dropped by filterEventsTailNoise. */
+  readonly filteredOutCount: number;
+}
+
+const EVENT_LOG_SCAN_CHUNK_BYTES = 64 * 1024;
 
 /**
  * Manages `<crewHome>/runs/<runId>/state.json` + `events.log` files.
@@ -468,6 +493,94 @@ export class RunStateStore {
     }
     const lines = content.split('\n').filter((l) => l.length > 0);
     return lines.slice(-n);
+  }
+
+  /**
+   * Return the last `n` filtered events from the run's events.log.
+   *
+   * This preserves `readEventsSince(runId, 0)` line semantics: split on
+   * LF, ignore empty records, include a final non-newline-terminated
+   * partial line. Exact `events_tail_skipped` accounting requires the
+   * total filtered survivor count, so this scans the file once in bounded
+   * chunks with a UTF-8 decoder, applies the existing tail-noise filter to
+   * raw lines, and keeps only a ring buffer of the last `n` survivors.
+   */
+  readFilteredTailFromEnd(runId: string, n: number): FilteredEventsTail {
+    const path = this.eventsLogPath(runId);
+    let fd: number;
+    try {
+      fd = openSync(path, 'r');
+    } catch (err) {
+      if (isEnoent(err)) {
+        return {
+          lines: [],
+          totalLineCount: 0,
+          totalFilteredCount: 0,
+          filteredOutCount: 0,
+        };
+      }
+      throw err;
+    }
+
+    try {
+      const size = fstatSync(fd).size;
+      if (size === 0) {
+        return {
+          lines: [],
+          totalLineCount: 0,
+          totalFilteredCount: 0,
+          filteredOutCount: 0,
+        };
+      }
+
+      const limit = n > 0 ? Math.floor(n) : 0;
+      const tail: string[] = [];
+      let totalLineCount = 0;
+      let totalFilteredCount = 0;
+      let pending = '';
+      let offset = 0;
+      const buffer = Buffer.allocUnsafe(Math.min(EVENT_LOG_SCAN_CHUNK_BYTES, size));
+      const decoder = new StringDecoder('utf8');
+
+      const recordLine = (line: string): void => {
+        if (line.length === 0) return;
+        totalLineCount += 1;
+        const filtered = filterEventsTailNoise([line]);
+        if (filtered.length === 0) return;
+        totalFilteredCount += 1;
+        if (limit === 0) return;
+        if (tail.length === limit) tail.shift();
+        tail.push(filtered[0]);
+      };
+
+      while (offset < size) {
+        const length = Math.min(buffer.length, size - offset);
+        const bytesRead = readSync(fd, buffer, 0, length, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+
+        const text = pending + decoder.write(buffer.subarray(0, bytesRead));
+        const parts = text.split('\n');
+        pending = parts.pop() ?? '';
+        for (const part of parts) {
+          recordLine(part);
+        }
+      }
+
+      const finalText = pending + decoder.end();
+      if (finalText.length > 0) {
+        recordLine(finalText);
+      }
+
+      return {
+        lines: tail,
+        totalLineCount,
+        totalFilteredCount,
+        filteredOutCount: totalLineCount - totalFilteredCount,
+      };
+    } finally {
+      closeSync(fd);
+    }
   }
 
   /**
