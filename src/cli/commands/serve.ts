@@ -1100,7 +1100,8 @@ function progressNotifierFrom(
     logger.warn(
       'progressToken absent on first dispatch without a token this server session ' +
       `(agent=${agentId}). Inline notifications/progress will not fire for this call. ` +
-      'The captain\'s get_run_status long-poll is your only progress channel. ' +
+      'The dispatch envelope\'s tail.command / events.log side-channel and any ' +
+      'later get_run_status / list_runs reads are the live progress paths. ' +
       'Known: codex CLI 0.128.0 omits the token; Claude Code supplies it.',
     );
   } else if (token !== undefined && !seen.presentLogged) {

@@ -128,6 +128,77 @@ describe('renderSkill (claude-code template)', () => {
     expect(out.endsWith('\n')).toBe(true);
     expect(out.endsWith('\n\n')).toBe(false);
   });
+
+  it('substitutes {{CREW_WAIT_COMMAND}} (default: bare name)', async () => {
+    const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
+    const out = await renderSkill({
+      templatePath,
+      tools: TOOLS,
+      packageRoot: REPO_ROOT,
+    });
+
+    // Default substitution: bare command (skill body uses the
+    // placeholder, never the literal `crew-wait` name).
+    expect(out).toContain('crew-wait <run_id>');
+    expect(out).not.toMatch(/\{\{CREW_WAIT_COMMAND\}\}/);
+  });
+
+  it('substitutes {{CREW_WAIT_COMMAND}} with absolute path when install fell back', async () => {
+    // Regression: skill-prose / allowlist-entry coupling. If
+    // install used `Bash(/usr/local/bin/crew-wait:*)`, the skill body
+    // MUST instruct captains to use the same absolute form — bare
+    // `crew-wait` would not pass the matcher.
+    const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
+    const ABSOLUTE_PATH = '/usr/local/bin/crew-wait';
+    const out = await renderSkill({
+      templatePath,
+      tools: TOOLS,
+      crewWaitCommand: ABSOLUTE_PATH,
+      packageRoot: REPO_ROOT,
+    });
+
+    expect(out).toContain(`${ABSOLUTE_PATH} <run_id>`);
+    expect(out).not.toMatch(/\{\{CREW_WAIT_COMMAND\}\}/);
+    // Bare crew-wait should still appear in the verbose section header
+    // (e.g., "Background watcher overlay") but the actual command-shape
+    // examples must use the absolute path.
+    const watcherInvocation = out.match(/Bash\(["']?[^)]*crew-wait[^)]*["']?\s*,?\s*run_in_background/);
+    expect(watcherInvocation?.[0]).toContain(ABSOLUTE_PATH);
+  });
+
+  it('renders the Phase 2 dispatch-and-yield body (Remove / Replace / Add bullets)', async () => {
+    // Targeted assertions for the Phase 2 skill rewrite per
+    // docs/plans/active/non-blocking-captain.md. These guard against
+    // future drift: removing a section the plan removed, restoring
+    // language the plan rejected, or losing the new guidance.
+    const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
+    const out = await renderSkill({
+      templatePath,
+      tools: TOOLS,
+      packageRoot: REPO_ROOT,
+    });
+
+    // REMOVED — must not reappear:
+    expect(out).not.toContain('## Polling lifecycle — every dispatch');
+    expect(out).not.toContain('Hard rule: stay in the same turn');
+    // The plan deprecated "Always pass wait_for_change_ms: 30000" as
+    // the captain default.
+    expect(out).not.toMatch(/Always pass\s+`wait_for_change_ms:\s*30000`/);
+
+    // ADDED — Phase 2 + post-review revisions:
+    expect(out).toContain('Background watcher overlay (Claude Code only)');
+    expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
+    expect(out).toContain('Synthetic-turn handling');
+    expect(out).toContain('list_runs');
+    // Foreground crew-wait hard gate: Codex/Gemini blocked until
+    // empirical evidence lands. (Phase 2 review's major finding.)
+    expect(out).toMatch(/Codex.*Gemini.*blocked|blocked.*Codex.*Gemini/);
+    expect(out).toContain('docs/status/captain-flow-review-2026-04-29.md');
+    // Multiple terminations don't batch:
+    expect(out).toContain("don't batch");
+    // Pending-run check guidance:
+    expect(out).toContain('Checking pending runs at turn start');
+  });
 });
 
 describe('renderSkill (codex template)', () => {

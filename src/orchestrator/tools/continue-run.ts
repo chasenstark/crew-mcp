@@ -7,9 +7,10 @@
  * issues a reviewer found, or when the user provides a follow-up
  * instruction without wanting to start over.
  *
- * Returns the same envelope shape as run_agent (run_id, worktree_path,
- * status, summary, files_changed). The async-fallback (>60s →
- * status:'running') applies here too.
+ * Returns the same async-first envelope shape as run_agent
+ * (run_id, worktree_path, status: "running"). Terminal results are
+ * surfaced out-of-band via crew-wait watchers (Claude Code), or
+ * later get_run_status / list_runs reads.
  */
 
 import { z } from 'zod';

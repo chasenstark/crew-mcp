@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import { logger } from '../../src/utils/logger.js';
+
 interface MockGitClient {
   raw: ReturnType<typeof vi.fn>;
   status: ReturnType<typeof vi.fn>;
@@ -581,6 +583,66 @@ describe('WorktreeManager', () => {
         '-m',
         'Merge crew run run-1\n\nCrew-Run: run-1',
       ]);
+    });
+
+    it('mergeRunWorktree warn-logs when worktree HEAD is on a different branch than record.branchName', async () => {
+      // Captures the orphan-branch case from the merge_run fix: the
+      // agent committed on a non-recorded branch (e.g., codex sandbox
+      // forced one). Merging by SHA captures the work, but the actual
+      // branch ref persists locally after cleanup. Warn so the user
+      // knows.
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      // First wGit.revparse(['HEAD']) for no-changes check; then
+      // wGit.revparse(['--abbrev-ref', 'HEAD']) for branch-divergence
+      // detection. Order matters.
+      wGit.revparse
+        .mockResolvedValueOnce('actual-sha')                // HEAD SHA
+        .mockResolvedValueOnce('crew-run/agent-fork');      // current branch (different!)
+      rootGit.revparse
+        .mockResolvedValueOnce('main')                      // resolveMergeTargetBranch
+        .mockResolvedValueOnce('main-sha')                  // no-changes check (different)
+        .mockResolvedValueOnce('main')                      // current-branch check
+        .mockResolvedValueOnce('post-merge-sha');           // commitSha
+
+      await manager.mergeRunWorktree('run-1');
+
+      const warnCalls = warn.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('crew-run/agent-fork'),
+      );
+      expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+      expect(warnCalls[0][0]).toMatch(/orphan local ref/);
+      expect(warnCalls[0][0]).toMatch(/git branch -D crew-run\/agent-fork/);
+    });
+
+    it('mergeRunWorktree does NOT warn when worktree HEAD is on the recorded branch', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse
+        .mockResolvedValueOnce('actual-sha')                  // HEAD SHA
+        .mockResolvedValueOnce('crew-run/run-1-aaaaaaaa');    // current branch (matches record)
+      rootGit.revparse
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('main-sha')
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('post-merge-sha');
+
+      await manager.mergeRunWorktree('run-1');
+
+      const branchWarnCalls = warn.mock.calls.filter((c) =>
+        typeof c[0] === 'string' && c[0].includes('orphan local ref'),
+      );
+      expect(branchWarnCalls.length).toBe(0);
     });
 
     it('mergeRunWorktree refuses dirty host worktree without force', async () => {

@@ -273,11 +273,29 @@ export async function installSingleTarget(args: {
 }): Promise<InstalledTarget> {
   const { adapter, home, packageRoot, crewBin, crewArgs, autoApprove } = args;
 
+  // Resolve the crew-wait command up front so the skill body and the
+  // Claude allowlist entry stay in lockstep. The skill embeds this
+  // literal as `{{CREW_WAIT_COMMAND}} <run_id>`, and the allowlist is
+  // `Bash(<this>:*)` — the two MUST match exactly or the captain's
+  // Bash invocation won't pass the matcher.
+  //
+  // Only Claude Code actually uses the watcher; for Codex/Gemini we
+  // pass the bare name so the rendered prose still reads correctly,
+  // but those captains default to the portable baseline anyway.
+  let crewWaitCommand = 'crew-wait';
+  if (adapter.id === 'claude-code') {
+    const pathVisible = (args.isCrewWaitOnPath ?? isCrewWaitOnPath)();
+    crewWaitCommand = pathVisible
+      ? 'crew-wait'
+      : (args.resolveCrewWaitBinary ?? resolveCrewWaitBinary)();
+  }
+
   // 1. Render skill.
   const templatePath = templatePathForHost(packageRoot, adapter.id);
   const skillContent = await renderSkill({
     templatePath,
     tools: CATALOG_TOOLS,
+    crewWaitCommand,
     packageRoot,
   });
 
@@ -317,20 +335,19 @@ export async function installSingleTarget(args: {
     const approvalExisting = existsSync(approvalFile)
       ? await readFile(approvalFile, 'utf-8')
       : '';
-    const pathVisible = (args.isCrewWaitOnPath ?? isCrewWaitOnPath)();
-    const crewWaitBinary = pathVisible
-      ? 'crew-wait'
-      : (args.resolveCrewWaitBinary ?? resolveCrewWaitBinary)();
+    // crewWaitCommand was resolved above the skill render so the
+    // allowlist entry matches the skill body exactly.
     const approvalUpdated = addClaudePermission(
       approvalExisting,
-      `Bash(${crewWaitBinary}:*)`,
+      `Bash(${crewWaitCommand}:*)`,
     );
     if (approvalUpdated !== approvalExisting) {
       mkdirSync(dirname(approvalFile), { recursive: true });
       writeFileSync(approvalFile, approvalUpdated, 'utf-8');
     }
     logger.info(
-      'crew install: Claude Code crew-wait watcher allowlisted. '
+      `crew install: Claude Code crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
+      + 'Skill body uses the same command. '
       + 'If you use a non-default CREW_HOME, export CREW_HOME in the shell environment Claude Code Bash inherits.',
     );
   }

@@ -502,8 +502,29 @@ export class WorktreeManager {
     // If the agent switched branches inside the worktree (e.g., a sandbox
     // forced a non-standard branch name), the recorded branch ref is stuck
     // at the initial commit and merging it would silently no-op while the
-    // real work survives on a different ref. The SHA from line 486 is
-    // canonical regardless of branch state.
+    // real work survives on a different ref. `worktreeHead` (read above
+    // for the no-changes check) is canonical regardless of branch state.
+    //
+    // Side effect: if the agent committed on a different branch, that
+    // branch ref persists locally after `cleanupRunRecordedWorktree`
+    // deletes only `record.branchName`. Detected and warn-logged below.
+    let actualBranch: string | undefined;
+    try {
+      const raw = (await wGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
+      // 'HEAD' here means detached — leave actualBranch undefined.
+      if (raw && raw !== 'HEAD') actualBranch = raw;
+    } catch {
+      // Best-effort; non-fatal.
+    }
+    if (actualBranch && actualBranch !== record.branchName) {
+      logger.warn(
+        `merge_run ${runId}: worktree HEAD is on branch '${actualBranch}', `
+        + `but the run was created on '${record.branchName}'. Merging the actual `
+        + `commit graph (${worktreeHead}) — '${actualBranch}' will remain as an `
+        + `orphan local ref after cleanup. Delete with `
+        + `\`git branch -D ${actualBranch}\` if you don't need it.`,
+      );
+    }
     try {
       await this.git.merge([worktreeHead, '--no-ff', '-m', mergeMessage]);
     } catch (err) {

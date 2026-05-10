@@ -8,6 +8,8 @@ scripts/*
 !scripts/smoke/**
 !scripts/tail-handler/
 !scripts/tail-handler/**
+!scripts/empirical-gates/
+!scripts/empirical-gates/**
 scripts/tail-handler/build/
 scripts/tail-handler/*.app/
 

@@ -47,6 +47,21 @@ export interface RenderSkillArgs {
   readonly templatePath: string;
   readonly tools: readonly SkillTool[];
   /**
+   * Literal `Bash` invocation the captain should use to spawn the
+   * watcher. Substituted into `{{CREW_WAIT_COMMAND}}` placeholders in
+   * the body. Must match the host's allowlist entry exactly — bare
+   * `crew-wait` when the install detected it on PATH, or an absolute
+   * path like `/usr/local/bin/crew-wait` when install used the
+   * absolute-path fallback. Hosts that don't run the watcher (Codex,
+   * Gemini) still receive the literal so the prose reads sensibly,
+   * but they default to the portable baseline anyway.
+   *
+   * Optional with a sane default (`crew-wait`) so existing render
+   * sites without coupling-aware install logic keep working; new
+   * sites should always pass the actually-resolved command.
+   */
+  readonly crewWaitCommand?: string;
+  /**
    * Override for tests. Defaults to a path resolved relative to this
    * file's compiled location (which sits in dist/install/ at runtime,
    * with skills/ as a sibling of dist/).
@@ -124,12 +139,16 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
   const templateRaw = await readFile(args.templatePath, 'utf-8');
 
   const toolList = renderToolList(args.tools);
-  const bodyWithTools = body.replace('{{TOOL_LIST}}', toolList);
+  const crewWaitCommand = args.crewWaitCommand ?? 'crew-wait';
+  const bodyWithTools = body
+    .replace('{{TOOL_LIST}}', toolList)
+    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
 
   const rendered = templateRaw
     .replace('{{BODY}}', bodyWithTools)
     .replace(/\{\{DESCRIPTION\}\}/g, SKILL_DESCRIPTION)
-    .replace(/\{\{CREW_VERSION\}\}/g, SERVE_VERSION);
+    .replace(/\{\{CREW_VERSION\}\}/g, SERVE_VERSION)
+    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
 
   return rendered.trimEnd() + '\n';
 }

@@ -16,8 +16,10 @@
  * Ownership model: this file owns the **schema** + a pure **plan builder**.
  * The MCP server (`crew-mcp serve`, src/cli/commands/serve.ts) calls
  * `planRunAgent` to validate input + allocate a worktree, then dispatches
- * the task through `ToolDispatcher` and waits for the terminal event before
- * shaping the response envelope.
+ * the task asynchronously through `ToolDispatcher` and returns a
+ * `{ status: "running", run_id }` envelope immediately. The captain
+ * surfaces terminal results out-of-band via `crew-wait` watchers (Claude
+ * Code), `get_run_status` reads on later turns, or `list_runs` recovery.
  *
  * Worktree lifecycle: mint `runId = randomUUID()` per call, allocate
  * `.crew/runs/<runId>/worktree/` via worktreeManager.createRunWorktree,

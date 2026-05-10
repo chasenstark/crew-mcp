@@ -246,31 +246,77 @@ tool result for the user who wants them.
 ### Background watcher overlay (Claude Code only)
 
 On Claude Code, immediately after `run_agent` / `continue_run`
-returns, spawn `crew-wait <run_id>` with `Bash` and
-`run_in_background: true`, then end your turn. `crew-wait` ships in
-the Phase 3 overlay; it watches `state.json` until the run reaches
-`success | partial | error | cancelled`, then exits. Claude Code
-turns that background completion into a synthetic captain turn.
+returns, spawn `{{CREW_WAIT_COMMAND}} <run_id>` with `Bash` and
+`run_in_background: true`, then end your turn. The watcher polls
+`state.json` until the run reaches `success | partial | error |
+cancelled`, then exits. Claude Code turns that background
+completion into a synthetic captain turn.
 
-If spawning the watcher fails because the binary is missing, the
-permission allowlist rejects it, or the host is not Claude Code, fall
-back to the portable baseline: end your turn after the dispatch and
-check pending runs at the next user turn.
+**Use `{{CREW_WAIT_COMMAND}}` exactly as written above** — the
+install renders the literal command path your allowlist accepts
+(either the bare `crew-wait` name when it's PATH-visible, or an
+absolute path like `/usr/local/bin/crew-wait` when the install
+fell back). Do not improvise the spelling — a different form will
+not match the `Bash(...)` allowlist entry and the watcher will
+fail to spawn.
 
-### Foreground `crew-wait` opt-in (any host, gated on Phase 3 empirical test)
+**Synthetic-turn handling.** When the watcher exits, Claude Code
+fires a synthetic turn whose tool-result body includes a single
+line of stdout:
 
-When the user explicitly says they want to wait in-turn ("wait for
-this", "I'll wait"), or when Codex/Gemini in-turn waiting is
-preferable for the task, call `crew-wait <run_id>` as a foreground
-shell command. This blocks chat, but it uses one inference instead
-of an N-iteration MCP long-poll loop. This any-host behavior is
-allowed only after the Phase 3 foreground-wait empirical tests pass;
-otherwise treat it as Claude-only.
+```
+CREW_WAIT_TERMINAL run_id=<id> agent=<agent> status=<status> worktree=<path>
+```
 
-After foreground `crew-wait` returns, call `get_run_status({ run_id })`
-for the rich terminal payload: summary, `files_changed`, prompts,
-warnings, and `events_tail`. The shell output is terminal metadata,
-not the full result.
+Parse `run_id` from that line and call
+`get_run_status({ run_id })` for the rich terminal payload
+(summary, `files_changed`, `events_tail`). Surface a tight
+synthesis to the user and ask the relevant follow-up
+(merge / iterate / discard for implementer runs;
+keep / cleanup for read-only).
+
+If the synthetic turn arrives without the `CREW_WAIT_TERMINAL`
+line (host stdout-surfacing degrades, watcher killed by signal,
+etc.), fall back to discovery via `list_runs`:
+
+```
+list_runs({
+  status: ["success", "partial", "error", "cancelled"],
+  completedAfter: <ISO timestamp of your last terminal surfacing>,
+})
+```
+
+That returns every newly-terminal run in the current repo,
+newest-first. Dedupe against run IDs you already surfaced earlier
+in the conversation, then process each remaining one as if its
+`CREW_WAIT_TERMINAL` line had arrived normally.
+
+**Spawn failure / non-Claude host.** If spawning the watcher
+fails (binary missing, allowlist rejects, host is not Claude
+Code), fall back to the portable baseline: end your turn after
+the dispatch and check pending runs at the next user turn.
+
+### Foreground `{{CREW_WAIT_COMMAND}}` opt-in (Claude Code only — Codex / Gemini blocked until empirical gates pass)
+
+When the user explicitly says they want to wait in-turn ("wait
+for this", "I'll wait"), call `{{CREW_WAIT_COMMAND}} <run_id>`
+as a foreground shell command. This blocks chat, but it uses one
+inference instead of an N-iteration MCP long-poll loop.
+
+**Hard gate: Claude Code only for now.** Phase 3 empirical tests
+#3 (Codex foreground ≥5min) and #4 (Gemini foreground ≥5min) are
+documented as deferred in
+`docs/status/captain-flow-review-2026-04-29.md`. Until that file
+records dated passing evidence for those gates, do NOT use
+foreground `{{CREW_WAIT_COMMAND}}` on Codex or Gemini — those
+hosts may silently kill long shell commands or behave
+inconsistently with ESC. Default to the portable baseline (end
+turn, check at next user turn) on Codex/Gemini.
+
+After foreground `{{CREW_WAIT_COMMAND}}` returns, call
+`get_run_status({ run_id })` for the rich terminal payload:
+summary, `files_changed`, prompts, warnings, and `events_tail`.
+The shell output is terminal metadata, not the full result.
 
 ### Checking pending runs at turn start
 
@@ -328,15 +374,23 @@ run_agent(...)              → { status: "running", run_id: R,
                                 tail_url: "crew-tail:///..." }
 "Dispatched as `R` — [tail in side terminal](crew-tail:///...). Ended turn; chat freely."
 Claude Code only:
-  Bash("crew-wait R", run_in_background: true)
+  Bash("{{CREW_WAIT_COMMAND}} R", run_in_background: true)
 end turn
 
-later user turn or watcher synthetic turn:
-get_run_status({ run_id: R })
-  → status: "success", summary: "...", files_changed: [...],
-    events_tail: [<last N events of full log>]
-"Done. <one-paragraph synthesis informed by summary + events_tail>.
-Merge / iterate / discard?"
+later — Claude Code synthetic turn from watcher exit:
+  tool result contains: "CREW_WAIT_TERMINAL run_id=R agent=... status=success worktree=..."
+  get_run_status({ run_id: R })
+    → status: "success", summary: "...", files_changed: [...],
+      events_tail: [<last N events of full log>]
+  "Done. <one-paragraph synthesis informed by summary + events_tail>.
+  Merge / iterate / discard?"
+
+OR — later user turn (Codex/Gemini default; or Claude Code if synthetic-turn payload was empty):
+  list_runs({ status: ["success","partial","error","cancelled"],
+              completedAfter: <last surfaced timestamp> })
+    → runs: [{ run_id: R, agent_id, status, summary, ... }]
+  get_run_status({ run_id: R }) for the rich payload
+  surface as above; dedupe against already-surfaced run IDs.
 ```
 
 The key is the turn break: after dispatch, the user can type
