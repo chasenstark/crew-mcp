@@ -405,7 +405,6 @@ export class RunStateStore {
    */
   appendEvent(runId: string, line: string): void {
     const path = this.eventsLogPath(runId);
-    mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, line.endsWith('\n') ? line : `${line}\n`, 'utf-8');
   }
 
