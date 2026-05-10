@@ -51,51 +51,27 @@ matches one of these signals:
 - **The user wants parallel exploration.** "Try two implementations
   and we'll pick." Dispatch each variant.
 
-If you're unsure, default to inline. Dispatching for trivial work
-defeats the point of the user staying in their primary CLI.
+**Default to inline whenever zero of the four signals applies
+cleanly.** Maybe-fits should not dispatch — they should ask. A
+30–60s dispatch followed by a discard is worse than a 5-second
+clarifying question; dispatching for trivial work defeats the
+point of the user staying in their primary CLI.
 
 ### Don't dispatch to your own host product
 
-Crew exists to bridge **between** agent products (Claude ↔ Codex ↔
-Gemini ↔ local). It is not the right tool for spawning another
-instance of the host you're already running in. If you're Claude
-Code and the user says "have Claude review this", **use your
-native subagent mechanism (the `Agent` / `Task` tool) directly** —
-do not `run_agent` to `claude-code`. Same applies symmetrically:
-Codex → Codex, Gemini → Gemini should go through the host's
-own subagent path, not crew.
+Crew bridges **between** agent products (Claude ↔ Codex ↔ Gemini ↔
+local). It's not the right tool for spawning another instance of the
+host you're already running in. If you're Claude Code and the user
+says "have Claude review this", **use your native subagent
+mechanism (the `Agent` / `Task` tool) directly** — don't `run_agent`
+to `claude-code`. Symmetric for Codex → Codex, Gemini → Gemini.
 
-Why this matters:
-
-- **Quota.** Both calls bill the same subscription / API key. A
-  crew dispatch to your own product double-charges the user for
-  the same model family.
-- **Latency.** Native subagents skip the worktree allocation
-  (~30–60s) and the merge/discard ceremony.
-- **Context.** Native subagents return their result inline with
-  no merge step; crew runs require an explicit merge or discard.
-
-The only legitimate reason to crew-dispatch to your own host is
-when the user specifically wants **worktree isolation** for a
-same-product run (e.g., "fork a Claude run in a worktree so I
-can keep working on main"). If the user names that explicitly,
-proceed. Otherwise: native subagent. If you're not sure which
-the user wants, ask one short question.
-
-When `list_agents` shows your own host product, treat it as
-"available for explicit isolation requests only" rather than a
-default routing target.
-
-## Decision order — the spine
-
-Run this in your head before reaching for any tool. Each step has its
-own section below; this list is the ordering glue.
-
-1. **Inline or dispatch?** No signal in the list above → inline; stop here.
-2. **Ask first?** If any rubric item below fires, ask one question and wait.
-3. **Dispatch.** `list_agents` → `run_agent` (or `continue_run` to resume an existing run).
-4. **Iterate or surface.** Read the result; iterate inline (`continue_run` / second opinion) or summarize for the user.
-5. **Merge / discard.** Only on explicit user approval. Never call `merge_run` or `discard_run` unprompted.
+The one legitimate exception is **explicit worktree isolation** for
+a same-product run ("fork a Claude run in a worktree so I can keep
+working on main"). If the user names that, proceed. Otherwise:
+native subagent. If unsure, ask. When `list_agents` shows your own
+host product, treat it as "available for explicit isolation
+requests only" rather than a default routing target.
 
 ## The default flow — code → review → iterate → merge
 
@@ -110,14 +86,11 @@ When the user dispatches an implementation:
    available, then end your turn so the user can keep chatting. On a
    later user turn or watcher synthetic turn, read the terminal
    payload with `get_run_status`.
-3. **Iterate.** If something's off, `continue_run` against the same
-   `run_id` with a fix prompt — same agent, same worktree. If you
-   want a second opinion, `run_agent` to a different agent with
-   `read_only: true` and `working_directory` pointed at the
-   implementer's worktree so the reviewer sees the changes without
-   allocating its own worktree. The reviewer is structurally
-   prevented from leaving stranded edits in a phantom worktree —
-   it just reads the implementer's tree. (Restate "review only, do
+3. **Iterate.** `continue_run` for fix-up turns (same agent, same
+   worktree). For a second opinion, `run_agent` to a different
+   agent with `read_only: true` + `working_directory` pointed at
+   the implementer's worktree — the reviewer reads the changes
+   without allocating its own worktree. (Restate "review only, do
    not edit" in the reviewer's prompt anyway; the flag skips
    allocation but doesn't constrain the agent's tools.) Apply
    reviewer findings via `continue_run` on the implementer's run.
@@ -150,23 +123,11 @@ asking; it discards their position in the merge.
 **Always pass a meaningful `commit_title`** (and optionally
 `commit_body`) to `merge_run`. The merge commit's subject becomes
 permanent git history the user reads later — "Merge crew run
-abc123…" is the fallback for when you forgot, and it's useless
-when scrolling `git log`. You have the prompt, the agent's
-summary, and the diff context; compose a conventional-style
-subject from them: short imperative (≤72 chars), describing what
-the run accomplished, not that it was a crew run.
-
-> Good: `commit_title: "fix(parser): handle empty-line input
-correctly"` `commit_body: "Adds the empty-line guard to
-parseLine() with a regression test."`
->
-> Bad: `commit_title: "Codex did the parser fix"`
->
-> Worse: omitting commit_title and letting it fall back to
-> `Merge crew run <id>`.
-
-The `Crew-Run: <run_id>` trailer is appended automatically — don't
-include it manually.
+abc123…" is the useless fallback. Compose a conventional-style
+subject from the prompt, summary, and diff: short imperative
+(≤72 chars) describing what the run accomplished, not that it was
+a crew run. The `Crew-Run: <run_id>` trailer is appended
+automatically — don't include it manually.
 
 ## When to ask the user — rubric, not vibes
 
@@ -195,7 +156,7 @@ them hold.
    work through crew).
 
 The rubric only fires **after** you've decided to dispatch. If a
-dispatch signal already applies and the four items above are clean —
+dispatch signal already applies and the five items above are clean —
 **just dispatch**, no clarifying question needed. Trivial,
 well-specified asks should not be ceremonious; over-asking on an
 obvious "fix this typo via the reviewer" defeats the point of the
@@ -252,13 +213,9 @@ returns, spawn `{{CREW_WAIT_COMMAND}} <run_id>` with `Bash` and
 cancelled`, then exits. Claude Code turns that background
 completion into a synthetic captain turn.
 
-**Use `{{CREW_WAIT_COMMAND}}` exactly as written above** — the
-install renders the literal command path your allowlist accepts
-(either the bare `crew-wait` name when it's PATH-visible, or an
-absolute path like `/usr/local/bin/crew-wait` when the install
-fell back). Do not improvise the spelling — a different form will
-not match the `Bash(...)` allowlist entry and the watcher will
-fail to spawn.
+Use `{{CREW_WAIT_COMMAND}}` exactly as rendered — improvising the
+spelling (bare name vs absolute path) will miss the `Bash(...)`
+allowlist entry and the watcher won't spawn.
 
 **Synthetic-turn handling.** When the watcher exits, Claude Code
 fires a synthetic turn whose tool-result body includes a single
@@ -346,26 +303,12 @@ synthetic turns; they don't queue together.
 
 ### How users follow progress (not your problem)
 
-Two side channels carry live progress without burning your context:
-
-- **The inline tail link in your dispatch confirmation** — the
-  `[tail in side terminal](<tail_url>)` markdown link you emit
-  opens a side terminal on macOS via the `crew-tail://`
-  handler. This is the user's main progress channel; surfacing it
-  inline is the whole point of including the link in your reply
-  rather than relying on the tool-result panel. If the handler
-  isn't installed, the click does nothing useful — but the same is
-  true of the `file://` fallback (Claude Code intercepts it into
-  the editor), so `tail_url` is still the right choice; the user
-  can manually run the `tail -F` command from the tool-result panel
-  in that case.
-- `tail.command` / `events.log` is the only default live-progress
-  UX. Inline MCP `notifications/progress` chunks only exist while a
-  tool call is in flight; the chat-available default flow ends the
-  tool turn, so those inline notifications don't fire.
-
-Both happen without you. Don't duplicate them by rendering events
-into your reply.
+The inline `[tail in side terminal](<tail_url>)` link in your
+dispatch confirmation is the user's main live-progress channel.
+Don't duplicate it by rendering events into your reply. Inline
+MCP `notifications/progress` only fire while a tool call is in
+flight; the chat-available default flow ends the turn, so those
+don't apply here.
 
 ### Worked shape
 
@@ -452,52 +395,38 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   `continue_run` re-syncs each turn so user edits between turns
   flow through. (read-only runs don't allocate a worktree, so this
   doesn't apply — they already operate on the host repo directly.)
-- **Read-only dispatches.** Pass `read_only: true` on `run_agent` for
-  review/triage/Q&A work where the agent shouldn't edit (code review,
-  architecture critique, "explain what this module does"). Skipping
-  worktree allocation saves ~100ms–1s and disk space, and the
-  reviewer-on-implementer pattern (`read_only: true` +
-  `working_directory: <implementer-worktree>`) becomes the structural
-  default rather than a prompt-level workaround. Caveats:
-  - There's no FS isolation. If the agent ignores the prompt and
-    writes, the changes land in `working_directory`. The dispatch
-    surfaces a `warnings` field on the result if it detects
-    post-run uncommitted changes — relay those to the user.
-  - `merge_run` refuses on a read-only run with a clear reason.
-    `discard_run` works (metadata-only cleanup).
+- **Read-only dispatches.** Pass `read_only: true` for review/triage/Q&A
+  work. Skips worktree allocation (~100ms–1s saved); the
+  reviewer-on-implementer pattern is `read_only: true` +
+  `working_directory: <implementer-worktree>`. Caveats:
+  - **No FS isolation.** If the agent ignores the prompt and
+    writes, edits land in `working_directory`. The dispatch
+    surfaces a `warnings` field if it detects post-run uncommitted
+    changes — relay those.
+  - `merge_run` refuses on read-only with a clear reason;
+    `discard_run` works (metadata-only).
   - **Discard reviewer runs once you've consumed their findings.**
-    Read-only runs do **not** auto-clean — only implementer runs
-    do (via the `merge_run` cleanup path, which doesn't apply
-    here). A multi-branch stack with N reviewers leaves N stale
-    run-state directories under `~/.crew/runs/` until the
-    captain explicitly discards. Cleanup is cheap (~20KB each,
-    no worktree to remove) and idempotent.
-  - `continue_run` is sticky — resuming a read-only run stays
-    read-only. To switch modes, dispatch a fresh `run_agent`.
-  - Without `read_only: true`, dispatching a reviewer at another
-    run's worktree still works but allocates a wasted worktree —
-    prefer the flag.
+    Read-only runs don't auto-clean (only `merge_run` triggers
+    cleanup). A stack of N reviewers leaves N stale run-state
+    directories under `~/.crew/runs/` until explicit discard.
+    Cleanup is cheap (~20KB each) and idempotent.
+  - `continue_run` is sticky on read-only; to switch modes,
+    dispatch a fresh `run_agent`.
+  - Without the flag, dispatching a reviewer at another worktree
+    still works but allocates a wasted worktree — prefer the flag.
 
 - **Effort.** `run_agent` / `continue_run` accept
   `effort: "low" | "medium" | "high" | "xhigh" | "max"` (codex's
-  `model_reasoning_effort` set), and `list_agents` surfaces the
-  per-machine default. When you accept the default, pass nothing
-  and don't add effort framing to the prompt. **When you
-  intentionally choose or override the level**, do BOTH:
-  1. Pass `effort: "<level>"` in the tool call (lets codex flip its
-     native knob; claude-code / gemini-cli / openai-compatible
-     ignore the constraint, but the call is harmless).
-  2. Restate it in the prompt in one short line, e.g. `Apply
-<level> reasoning effort: <one phrase about what that means
-for this task>.`
-
-  Without the prompt line, dispatching `effort: "high"` to
-  claude-code does nothing — for those adapters the prompt is the
-  only signal the model sees. Rough mapping:
-  - `low`: classification, typo fixes, mechanical changes, quick sanity checks.
-  - `medium`: ordinary implementation or review.
+  `model_reasoning_effort` set); `list_agents` surfaces the
+  per-machine default. Accept the default by passing nothing.
+  **When you override**, do BOTH: (a) pass `effort: "<level>"` so
+  codex flips its native knob (claude-code / gemini-cli /
+  openai-compatible ignore it harmlessly); (b) restate it in the
+  prompt in one short line — those adapters only see the
+  prompt-level signal. Mapping:
+  - `low` / `medium`: typo fixes through ordinary implementation or review.
   - `high`: cross-file reasoning, non-trivial refactors, root-cause triage.
-  - `xhigh` / `max`: correctness-critical work (auth, money, migrations), architectural changes, or when the user explicitly asks for an exhaustive pass.
+  - `xhigh` / `max`: correctness-critical work (auth, money, migrations), architectural changes, or "exhaustive pass" requests.
 
 - Worktrees persist across crew-serve restarts. A `run_id` you got
   yesterday is still resumable today (until merged or discarded).
