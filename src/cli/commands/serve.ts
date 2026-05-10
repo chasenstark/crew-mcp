@@ -12,6 +12,7 @@
 //   merge_run        — merge a worktree into the host's HEAD (the only
 //                      mutating tool; host CLI must confirm with user)
 //   discard_run      — abandon a worktree without merging
+//   cancel_run       — abort an in-flight run
 //   get_run_status   — poll a run's state.json + tail of events.log
 //
 // Logging discipline: stdout is reserved for the MCP wire protocol. The
