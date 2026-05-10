@@ -9,7 +9,7 @@
  * `repoRoot` field.
  */
 
-import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import * as fs from 'node:fs';
 import { join } from 'node:path';
 
 import { z } from 'zod';
@@ -68,12 +68,39 @@ export interface ListRunsContext {
   readonly repoRoot: string;
 }
 
+interface ParsedRunStateCacheEntry {
+  readonly path: string;
+  readonly mtimeMs: number;
+  readonly parsed?: RunStateV1;
+}
+
+interface ListRunsFs {
+  existsSync(path: string): boolean;
+  readdirSync(path: string, options: { withFileTypes: true }): fs.Dirent[];
+  statSync(path: string): fs.Stats;
+  readFileSync(path: string, encoding: 'utf-8'): string;
+  realpathSync(path: string): string;
+}
+
+const defaultListRunsFs: ListRunsFs = {
+  existsSync: fs.existsSync,
+  readdirSync: fs.readdirSync,
+  statSync: fs.statSync,
+  readFileSync: fs.readFileSync,
+  realpathSync: fs.realpathSync,
+};
+
+let listRunsFs = defaultListRunsFs;
+
+const repoRootRealpathCache = new Map<string, string>();
+const parsedRunStateCache = new Map<string, ParsedRunStateCacheEntry>();
+
 export function listRuns(
   input: ListRunsInput,
   ctx: ListRunsContext,
 ): ListRunsOutput {
   const runsBasePath = join(ctx.crewHome, 'runs');
-  if (!existsSync(runsBasePath)) {
+  if (!listRunsFs.existsSync(runsBasePath)) {
     return { runs: [] };
   }
 
@@ -84,15 +111,19 @@ export function listRuns(
   const limit = input.limit ?? DEFAULT_LIST_RUNS_LIMIT;
 
   const states: RunStateV1[] = [];
-  for (const entry of readdirSync(runsBasePath, { withFileTypes: true })) {
+  const entries = listRunsFs.readdirSync(runsBasePath, { withFileTypes: true });
+  const seenRunIds = new Set<string>();
+  for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const state = readRunState(join(runsBasePath, entry.name, 'state.json'));
+    seenRunIds.add(entry.name);
+    const state = readRunState(entry.name, join(runsBasePath, entry.name, 'state.json'));
     if (!state) continue;
     if (!belongsToRepo(state, repoRoot, includeUnknownRepo)) continue;
     if (statusFilter && !statusFilter.has(state.status)) continue;
     if (completedAfter && (!state.completedAt || state.completedAt <= completedAfter)) continue;
     states.push(state);
   }
+  pruneMissingRunStateCacheEntries(runsBasePath, seenRunIds);
 
   states.sort(compareRunStateNewestFirst);
 
@@ -138,18 +169,42 @@ function summaryField(state: RunStateV1): { summary?: string } {
   return summary !== undefined ? { summary } : {};
 }
 
-function readRunState(path: string): RunStateV1 | undefined {
-  if (!existsSync(path)) return undefined;
+function readRunState(runId: string, path: string): RunStateV1 | undefined {
+  let mtimeMs: number;
+  try {
+    mtimeMs = listRunsFs.statSync(path).mtimeMs;
+  } catch {
+    parsedRunStateCache.delete(runId);
+    return undefined;
+  }
+
+  const cached = parsedRunStateCache.get(runId);
+  if (cached && cached.path === path && cached.mtimeMs === mtimeMs) {
+    return cached.parsed;
+  }
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, 'utf-8'));
+    parsed = JSON.parse(listRunsFs.readFileSync(path, 'utf-8'));
   } catch {
+    parsedRunStateCache.set(runId, { path, mtimeMs });
     return undefined;
   }
   if (!isRunStateV1(parsed)) {
+    parsedRunStateCache.set(runId, { path, mtimeMs });
     return undefined;
   }
+  parsedRunStateCache.set(runId, { path, mtimeMs, parsed });
   return parsed;
+}
+
+function pruneMissingRunStateCacheEntries(runsBasePath: string, seenRunIds: Set<string>): void {
+  const expectedPathPrefix = `${runsBasePath}/`;
+  for (const [runId, entry] of parsedRunStateCache) {
+    if (entry.path.startsWith(expectedPathPrefix) && !seenRunIds.has(runId)) {
+      parsedRunStateCache.delete(runId);
+    }
+  }
 }
 
 function isRunStateV1(value: unknown): value is RunStateV1 {
@@ -167,9 +222,29 @@ function isRunStateV1(value: unknown): value is RunStateV1 {
 }
 
 function resolveRepoRoot(raw: string): string {
-  try {
-    return realpathSync(raw);
-  } catch {
-    return raw;
+  const cached = repoRootRealpathCache.get(raw);
+  if (cached !== undefined) {
+    return cached;
   }
+
+  let resolved: string;
+  try {
+    resolved = listRunsFs.realpathSync(raw);
+  } catch {
+    resolved = raw;
+  }
+  repoRootRealpathCache.set(raw, resolved);
+  return resolved;
+}
+
+export function clearListRunsCachesForTest(): void {
+  repoRootRealpathCache.clear();
+  parsedRunStateCache.clear();
+}
+
+export function setListRunsFsForTest(overrides: Partial<ListRunsFs>): () => void {
+  listRunsFs = { ...defaultListRunsFs, ...overrides };
+  return () => {
+    listRunsFs = defaultListRunsFs;
+  };
 }
