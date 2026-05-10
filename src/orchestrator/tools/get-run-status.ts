@@ -2,8 +2,9 @@
  * get_run_status — poll the current state of a run.
  *
  * Pairs with the async-first dispatch model (`run_agent` always returns
- * `status: "running"` immediately; the captain polls this tool to learn
- * how the run progresses). Supports two modes:
+ * `status: "running"` immediately). The captain uses this as an
+ * on-demand status read at turn start, after a watcher exits, or after
+ * an opt-in foreground wait. Supports three modes:
  *
  *   1. Snapshot (no `wait_for_change_ms`): returns the current state +
  *      events delta + cursor immediately. Cheap; always safe.
@@ -14,8 +15,8 @@
  *      `wait_for_change_ms` elapses.
  *   3. Terminal-only long-poll (`wait_for_terminal_only: true`): with
  *      `wait_for_change_ms`, ignores stream chunks and waits only for a
- *      terminal event or timeout. Recommended for the captain's default
- *      wait loop.
+ *      terminal event or timeout. Advanced/legacy option for opt-in
+ *      in-turn waiting.
  *
  * The cursor (`since_event_line` in, `next_event_line` out) keeps each
  * poll surfacing only the *new* events.log lines, so the captain
@@ -56,16 +57,17 @@ export const getRunStatusInputSchema = z.object({
    * If set, the server holds the response open for up to this many
    * milliseconds, returning early as soon as new events arrive or the
    * run reaches a terminal state. If unset (or 0), the call returns a
-   * synchronous snapshot. Recommended: 30000. Capped at 60000 (server
-   * clamps; an overly long wait risks tripping host MCP timeouts).
+   * synchronous snapshot. Advanced/legacy option for opt-in in-turn
+   * waiting. Capped at 60000 (server clamps; an overly long wait risks
+   * tripping host MCP timeouts).
    */
   wait_for_change_ms: z.number().int().nonnegative().optional(),
   /**
    * When set with `wait_for_change_ms`, wait only for terminal
    * run events (`run:complete`, `run:failed`, `run:cancelled`) and
-   * ignore stream chunks. Recommended for the default captain wait
-   * loop: progress still flows through notifications/tail side
-   * channels, while the captain wakes only on terminal or timeout.
+   * ignore stream chunks. Advanced/legacy option for opt-in in-turn
+   * waiting; the default captain dispatch flow ends the turn instead
+   * of long-polling.
    */
   wait_for_terminal_only: z.boolean().optional(),
   /**
@@ -89,4 +91,4 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Poll a run by run_id. Always poll after run_agent / continue_run — those return status:"running" immediately. **Always pass wait_for_change_ms: 30000** plus since_event_line (the prior response's next_event_line). Recommended default: also pass wait_for_terminal_only:true so the server waits only for terminal events (run:complete | run:failed | run:cancelled), ignoring stream chunks while progress flows through notifications/tail side channels. Without wait_for_terminal_only, the server blocks until new signal events arrive or the run reaches terminal state (and returns immediately if already terminal), so each poll wakes the captain on real progress. Pure adapter receipts (e.g. codex "command: started ..." / "(exit 0)" / item.* lifecycle frames) do NOT wake the long-poll — they advance next_event_line on disk but the captain stays asleep until signal arrives. Snapshot polls (no wait_for_change_ms) return instantly and create tight polling loops — avoid. While running with wait_for_terminal_only off, response is lean — status + cursor only; terminal-only timeouts are {status:"running", timed_out:true} with no cursor. On terminal, response adds summary (last turn's output), filesChanged, prompts, and events_tail (default ${DEFAULT_MAX_EVENTS_TAIL}; configurable via max_events_tail up to ${MAX_EVENTS_TAIL_CAP}).`;
+  `Read a run's current status by run_id. Use this on demand: at the start of a captain turn for known pending runs, after a Claude Code watcher / foreground crew-wait exits, or when the user asks about a run. The default dispatch flow does not poll; run_agent / continue_run return status:"running" immediately, the captain confirms the dispatch, then ends the turn so chat stays available. Snapshot reads (omit wait_for_change_ms) return immediately with current status, summary/filesChanged/prompts when terminal, and events_tail on terminal responses (default ${DEFAULT_MAX_EVENTS_TAIL}; configurable via max_events_tail up to ${MAX_EVENTS_TAIL_CAP}). wait_for_change_ms and wait_for_terminal_only are advanced/legacy options for opt-in in-turn waiting: wait_for_change_ms blocks server-side until new signal events or terminal state, and wait_for_terminal_only:true waits only for terminal events (run:complete | run:failed | run:cancelled), returning {status:"running", timed_out:true} on timeout.`;

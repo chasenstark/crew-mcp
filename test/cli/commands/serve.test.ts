@@ -141,10 +141,9 @@ async function startHarness(
 /**
  * Async-first dispatch helper. `run_agent` and `continue_run` always
  * return `status: "running"` immediately now; tests that need to assert
- * terminal state call this to drive the captain's polling loop until
- * the run resolves. Mirrors the captain skill body's polling pattern
- * minus the `wait_for_change_ms` (no need to long-poll in tests —
- * mock adapters terminate within ms).
+ * terminal state call this to read status until the run resolves.
+ * Tests poll because they need deterministic terminal assertions; the
+ * captain's default flow yields the turn and reads status on demand.
  */
 async function pollUntilTerminal(
   client: Client,
@@ -440,6 +439,9 @@ describe('crew serve — run_agent tool', () => {
       expect(text).toContain(env.worktree_path);
       expect(text).toContain(`tail -F ${env.events_log_path}`);
       expect(text).toContain('get_run_status');
+      expect(text).toContain('user is free to chat');
+      expect(text).toContain(`get_run_status({ run_id: "${env.run_id}" })`);
+      expect(text).not.toContain('wait_for_change_ms: 30000');
       // Clickable link only shows on macOS (Terminal.app handles
       // crew-tail:// when the optional handler is installed). On other
       // platforms the manual tail line remains the portable path.
@@ -1685,7 +1687,7 @@ describe('crew serve — progress notifications', () => {
   });
 });
 
-describe('crew serve — async-first dispatch + long-poll get_run_status', () => {
+describe('crew serve — async-first dispatch + on-demand get_run_status', () => {
   it('run_agent returns status:running immediately even when adapter is fast', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-fast',
@@ -1704,12 +1706,14 @@ describe('crew serve — async-first dispatch + long-poll get_run_status', () =>
       });
       const env = run.structuredContent as RunEnvelope;
       // Async-first: run_agent never inlines a terminal envelope —
-      // the captain always polls.
+      // the captain ends the turn and reads status on demand later.
       expect(env.status).toBe('running');
-      expect(env.summary).toMatch(/Poll get_run_status/);
-      expect(env.summary).toMatch(/wait_for_change_ms/);
-      expect(env.summary).toMatch(/wait_for_terminal_only/);
-      // Polling resolves to terminal.
+      expect(env.summary).toContain('user is free to chat');
+      expect(env.summary).toContain('spawning the watcher');
+      expect(env.summary).not.toMatch(/Poll get_run_status/);
+      expect(env.summary).not.toMatch(/wait_for_change_ms/);
+      expect(env.summary).not.toMatch(/wait_for_terminal_only/);
+      // Status reads still resolve to terminal.
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
     } finally {

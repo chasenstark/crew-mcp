@@ -97,8 +97,11 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('## Escape hatch');
     expect(out).toContain('## Dispatch-vs-inline');
     expect(out).toContain('## Merge boundary');
-    expect(out).toContain('wait_for_terminal_only: true');
-    expect(out).toContain('timed_out: true');
+    expect(out).toContain('## Dispatch lifecycle — chat stays available');
+    expect(out).toContain('Background watcher overlay (Claude Code only)');
+    expect(out).toContain('Checking pending runs at turn start');
+    expect(out).not.toContain('## Polling lifecycle — every dispatch');
+    expect(out).not.toContain('Hard rule: stay in the same turn');
 
     // Tool list rendered
     for (const tool of TOOLS) {

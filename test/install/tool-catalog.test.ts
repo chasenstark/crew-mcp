@@ -15,6 +15,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { buildCrewMcpServer } from '../../src/cli/commands/serve.js';
 import { CATALOG_TOOLS } from '../../src/install/tool-catalog.js';
+import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run-status.js';
 
 describe('install/tool-catalog ↔ crew serve parity', () => {
   it('listTools() returns exactly the tools declared in CATALOG_TOOLS', async () => {
@@ -33,5 +34,15 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     } finally {
       await client.close();
     }
+  });
+
+  it('uses the on-demand get_run_status description from the tool source', () => {
+    const catalogEntry = CATALOG_TOOLS.find((tool) => tool.name === 'get_run_status');
+    expect(catalogEntry?.description).toBe(GET_RUN_STATUS_DESCRIPTION);
+    expect(catalogEntry?.description).toContain('Read a run\'s current status by run_id');
+    expect(catalogEntry?.description).toContain('the captain confirms the dispatch, then ends the turn');
+    expect(catalogEntry?.description).toContain('advanced/legacy options for opt-in in-turn waiting');
+    expect(catalogEntry?.description).not.toContain('Always poll after run_agent / continue_run');
+    expect(catalogEntry?.description).not.toContain('Always pass wait_for_change_ms: 30000');
   });
 });

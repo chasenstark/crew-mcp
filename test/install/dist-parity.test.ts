@@ -38,7 +38,7 @@ describe('dist/index.js parity with current src descriptions', () => {
     ['run_agent', 'Delegate a task to a subagent in an isolated worktree'],
     ['continue_run', 'Resume a run with a new prompt. Same agent, same worktree.'],
     ['merge_run', 'Pass commit_title (and optional commit_body) for the merge commit'],
-    ['get_run_status', 'Always poll after run_agent / continue_run'],
+    ['get_run_status', 'Use this on demand: at the start of a captain turn'],
     ['list_agents', 'Return the current agent inventory'],
     ['cancel_run', 'Abort an in-flight run. The run ends with status'],
     ['discard_run', 'without merging. Idempotent.'],
