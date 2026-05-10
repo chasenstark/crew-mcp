@@ -626,10 +626,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         terminalOnly,
       });
 
-      const fresh = runStateStore.read(args.run_id) ?? state;
-      if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
+      if (terminalOnly && timedOut && !isTerminalRunStatus(state.status)) {
         return jsonContent({ status: 'running', timed_out: true });
       }
+      const fresh = runStateStore.read(args.run_id) ?? state;
       return buildGetRunStatusResponse(
         fresh,
         runStateStore,

@@ -30,6 +30,7 @@ import { crewTailUrl } from '../../../src/cli/commands/tail-url.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
+import { RunStateStore } from '../../../src/orchestrator/run-state.js';
 import {
   getRunStatusInputSchema,
   MAX_EVENTS_TAIL_CAP,
@@ -2176,6 +2177,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         arguments: { agent_id: 'mock-terminal-only-timeout', prompt: 'timeout' },
       });
       const env = run.structuredContent as RunEnvelope;
+      const readSpy = vi.spyOn(RunStateStore.prototype, 'read');
+      const readsBeforeStatusCall = readSpy.mock.calls.length;
       const res = await h.client.callTool({
         name: 'get_run_status',
         arguments: {
@@ -2195,6 +2198,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       };
       expect(s.next_event_line).toBeUndefined();
       expect(s.events_tail).toBeUndefined();
+      expect(readSpy.mock.calls.length - readsBeforeStatusCall).toBe(1);
+      readSpy.mockRestore();
 
       resolveAdapter();
       await pollUntilTerminal(h.client, env.run_id);
