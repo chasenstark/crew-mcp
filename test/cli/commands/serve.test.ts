@@ -24,6 +24,8 @@ import {
   buildCrewMcpServer,
   fileUrlHref,
   formatProgressLines,
+  getStaleRunSweep,
+  scheduleStaleRunSweep,
   type FullRunEnvelope,
   type RunEnvelope,
 } from '../../../src/cli/commands/serve.js';
@@ -141,6 +143,7 @@ async function startHarness(
     close: async () => {
       await client.close();
       await server.close();
+      await getStaleRunSweep();
       if (previousFullEnvelope === undefined) {
         delete process.env.CREW_FULL_ENVELOPE;
       } else {
@@ -328,6 +331,11 @@ describe('crew serve — stale-run sweeper', () => {
         crewHome,
         registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
       });
+      const currentBeforeSweep = JSON.parse(
+        readFileSync(join(runsDir, 'current-running', 'state.json'), 'utf-8'),
+      ) as { status: string };
+      expect(currentBeforeSweep.status).toBe('running');
+      await getStaleRunSweep();
       await first.server.close();
 
       const current = JSON.parse(
@@ -355,6 +363,7 @@ describe('crew serve — stale-run sweeper', () => {
         crewHome,
         registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
       });
+      await getStaleRunSweep();
       await second.server.close();
       const currentAfterSecondBoot = JSON.parse(
         readFileSync(join(runsDir, 'current-running', 'state.json'), 'utf-8'),
@@ -418,6 +427,7 @@ describe('crew serve — stale-run sweeper', () => {
         crewHome,
         registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
       });
+      await getStaleRunSweep();
       await server.server.close();
 
       const alive = JSON.parse(
@@ -432,6 +442,73 @@ describe('crew serve — stale-run sweeper', () => {
       expect(dead.status).toBe('error');
       expect(dead.lastError).toBe('abandoned (server restart)');
     } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('single-flights concurrent stale-run sweep triggers', async () => {
+    await getStaleRunSweep();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-flight-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-flight-home-'));
+    const runStateStore = new RunStateStore({ crewHome, repoRoot: root });
+    const sweepStarted = createDeferred<void>();
+    const releaseSweep = createDeferred<void>();
+    let calls = 0;
+
+    try {
+      const args = { crewHome, projectRoot: root, runStateStore };
+      const first = scheduleStaleRunSweep(args, async () => {
+        calls += 1;
+        sweepStarted.resolve();
+        await releaseSweep.promise;
+      });
+      const second = scheduleStaleRunSweep(args, async () => {
+        calls += 1;
+      });
+
+      expect(second).toBe(first);
+      await sweepStarted.promise;
+      expect(calls).toBe(1);
+
+      releaseSweep.resolve();
+      await first;
+      expect(calls).toBe(1);
+      expect(getStaleRunSweep()).toBeNull();
+    } finally {
+      releaseSweep.resolve();
+      await getStaleRunSweep();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('logs deferred stale-run sweep errors without failing server startup', async () => {
+    await getStaleRunSweep();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-error-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-error-home-'));
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const built = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+        staleRunSweeper: () => {
+          throw new Error('mock sweep failure');
+        },
+      });
+
+      expect(built.server).toBeDefined();
+      await getStaleRunSweep();
+      await built.server.close();
+      expect(warn).toHaveBeenCalledWith(
+        'stale-run sweeper: failed: mock sweep failure',
+      );
+    } finally {
+      warn.mockRestore();
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
     }
