@@ -98,7 +98,7 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('## Dispatch-vs-inline');
     expect(out).toContain('## Merge boundary');
     expect(out).toContain('## Dispatch lifecycle — chat stays available');
-    expect(out).toContain('Background watcher overlay (Claude Code only)');
+    expect(out).toContain('Step 2 — background watcher overlay (Claude Code, mandatory)');
     expect(out).toContain('Checking pending runs at turn start');
     expect(out).not.toContain('## Polling lifecycle — every dispatch');
     expect(out).not.toContain('Hard rule: stay in the same turn');
@@ -159,9 +159,9 @@ describe('renderSkill (claude-code template)', () => {
 
     expect(out).toContain(`${ABSOLUTE_PATH} <run_id>`);
     expect(out).not.toMatch(/\{\{CREW_WAIT_COMMAND\}\}/);
-    // Bare crew-wait should still appear in the verbose section header
-    // (e.g., "Background watcher overlay") but the actual command-shape
-    // examples must use the absolute path.
+    // Bare "crew-wait" can still appear in the verbose section header
+    // (e.g., "Step 2 — background watcher overlay") but the actual
+    // command-shape examples must use the absolute path.
     const watcherInvocation = out.match(/Bash\(["']?[^)]*crew-wait[^)]*["']?\s*,?\s*run_in_background/);
     expect(watcherInvocation?.[0]).toContain(ABSOLUTE_PATH);
   });
@@ -186,7 +186,7 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).not.toMatch(/Always pass\s+`wait_for_change_ms:\s*30000`/);
 
     // ADDED — Phase 2 + post-review revisions:
-    expect(out).toContain('Background watcher overlay (Claude Code only)');
+    expect(out).toContain('Step 2 — background watcher overlay (Claude Code, mandatory)');
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
     expect(out).toContain('Synthetic-turn handling');
     expect(out).toContain('list_runs');

@@ -82,10 +82,15 @@ When the user dispatches an implementation:
    yourself; the agent sees it verbatim.
 2. **Yield while running.** `run_agent` returns immediately with the
    `run_id` and `tail_url`. Confirm the dispatch with the `run_id`
-   and tail link, start the Claude Code watcher overlay when
-   available, then end your turn so the user can keep chatting. On a
-   later user turn or watcher synthetic turn, read the terminal
-   payload with `get_run_status`.
+   and tail link, then end your turn so the user can keep chatting.
+   On Claude Code, before ending the turn, spawn the watcher overlay:
+   `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
+   On Codex / Gemini, just end the turn — no watcher. Read the
+   terminal payload with `get_run_status` on the watcher's synthetic
+   turn (Claude Code) or on the next user turn (Codex / Gemini).
+   **Never** call `get_run_status` with `wait_for_terminal_only` or
+   a long `wait_for_change_ms` to block the turn open — see the
+   Dispatch lifecycle section.
 3. **Iterate.** `continue_run` for fix-up turns (same agent, same
    worktree). For a second opinion, `run_agent` to a different
    agent with `read_only: true` + `working_directory` pointed at
@@ -216,7 +221,7 @@ That's a single line. Don't relay the rest of the dispatch markdown
 (worktree path, status-read hints, etc.) — those are already in the
 tool result for the user who wants them.
 
-### Background watcher overlay (Claude Code only)
+### Step 2 — background watcher overlay (Claude Code, mandatory)
 
 On Claude Code, immediately after `run_agent` / `continue_run`
 returns, spawn `{{CREW_WAIT_COMMAND}} <run_id>` with `Bash` and
@@ -225,9 +230,14 @@ returns, spawn `{{CREW_WAIT_COMMAND}} <run_id>` with `Bash` and
 cancelled`, then exits. Claude Code turns that background
 completion into a synthetic captain turn.
 
-Use `{{CREW_WAIT_COMMAND}}` exactly as rendered — improvising the
-spelling (bare name vs absolute path) will miss the `Bash(...)`
-allowlist entry and the watcher won't spawn.
+**Use `{{CREW_WAIT_COMMAND}}` exactly as rendered above** — the
+install picks the literal form your `Bash(...)` allowlist accepts
+(bare `crew-wait` when it's on PATH, or an absolute path like
+`/usr/local/bin/crew-wait` when the install fell back). Either form
+is correct in its own install; the wrong form for this install will
+miss the allowlist entry, the `Bash` call will be denied, and the
+watcher won't spawn. If you have to type it from memory, copy it
+from this section rather than guessing.
 
 **Synthetic-turn handling.** When the watcher exits, Claude Code
 fires a synthetic turn whose tool-result body includes a single
