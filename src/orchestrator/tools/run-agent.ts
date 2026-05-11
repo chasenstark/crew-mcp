@@ -83,7 +83,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent verbatim. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope with status:"running", run_id, worktree_path, and tail links; read terminal results later with get_run_status.';
+  'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent verbatim. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope (run_id, worktree_path, tail_url); chat-available default is to spawn crew-wait <run_id> in background on Claude Code, or check via get_run_status / list_runs on a later turn (Codex/Gemini). Do not block the turn long-polling get_run_status.';
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;

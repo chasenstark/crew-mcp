@@ -180,6 +180,18 @@ your visible output to one dispatch confirmation, one terminal
 summary, and one merge/iterate/discard prompt. The user has an
 independent progress channel through the tail link.
 
+**Don't block the turn with `get_run_status`.** Setting
+`wait_for_terminal_only: true` (or a long `wait_for_change_ms`)
+holds the turn open until the run lands — the user can't chat,
+can't interrupt, can't redirect. Async-first dispatch exists so
+the captain stays available; the watcher overlay (Step 2 below)
+is how Claude Code captains surface a terminal result without
+blocking. The only legitimate in-turn wait is the explicit
+foreground opt-in described further down, and it only applies
+when the user said "wait for this" out loud. On Codex / Gemini,
+default to a snapshot `get_run_status` at the next user turn —
+never a long-poll inside the dispatch turn.
+
 ### Step 1 dispatch confirmation
 
 Confirm the run_id back to the user **once**, briefly, and **include
