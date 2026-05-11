@@ -22,9 +22,11 @@ import { z } from 'zod';
 
 import {
   buildCrewMcpServer,
+  classifyClient,
   fileUrlHref,
   formatProgressLines,
   getStaleRunSweep,
+  nextStepSentence,
   scheduleStaleRunSweep,
   type FullRunEnvelope,
   type RunEnvelope,
@@ -124,7 +126,7 @@ function expectStructuredJsonBytes(
 
 async function startHarness(
   adapters: AgentAdapter[],
-  options: { fullEnvelope?: boolean } = {},
+  options: { fullEnvelope?: boolean; clientName?: string } = {},
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
@@ -150,7 +152,14 @@ async function startHarness(
   });
 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'crew-test-client', version: '0.0.0' });
+  // Default client name is a neutral `crew-test-client` so unrelated
+  // serve tests classify as `unknown` and don't silently exercise the
+  // Claude Code branch. Tests that need a specific host (e.g. to
+  // assert watcher-phrased copy) pass `clientName` explicitly.
+  const client = new Client({
+    name: options.clientName ?? 'crew-test-client',
+    version: '0.0.0',
+  });
 
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
@@ -2265,7 +2274,10 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         metadata: {},
       }),
     });
-    const h = await startHarness([adapter]);
+    // Opt into the claude-code branch so this test's watcher-phrased
+    // copy assertions are explicit about which host they target —
+    // the harness default is neutral.
+    const h = await startHarness([adapter], { clientName: 'claude-code' });
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
@@ -2283,6 +2295,67 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // Status reads still resolve to terminal.
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
+    } finally {
+      await h.close();
+    }
+  });
+
+  // The dispatch envelope's "next step" sentence is keyed off the MCP
+  // `clientInfo.name` carried in the initialize handshake. These cases
+  // guard the three branches (codex/gemini → "dispatch returns",
+  // unknown → neutral) so a future copy edit can't silently drift on
+  // non-Claude-Code hosts.
+  it('codex client gets "after this dispatch returns" copy', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'instant',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter], { clientName: 'codex-cli' });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.summary).toContain('after this dispatch returns');
+      expect(env.summary).not.toContain('spawning the watcher');
+      const text = toolText(run);
+      expect(text).toContain('after this dispatch returns');
+      expect(text).not.toContain('spawning the watcher');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('unknown client gets the neutral fallback copy', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'instant',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter], { clientName: 'some-future-host' });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.summary).toContain('End your turn after dispatch');
+      expect(env.summary).not.toContain('spawning the watcher');
+      expect(env.summary).not.toContain('after this dispatch returns');
+      const text = toolText(run);
+      expect(text).toContain('End your turn after dispatch');
+      expect(text).not.toContain('spawning the watcher');
+      expect(text).not.toContain('after this dispatch returns');
     } finally {
       await h.close();
     }
@@ -3413,5 +3486,58 @@ describe('formatProgressLines (unit)', () => {
       '[spin] frame one',
       '[spin] frame two',
     ]);
+  });
+});
+
+describe('classifyClient', () => {
+  // Substring + lowercase match so future renames of host clients
+  // (e.g. "claude-code-cli" → "claude-code-host") still classify.
+  it.each<[string | undefined, ReturnType<typeof classifyClient>]>([
+    ['claude-code', 'claude-code'],
+    ['Claude-Code', 'claude-code'],
+    ['claude-code-cli', 'claude-code'],
+    ['Claude Code', 'claude-code'],
+    ['claude_code', 'claude-code'],
+    ['claude', 'claude-code'],
+    ['codex', 'codex'],
+    ['codex-cli', 'codex'],
+    ['Codex CLI', 'codex'],
+    ['codex_cli', 'codex'],
+    ['CODEX', 'codex'],
+    ['gemini', 'gemini'],
+    ['gemini-cli', 'gemini'],
+    ['Gemini CLI', 'gemini'],
+    ['some-future-host', 'unknown'],
+    ['', 'unknown'],
+    [undefined, 'unknown'],
+  ])('classifies %j as %j', (input, expected) => {
+    expect(classifyClient(input)).toBe(expected);
+  });
+});
+
+describe('nextStepSentence', () => {
+  // Single source of truth for the "next step" copy that lands in
+  // both the structured `summary` and the markdown `- Next:` bullet —
+  // these asserts make the contract explicit so a future copy edit
+  // can't drift one without the other.
+  it('returns the watcher phrasing for claude-code', () => {
+    expect(nextStepSentence('claude-code')).toBe(
+      'End your turn after spawning the watcher; user is free to chat.',
+    );
+  });
+  it('returns the dispatch-returns phrasing for codex', () => {
+    expect(nextStepSentence('codex')).toBe(
+      'End your turn after this dispatch returns; user is free to chat.',
+    );
+  });
+  it('returns the dispatch-returns phrasing for gemini', () => {
+    expect(nextStepSentence('gemini')).toBe(
+      'End your turn after this dispatch returns; user is free to chat.',
+    );
+  });
+  it('returns a neutral fallback for unknown hosts', () => {
+    expect(nextStepSentence('unknown')).toBe(
+      'End your turn after dispatch; user is free to chat.',
+    );
   });
 });

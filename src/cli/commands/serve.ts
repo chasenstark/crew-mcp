@@ -90,6 +90,53 @@ export const SERVE_VERSION = CREW_MCP_VERSION;
  */
 export const MAX_LONG_POLL_MS = 60_000;
 
+/**
+ * Classification of the MCP host CLI that initialized this server, derived
+ * from the `clientInfo.name` carried in the MCP `initialize` request. Used
+ * to tailor the dispatch envelope's "next step" copy: Claude Code captains
+ * need to spawn a watcher overlay before ending the turn, while Codex /
+ * Gemini captains just end the turn after the dispatch tool returns.
+ */
+export type ClientKind = 'claude-code' | 'codex' | 'gemini' | 'unknown';
+
+/**
+ * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
+ * (not equality) so future renames of host clients still classify
+ * correctly without re-shipping crew-mcp. Normalizes separators
+ * (whitespace, underscores → hyphens) and case before matching so
+ * `"Claude Code"`, `"claude_code"`, and `"claude-code-cli"` all fold
+ * to the same kind. Exported for unit tests; the production lookup
+ * runs once per server via `getClientKind` in `buildCrewMcpServer`.
+ */
+export function classifyClient(name: string | undefined): ClientKind {
+  if (!name) return 'unknown';
+  const n = name.toLowerCase().replace(/[\s_]+/g, '-');
+  if (n.includes('claude-code') || n === 'claude') return 'claude-code';
+  if (n.includes('codex')) return 'codex';
+  if (n.includes('gemini')) return 'gemini';
+  return 'unknown';
+}
+
+/**
+ * Host-specific "next step" sentence appended to the dispatch envelope
+ * summary and the markdown `- Next:` bullet. Single source of truth so
+ * the structured `summary` field and the human-facing markdown can never
+ * disagree. Unknown hosts get a neutral fallback that doesn't claim a
+ * watcher will or won't exist — the captain's skill body covers the
+ * host-specific watcher protocol.
+ */
+export function nextStepSentence(kind: ClientKind): string {
+  switch (kind) {
+    case 'claude-code':
+      return 'End your turn after spawning the watcher; user is free to chat.';
+    case 'codex':
+    case 'gemini':
+      return 'End your turn after this dispatch returns; user is free to chat.';
+    case 'unknown':
+      return 'End your turn after dispatch; user is free to chat.';
+  }
+}
+
 const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
   'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
   'Ask the user to approve, then call merge_run again with {confirmed: true}. ' +
@@ -311,6 +358,19 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     version: SERVE_VERSION,
   });
 
+  // Memoized host-CLI classification. `getClientVersion()` returns
+  // `undefined` until the MCP `initialize` handshake completes, but tool
+  // calls only fire post-initialize so the first dispatch will always
+  // see a defined value. Cache so we don't re-classify on every
+  // dispatch — the answer can't change within a single server lifetime.
+  let cachedClientKind: ClientKind | undefined;
+  const getClientKind = (): ClientKind => {
+    if (cachedClientKind !== undefined) return cachedClientKind;
+    const info = server.server.getClientVersion();
+    cachedClientKind = classifyClient(info?.name);
+    return cachedClientKind;
+  };
+
   // ---- list_agents -----------------------------------------------------
   server.registerTool(
     'list_agents',
@@ -380,6 +440,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         dispatcher,
         runStateStore,
         progress: progressNotifierFrom(extra, args.agent_id, progressTokenSeen),
+        clientKind: getClientKind(),
       });
     },
   );
@@ -477,6 +538,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         dispatcher,
         runStateStore,
         progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
+        clientKind: getClientKind(),
       });
     },
   );
@@ -850,6 +912,14 @@ interface DispatchAndRespondArgs {
    * `_meta`. Callers build this via `progressNotifierFrom(extra)`.
    */
   progress?: ProgressNotifier;
+  /**
+   * Host-CLI classification (claude-code / codex / gemini / unknown),
+   * resolved once per server lifetime from the MCP initialize handshake.
+   * Drives the "next step" copy in the dispatch envelope: Claude Code
+   * captains need to spawn a watcher overlay; Codex / Gemini captains
+   * just end the turn. See `nextStepSentence`.
+   */
+  clientKind: ClientKind;
 }
 
 /**
@@ -895,9 +965,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
   });
   args.dispatcher.start(args.task);
 
-  const summary =
-    `Dispatched as "${args.runId}". End your turn after spawning the watcher ` +
-    `(Claude Code) or after this dispatch returns (Codex/Gemini); user is free to chat.`;
+  const summary = `Dispatched as "${args.runId}". ${nextStepSentence(args.clientKind)}`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
   const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
   const env: FullRunEnvelope = {
@@ -913,7 +981,7 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     files_changed: [],
   };
   return {
-    content: [{ type: 'text' as const, text: renderDispatchMarkdown(env) }],
+    content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, args.clientKind) }],
     structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
   };
 }
@@ -945,7 +1013,7 @@ function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
  * `run_id` reliably — it appears in a backticked code span the
  * model can pluck verbatim.
  */
-function renderDispatchMarkdown(env: FullRunEnvelope): string {
+function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientKind): string {
   const lines = [
     `**Dispatched** ${mdInlineCode(env.agent_id ?? 'agent')} as run \`${env.run_id}\`.`,
     '',
@@ -965,7 +1033,7 @@ function renderDispatchMarkdown(env: FullRunEnvelope): string {
   }
   lines.push(
     `- Tail manually: \`tail -F ${env.events_log_path}\``,
-    `- Next: end your turn after spawning the watcher (Claude Code) or after this dispatch returns (Codex/Gemini); user is free to chat.`,
+    `- Next: ${nextStepSentence(clientKind)}`,
     `- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``,
   );
   return lines.join('\n');
