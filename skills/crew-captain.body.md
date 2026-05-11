@@ -107,7 +107,8 @@ When the user dispatches an implementation:
    worktree (cleanup) or keep it around for follow-up.
 5. **Merge or discard on user instruction.** Never call `merge_run`
    or `discard_run` without explicit approval — see merge-boundary
-   safety rule below.
+   safety rule below. When merging, pass `confirmed: true` only after
+   that approval.
 
 ## Merge boundary — always confirm before merge_run
 
@@ -124,6 +125,19 @@ not attempt automated resolution. The host repo may now be in a
 mid-merge state — let the user resolve by hand or run
 `git merge --abort`. Don't run `merge --abort` yourself without
 asking; it discards their position in the merge.
+
+By default the server enforces this boundary too:
+`merge_run` requires `{ confirmed: true }` when
+`confirmBeforeMerge=true` in the user's crew config. You may pass
+`confirmed: true` only after the user gives explicit affirmative
+consent in the immediately preceding turn. Never add it
+pre-emptively, never infer it from a stale approval, and never pass it
+just to get past the gate.
+
+If `merge_run` rejects with
+`requires explicit user confirmation`, re-ask the user with a concrete
+merge prompt, wait for an affirmative answer, then retry
+`merge_run` with `confirmed: true`. Do not retry automatically.
 
 **Always pass a meaningful `commit_title`** (and optionally
 `commit_body`) to `merge_run`. The merge commit's subject becomes
@@ -382,7 +396,8 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
 ## Operating guardrails
 
 - **Never** call `merge_run` or `discard_run` without explicit user
-  approval.
+  approval. For `merge_run`, include `confirmed: true` only after the
+  user's explicit "yes" in the immediate prior turn.
 - `agent_id` for `run_agent` must come from `list_agents`. Don't
   invent agent names — you'll get a clear error and waste a turn.
   Aliases (e.g., `"claude"` for `"claude-code"`) work too;

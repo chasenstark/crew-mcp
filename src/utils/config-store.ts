@@ -3,13 +3,16 @@
  *
  * Stores user preferences that span the whole crew install (not
  * per-agent — those live in `agents.json`). Currently:
- *   - `notifications` (boolean): toggle OS toast on terminal run
- *     status. Env var `CREW_OS_NOTIFICATIONS=off` always overrides.
+ *   - `notifications.success` / `notifications.error`: toggle OS
+ *     toasts by terminal run status. Env var
+ *     `CREW_OS_NOTIFICATIONS=off` always overrides.
+ *   - `confirmBeforeMerge`: require an explicit merge confirmation.
+ *     Env var `CREW_CONFIRM_BEFORE_MERGE=off` disables the gate.
  *
  * Read path is forgiving — every read happens on a hot path (each
  * dispatched run terminal status) and a parser crash would silently
  * break notifications:
- *   - missing file        → defaults (notifications: true)
+ *   - missing file        → defaults
  *   - invalid JSON        → defaults + warning log
  *   - non-object root     → defaults + warning log
  *   - bad field type      → drop that field, keep the rest
@@ -32,16 +35,30 @@ import { logger } from './logger.js';
 
 export const CONFIG_FILENAME = 'config.json';
 
+export interface CrewNotificationsConfig {
+  readonly success: boolean;
+  readonly error: boolean;
+}
+
 export interface CrewConfig {
   /**
-   * Whether OS terminal-status notifications fire when a dispatched
-   * run reaches a terminal state. Defaults to true.
+   * Whether OS terminal-status notifications fire by status channel.
+   * Defaults to true for both channels.
    */
-  readonly notifications: boolean;
+  readonly notifications: CrewNotificationsConfig;
+  /**
+   * Whether merge_run requires an explicit confirmed:true argument.
+   * Defaults to true.
+   */
+  readonly confirmBeforeMerge: boolean;
 }
 
 export const DEFAULT_CONFIG: CrewConfig = {
-  notifications: true,
+  notifications: {
+    success: true,
+    error: true,
+  },
+  confirmBeforeMerge: true,
 };
 
 export function resolveConfigPath(crewHome: string): string {
@@ -54,7 +71,7 @@ export function resolveConfigPath(crewHome: string): string {
  */
 export function readConfigFile(crewHome: string): CrewConfig {
   const path = resolveConfigPath(crewHome);
-  if (!existsSync(path)) return DEFAULT_CONFIG;
+  if (!existsSync(path)) return cloneConfig(DEFAULT_CONFIG);
   let raw: string;
   try {
     raw = readFileSync(path, 'utf-8');
@@ -62,7 +79,7 @@ export function readConfigFile(crewHome: string): CrewConfig {
     logger.warn(
       `[config] could not read ${path}: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return DEFAULT_CONFIG;
+    return cloneConfig(DEFAULT_CONFIG);
   }
   let parsed: unknown;
   try {
@@ -71,24 +88,60 @@ export function readConfigFile(crewHome: string): CrewConfig {
     logger.warn(
       `[config] ${path} is not valid JSON (${err instanceof Error ? err.message : String(err)}); using defaults`,
     );
-    return DEFAULT_CONFIG;
+    return cloneConfig(DEFAULT_CONFIG);
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     logger.warn(`[config] ${path} must be a JSON object; using defaults`);
-    return DEFAULT_CONFIG;
+    return cloneConfig(DEFAULT_CONFIG);
   }
   const record = parsed as Record<string, unknown>;
-  const out: { -readonly [K in keyof CrewConfig]: CrewConfig[K] } = { ...DEFAULT_CONFIG };
+  const out = mutableConfig(DEFAULT_CONFIG);
   if ('notifications' in record) {
     if (typeof record.notifications === 'boolean') {
-      out.notifications = record.notifications;
+      out.notifications = {
+        success: record.notifications,
+        error: record.notifications,
+      };
+    } else if (
+      record.notifications
+      && typeof record.notifications === 'object'
+      && !Array.isArray(record.notifications)
+    ) {
+      const notifications = record.notifications as Record<string, unknown>;
+      if ('success' in notifications) {
+        if (typeof notifications.success === 'boolean') {
+          out.notifications.success = notifications.success;
+        } else {
+          logger.warn(
+            `[config] ${path}: "notifications.success" must be a boolean; using default (${DEFAULT_CONFIG.notifications.success})`,
+          );
+        }
+      }
+      if ('error' in notifications) {
+        if (typeof notifications.error === 'boolean') {
+          out.notifications.error = notifications.error;
+        } else {
+          logger.warn(
+            `[config] ${path}: "notifications.error" must be a boolean; using default (${DEFAULT_CONFIG.notifications.error})`,
+          );
+        }
+      }
     } else {
       logger.warn(
-        `[config] ${path}: "notifications" must be a boolean; using default (${DEFAULT_CONFIG.notifications})`,
+        `[config] ${path}: "notifications" must be an object or legacy boolean; using defaults`,
       );
     }
   }
-  return out;
+  if ('confirmBeforeMerge' in record) {
+    if (typeof record.confirmBeforeMerge === 'boolean') {
+      out.confirmBeforeMerge = record.confirmBeforeMerge;
+    } else {
+      logger.warn(
+        `[config] ${path}: "confirmBeforeMerge" must be a boolean; using default (${DEFAULT_CONFIG.confirmBeforeMerge})`,
+      );
+    }
+  }
+  return cloneConfig(out);
 }
 
 /**
@@ -112,7 +165,11 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
   if (!('_readme' in merged)) {
     merged._readme = DEFAULT_README;
   }
-  merged.notifications = config.notifications;
+  merged.notifications = {
+    success: config.notifications.success,
+    error: config.notifications.error,
+  };
+  merged.confirmBeforeMerge = config.confirmBeforeMerge;
   const serialized = JSON.stringify(merged, null, 2) + '\n';
   const tmp = `${path}.tmp.${process.pid}`;
   writeFileSync(tmp, serialized, 'utf-8');
@@ -136,7 +193,33 @@ const DEFAULT_README: readonly string[] = [
   'crew-mcp per-machine configuration. Edit via `crew-mcp config`',
   '(interactive) or by hand. Underscore-prefixed keys are ignored.',
   'Fields:',
-  '  - notifications (boolean): OS toast on terminal run status.',
+  '  - notifications.success (boolean): OS toast on successful runs.',
+  '  - notifications.error (boolean): OS toast on failed or partial runs.',
   '    Env var CREW_OS_NOTIFICATIONS=off always overrides to off.',
+  '  - confirmBeforeMerge (boolean): require explicit merge confirmation.',
+  '    Env var CREW_CONFIRM_BEFORE_MERGE=off disables the gate.',
   'Delete this file to reset to defaults.',
 ];
+
+function cloneConfig(config: CrewConfig): CrewConfig {
+  return {
+    notifications: {
+      success: config.notifications.success,
+      error: config.notifications.error,
+    },
+    confirmBeforeMerge: config.confirmBeforeMerge,
+  };
+}
+
+function mutableConfig(config: CrewConfig): {
+  notifications: { success: boolean; error: boolean };
+  confirmBeforeMerge: boolean;
+} {
+  return {
+    notifications: {
+      success: config.notifications.success,
+      error: config.notifications.error,
+    },
+    confirmBeforeMerge: config.confirmBeforeMerge,
+  };
+}

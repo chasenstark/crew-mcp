@@ -39,6 +39,7 @@ import {
   MAX_EVENTS_TAIL_CAP,
 } from '../../../src/orchestrator/tools/get-run-status.js';
 import { logger } from '../../../src/utils/logger.js';
+import * as configStore from '../../../src/utils/config-store.js';
 
 // --- helpers ---
 
@@ -1015,7 +1016,7 @@ describe('crew serve — merge_run tool', () => {
 
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       const mergeEnv = mergeRes.structuredContent as {
         run_id: string;
@@ -1054,6 +1055,159 @@ describe('crew serve — merge_run tool', () => {
     }
   });
 
+  it('refuses to merge without confirmed:true when confirmBeforeMerge is enabled', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'GATE.md'), 'gate\n', 'utf-8');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'p' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const merge = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+
+      expect(merge.isError).toBe(true);
+      expect(toolText(merge)).toBe(
+        'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
+        'Ask the user to approve, then call merge_run again with {confirmed: true}. ' +
+        'Run this from the captain skill — never auto-pass confirmed:true without an explicit user "yes".',
+      );
+      expect(existsSync(join(h.root, 'GATE.md'))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('bypasses merge confirmation when confirmBeforeMerge=false', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'NO-GATE.md'), 'ok\n', 'utf-8');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      configStore.writeConfigFile(h.crewHome, {
+        notifications: { success: true, error: true },
+        confirmBeforeMerge: false,
+      });
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'p' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const merge = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+
+      const env = merge.structuredContent as { status: string };
+      expect(env.status).toBe('merged');
+      expect(existsSync(join(h.root, 'NO-GATE.md'))).toBe(true);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('bypasses merge confirmation when CREW_CONFIRM_BEFORE_MERGE=off', async () => {
+    const previous = process.env.CREW_CONFIRM_BEFORE_MERGE;
+    process.env.CREW_CONFIRM_BEFORE_MERGE = 'off';
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'ENV-GATE.md'), 'ok\n', 'utf-8');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'p' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const merge = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+
+      const env = merge.structuredContent as { status: string };
+      expect(env.status).toBe('merged');
+      expect(existsSync(join(h.root, 'ENV-GATE.md'))).toBe(true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CREW_CONFIRM_BEFORE_MERGE;
+      } else {
+        process.env.CREW_CONFIRM_BEFORE_MERGE = previous;
+      }
+      await h.close();
+    }
+  });
+
+  it('only bypasses merge confirmation when CREW_CONFIRM_BEFORE_MERGE is exactly off', async () => {
+    const previous = process.env.CREW_CONFIRM_BEFORE_MERGE;
+    const envValues = ['on', 'false', '0', '', '1'];
+    try {
+      for (const value of envValues) {
+        process.env.CREW_CONFIRM_BEFORE_MERGE = value;
+        const adapter = makeMockAdapter({
+          name: `mock-coder-${value || 'empty'}`,
+          execute: async (task) => {
+            const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+            writeFileSync(join(cwd, `ENV-GATE-${value || 'empty'}.md`), 'ok\n', 'utf-8');
+            return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+          },
+        });
+        const h = await startHarness([adapter]);
+        try {
+          const run = await h.client.callTool({
+            name: 'run_agent',
+            arguments: { agent_id: adapter.name, prompt: 'p' },
+          });
+          const runEnv = run.structuredContent as FullRunEnvelope;
+          await pollUntilTerminal(h.client, runEnv.run_id);
+
+          const merge = await h.client.callTool({
+            name: 'merge_run',
+            arguments: { run_id: runEnv.run_id },
+          });
+
+          expect(toolText(merge)).toContain(
+            'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true).',
+          );
+          expect(existsSync(join(h.root, `ENV-GATE-${value || 'empty'}.md`))).toBe(false);
+        } finally {
+          await h.close();
+        }
+      }
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CREW_CONFIRM_BEFORE_MERGE;
+      } else {
+        process.env.CREW_CONFIRM_BEFORE_MERGE = previous;
+      }
+    }
+  });
+
   it('refuses to merge twice (idempotency check)', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
@@ -1071,7 +1225,10 @@ describe('crew serve — merge_run tool', () => {
       });
       const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
-      await h.client.callTool({ name: 'merge_run', arguments: { run_id: runEnv.run_id } });
+      await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id, confirmed: true },
+      });
       const second = await h.client.callTool({
         name: 'merge_run',
         arguments: { run_id: runEnv.run_id },
@@ -1142,7 +1299,7 @@ describe('crew serve — merge_run tool', () => {
 
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       expect(mergeRes.isError).toBe(true);
       const env = mergeRes.structuredContent as { status: string; conflicts?: string[] };
@@ -1169,7 +1326,7 @@ describe('crew serve — merge_run tool', () => {
 
       const retry = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       expect(retry.isError).toBe(true);
       const retryEnv = retry.structuredContent as { status: string; conflicts?: string[] };
@@ -1216,7 +1373,7 @@ describe('crew serve — merge_run tool', () => {
       await pollUntilTerminal(h.client, runEnv.run_id);
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       const env = mergeRes.structuredContent as { status: string };
       expect(env.status).toBe('no-changes');

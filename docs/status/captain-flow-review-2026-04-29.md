@@ -5,6 +5,26 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-11 Configurable Merge Confirmation Gate
+
+`crew-mcp config` now exposes three per-machine toggles:
+`notifications.success`, `notifications.error`, and `confirmBeforeMerge`.
+The config store still reads the legacy `{ notifications: boolean }` shape,
+normalizing it to both notification channels, but writes always serialize the
+nested notification object plus the top-level merge gate field.
+
+`merge_run` now accepts optional `confirmed: boolean`. When
+`confirmBeforeMerge=true` (the default), the server refuses actual merge
+attempts unless `confirmed === true`; `CREW_CONFIRM_BEFORE_MERGE=off` bypasses
+the gate for scripted flows. Config read failures fail closed and refuse the
+merge. The captain skill now instructs captains to pass `confirmed: true` only
+after explicit affirmative user consent in the immediately prior turn, and to
+re-ask if the server returns the confirmation-required error.
+
+Terminal OS notifications are split by terminal status: `success` uses
+`notifications.success`, `error` and `partial` use `notifications.error`, and
+`cancelled` never fires an OS notification.
+
 ## Update - 2026-05-10 crew-wait Watch Notifications (Tier 5 N3/N7)
 
 `crew-wait <run_id>` remains a per-run process so Claude Code still receives one

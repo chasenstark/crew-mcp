@@ -24,23 +24,49 @@ import {
   writeConfigFile,
 } from '../../utils/config-store.js';
 
+type MutableCrewConfig = {
+  notifications: {
+    success: boolean;
+    error: boolean;
+  };
+  confirmBeforeMerge: boolean;
+};
+
 interface ConfigEntry {
-  readonly key: keyof CrewConfig;
   readonly label: string;
   readonly description: string;
+  readonly get: (state: CrewConfig | MutableCrewConfig) => boolean;
+  readonly set: (state: MutableCrewConfig, value: boolean) => void;
 }
 
 /**
- * Order matters — first entry is highlighted on open. Notifications is
- * the first surfaced control because it's the only setting today and
- * the most likely thing a user wants to change.
+ * Order matters — first entry is highlighted on open.
  */
 function buildEntries(): readonly ConfigEntry[] {
   return [
     {
-      key: 'notifications',
-      label: 'notifications',
-      description: 'OS toast when a dispatched run reaches a terminal status',
+      label: 'notifications.success',
+      description: 'OS toast on successful runs',
+      get: (state) => state.notifications.success,
+      set: (state, value) => {
+        state.notifications.success = value;
+      },
+    },
+    {
+      label: 'notifications.error',
+      description: 'OS toast on failed or partial runs',
+      get: (state) => state.notifications.error,
+      set: (state, value) => {
+        state.notifications.error = value;
+      },
+    },
+    {
+      label: 'confirmBeforeMerge',
+      description: 'Ask before merging dispatched runs (off = auto-merge)',
+      get: (state) => state.confirmBeforeMerge,
+      set: (state, value) => {
+        state.confirmBeforeMerge = value;
+      },
     },
   ];
 }
@@ -64,7 +90,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     // can at least see what's configured, plus an actionable hint.
     stdout.write('crew-mcp config (current settings):\n\n');
     for (const entry of entries) {
-      const value = current[entry.key];
+      const value = entry.get(current);
       stdout.write(`  ${entry.label}: ${value ? 'on' : 'off'}\n`);
     }
     stdout.write(
@@ -74,7 +100,13 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     return 1;
   }
 
-  const state: { -readonly [K in keyof CrewConfig]: CrewConfig[K] } = { ...current };
+  const state: MutableCrewConfig = {
+    notifications: {
+      success: current.notifications.success,
+      error: current.notifications.error,
+    },
+    confirmBeforeMerge: current.confirmBeforeMerge,
+  };
   const result = await driveTui({ stdin, stdout, entries, state });
 
   if (result === 'cancelled') {
@@ -84,7 +116,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
 
   // Only write if something actually changed — avoids touching the
   // file mtime on a no-op save.
-  if (!sameConfig(current, state)) {
+  if (!sameConfig(current, state, entries)) {
     writeConfigFile(crewHome, state);
     stdout.write(`\ncrew-mcp config: saved to ${configPath}\n`);
   } else {
@@ -93,15 +125,20 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
   return 0;
 }
 
-function sameConfig(a: CrewConfig, b: CrewConfig): boolean {
-  return a.notifications === b.notifications;
+function sameConfig(
+  a: CrewConfig,
+  b: CrewConfig | MutableCrewConfig,
+  entries: readonly ConfigEntry[],
+): boolean {
+  return JSON.stringify(entries.map((entry) => entry.get(a)))
+    === JSON.stringify(entries.map((entry) => entry.get(b)));
 }
 
 interface TuiArgs {
   readonly stdin: NodeJS.ReadStream;
   readonly stdout: NodeJS.WriteStream;
   readonly entries: readonly ConfigEntry[];
-  readonly state: { -readonly [K in keyof CrewConfig]: CrewConfig[K] };
+  readonly state: MutableCrewConfig;
 }
 
 type TuiResult = 'saved' | 'cancelled';
@@ -134,10 +171,10 @@ function driveTui(args: TuiArgs): Promise<TuiResult> {
     lines.push('');
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
-      const value = state[entry.key];
+      const value = entry.get(state);
       const checkbox = value ? '[x]' : '[ ]';
       const pointer = i === cursor ? '>' : ' ';
-      const label = entry.label.padEnd(14);
+      const label = entry.label.padEnd(22);
       lines.push(`${pointer} ${checkbox} ${label}  ${entry.description}`);
     }
     lines.push('');
@@ -216,7 +253,7 @@ function driveTui(args: TuiArgs): Promise<TuiResult> {
             return;
           case 'space': {
             const entry = entries[cursor];
-            state[entry.key] = !state[entry.key];
+            entry.set(state, !entry.get(state));
             render();
             return;
           }

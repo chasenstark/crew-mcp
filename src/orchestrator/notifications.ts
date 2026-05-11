@@ -16,13 +16,17 @@ interface NotificationCommand {
   readonly args: readonly string[];
 }
 
-export function osNotificationsEnabled(): boolean {
+export function osNotificationsEnabled(
+  status: TerminalNotification['status'],
+): boolean {
   // Env var is an override (escape hatch for CI/one-shot runs). When
   // explicitly set to "off" we honor it without touching the config
   // file. Otherwise the persistent config decides (default: enabled).
   if (process.env.CREW_OS_NOTIFICATIONS === 'off') return false;
+  if (status === 'cancelled') return false;
   try {
-    return readConfigFile(resolveCrewHome()).notifications;
+    const notifications = readConfigFile(resolveCrewHome()).notifications;
+    return status === 'success' ? notifications.success : notifications.error;
   } catch (err) {
     // Fail closed: if the config store throws (permission denied,
     // disk full, unexpected fs state) we cannot tell whether the
@@ -96,7 +100,7 @@ export function buildTerminalNotificationCommand(
 }
 
 export function notifyTerminal(notification: TerminalNotification): void {
-  if (!osNotificationsEnabled()) return;
+  if (!osNotificationsEnabled(notification.status)) return;
 
   const command = buildTerminalNotificationCommand(notification);
   const logContext = {
