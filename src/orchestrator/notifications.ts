@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 
+import { readConfigFile } from '../utils/config-store.js';
+import { resolveCrewHome } from '../utils/crew-home.js';
 import { logger } from '../utils/logger.js';
 import type { RunStatus } from './run-state.js';
 
@@ -15,7 +17,21 @@ interface NotificationCommand {
 }
 
 export function osNotificationsEnabled(): boolean {
-  return process.env.CREW_OS_NOTIFICATIONS !== 'off';
+  // Env var is an override (escape hatch for CI/one-shot runs). When
+  // explicitly set to "off" we honor it without touching the config
+  // file. Otherwise the persistent config decides (default: enabled).
+  if (process.env.CREW_OS_NOTIFICATIONS === 'off') return false;
+  try {
+    return readConfigFile(resolveCrewHome()).notifications;
+  } catch (err) {
+    // Fail closed: if the config store throws (permission denied,
+    // disk full, unexpected fs state) we cannot tell whether the
+    // user has disabled notifications. Defaulting to *on* could
+    // resurrect toasts the user explicitly turned off — worse UX
+    // than briefly missing them while the underlying issue is fixed.
+    logger.warn('osNotificationsEnabled: config-store read failed; defaulting to off', { err });
+    return false;
+  }
 }
 
 function oneLine(value: string): string {

@@ -44,6 +44,16 @@ export function buildProgram(): Command {
     });
 
   program
+    .command('config')
+    .description('Interactively toggle per-machine crew settings (notifications, …)')
+    .action(async () => {
+      applyDebugFlag(program);
+      const { configCommand } = await import('./cli/commands/config.js');
+      const code = await configCommand();
+      if (code !== 0) process.exitCode = code;
+    });
+
+  program
     .command('install')
     .description('Install the crew MCP server + skill into a host CLI')
     .option(

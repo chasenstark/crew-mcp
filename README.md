@@ -58,6 +58,24 @@ Then restart your host CLI session. From inside it, ask things like
 "have Claude review this changelog parser" or "send this to Codex" —
 the skill loads and `mcp__crew__*` tools become available.
 
+## Configure
+
+Per-machine settings live in `~/.crew/config.json`. Edit them
+interactively:
+
+```sh
+crew-mcp config
+```
+
+The TUI lists each toggle (`↑/↓` to move, `space` to toggle, `enter`
+to save, `q` / `esc` to cancel). Today the only entry is:
+
+- **notifications** — OS toast when a dispatched run reaches a terminal
+  status (success / partial / error / cancelled). Enabled by default.
+
+The env var `CREW_OS_NOTIFICATIONS=off` always overrides to off, which
+is handy for CI or one-shot quiet runs.
+
 ## v0.1
 
 Frozen as the [v0.1-tui git tag](https://github.com/chasenstark/crew-mcp/releases/tag/v0.1-tui)

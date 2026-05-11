@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,10 +49,16 @@ function expectedCommandForCurrentPlatform() {
 
 describe('notifications', () => {
   const originalEnv = process.env.CREW_OS_NOTIFICATIONS;
+  const originalCrewHome = process.env.CREW_HOME;
+  let tmpHome: string;
 
   beforeEach(() => {
     mockSpawn.mockReset();
     delete process.env.CREW_OS_NOTIFICATIONS;
+    // Isolate from any real ~/.crew/config.json on the dev machine
+    // so osNotificationsEnabled() sees the built-in default (enabled).
+    tmpHome = mkdtempSync(join(tmpdir(), 'crew-notif-test-'));
+    process.env.CREW_HOME = tmpHome;
   });
 
   afterEach(() => {
@@ -59,6 +68,12 @@ describe('notifications', () => {
     } else {
       process.env.CREW_OS_NOTIFICATIONS = originalEnv;
     }
+    if (originalCrewHome === undefined) {
+      delete process.env.CREW_HOME;
+    } else {
+      process.env.CREW_HOME = originalCrewHome;
+    }
+    rmSync(tmpHome, { recursive: true, force: true });
   });
 
   it('disables OS notifications only when CREW_OS_NOTIFICATIONS=off', () => {
