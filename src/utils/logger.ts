@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -144,6 +144,22 @@ export function enableFileLogging(projectRoot: string): string {
   writeFileSync(path, `[${formatFileTimestamp()}] INFO Log file created\n`);
   logFilePath = path;
   return path;
+}
+
+/**
+ * Direct file-logging override. Unlike `enableFileLogging` (which auto-names a
+ * timestamped file under `<projectRoot>/.crew/logs/`), this lets the caller
+ * pin the log to an explicit absolute path — used by `crew-mcp serve` to honor
+ * `--log-file` / `CREW_LOG_FILE` for diagnostic captures when the host CLI
+ * (e.g. Conductor) doesn't surface the server's stderr. Parent dirs are
+ * created; a header line records the takeover. Subsequent calls overwrite
+ * the path field (last writer wins) but do not truncate the file — log lines
+ * append.
+ */
+export function setLogFilePath(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `[${formatFileTimestamp()}] INFO Log file opened (pid=${process.pid})\n`);
+  logFilePath = path;
 }
 
 export function getLogFilePath(): string | null {

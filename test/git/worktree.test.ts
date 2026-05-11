@@ -356,6 +356,77 @@ describe('WorktreeManager', () => {
       expect(pruneCallsDuringCreates).toHaveLength(0);
     });
 
+    it('downgrades the prune failure to debug when cwd is not a git repository', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'crew-worktree-not-a-repo-'));
+      const crewHome = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+      tempDirs.push(root, crewHome);
+
+      // Replace the default `worktree prune` handler with the same fatal
+      // git emits when launched from a non-repo cwd (Conductor's app bin
+      // dir, etc.). All other raw calls fall through to the default.
+      const fakeGit = getGitClient(root);
+      const defaultRaw = fakeGit.raw.getMockImplementation();
+      fakeGit.raw.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'worktree' && args[1] === 'prune') {
+          throw new Error(
+            `fatal: not a git repository (or any of the parent directories): .git`,
+          );
+        }
+        return defaultRaw?.(args);
+      });
+
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
+
+      try {
+        new WorktreeManager({ projectRoot: root, crewHome });
+        // The prune is fire-and-forget (`void git.raw(...).catch(...)`); a
+        // single microtask flush is enough to let the rejection handler run.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const warnedAboutPrune = warn.mock.calls.some(
+          ([msg]) => typeof msg === 'string' && msg.includes('prune stale git worktrees'),
+        );
+        const debuggedAboutNonRepo = debug.mock.calls.some(
+          ([msg]) => typeof msg === 'string' && msg.includes('not a git repository'),
+        );
+        expect(warnedAboutPrune).toBe(false);
+        expect(debuggedAboutNonRepo).toBe(true);
+      } finally {
+        warn.mockRestore();
+        debug.mockRestore();
+      }
+    });
+
+    it('still warns on other prune failures (non-cosmetic errors stay loud)', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'crew-worktree-prune-warn-'));
+      const crewHome = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+      tempDirs.push(root, crewHome);
+
+      const fakeGit = getGitClient(root);
+      const defaultRaw = fakeGit.raw.getMockImplementation();
+      fakeGit.raw.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'worktree' && args[1] === 'prune') {
+          throw new Error('fatal: unable to access .git: permission denied');
+        }
+        return defaultRaw?.(args);
+      });
+
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      try {
+        new WorktreeManager({ projectRoot: root, crewHome });
+        await Promise.resolve();
+        await Promise.resolve();
+        const warnedAboutPrune = warn.mock.calls.some(
+          ([msg]) => typeof msg === 'string' && msg.includes('prune stale git worktrees'),
+        );
+        expect(warnedAboutPrune).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('does not repeat the lazy prune for a second manager on the same project root', () => {
       const root = mkdtempSync(join(tmpdir(), 'crew-worktree-manager-'));
       const crewHomeA = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));

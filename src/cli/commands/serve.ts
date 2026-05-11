@@ -21,7 +21,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, realpathSync, type Dirent } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -76,7 +76,7 @@ import {
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { readConfigFile } from '../../utils/config-store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
-import { logger } from '../../utils/logger.js';
+import { logger, setLogFilePath } from '../../utils/logger.js';
 import { CREW_MCP_VERSION } from '../version.js';
 import { crewTailUrl } from './tail-url.js';
 
@@ -135,6 +135,15 @@ export interface ServeOptions {
    */
   staleRunSweeper?: (args: StaleRunSweepArgs) => void | Promise<void>;
 
+  /**
+   * When set, every logger call also appends to this absolute path. Useful
+   * for diagnosing host MCP-lifecycle problems (e.g. Conductor) that don't
+   * surface the server's stderr. If unset, callers also honor the
+   * `CREW_LOG_FILE` env var; the env path is resolved relative to the
+   * server's working directory if not absolute. Tests pass an explicit
+   * path so the env stays clean.
+   */
+  logFile?: string;
 }
 
 export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled';
@@ -752,6 +761,27 @@ function resolveMergeConfirmationGate(crewHome: string):
  * stdio. Blocks until the transport closes (stdin EOF) or a signal arrives.
  */
 export async function serveCommand(options: ServeOptions = {}): Promise<void> {
+  // Diagnostic file logging: honor either the explicit option or the env
+  // var. Resolved before buildCrewMcpServer so startup messages (worktree
+  // manager init, stale-run sweep result, registry probes) are captured.
+  // Failure to open the file logs to stderr and proceeds — the server must
+  // still come up even if the path is unwritable.
+  const rawLogFile = options.logFile ?? process.env.CREW_LOG_FILE;
+  if (rawLogFile && rawLogFile.trim().length > 0) {
+    const cwd = options.cwd ?? process.cwd();
+    const resolved = isAbsolute(rawLogFile) ? rawLogFile : join(cwd, rawLogFile);
+    try {
+      setLogFilePath(resolved);
+      logger.info(`crew-mcp serve: file logging enabled at ${resolved}`);
+    } catch (err) {
+      logger.warn(
+        `crew-mcp serve: failed to open log file ${resolved}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   const { server, dispatcher } = buildCrewMcpServer(options);
 
   let shuttingDown = false;
@@ -1397,6 +1427,41 @@ function isTerminalRunStatus(status: string): boolean {
   );
 }
 
+/**
+ * Grace window for the stale-run sweeper. Records whose most recent
+ * `prompts[].startedAt` is within this window are skipped even when
+ * `serverPid` resolves to ESRCH — see the same-second restart race
+ * detailed at the call site. Default chosen to cover host MCP-lifecycle
+ * recycle cycles (Conductor was observed at ~3s SIGTERM after dispatch)
+ * with comfortable headroom; override via `CREW_STALE_RUN_GRACE_MS`.
+ */
+export const DEFAULT_STALE_RUN_GRACE_MS = 30_000;
+
+function resolveStaleRunGraceMs(): number {
+  const raw = process.env.CREW_STALE_RUN_GRACE_MS;
+  if (raw === undefined) return DEFAULT_STALE_RUN_GRACE_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_STALE_RUN_GRACE_MS;
+  return Math.floor(parsed);
+}
+
+const STALE_RUN_GRACE_MS = resolveStaleRunGraceMs();
+
+/**
+ * Most recent timestamp at which `serverPid` was stamped onto a run —
+ * either the original `create()` (top-level `startedAt`) or the last
+ * `appendPrompt()` (last `prompts[].startedAt`, since both reset the
+ * PID). Returns epoch ms, or `undefined` if neither parses.
+ */
+function latestStampedAt(state: RunStateV1): number | undefined {
+  const prompts = state.prompts;
+  const lastPrompt = prompts && prompts.length > 0 ? prompts[prompts.length - 1] : undefined;
+  const candidate = lastPrompt?.startedAt ?? state.startedAt;
+  if (typeof candidate !== 'string') return undefined;
+  const ms = Date.parse(candidate);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 function markAbandonedRunningRuns(args: StaleRunSweepArgs): void {
   const runsDir = join(args.crewHome, 'runs');
   const currentRepoRoot = resolveComparableRepoRoot(args.projectRoot);
@@ -1441,6 +1506,27 @@ function markAbandonedRunningRuns(args: StaleRunSweepArgs): void {
     // can prove are abandoned (PID set, ESRCH on lookup).
     if (state.serverPid === undefined || isProcessAlive(state.serverPid)) {
       continue;
+    }
+    // Same-second restart race: if the host is recycling crew-mcp
+    // within ~seconds of dispatch (observed under Conductor — see
+    // ABANDONED_SERVER_RESTART_DIAGNOSIS) the new server can boot
+    // fast enough that the dying predecessor's serverPid is already
+    // ESRCH by the time this sweep runs, even though the codex child
+    // it spawned is technically still alive (or has just been
+    // SIGTERMed and is exiting). Skip records whose most recent
+    // prompt was started within the last `STALE_RUN_GRACE_MS`:
+    // they're either in-flight under a new server or seconds-fresh
+    // garbage that the next dispatch (or a user-initiated
+    // discard_run) will clear up properly. We use the latest
+    // `prompts[].startedAt` because `serverPid` is re-stamped on
+    // `appendPrompt` (continue_run), so a long-lived run that just
+    // received a new prompt should be protected too.
+    const lastStampedAt = latestStampedAt(state);
+    if (lastStampedAt !== undefined) {
+      const ageMs = Date.now() - lastStampedAt;
+      if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < STALE_RUN_GRACE_MS) {
+        continue;
+      }
     }
 
     try {
