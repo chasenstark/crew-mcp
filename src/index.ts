@@ -28,10 +28,16 @@ export function buildProgram(): Command {
   program
     .command('serve')
     .description('Run crew-mcp as a stdio MCP server (the host CLI spawns this)')
-    .action(async () => {
+    .option(
+      '--log-file <path>',
+      'Append all log output to this file as well as stderr. ' +
+        'Useful when the host CLI does not surface the server\'s stderr ' +
+        '(e.g. Conductor). Alternatively set CREW_LOG_FILE in the env.',
+    )
+    .action(async (opts: { logFile?: string }) => {
       applyDebugFlag(program);
       const { serveCommand } = await import('./cli/commands/serve.js');
-      await serveCommand();
+      await serveCommand({ logFile: opts.logFile });
     });
 
   program

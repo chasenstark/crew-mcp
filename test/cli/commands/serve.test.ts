@@ -517,6 +517,78 @@ describe('crew serve — stale-run sweeper', () => {
     }
   });
 
+  it('skips runs whose latest prompt.startedAt is within the grace window (same-second restart race)', async () => {
+    // Regression for the Conductor-style restart race: the host SIGTERMed
+    // crew-mcp ~3s after dispatch and the immediate respawn's sweeper
+    // would reap an in-flight run because its predecessor's serverPid
+    // was already ESRCH. The grace window protects records whose serverPid
+    // was JUST stamped by the dying predecessor — they're either picked
+    // up by another live server or seconds-fresh garbage the next
+    // dispatch (or a user-driven discard_run) will clear.
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-grace-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-grace-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const DEAD_PID = 2_000_000_000;
+    const fresh = new Date().toISOString();
+    const ancient = '2026-05-09T00:00:00.000Z';
+
+    const writeState = (
+      runId: string,
+      startedAt: string,
+      promptStartedAt: string,
+    ): void => {
+      const dir = join(runsDir, runId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          runId,
+          agentId: 'mock-coder',
+          status: 'running',
+          startedAt,
+          worktreePath: join(dir, 'worktree'),
+          repoRoot: root,
+          serverPid: DEAD_PID,
+          prompts: [{ turn: 1, prompt: 'go', startedAt: promptStartedAt }],
+          filesChanged: [],
+        }, null, 2),
+        'utf-8',
+      );
+    };
+
+    // "fresh": latest prompt timestamp is now → grace window saves it
+    // even though serverPid is dead.
+    writeState('fresh-running', ancient, fresh);
+    // "ancient": both timestamps are days old → sweep should reap.
+    writeState('ancient-running', ancient, ancient);
+
+    try {
+      const server = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+      });
+      await getStaleRunSweep();
+      await server.server.close();
+
+      const freshState = JSON.parse(
+        readFileSync(join(runsDir, 'fresh-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+      const ancientState = JSON.parse(
+        readFileSync(join(runsDir, 'ancient-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+
+      expect(freshState.status).toBe('running');
+      expect(freshState.lastError).toBeUndefined();
+      expect(ancientState.status).toBe('error');
+      expect(ancientState.lastError).toBe('abandoned (server restart)');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
   it('single-flights concurrent stale-run sweep triggers', async () => {
     await getStaleRunSweep();
 

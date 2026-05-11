@@ -610,8 +610,19 @@ export class WorktreeManager {
     if (WorktreeManager.prunedProjectRoots.has(projectRoot)) return;
     WorktreeManager.prunedProjectRoots.add(projectRoot);
     void this.git.raw(['worktree', 'prune']).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      // Host CLIs (e.g. Conductor) launch crew-mcp from their own app bin
+      // directory, which isn't a git repo. The prune has nothing to prune
+      // in that case — log at debug so the noise doesn't show up in
+      // routine `info` output. Any other prune failure stays a warn.
+      if (/not a git repository/i.test(message)) {
+        logger.debug(
+          `Skipping worktree prune; ${projectRoot} is not a git repository`,
+        );
+        return;
+      }
       logger.warn(
-        `Failed to prune stale git worktrees for ${projectRoot}: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to prune stale git worktrees for ${projectRoot}: ${message}`,
       );
     });
   }
