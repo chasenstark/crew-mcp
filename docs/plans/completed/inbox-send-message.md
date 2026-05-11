@@ -1,10 +1,102 @@
 # Inbox + `send_message` — design plan
 
-**Status:** Draft v7 2026-05-10 (post round-6 review).
+**Status:** SUPERSEDED 2026-05-11 by
+[`captain-inbox-and-peer-messages.md`](./captain-inbox-and-peer-messages.md).
+This document is preserved as historical context — v7 represents the
+captain-only inbox shape ratified across 7 review rounds before
+design discussion concluded that the captain-to-worker storage layer
+didn't earn its keep. The successor plan (captain-inbox-and-peer-messages)
+replaces this with: (1) an inline `peer_messages` parameter on
+`continue_run` / `run_agent` for captain→worker context, and (2) a
+worker→captain `send_message` MCP tool with a per-run-token trust
+boundary. See the successor's §"Round 4 review log" for the descope
+rationale.
+**Original status (preserved):** Draft v7 2026-05-10 (post round-6 review).
 **Predecessor / context:** `docs/plans/active/competitive-analysis-mco-cao.md` §5.1.
 **Inspiration:** CAO's `send_message` + watchdog inbox model
 (`/tmp/competitive-cao/src/cli_agent_orchestrator/services/inbox_service.py`,
 `mcp_server/server.py`).
+
+## At a glance
+
+**What.** A captain-driven inbox. The captain calls `send_message` to
+queue a structured message into another run's inbox; on the recipient's
+next `continue_run({flush_inbox: true})`, the dispatcher prepends the
+message body (plus referenced files / line excerpts) to the agent's
+prompt.
+
+**Why.** Today the captain hand-copies agent A's output into agent B's
+review prompt. The inbox replaces that with two tool calls — verbatim
+transmission, structured context, durable audit trail.
+
+**Cost.** ~6.75-7.75 days across 7 phases. v1 is captain-only;
+worker-initiated send, `read_inbox`, and auto-continue are v2.
+
+### Two-tool flow + message lifecycle
+
+```
+CAPTAIN                  CREW-MCP                     ~/.crew/runs/B/inbox/
+  |                         |                                  |
+  | send_message(B, body)-->|                                  |
+  |                         | write msg ---------------------->[pending]
+  |<-{msg_id, pending:1}----|                                  |
+  |                         |                                  |
+  | continue_run(B,         |                                  |
+  |   flush_inbox: true)--->|                                  |
+  |                         | claim under inbox lock --------->[pending -> claimed]
+  |                         | build prepend block              |
+  |                         |   (caps; first-message-force)    |
+  |                         | under state lock:                |
+  |                         |   appendPrompt                   |
+  |                         |   dispatcher.start() -------------> spawn (B sees prepend)
+  |                         |   FINALIZE ---------------------->[claimed -> delivered]
+  |<-{delivered_count: 1}---|                                  |
+
+failure / terminal paths:
+  - dispatcher.start throws synchronously, OR -----------------> [claimed -> pending]
+    recipient went terminal between claim and CAS               (re-flushable)
+  - recipient merge_run'd -------------------------------------> [pending -> undeliverable]
+                                                                 (kept for audit)
+  - recipient discard_run'd -----------------------------------> (file wiped w/ worktree)
+  - serve crashes mid-flush -----------------------------------> sweeper at next startup
+                                                                 reverts [claimed -> pending]
+                                                                 (PID + instance + age check)
+```
+
+### Scope (v1 vs v2)
+
+| In v1 | Deferred to v2 |
+|---|---|
+| Captain-only `send_message` | Worker-initiated send (needs per-run token + restricted serve) |
+| `inbox_counts` on `get_run_status` | Body retrieval (`read_inbox`) |
+| Captain-triggered flush | Auto-continue on message arrival |
+| `to: { run_id }` (recipient is a run) | `to: { kind: 'captain' }` |
+| Single repo, single host, single process | Cross-machine, multi-writer |
+| `delivered` = "dispatcher accepted the task" (at-least-once) | Adapter-level "prompt accepted" ack (exactly-once) |
+
+### Key design decisions
+
+- **4-status enum** (`pending` / `claimed` / `delivered` / `undeliverable`):
+  `claimed` lease prevents double-delivery on concurrent flush;
+  `undeliverable` separates terminal failure from in-flight.
+- **`delivered` means "dispatcher accepted the task"**, not "agent read
+  it." Stronger semantics need a new dispatcher event + per-adapter
+  wiring (v2). At-least-once at the dispatcher boundary; agents may
+  see the same body twice across a serve crash.
+- **Aggregate prepend cap** (32 KB default, 64 KB hard ceiling) with
+  first-message-force so large legitimate messages are never starved.
+- **Server-derived `thread_id` / `thread_depth`** — caller cannot
+  supply (security). Parent lookup is global across runs in the same
+  repo; cross-repo replies refused.
+- **Two lock scopes** via `withRunLock({crewHome, runId, scope})`:
+  `inbox` for inbox files, `state` for `state.json`. Inbox-first
+  acquisition order; brief acquisitions only.
+- **`runDispatchAndRespond` callback extension** (`inboxOnDispatcherAccepted` /
+  `inboxOnSyncDispatchFailure`) rather than lifecycle listeners —
+  `run:start` is emitted synchronously inside `dispatcher.start()`,
+  so any listener installed after the call would miss the event.
+
+---
 
 > **Round 1** converged on a major rescope: v1 is captain-only.
 >

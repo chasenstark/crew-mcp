@@ -9,7 +9,7 @@ dependencies; wx flag spec correction) and accepts residual
 stale-text drift as cosmetic-resolve-at-implementation. See §"Round
 8 review log" for the convergence rationale and §"Round 1-7 review
 logs" for full history.
-**Predecessor:** [`inbox-send-message.md`](./inbox-send-message.md) — captain-only
+**Predecessor:** [`inbox-send-message.md`](../completed/inbox-send-message.md) — captain-only
 inbox plan ratified across 7 review rounds. After design discussion the
 captain-to-worker direction is well-served by direct prompting, so this
 plan supersedes it: it descopes captain-to-worker storage (replacing it
