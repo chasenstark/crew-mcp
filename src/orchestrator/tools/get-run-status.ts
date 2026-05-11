@@ -2,21 +2,27 @@
  * get_run_status — poll the current state of a run.
  *
  * Pairs with the async-first dispatch model (`run_agent` always returns
- * `status: "running"` immediately). The captain uses this as an
- * on-demand status read at turn start, after a watcher exits, or after
- * an opt-in foreground wait. Supports three modes:
+ * `status: "running"` immediately). The captain's chat-available default
+ * is the snapshot mode — used at turn start, after a watcher exits, or
+ * to answer a user status question. The wait modes block the captain's
+ * turn open and are reserved for explicit "wait for this" opt-ins (see
+ * GET_RUN_STATUS_DESCRIPTION and the skill body's Dispatch lifecycle
+ * section). Supports three modes:
  *
  *   1. Snapshot (no `wait_for_change_ms`): returns the current state +
- *      events delta + cursor immediately. Cheap; always safe.
+ *      events delta + cursor immediately. Cheap; always safe; the
+ *      captain default.
  *   2. Long-poll (`wait_for_change_ms` set): returns immediately if the
  *      run already has new events past `since_event_line`, OR if the
  *      run is in a terminal state. Otherwise blocks server-side until
  *      one of: (a) a stream/terminal event fires for this run, (b)
- *      `wait_for_change_ms` elapses.
+ *      `wait_for_change_ms` elapses. Captains should not use this to
+ *      surface a terminal result inside the dispatch turn — the
+ *      crew-wait watcher (Claude Code) or a next-turn snapshot is the
+ *      non-blocking path.
  *   3. Terminal-only long-poll (`wait_for_terminal_only: true`): with
  *      `wait_for_change_ms`, ignores stream chunks and waits only for a
- *      terminal event or timeout. Advanced/legacy option for opt-in
- *      in-turn waiting.
+ *      terminal event or timeout. Same opt-in-only caveat as mode (2).
  *
  * The cursor (`since_event_line` in, `next_event_line` out) keeps each
  * poll surfacing only the *new* events.log lines, so the captain
@@ -57,17 +63,20 @@ export const getRunStatusInputSchema = z.object({
    * If set, the server holds the response open for up to this many
    * milliseconds, returning early as soon as new events arrive or the
    * run reaches a terminal state. If unset (or 0), the call returns a
-   * synchronous snapshot. Advanced/legacy option for opt-in in-turn
-   * waiting. Capped at 60000 (server clamps; an overly long wait risks
-   * tripping host MCP timeouts).
+   * synchronous snapshot. Opt-in only — the captain should not use
+   * this to surface a terminal result inside the dispatch turn (that
+   * blocks chat); reserve it for cases where the user explicitly said
+   * "wait for this." Capped at 60000 (server clamps; an overly long
+   * wait risks tripping host MCP timeouts).
    */
   wait_for_change_ms: z.number().int().nonnegative().optional(),
   /**
    * When set with `wait_for_change_ms`, wait only for terminal
    * run events (`run:complete`, `run:failed`, `run:cancelled`) and
-   * ignore stream chunks. Advanced/legacy option for opt-in in-turn
-   * waiting; the default captain dispatch flow ends the turn instead
-   * of long-polling.
+   * ignore stream chunks. Same opt-in-only caveat as
+   * `wait_for_change_ms`: the chat-available default is the crew-wait
+   * watcher (Claude Code) or a next-turn snapshot, not a blocking
+   * long-poll inside the dispatch turn.
    */
   wait_for_terminal_only: z.boolean().optional(),
   /**

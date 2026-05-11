@@ -506,6 +506,76 @@ describe('planRunAgent — read_only path', () => {
     const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
     expect(result.warnings).toBeUndefined();
   });
+
+  // Regression: the dirty-tree probe used to report every dirty file
+  // in the host repo as an agent contract violation, even though those
+  // files were already dirty before the dispatch. Both review-style
+  // crew runs in 2026-05-11 surfaced this as a false-positive warning
+  // listing files the reviewer never touched. The probe now snapshots
+  // pre-dispatch and diffs post.
+  it('ignores host-repo dirt that pre-existed the dispatch', async () => {
+    // Seed: the host repo already has a modified tracked file and an
+    // untracked file BEFORE the read-only run starts.
+    writeFileSync(join(root, 'README.md'), 'user was editing\n', 'utf-8');
+    writeFileSync(join(root, 'scratch.md'), 'untracked draft\n', 'utf-8');
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async () => ({
+        output: 'looked, touched nothing',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'reviewer', prompt: 'review', read_only: true },
+      'call-pre-dirty-clean',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    expect(result.warnings).toBeUndefined();
+  });
+
+  it('warns only on agent-introduced changes when host repo started dirty', async () => {
+    // Seed: pre-existing dirt the agent does not own.
+    writeFileSync(join(root, 'README.md'), 'user-in-flight\n', 'utf-8');
+    writeFileSync(join(root, 'scratch.md'), 'pre-existing untracked\n', 'utf-8');
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        // Reviewer breaks contract: writes one new file. README.md and
+        // scratch.md are already dirty but not from the agent.
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'leaked.md'), 'agent wrote this\n', 'utf-8');
+        return { output: 'broke contract', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'reviewer', prompt: 'review', read_only: true },
+      'call-pre-dirty-leak',
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    expect(result.warnings).toBeDefined();
+    expect(result.warnings?.length).toBe(1);
+    // Warning names the agent-introduced file, NOT the pre-existing
+    // dirt the user was already editing.
+    expect(result.warnings?.[0]).toMatch(/leaked\.md/);
+    expect(result.warnings?.[0]).not.toMatch(/README\.md/);
+    expect(result.warnings?.[0]).not.toMatch(/scratch\.md/);
+    // Cleanup so afterEach is well-behaved.
+    rmSync(join(root, 'leaked.md'), { force: true });
+  });
 });
 
 describe('resolveEffectiveEffort', () => {

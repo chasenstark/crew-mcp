@@ -1435,6 +1435,11 @@ describe('crew serve — read_only runs', () => {
         name: 'continue_run',
         arguments: { run_id: firstEnv.run_id, prompt: 'turn-two' },
       });
+      // continue_run is async-first; wait for the second turn to land
+      // before reading secondCwd. (Previously raced; the read-only
+      // dirty-tree pre-snapshot adds enough async work pre-execute that
+      // the race now reliably loses on a fast box.)
+      await pollUntilTerminal(h.client, firstEnv.run_id);
       // The second turn ran against host repo (the original "worktree path"),
       // not against a freshly-allocated worktree. Confirms the sticky path.
       expect(secondCwd).toBe(h.root);

@@ -332,6 +332,17 @@ export function buildAdapterDispatchTask(args: {
         }
       }
 
+      // Read-only contract probe — pre-snapshot. Captures the host
+      // repo's existing dirty state BEFORE the agent runs so the
+      // post-dispatch warning only fires on agent-introduced changes,
+      // not on whatever the user was already editing. Without this,
+      // every read-only dispatch against a dirty host repo (the common
+      // case during development) returns a false-positive warning
+      // listing files the agent never touched.
+      const dirtyBefore = args.readOnly
+        ? new Set(await detectDirtyTree(args.effectiveWorkingDirectory).catch(() => []))
+        : undefined;
+
       const result = await args.adapter.execute({
         prompt: args.prompt,
         context: {
@@ -363,12 +374,22 @@ export function buildAdapterDispatchTask(args: {
         // despite being told not to) and surface as a warning. Never
         // fail the dispatch on probe errors — the run completed; the
         // probe is purely advisory.
+        //
+        // Diffs against the pre-dispatch snapshot so pre-existing
+        // host-repo dirt does not get reported as an agent edit.
+        // Known limitation: an agent that modifies a file already in
+        // the pre-snapshot dirty set is invisible to the probe. The
+        // alternative (snapshotting file hashes) costs more and is
+        // out of scope for this fix; the much-louder false-positive
+        // flood is what mattered.
         try {
-          const dirtied = await detectDirtyTree(args.effectiveWorkingDirectory);
-          if (dirtied.length === 0) return result;
+          const dirtyAfter = await detectDirtyTree(args.effectiveWorkingDirectory);
+          const before = dirtyBefore ?? new Set<string>();
+          const newlyDirty = dirtyAfter.filter((path) => !before.has(path));
+          if (newlyDirty.length === 0) return result;
           const warning =
             `Read-only run produced uncommitted changes in ${args.effectiveWorkingDirectory}: ` +
-            `${dirtied.join(', ')}. Review with \`git status\` in that directory.`;
+            `${newlyDirty.join(', ')}. Review with \`git status\` in that directory.`;
           const existing = Array.isArray(result.warnings) ? result.warnings : [];
           return { ...result, warnings: [...existing, warning] };
         } catch {
