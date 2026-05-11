@@ -2,8 +2,9 @@
  * merge_run — merge a run's worktree back into the host's HEAD.
  *
  * The single safety boundary in v2: the host CLI must call this
- * explicitly. crew never auto-merges. The captain skill (M3) instructs
- * the host to ask the user for approval before invoking this tool.
+ * explicitly. crew never auto-merges. By default the server also
+ * requires confirmed:true, and the captain skill instructs the host to
+ * ask the user for approval before invoking this tool.
  *
  * Behavior:
  *   - Auto-commits any uncommitted changes in the worktree first
@@ -36,6 +37,11 @@ export const mergeRunInputSchema = z.object({
   target_branch: z.string().optional(),
   force: z.boolean().optional(),
   /**
+   * Must be true when config confirmBeforeMerge is enabled. Captains
+   * may pass it only after explicit affirmative user approval.
+   */
+  confirmed: z.boolean().optional(),
+  /**
    * Conventional-commit-style subject line for the merge commit.
    * Should describe what the run actually changed (the captain
    * has the prompt + summary + diff context to compose this).
@@ -55,4 +61,4 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input takes run_id plus optional target_branch, force, commit_title, and commit_body; the merge commit automatically receives a `Crew-Run: <run_id>` trailer. Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up, while conflict/no-changes worktrees are preserved.";
+  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input takes run_id plus optional target_branch, force, confirmed, commit_title, and commit_body; when config confirmBeforeMerge is true, confirmed:true is required and must only follow explicit user approval. The merge commit automatically receives a `Crew-Run: <run_id>` trailer. Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up, while conflict/no-changes worktrees are preserved.";

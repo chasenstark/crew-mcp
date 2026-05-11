@@ -74,6 +74,7 @@ import {
   MAX_EVENTS_TAIL_CAP,
 } from '../../orchestrator/tools/get-run-status.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
+import { readConfigFile } from '../../utils/config-store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 import { CREW_MCP_VERSION } from '../version.js';
@@ -88,6 +89,11 @@ export const SERVE_VERSION = CREW_MCP_VERSION;
  * Captains usually pass 30000; we clamp anything larger to this value.
  */
 export const MAX_LONG_POLL_MS = 60_000;
+
+const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
+  'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
+  'Ask the user to approve, then call merge_run again with {confirmed: true}. ' +
+  'Run this from the captain skill — never auto-pass confirmed:true without an explicit user "yes".';
 
 // Re-export for callers that imported these from this module.
 // Canonical definitions live in `orchestrator/tools/get-run-status` so
@@ -506,6 +512,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           }.`,
         );
       }
+      const confirmationGate = resolveMergeConfirmationGate(crewHome);
+      if (confirmationGate.error) {
+        return errorContent(confirmationGate.error);
+      }
+      if (confirmationGate.enabled && args.confirmed !== true) {
+        return errorContent(MERGE_CONFIRMATION_REQUIRED_MESSAGE);
+      }
       try {
         const result = await worktreeManager.mergeRunWorktree(args.run_id, {
           targetBranch: args.target_branch,
@@ -720,6 +733,18 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   return { server, dispatcher, worktreeManager, runStateStore };
+}
+
+function resolveMergeConfirmationGate(crewHome: string):
+  | { enabled: boolean; error?: undefined }
+  | { enabled?: undefined; error: string } {
+  if (process.env.CREW_CONFIRM_BEFORE_MERGE === 'off') {
+    return { enabled: false };
+  }
+  // readConfigFile is forgiving — fs/JSON failures return DEFAULT_CONFIG
+  // (confirmBeforeMerge=true), which is fail-closed by default. We don't
+  // need a wrapping try/catch here.
+  return { enabled: readConfigFile(crewHome).confirmBeforeMerge };
 }
 
 /**

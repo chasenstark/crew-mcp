@@ -68,13 +68,19 @@ crew-mcp config
 ```
 
 The TUI lists each toggle (`↑/↓` to move, `space` to toggle, `enter`
-to save, `q` / `esc` to cancel). Today the only entry is:
+to save, `q` / `esc` to cancel). Entries:
 
-- **notifications** — OS toast when a dispatched run reaches a terminal
-  status (success / partial / error / cancelled). Enabled by default.
+- **notifications.success** — OS toast when a dispatched run succeeds.
+  Enabled by default.
+- **notifications.error** — OS toast when a dispatched run fails or
+  finishes partial. Enabled by default. Cancelled runs never notify.
+- **confirmBeforeMerge** — require `merge_run` to carry explicit
+  confirmation before mutating the host branch. Enabled by default.
 
 The env var `CREW_OS_NOTIFICATIONS=off` always overrides to off, which
-is handy for CI or one-shot quiet runs.
+is handy for CI or one-shot quiet runs. The env var
+`CREW_CONFIRM_BEFORE_MERGE=off` disables the merge confirmation gate for
+scripted merges.
 
 ## v0.1
 

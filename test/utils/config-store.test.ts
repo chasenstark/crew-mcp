@@ -29,25 +29,66 @@ describe('config-store', () => {
   });
 
   it('round-trips a written config', () => {
-    writeConfigFile(home, { notifications: false });
-    expect(readConfigFile(home)).toEqual({ notifications: false });
+    const config = {
+      notifications: { success: false, error: true },
+      confirmBeforeMerge: false,
+    };
+    writeConfigFile(home, config);
+    expect(readConfigFile(home)).toEqual(config);
+  });
+
+  it('reads legacy boolean notifications into both channels', () => {
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ notifications: false }),
+      'utf-8',
+    );
+    expect(readConfigFile(home)).toEqual({
+      notifications: { success: false, error: false },
+      confirmBeforeMerge: true,
+    });
+  });
+
+  it('first write migrates legacy notification shape in place', () => {
+    const path = resolveConfigPath(home);
+    writeFileSync(
+      path,
+      JSON.stringify({ notifications: true, _note: 'legacy' }, null, 2),
+      'utf-8',
+    );
+    writeConfigFile(home, {
+      notifications: { success: true, error: false },
+      confirmBeforeMerge: true,
+    });
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    expect(raw._note).toBe('legacy');
+    expect(raw.notifications).toEqual({ success: true, error: false });
+    expect(raw.confirmBeforeMerge).toBe(true);
   });
 
   it('preserves underscore-prefixed comments through writes', () => {
     const path = resolveConfigPath(home);
     writeFileSync(
       path,
-      JSON.stringify({ _note: 'hand-edited', notifications: true }, null, 2),
+      JSON.stringify({
+        _note: 'hand-edited',
+        notifications: { success: true, error: true },
+        confirmBeforeMerge: true,
+      }, null, 2),
       'utf-8',
     );
-    writeConfigFile(home, { notifications: false });
+    writeConfigFile(home, {
+      notifications: { success: false, error: true },
+      confirmBeforeMerge: false,
+    });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('hand-edited');
-    expect(raw.notifications).toBe(false);
+    expect(raw.notifications).toEqual({ success: false, error: true });
+    expect(raw.confirmBeforeMerge).toBe(false);
   });
 
   it('seeds a _readme on first write', () => {
-    writeConfigFile(home, { notifications: true });
+    writeConfigFile(home, DEFAULT_CONFIG);
     const raw = JSON.parse(
       readFileSync(resolveConfigPath(home), 'utf-8'),
     ) as Record<string, unknown>;
@@ -64,11 +105,31 @@ describe('config-store', () => {
   it('drops fields with the wrong type but keeps the rest', () => {
     writeFileSync(
       join(home, CONFIG_FILENAME),
-      JSON.stringify({ notifications: 'yes please' }),
+      JSON.stringify({
+        notifications: { success: 'yes please', error: false },
+        confirmBeforeMerge: 'sure',
+      }),
       'utf-8',
     );
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-    expect(readConfigFile(home)).toEqual(DEFAULT_CONFIG);
+    expect(readConfigFile(home)).toEqual({
+      notifications: { success: true, error: false },
+      confirmBeforeMerge: true,
+    });
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('falls back to defaults for invalid notification container types', () => {
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ notifications: 'yes please', confirmBeforeMerge: false }),
+      'utf-8',
+    );
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    expect(readConfigFile(home)).toEqual({
+      notifications: { success: true, error: true },
+      confirmBeforeMerge: false,
+    });
     expect(warn).toHaveBeenCalled();
   });
 

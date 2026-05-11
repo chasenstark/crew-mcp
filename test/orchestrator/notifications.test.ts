@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { logger } from '../../src/utils/logger.js';
+import { writeConfigFile } from '../../src/utils/config-store.js';
 
 const mockSpawn = vi.hoisted(() => vi.fn());
 
@@ -77,15 +78,49 @@ describe('notifications', () => {
   });
 
   it('disables OS notifications only when CREW_OS_NOTIFICATIONS=off', () => {
-    expect(osNotificationsEnabled()).toBe(true);
+    expect(osNotificationsEnabled('success')).toBe(true);
     process.env.CREW_OS_NOTIFICATIONS = 'off';
-    expect(osNotificationsEnabled()).toBe(false);
+    expect(osNotificationsEnabled('success')).toBe(false);
     process.env.CREW_OS_NOTIFICATIONS = 'OFF';
-    expect(osNotificationsEnabled()).toBe(true);
+    expect(osNotificationsEnabled('success')).toBe(true);
+  });
+
+  it('honors success and error notification channels independently', () => {
+    writeConfigFile(tmpHome, {
+      notifications: { success: false, error: true },
+      confirmBeforeMerge: true,
+    });
+    expect(osNotificationsEnabled('success')).toBe(false);
+    expect(osNotificationsEnabled('error')).toBe(true);
+  });
+
+  it('routes partial notifications to the error channel', () => {
+    writeConfigFile(tmpHome, {
+      notifications: { success: true, error: false },
+      confirmBeforeMerge: true,
+    });
+    expect(osNotificationsEnabled('partial')).toBe(false);
+  });
+
+  it('always suppresses cancelled notifications', () => {
+    writeConfigFile(tmpHome, {
+      notifications: { success: true, error: true },
+      confirmBeforeMerge: true,
+    });
+    expect(osNotificationsEnabled('cancelled')).toBe(false);
   });
 
   it('does not spawn when env-var disabled', () => {
     process.env.CREW_OS_NOTIFICATIONS = 'off';
+    notifyTerminal({ runId: 'abcdef123456', agentId: 'codex', status: 'success' });
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('does not spawn when the selected status channel is disabled', () => {
+    writeConfigFile(tmpHome, {
+      notifications: { success: false, error: true },
+      confirmBeforeMerge: true,
+    });
     notifyTerminal({ runId: 'abcdef123456', agentId: 'codex', status: 'success' });
     expect(mockSpawn).not.toHaveBeenCalled();
   });
@@ -199,7 +234,7 @@ describe('notifications', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     const child = mockSpawnChild();
 
-    notifyTerminal({ runId: 'abcdef123456', agentId: 'codex', status: 'cancelled' });
+    notifyTerminal({ runId: 'abcdef123456', agentId: 'codex', status: 'error' });
     child.emit('exit', null, 'SIGTERM');
 
     expect(warn).toHaveBeenCalledWith(
