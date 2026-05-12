@@ -40,6 +40,16 @@ import { StringDecoder } from 'node:string_decoder';
 import { logger } from '../utils/logger.js';
 import { filterEventsTailNoise } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
+import {
+  resolvePeerMessageCaps,
+  type ResolvedCaps,
+} from './peer-messages/caps.js';
+import { runPeerMessagesPipeline } from './peer-messages/pipeline.js';
+import type {
+  PeerMessageInput,
+  PeerMessageRendered,
+} from './peer-messages/schema.js';
+import { withStateLock } from './run-state-lock.js';
 
 export type RunStatus =
   | 'running'
@@ -54,6 +64,7 @@ export type RunStatus =
 export interface PromptRecord {
   readonly turn: number;
   readonly prompt: string;
+  readonly peer_messages_input?: readonly PeerMessageRendered[];
   readonly startedAt: string;
   readonly completedAt?: string;
   /** The adapter's `output` text for this turn. */
@@ -167,6 +178,7 @@ export interface CreateRunStateInit {
   readonly agentId: string;
   readonly worktreePath: string;
   readonly initialPrompt: string;
+  readonly initialPeerMessagesInput?: readonly PeerMessageInput[];
   /**
    * Whether this run was dispatched with `read_only: true`. Persisted
    * so `continue_run` can read the bit back and stay sticky, and so
@@ -191,6 +203,26 @@ export interface RunStateStoreOptions {
   readonly repoRoot: string;
 }
 
+export interface CreateRunStateResult {
+  readonly state: RunStateV1;
+  readonly renderedPeerMessages: readonly PeerMessageRendered[];
+  readonly composedPrompt: string;
+  readonly warnings: readonly string[];
+}
+
+export interface AppendPromptOptions {
+  readonly userPrompt: string;
+  readonly peerMessagesInput?: readonly PeerMessageInput[];
+}
+
+export interface AppendPromptResult {
+  readonly state: RunStateV1;
+  readonly turnNumber: number;
+  readonly renderedPeerMessages: readonly PeerMessageRendered[];
+  readonly composedPrompt: string;
+  readonly warnings: readonly string[];
+}
+
 export interface FilteredEventsTail {
   readonly lines: readonly string[];
   /** Raw non-empty events.log line count; equals the next_event_line cursor. */
@@ -210,13 +242,36 @@ const EVENT_LOG_SCAN_CHUNK_BYTES = 64 * 1024;
  * single crew serve process = serial tool calls).
  */
 export class RunStateStore {
+  private readonly crewHome: string;
   private readonly runsBasePath: string;
   private readonly repoRoot: string;
+  private readonly resolvedCaps: ResolvedCaps;
+  private overridesInvalidPending: boolean;
 
   constructor(options: RunStateStoreOptions) {
+    this.crewHome = options.crewHome;
     this.runsBasePath = join(options.crewHome, 'runs');
     mkdirSync(this.runsBasePath, { recursive: true });
+    mkdirSync(join(options.crewHome, 'state-locks'), { recursive: true });
     this.repoRoot = resolveRepoRoot(options.repoRoot);
+    this.resolvedCaps = resolvePeerMessageCaps(process.env);
+    this.overridesInvalidPending = this.resolvedCaps.overridesInvalid !== undefined;
+  }
+
+  get caps(): ResolvedCaps {
+    return this.resolvedCaps;
+  }
+
+  consumeCapOverridesWarning(): readonly string[] {
+    if (!this.overridesInvalidPending) {
+      return [];
+    }
+    this.overridesInvalidPending = false;
+    const names = this.resolvedCaps.overridesInvalid ?? [];
+    if (names.length === 0) {
+      return [];
+    }
+    return [`peer_messages.cap_overrides_invalid: ${names.join(', ')}`];
   }
 
   /**
@@ -225,37 +280,63 @@ export class RunStateStore {
    * directory is created if it doesn't already exist (the worktree
    * manager may have created it first; either order is fine).
    */
-  create(init: CreateRunStateInit): RunStateV1 {
-    const now = new Date().toISOString();
-    const state: RunStateV1 = {
-      schemaVersion: SCHEMA_VERSION,
-      runId: init.runId,
-      agentId: init.agentId,
-      status: 'running',
-      startedAt: now,
-      worktreePath: init.worktreePath,
-      repoRoot: this.repoRoot,
-      serverPid: process.pid,
-      ...(init.readOnly ? { readOnly: true } : {}),
-      prompts: [
-        {
-          turn: 1,
-          prompt: truncatePromptForStorage(init.initialPrompt),
-          startedAt: now,
-        },
-      ],
-      filesChanged: [],
-    };
-    this.writeAtomic(init.runId, state);
-    // Drop a one-click `tail.command` helper next to events.log. On macOS
-    // this is the file extension Terminal.app registers as a launcher: a
-    // user can `open` the file (or click a `file://` link to it) and a
-    // Terminal window opens running `tail -F` against the run's event log.
-    // On Linux/Windows the suffix carries no meaning, but the file is
-    // still a runnable shell script — the dispatch markdown only surfaces
-    // the clickable form on macOS.
-    this.writeTailCommandHelper(init.runId);
-    return state;
+  async create(init: CreateRunStateInit): Promise<CreateRunStateResult> {
+    return withStateLock({ crewHome: this.crewHome, runId: init.runId }, async () => {
+      const now = new Date().toISOString();
+      const pipelineResult = runPeerMessagesPipeline(init.initialPeerMessagesInput ?? [], {
+        renderedAt: now,
+        renderedInTurn: 1,
+        caps: this.caps,
+      });
+      const renderedMessages = pipelineResult.renderedMessages;
+      const composedPrompt = pipelineResult.rendered + init.initialPrompt;
+      if (composedPrompt.length > this.caps.composedPromptCap) {
+        throw new Error(
+          `peer_messages.composed_prompt_too_large: ${composedPrompt.length} ` +
+          `> ${this.caps.composedPromptCap}`,
+        );
+      }
+
+      const state: RunStateV1 = {
+        schemaVersion: SCHEMA_VERSION,
+        runId: init.runId,
+        agentId: init.agentId,
+        status: 'running',
+        startedAt: now,
+        worktreePath: init.worktreePath,
+        repoRoot: this.repoRoot,
+        serverPid: process.pid,
+        ...(init.readOnly ? { readOnly: true } : {}),
+        prompts: [
+          {
+            turn: 1,
+            prompt: truncatePromptForStorage(init.initialPrompt),
+            ...(renderedMessages.length > 0 ? { peer_messages_input: [...renderedMessages] } : {}),
+            startedAt: now,
+          },
+        ],
+        filesChanged: [],
+      };
+      this.writeAtomic(init.runId, state);
+      // Drop a one-click `tail.command` helper next to events.log. On macOS
+      // this is the file extension Terminal.app registers as a launcher: a
+      // user can `open` the file (or click a `file://` link to it) and a
+      // Terminal window opens running `tail -F` against the run's event log.
+      // On Linux/Windows the suffix carries no meaning, but the file is
+      // still a runnable shell script — the dispatch markdown only surfaces
+      // the clickable form on macOS.
+      this.writeTailCommandHelper(init.runId);
+
+      const capWarnings = (init.initialPeerMessagesInput?.length ?? 0) > 0
+        ? this.consumeCapOverridesWarning()
+        : [];
+      return {
+        state,
+        renderedPeerMessages: renderedMessages,
+        composedPrompt,
+        warnings: [...pipelineResult.warnings, ...capWarnings],
+      };
+    });
   }
 
   /**
@@ -351,18 +432,69 @@ export class RunStateStore {
    * the original (possibly dead) server's PID, and the stale-run
    * sweeper in any sibling server's startup would mark it abandoned.
    */
-  appendPrompt(runId: string, prompt: string): RunStateV1 {
-    const now = new Date().toISOString();
-    return this.update(runId, (s) => ({
-      ...s,
-      status: 'running',
-      completedAt: undefined,
-      serverPid: process.pid,
-      prompts: [
-        ...s.prompts,
-        { turn: s.prompts.length + 1, prompt: truncatePromptForStorage(prompt), startedAt: now },
-      ],
-    }));
+  async appendPrompt(
+    runId: string,
+    options: AppendPromptOptions,
+  ): Promise<AppendPromptResult> {
+    return withStateLock({ crewHome: this.crewHome, runId }, async () => {
+      const fresh = this.read(runId);
+      if (!fresh) {
+        throw new Error(`peer_messages.run_unknown: ${runId}`);
+      }
+      if (fresh.status === 'running') {
+        throw new Error(`peer_messages.run_in_flight: ${runId}`);
+      }
+      if (
+        fresh.status === 'discarded'
+        || fresh.status === 'merged'
+        || fresh.status === 'merge_conflict'
+      ) {
+        throw new Error(`peer_messages.run_terminal: ${runId} status=${fresh.status}`);
+      }
+
+      const turnNumber = fresh.prompts.length + 1;
+      const now = new Date().toISOString();
+      const pipelineResult = runPeerMessagesPipeline(options.peerMessagesInput ?? [], {
+        renderedAt: now,
+        renderedInTurn: turnNumber,
+        caps: this.caps,
+      });
+      const renderedMessages = pipelineResult.renderedMessages;
+      const composedPrompt = pipelineResult.rendered + options.userPrompt;
+      if (composedPrompt.length > this.caps.composedPromptCap) {
+        throw new Error(
+          `peer_messages.composed_prompt_too_large: ${composedPrompt.length} ` +
+          `> ${this.caps.composedPromptCap}`,
+        );
+      }
+
+      const nextState = this.update(runId, (s) => ({
+        ...s,
+        status: 'running',
+        completedAt: undefined,
+        serverPid: process.pid,
+        prompts: [
+          ...s.prompts,
+          {
+            turn: turnNumber,
+            prompt: truncatePromptForStorage(options.userPrompt),
+            ...(renderedMessages.length > 0 ? { peer_messages_input: [...renderedMessages] } : {}),
+            startedAt: now,
+          },
+        ],
+      }));
+
+      const capWarnings = (options.peerMessagesInput?.length ?? 0) > 0
+        ? this.consumeCapOverridesWarning()
+        : [];
+      return {
+        state: nextState,
+        turnNumber,
+        renderedPeerMessages: renderedMessages,
+        composedPrompt,
+        warnings: [...pipelineResult.warnings, ...capWarnings],
+      };
+    });
   }
 
   /**

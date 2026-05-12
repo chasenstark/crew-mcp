@@ -5,6 +5,22 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-11 Peer Messages Phase 2 State Lock
+
+Phase 2 of `docs/plans/active/peer-messages-parameter.md` added a per-run
+state lock under `<crewHome>/state-locks/<runId>/`, created at
+`RunStateStore` startup and acquired with atomic `mkdir` for `create()` and
+`appendPrompt()`. Lock reclaim mirrors the worktree lock owner heuristic:
+alive PIDs, including `EPERM`, are not reclaimed; dead-PID locks are reclaimed
+only after stale mtime.
+
+`RunStateStore.create()` and `appendPrompt()` are now async and own the peer
+message cap pipeline, composed-prompt cap check, prompt composition, and
+per-turn audit recording before any `state.json` write. `markTerminal()` and
+post-terminal transitions remain sync and outside this narrow lock, so the
+documented `appendPrompt` versus terminal-update residual race remains a known
+future full-state-lock-sweep item.
+
 ## Update - 2026-05-11 Configurable Merge Confirmation Gate
 
 `crew-mcp config` now exposes three per-machine toggles:
