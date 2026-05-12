@@ -423,13 +423,17 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         };
       }
 
-      runStateStore.create({
-        runId: plan.runId,
-        agentId: args.agent_id,
-        worktreePath: plan.worktreePath,
-        initialPrompt: args.prompt,
-        readOnly: plan.readOnly,
-      });
+      try {
+        await runStateStore.create({
+          runId: plan.runId,
+          agentId: args.agent_id,
+          worktreePath: plan.worktreePath,
+          initialPrompt: args.prompt,
+          readOnly: plan.readOnly,
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
 
       return runDispatchAndRespond({
         runId: plan.runId,
@@ -453,28 +457,28 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: continueRunInputSchema.shape,
     },
     async (args, extra) => {
-      const state = runStateStore.read(args.run_id);
-      if (!state) {
+      const preState = runStateStore.read(args.run_id);
+      if (!preState) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
       }
-      if (state.status === 'running') {
+      if (preState.status === 'running') {
         return errorContent('continue_run: run is currently running; call cancel_run first.');
       }
       if (
-        state.status === 'discarded'
-        || state.status === 'merged'
-        || state.status === 'merge_conflict'
+        preState.status === 'discarded'
+        || preState.status === 'merged'
+        || preState.status === 'merge_conflict'
       ) {
         return errorContent(
-          `Cannot continue run "${args.run_id}" with status "${state.status}".`,
+          `Cannot continue run "${args.run_id}" with status "${preState.status}".`,
         );
       }
       const adapter = typeof registry.load === 'function'
-        ? await registry.load(state.agentId)
-        : registry.get(state.agentId);
+        ? await registry.load(preState.agentId)
+        : registry.get(preState.agentId);
       if (!adapter) {
         return errorContent(
-          `Agent "${state.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
+          `Agent "${preState.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
         );
       }
       const continueExtra = extra;
@@ -495,11 +499,21 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         args.model,
         continueAgentPrefs,
       );
+      let appendResult: Awaited<ReturnType<RunStateStore['appendPrompt']>>;
+      try {
+        appendResult = await runStateStore.appendPrompt(args.run_id, {
+          userPrompt: args.prompt,
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+      const { state, composedPrompt } = appendResult;
+
       const task = buildAdapterDispatchTask({
         toolCallId,
         runId: args.run_id,
         adapter,
-        prompt: args.prompt,
+        prompt: composedPrompt,
         effectiveWorkingDirectory: state.worktreePath,
         worktreePath: state.worktreePath,
         // Stickiness: a continue_run inherits the original dispatch's
@@ -512,8 +526,6 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         worktreeManager,
         input: { ...args },
       });
-
-      runStateStore.appendPrompt(args.run_id, args.prompt);
 
       // Re-mirror uncommitted host state into the worktree so changes
       // the user made between turns are visible to this turn's agent.

@@ -10,8 +10,10 @@
  */
 
 import { readFile } from 'node:fs/promises';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -26,7 +28,8 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 describe('install/tool-catalog ↔ crew serve parity', () => {
   it('listTools() returns exactly the tools declared in CATALOG_TOOLS', async () => {
-    const { server } = buildCrewMcpServer();
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-tool-catalog-home-'));
+    const { server } = buildCrewMcpServer({ crewHome });
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
 
@@ -40,6 +43,7 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       expect(names).toEqual(expected);
     } finally {
       await client.close();
+      rmSync(crewHome, { recursive: true, force: true });
     }
   });
 
