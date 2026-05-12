@@ -1,31 +1,41 @@
 /**
  * `crew-mcp verify` — sanity-check installed skill ↔ MCP tool catalog.
  *
- * Reads ~/.crew/install.json to learn what's installed, then for each
- * installed target:
+ * Checks runtime prerequisites, then reads ~/.crew/install.json to learn what's
+ * installed. For each installed target:
  *
  *   1. Skill file still exists.
  *   2. Skill text references every tool in the static catalog (and no
  *      extras — those would be stale references).
  *   3. Host config still contains the crew MCP block.
  *
- * Drift produces a clear message and a non-zero exit code so CI / users
- * can wire this into pre-flight scripts. Idempotent and read-only — no
- * side effects.
+ * Drift or failed runtime probes produce a clear message and a non-zero exit
+ * code so CI / users can wire this into pre-flight scripts. Runtime probes are
+ * idempotent, but may create expected Crew state directories.
  */
 
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import { HOST_ADAPTERS, type HostId } from '../../install/hosts/index.js';
 import { readInstallManifest } from '../../install/install-manifest.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
+import { resolvePeerMessageCaps } from '../../orchestrator/peer-messages/caps.js';
+import { runPeerMessagesPipeline } from '../../orchestrator/peer-messages/pipeline.js';
+import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
+import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.js';
+import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 
 export interface VerifyOptions {
   /** Override $HOME (tests). */
   home?: string;
+  /** Override `<crewHome>` (tests). Defaults to `$CREW_HOME` or `~/.crew`. */
+  crewHome?: string;
+  /** Override env for runtime cap verification (tests). Defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface VerifyTargetReport {
@@ -34,8 +44,17 @@ export interface VerifyTargetReport {
   issues: string[];
 }
 
+export type VerifyProbeStatus = 'ok' | 'warn' | 'error';
+
+export interface VerifyProbeReport {
+  name: string;
+  status: VerifyProbeStatus;
+  message: string;
+}
+
 export interface VerifyReport {
   ok: boolean;
+  probes: VerifyProbeReport[];
   targets: VerifyTargetReport[];
   /** Top-level note when the manifest itself is empty. */
   note?: string;
@@ -43,13 +62,21 @@ export interface VerifyReport {
 
 export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyReport> {
   const home = opts.home ?? homedir();
+  const crewHome = opts.crewHome
+    ?? (opts.home ? join(opts.home, '.crew') : resolveCrewHome());
+  const probes = await runRuntimeProbes({ crewHome, env: opts.env ?? process.env });
   const manifest = await readInstallManifest(home);
   const installedTargets = Object.keys(manifest.targets) as HostId[];
 
   if (installedTargets.length === 0) {
     const note = 'No installed targets. Run `crew install --target <host>` first.';
     logger.info(note);
-    return { ok: true, targets: [], note };
+    return {
+      ok: probes.every((probe) => probe.status !== 'error'),
+      probes,
+      targets: [],
+      note,
+    };
   }
 
   const expectedNames = CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
@@ -108,10 +135,14 @@ export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyRep
   }
 
   const ok = reports.every((r) => r.ok);
+  const probesOk = probes.every((probe) => probe.status !== 'error');
   if (!ok) {
     logger.warn('crew verify: drift detected. Run `crew install --target <host>` to re-sync.');
   }
-  return { ok, targets: reports };
+  if (!probesOk) {
+    logger.warn('crew verify: runtime prerequisite probe failed.');
+  }
+  return { ok: ok && probesOk, probes, targets: reports };
 }
 
 /**
@@ -127,4 +158,183 @@ export function extractToolReferences(skill: string): Set<string> {
     out.add(match[0]);
   }
   return out;
+}
+
+interface RuntimeProbeOptions {
+  readonly crewHome: string;
+  readonly env: NodeJS.ProcessEnv;
+}
+
+async function runRuntimeProbes(options: RuntimeProbeOptions): Promise<VerifyProbeReport[]> {
+  const probes = [
+    await verifyStateLocksWritable(options.crewHome),
+    verifyPeerMessagesPipeline(options.env),
+  ];
+
+  for (const probe of probes) {
+    if (probe.status === 'ok') {
+      logger.info(`crew verify: ${probe.message} ✓`);
+    } else {
+      logger.warn(`crew verify: ${probe.message}`);
+    }
+  }
+
+  return probes;
+}
+
+async function verifyStateLocksWritable(crewHome: string): Promise<VerifyProbeReport> {
+  const stateLocksDir = join(crewHome, 'state-locks');
+  const probePath = join(
+    stateLocksDir,
+    `verify-probe-${process.pid}-${Date.now()}.tmp`,
+  );
+
+  try {
+    await mkdir(stateLocksDir, { recursive: true });
+  } catch (error) {
+    return {
+      name: 'state-locks-writable',
+      status: 'error',
+      message: formatStateLocksError(
+        'create',
+        stateLocksDir,
+        error,
+        stateLocksDir,
+      ),
+    };
+  }
+
+  try {
+    await writeFile(probePath, 'crew-mcp verify state-locks probe\n', 'utf-8');
+  } catch (error) {
+    return {
+      name: 'state-locks-writable',
+      status: 'error',
+      message: formatStateLocksError('write', probePath, error, stateLocksDir),
+    };
+  }
+
+  try {
+    await rm(probePath);
+  } catch (error) {
+    return {
+      name: 'state-locks-writable',
+      status: 'error',
+      message: formatStateLocksError('delete', probePath, error, stateLocksDir),
+    };
+  }
+
+  return {
+    name: 'state-locks-writable',
+    status: 'ok',
+    message: `state-locks/ writable at ${stateLocksDir}`,
+  };
+}
+
+function verifyPeerMessagesPipeline(env: NodeJS.ProcessEnv): VerifyProbeReport {
+  try {
+    const defaultCaps = resolvePeerMessageCaps({});
+    const defaultExcerptBudget = defaultCaps.excerpt * defaultCaps.maxExcerpts;
+    if (defaultCaps.overridesInvalid !== undefined) {
+      return {
+        name: 'peer-messages-caps-pipeline',
+        status: 'error',
+        message: `peer_messages default caps unexpectedly invalid: ${defaultCaps.overridesInvalid.join(', ')}`,
+      };
+    }
+    if (
+      defaultCaps.body > defaultExcerptBudget
+      || defaultExcerptBudget > defaultCaps.aggregate
+      || defaultCaps.aggregate > defaultCaps.hardCeiling
+      || defaultCaps.hardCeiling > defaultCaps.composedPromptCap
+    ) {
+      return {
+        name: 'peer-messages-caps-pipeline',
+        status: 'error',
+        message:
+          'peer_messages default cap hierarchy invalid: expected body <= excerpt*maxExcerpts <= aggregate <= hardCeiling <= composedPromptCap',
+      };
+    }
+
+    const caps = resolvePeerMessageCaps(env);
+    if (caps.aggregate > caps.hardCeiling || caps.hardCeiling > caps.composedPromptCap) {
+      return {
+        name: 'peer-messages-caps-pipeline',
+        status: 'error',
+        message:
+          'peer_messages runtime cap hierarchy invalid: expected aggregate <= hardCeiling <= composedPromptCap',
+      };
+    }
+
+    const input: PeerMessageInput[] = [{
+      body: 'Verify peer_messages plumbing.',
+      kind: 'note',
+      from_label: 'crew-mcp verify',
+      files: ['src/cli/commands/verify.ts'],
+      excerpts: [{
+        file: 'src/cli/commands/verify.ts',
+        range: [1, 1],
+        text: 'peer_messages verify probe',
+      }],
+    }];
+    const validated = validatePeerMessagesPreflight(input, caps);
+    const pipelineResult = runPeerMessagesPipeline(validated, {
+      renderedAt: new Date(0).toISOString(),
+      renderedInTurn: 0,
+      caps,
+    });
+    if (pipelineResult.rendered.trim().length === 0) {
+      return {
+        name: 'peer-messages-caps-pipeline',
+        status: 'error',
+        message: 'peer_messages validation probe rendered an empty prepend block',
+      };
+    }
+
+    if (caps.overridesInvalid && caps.overridesInvalid.length > 0) {
+      return {
+        name: 'peer-messages-caps-pipeline',
+        status: 'warn',
+        message: `peer_messages.cap_overrides_invalid: ${caps.overridesInvalid.join(', ')}`,
+      };
+    }
+
+    return {
+      name: 'peer-messages-caps-pipeline',
+      status: 'ok',
+      message: 'peer_messages caps and pipeline validate',
+    };
+  } catch (error) {
+    return {
+      name: 'peer-messages-caps-pipeline',
+      status: 'error',
+      message: `peer_messages validation probe failed: ${formatErrorForMessage(error)}`,
+    };
+  }
+}
+
+function formatStateLocksError(
+  action: string,
+  path: string,
+  error: unknown,
+  stateLocksDir: string,
+): string {
+  const code = errorCode(error);
+  const reason = formatErrorForMessage(error);
+  return (
+    `state-locks/ probe failed to ${action} ${path}: ${code} ${reason}. ` +
+    `Fix permissions so crew-mcp can create, write, and delete files under ${stateLocksDir}.`
+  );
+}
+
+function formatErrorForMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function errorCode(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return code;
+  }
+  return 'UNKNOWN';
 }

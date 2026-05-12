@@ -10,7 +10,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 
@@ -210,6 +218,71 @@ describe('install / verify / uninstall — happy path', () => {
     expect(report.targets).toHaveLength(1);
     expect(report.targets[0].host).toBe('codex');
     expect(report.targets[0].issues).toEqual([]);
+  });
+
+  it('verify reports state-locks/ writable when the crew home allows probes', async () => {
+    const report = await verifyCommand({ home });
+    const probe = report.probes.find((item) => item.name === 'state-locks-writable');
+
+    expect(report.ok).toBe(true);
+    expect(probe).toMatchObject({
+      status: 'ok',
+      message: expect.stringContaining('state-locks/'),
+    });
+    expect(existsSync(join(home, '.crew', 'state-locks'))).toBe(true);
+  });
+
+  it('verify reports a clear state-locks/ error when the crew home is unwritable', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return;
+    }
+
+    const crewHome = join(home, '.crew');
+    mkdirSync(crewHome, { recursive: true });
+    chmodSync(crewHome, 0o500);
+
+    try {
+      const report = await verifyCommand({ home });
+      const probe = report.probes.find((item) => item.name === 'state-locks-writable');
+
+      expect(report.ok).toBe(false);
+      expect(probe?.status).toBe('error');
+      expect(probe?.message).toContain('state-locks/');
+      expect(probe?.message).toContain(join(crewHome, 'state-locks'));
+      expect(probe?.message).toMatch(/EACCES|EPERM/);
+      expect(probe?.message).toContain('Fix permissions');
+    } finally {
+      chmodSync(crewHome, 0o700);
+    }
+  });
+
+  it('verify validates peer_messages caps and pipeline under default caps', async () => {
+    const report = await verifyCommand({ home, env: {} });
+    const probe = report.probes.find((item) => item.name === 'peer-messages-caps-pipeline');
+
+    expect(report.ok).toBe(true);
+    expect(probe).toEqual({
+      name: 'peer-messages-caps-pipeline',
+      status: 'ok',
+      message: 'peer_messages caps and pipeline validate',
+    });
+  });
+
+  it('verify warns but does not fail when peer_messages cap overrides are invalid', async () => {
+    const report = await verifyCommand({
+      home,
+      env: {
+        CREW_PEER_MESSAGES_PREPEND_CAP_CHARS: String(256 * 1024),
+      },
+    });
+    const probe = report.probes.find((item) => item.name === 'peer-messages-caps-pipeline');
+
+    expect(report.ok).toBe(true);
+    expect(probe).toEqual({
+      name: 'peer-messages-caps-pipeline',
+      status: 'warn',
+      message: 'peer_messages.cap_overrides_invalid: aggregate',
+    });
   });
 
   it('verify with no installed targets returns ok + a note', async () => {
