@@ -347,8 +347,7 @@ export async function installSingleTarget(args: {
     }
     logger.info(
       `crew install: Claude Code crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
-      + 'Skill body uses the same command. '
-      + 'If you use a non-default CREW_HOME, export CREW_HOME in the shell environment Claude Code Bash inherits.',
+      + 'Skill body uses the same command.',
     );
   }
 
