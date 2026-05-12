@@ -472,3 +472,66 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   not as a way to defer thinking.
 - If the user pushes back on a dispatch ("just answer it yourself"),
   do that. The skill is a default, not a contract.
+
+## Forwarding peer context
+
+You can pass structured peer context to a worker at dispatch time via
+the `peer_messages` parameter on `run_agent` and `continue_run`. Use
+it instead of pasting freeform strings into the prompt.
+
+### `peer_messages`: captain → worker context
+
+Both `run_agent` and `continue_run` accept an optional `peer_messages`
+array. Each item is `{body, kind, from_label, files, excerpts}`. The
+dispatcher prepends a typed block to the worker's prompt.
+
+Use cases:
+- Forward run A's output to run B's review prompt.
+- Forward synthesized feedback from multiple reviewers back to the
+  implementer.
+- Provide structured "here's context you'll need" alongside a normal
+  prompt.
+
+### Pattern: implement-then-review
+
+1. `run_agent(implementer, "implement X")` → run A. Dispatch and yield
+   per the §Dispatch lifecycle default flow.
+2. When A reaches terminal (via the watcher overlay on Claude Code, or
+   the next user-turn snapshot on Codex/Gemini), read `A.summary` and
+   `A.files_changed` via `get_run_status`.
+3. `run_agent(reviewer, "review this implementation", read_only: true,
+   working_directory: <A.worktree_path>, peer_messages: [{body:
+   A.summary, kind: 'review', from_label: "A (implementer)", files:
+   A.files_changed}])` → run B. The `read_only` + `working_directory`
+   pair lets the reviewer read A's edits without allocating its own
+   worktree; the `peer_messages` array forwards A's synthesis as
+   typed context.
+4. When B reaches terminal, read `B.summary`.
+5. If revisions needed: `continue_run(A, peer_messages: [{body:
+   B.summary, from_label: "B (reviewer)", kind: 'review'}],
+   prompt: "revise per these findings")`.
+
+Worker findings flow back via the existing `terminal.summary` path.
+There is no `send_message` / inbox return path in this plan.
+
+### When NOT to use peer_messages
+
+- Single freeform string of context: just put it in the prompt.
+- One-shot forwarding where structure adds noise: prompt is fine.
+
+`peer_messages` is for STRUCTURED forwarding where typed labels,
+fenced excerpts, and audit records aid orchestration.
+
+### `kind` is advisory
+
+`note | review | question | answer | status`. Crew-mcp does NOT
+branch on `kind`. Use it as a hint to the worker.
+
+### Caps
+
+Default per-item body: 16 KB; per-excerpt: 4 KB; excerpts per item:
+8; items per call: 50; aggregate rendered: 64 KB; hard ceiling: 128
+KB; composed prompt total: 256 KB.
+
+Errors all use `peer_messages.<code>:` prefix. See plan for full
+list. Truncation and drops emit `warnings` on the envelope (non-fatal).

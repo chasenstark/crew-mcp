@@ -48,6 +48,23 @@ describe('GeminiCliAdapter', () => {
     expect(result.status).toBe('error');
   });
 
+  it('passes the composed prompt through the gemini argv', async () => {
+    const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
+    mockExeca.mockResolvedValueOnce({
+      stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    await adapter.execute({
+      prompt: composedPrompt,
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    const args = mockExeca.mock.calls[0]?.[1] as string[];
+    expect(args.at(-1)).toBe(composedPrompt);
+  });
+
   it('passes --model when specified in execute constraints', async () => {
     mockExeca.mockResolvedValueOnce({
       stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,

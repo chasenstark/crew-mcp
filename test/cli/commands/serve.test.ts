@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
@@ -35,7 +35,11 @@ import { crewTailUrl } from '../../../src/cli/commands/tail-url.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
-import { RunStateStore } from '../../../src/orchestrator/run-state.js';
+import { RunStateStore, type RunStateV1 } from '../../../src/orchestrator/run-state.js';
+import { DEFAULT_PEER_MESSAGE_CAPS } from '../../../src/orchestrator/peer-messages/caps.js';
+import { buildPrependBlock } from '../../../src/orchestrator/peer-messages/prepend.js';
+import type { PeerMessageRendered } from '../../../src/orchestrator/peer-messages/schema.js';
+import type { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import {
   getRunStatusInputSchema,
   MAX_EVENTS_TAIL_CAP,
@@ -86,7 +90,9 @@ function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
 
 interface Harness {
   client: Client;
+  dispatcher: ToolDispatcher;
   worktreeManager: WorktreeManager;
+  runStateStore: RunStateStore;
   root: string;
   crewHome: string;
   close: () => Promise<void>;
@@ -124,6 +130,50 @@ function expectStructuredJsonBytes(
   expect(actualBytes.equals(expectedBytes)).toBe(true);
 }
 
+function withEnv(overrides: Record<string, string | undefined>): () => void {
+  const prior = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    prior.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+function readPersistedState(h: Harness, runId: string): RunStateV1 {
+  return JSON.parse(
+    readFileSync(join(h.crewHome, 'runs', runId, 'state.json'), 'utf-8'),
+  ) as RunStateV1;
+}
+
+function renderStoredPeerMessages(
+  messages: readonly PeerMessageRendered[],
+  h: Harness,
+): string {
+  const caps = h.runStateStore.caps ?? DEFAULT_PEER_MESSAGE_CAPS;
+  return buildPrependBlock(messages, {
+    aggregateCap: caps.aggregate,
+    hardCeiling: caps.hardCeiling,
+  }).rendered;
+}
+
+function runWorktreeCount(crewHome: string): number {
+  const runsDir = join(crewHome, 'runs');
+  if (!existsSync(runsDir)) return 0;
+  return readdirSync(runsDir, { withFileTypes: true })
+    .filter((entry) =>
+      entry.isDirectory()
+      && entry.name !== '.meta'
+      && existsSync(join(runsDir, entry.name, 'worktree')),
+    )
+    .length;
+}
+
 async function startHarness(
   adapters: AgentAdapter[],
   options: { fullEnvelope?: boolean; clientName?: string } = {},
@@ -144,7 +194,7 @@ async function startHarness(
   execSync('git commit -q -m init', { cwd: root });
 
   const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
-  const { server } = buildCrewMcpServer({
+  const { server, dispatcher, runStateStore } = buildCrewMcpServer({
     cwd: root,
     crewHome,
     registry: makeRegistry(adapters),
@@ -165,7 +215,9 @@ async function startHarness(
 
   return {
     client,
+    dispatcher,
     worktreeManager,
+    runStateStore,
     root,
     crewHome,
     close: async () => {
@@ -248,7 +300,7 @@ describe('crew serve — listTools surface', () => {
     ]);
   });
 
-  it('run_agent declares its input schema (agent_id + prompt required)', async () => {
+  it('run_agent declares its input schema (agent_id + prompt required, peer_messages optional)', async () => {
     const result = await h.client.listTools();
     const runAgent = result.tools.find((t) => t.name === 'run_agent');
     expect(runAgent).toBeDefined();
@@ -259,8 +311,24 @@ describe('crew serve — listTools surface', () => {
     };
     expect(schema.properties).toHaveProperty('agent_id');
     expect(schema.properties).toHaveProperty('prompt');
+    expect(schema.properties).toHaveProperty('peer_messages');
     expect(schema.required).toContain('agent_id');
     expect(schema.required).toContain('prompt');
+  });
+
+  it('continue_run declares peer_messages and does not require prompt', async () => {
+    const result = await h.client.listTools();
+    const continueRun = result.tools.find((t) => t.name === 'continue_run');
+    expect(continueRun).toBeDefined();
+    const schema = continueRun!.inputSchema as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(schema.properties).toHaveProperty('run_id');
+    expect(schema.properties).toHaveProperty('prompt');
+    expect(schema.properties).toHaveProperty('peer_messages');
+    expect(schema.required).toContain('run_id');
+    expect(schema.required ?? []).not.toContain('prompt');
   });
 });
 
@@ -1063,6 +1131,544 @@ describe('crew serve — continue_run tool', () => {
       const text = (res.content as Array<{ text: string }>)[0].text;
       expect(text).toMatch(/discarded/);
     } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('crew serve — peer_messages integration', () => {
+  const peerMessage = {
+    body: 'Reviewer found the missing edge case.',
+    kind: 'review' as const,
+    from_label: 'reviewer-A',
+    files: ['src/edge.ts'],
+    excerpts: [
+      {
+        file: 'src/edge.ts',
+        range: [12, 18] as [number, number],
+        text: 'if (!value) return;',
+      },
+    ],
+  };
+
+  function manyPeerMessages(count: number): Array<typeof peerMessage> {
+    return Array.from({ length: count }, (_, index) => ({
+      ...peerMessage,
+      body: `peer message ${index}`,
+      from_label: `peer-${index}`,
+      excerpts: undefined,
+    }));
+  }
+
+  it('run_agent prepends peer_messages byte-for-byte and stores the post-pipeline audit form', async () => {
+    const prompts: string[] = [];
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        prompts.push(task.prompt);
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'implement the fix',
+          peer_messages: [peerMessage],
+        },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const state = readPersistedState(h, env.run_id);
+      const stored = state.prompts[0].peer_messages_input ?? [];
+      const expectedBlock = renderStoredPeerMessages(stored, h);
+      expect(prompts[0]).toBe(`${expectedBlock}implement the fix`);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]).toMatchObject({
+        body: peerMessage.body,
+        kind: 'review',
+        from_label: 'reviewer-A',
+        files: ['src/edge.ts'],
+        rendered_in_turn: 1,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('continue_run accepts peer_messages without a prompt and prepends them byte-for-byte', async () => {
+    const prompts: string[] = [];
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        prompts.push(task.prompt);
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'turn one' },
+      });
+      const env = first.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const second = await h.client.callTool({
+        name: 'continue_run',
+        arguments: {
+          run_id: env.run_id,
+          prompt: '',
+          peer_messages: [peerMessage],
+        },
+      });
+      expect(second.isError).toBeUndefined();
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const state = readPersistedState(h, env.run_id);
+      const stored = state.prompts[1].peer_messages_input ?? [];
+      const expectedBlock = renderStoredPeerMessages(stored, h);
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toBe(expectedBlock);
+      expect(stored[0]).toMatchObject({
+        body: peerMessage.body,
+        kind: 'review',
+        rendered_in_turn: 2,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it.each(['codex', 'claude-code', 'gemini-cli', 'generic', 'openai-compatible'])(
+    'passes the composed peer_messages prompt to the %s adapter',
+    async (agentName) => {
+      let observedPrompt = '';
+      const adapter = makeMockAdapter({
+        name: agentName,
+        execute: async (task) => {
+          observedPrompt = task.prompt;
+          return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+        },
+      });
+      const h = await startHarness([adapter]);
+      try {
+        const run = await h.client.callTool({
+          name: 'run_agent',
+          arguments: {
+            agent_id: agentName,
+            prompt: 'review this',
+            peer_messages: [peerMessage],
+          },
+        });
+        const env = run.structuredContent as FullRunEnvelope;
+        await pollUntilTerminal(h.client, env.run_id);
+        const state = readPersistedState(h, env.run_id);
+        const expectedBlock = renderStoredPeerMessages(
+          state.prompts[0].peer_messages_input ?? [],
+          h,
+        );
+        expect(observedPrompt).toBe(`${expectedBlock}review this`);
+      } finally {
+        await h.close();
+      }
+    },
+  );
+
+  it('rejects continue_run as peer_messages.no_op when prompt and peer_messages are both empty', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id },
+      });
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toBe(
+        'peer_messages.no_op: continue_run requires either prompt or peer_messages',
+      );
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('rejects peer_messages.too_many before allocating a worktree', async () => {
+    const restore = withEnv({ CREW_PEER_MESSAGES_MAX_ITEMS: '1' });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      expect(runWorktreeCount(h.crewHome)).toBe(0);
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: manyPeerMessages(2),
+        },
+      });
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toMatch(/^peer_messages\.too_many:/);
+      expect(runWorktreeCount(h.crewHome)).toBe(0);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('rejects concurrent continue_run with peer_messages.run_in_flight inside appendPrompt', async () => {
+    let executeCount = 0;
+    const continuationTerminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => {
+        executeCount += 1;
+        if (executeCount === 1) {
+          return { output: 'initial', filesModified: [], status: 'success', metadata: {} };
+        }
+        return continuationTerminal.promise;
+      },
+    });
+    const h = await startHarness([adapter]);
+    const bothInAppend = createDeferred<void>();
+    let appendEntrants = 0;
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const originalAppend = h.runStateStore.appendPrompt.bind(h.runStateStore);
+      vi.spyOn(h.runStateStore, 'appendPrompt').mockImplementation(async (runId, options) => {
+        appendEntrants += 1;
+        if (appendEntrants === 2) bothInAppend.resolve();
+        await bothInAppend.promise;
+        return originalAppend(runId, options);
+      });
+
+      const first = h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'one' },
+      });
+      const second = h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'two' },
+      });
+      const results = await Promise.all([first, second]);
+      const errors = results.filter((res) => res.isError);
+      expect(errors).toHaveLength(1);
+      expect(toolText(errors[0])).toMatch(/^peer_messages\.run_in_flight:/);
+
+      continuationTerminal.resolve({
+        output: 'continued',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      });
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      continuationTerminal.resolve({
+        output: 'continued',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      });
+      await h.close();
+    }
+  });
+
+  it('cleans up the allocated worktree when run_agent composed prompt cap rejects', async () => {
+    const restore = withEnv({
+      CREW_PEER_MESSAGES_PREPEND_CAP_CHARS: '100',
+      CREW_PEER_MESSAGES_HARD_CEILING: '150',
+      CREW_DISPATCH_PROMPT_CAP_CHARS: '160',
+    });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'x'.repeat(200) },
+      });
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toMatch(/^peer_messages\.composed_prompt_too_large:/);
+      expect(runWorktreeCount(h.crewHome)).toBe(0);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('leaves prior state bytes intact when continue_run composed prompt cap rejects', async () => {
+    const restore = withEnv({
+      CREW_PEER_MESSAGES_PREPEND_CAP_CHARS: '100',
+      CREW_PEER_MESSAGES_HARD_CEILING: '150',
+      CREW_DISPATCH_PROMPT_CAP_CHARS: '160',
+    });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'short' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+      const statePath = join(h.crewHome, 'runs', env.run_id, 'state.json');
+      const before = readFileSync(statePath, 'utf-8');
+
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'x'.repeat(200) },
+      });
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toMatch(/^peer_messages\.composed_prompt_too_large:/);
+      expect(readFileSync(statePath, 'utf-8')).toBe(before);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('honors CREW_PEER_MESSAGES_MAX_ITEMS while the default accepts six items', async () => {
+    let restore = withEnv({ CREW_PEER_MESSAGES_MAX_ITEMS: '5' });
+    let h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const rejected = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: manyPeerMessages(6),
+        },
+      });
+      expect(rejected.isError).toBe(true);
+      expect(toolText(rejected)).toMatch(/^peer_messages\.too_many:/);
+    } finally {
+      await h.close();
+      restore();
+    }
+
+    restore = withEnv({ CREW_PEER_MESSAGES_MAX_ITEMS: undefined });
+    h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const accepted = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: manyPeerMessages(6),
+        },
+      });
+      expect(accepted.isError).toBeUndefined();
+      const env = accepted.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('surfaces cap_overrides_invalid once on the first dispatch that uses peer_messages', async () => {
+    const restore = withEnv({ CREW_PEER_MESSAGES_PREPEND_CAP_CHARS: '200000' });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'first',
+          peer_messages: [peerMessage],
+        },
+      });
+      const firstEnv = first.structuredContent as FullRunEnvelope;
+      expect(firstEnv.warnings).toContain('peer_messages.cap_overrides_invalid: aggregate');
+      expect(toolText(first)).toContain('peer_messages.cap_overrides_invalid: aggregate');
+      await pollUntilTerminal(h.client, firstEnv.run_id);
+
+      const second = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'second',
+          peer_messages: [peerMessage],
+        },
+      });
+      const secondEnv = second.structuredContent as FullRunEnvelope;
+      expect(secondEnv.warnings ?? []).not.toContain('peer_messages.cap_overrides_invalid: aggregate');
+      await pollUntilTerminal(h.client, secondEnv.run_id);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('surfaces body and excerpt truncation warnings on the envelope and markdown', async () => {
+    const restore = withEnv({
+      CREW_PEER_MESSAGE_BODY_CAP_CHARS: '24',
+      CREW_PEER_MESSAGE_EXCERPT_CAP_CHARS: '12',
+    });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: [{
+            ...peerMessage,
+            body: 'b'.repeat(80),
+            excerpts: [{ file: 'src/a.ts', range: [1, 2], text: 'e'.repeat(80) }],
+          }],
+        },
+      });
+      const env = res.structuredContent as FullRunEnvelope;
+      expect(env.warnings?.some((w) => w.startsWith('peer_messages.body_truncated:'))).toBe(true);
+      expect(env.warnings?.some((w) => w.startsWith('peer_messages.excerpt_truncated:'))).toBe(true);
+      const text = toolText(res);
+      expect(text).toContain('## Warnings');
+      expect(text).toContain('peer_messages.body_truncated:');
+      expect(text).toContain('peer_messages.excerpt_truncated:');
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('surfaces aggregate cap drop warnings on the envelope and markdown', async () => {
+    const restore = withEnv({
+      CREW_PEER_MESSAGES_PREPEND_CAP_CHARS: '500',
+      CREW_PEER_MESSAGES_HARD_CEILING: '2000',
+      CREW_DISPATCH_PROMPT_CAP_CHARS: '4000',
+    });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: manyPeerMessages(12).map((message) => ({
+            ...message,
+            body: 'm'.repeat(80),
+          })),
+        },
+      });
+      const env = res.structuredContent as FullRunEnvelope;
+      expect(env.warnings?.some((w) => w.startsWith('peer_messages.aggregate_cap_reached:'))).toBe(true);
+      expect(toolText(res)).toContain('peer_messages.aggregate_cap_reached:');
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it.each([
+    { fullEnvelope: true, label: 'full envelope' },
+    { fullEnvelope: false, label: 'default envelope' },
+  ])('surfaces warnings in $label mode and markdown', async ({ fullEnvelope }) => {
+    const restore = withEnv({ CREW_PEER_MESSAGE_BODY_CAP_CHARS: '24' });
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })], { fullEnvelope });
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: [{ ...peerMessage, body: 'b'.repeat(80) }],
+        },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      expect(env.warnings?.some((w) => w.startsWith('peer_messages.body_truncated:'))).toBe(true);
+      expect(toolText(res)).toContain('## Warnings');
+      expect(toolText(res)).toContain('peer_messages.body_truncated:');
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+      restore();
+    }
+  });
+
+  it('runs continue_run worktree sync after appendPrompt and before dispatch', async () => {
+    const sequence: string[] = [];
+    let executeCount = 0;
+    let promptCountAtSync = 0;
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => {
+        executeCount += 1;
+        if (executeCount === 2) sequence.push('execute');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      vi.spyOn(h.worktreeManager, 'syncUncommittedToRunWorktree')
+        .mockImplementation(async (runId) => {
+          sequence.push('sync');
+          promptCountAtSync = readPersistedState(h, runId).prompts.length;
+          return { copied: 0, removed: 0 };
+        });
+
+      await h.client.callTool({
+        name: 'continue_run',
+        arguments: {
+          run_id: env.run_id,
+          prompt: 'second',
+          peer_messages: [peerMessage],
+        },
+      });
+      await pollUntilTerminal(h.client, env.run_id);
+      expect(promptCountAtSync).toBe(2);
+      expect(sequence).toEqual(['sync', 'execute']);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('uses one stable toolCallId from planner task construction through dispatcher lifecycle', async () => {
+    let startToolCallId = '';
+    let completeToolCallId = '';
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter]);
+    const startSub = h.dispatcher.onEvent('run:start', (info) => {
+      startToolCallId = info.toolCallId;
+    });
+    const completeSub = h.dispatcher.onEvent('run:complete', (info) => {
+      completeToolCallId = info.toolCallId;
+    });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-coder',
+          prompt: 'go',
+          peer_messages: [peerMessage],
+        },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+      expect(startToolCallId).toBeTruthy();
+      expect(completeToolCallId).toBe(startToolCallId);
+    } finally {
+      startSub.dispose();
+      completeSub.dispose();
       await h.close();
     }
   });

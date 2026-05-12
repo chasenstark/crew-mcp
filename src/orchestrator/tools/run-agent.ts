@@ -34,7 +34,9 @@ import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
+import type { DispatchTask } from '../tool-dispatcher.js';
 import type { WorktreeManager } from '../../git/worktree.js';
+import { peerMessageInputSchema } from '../peer-messages/schema.js';
 
 /**
  * Minimal registry surface for run_agent. Accepts either AdapterRegistry or
@@ -51,6 +53,7 @@ export interface RegistryForRunAgent {
 export const runAgentInputSchema = z.object({
   agent_id: z.string().min(1),
   prompt: z.string().min(1),
+  peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
   working_directory: z.string().optional(),
   model: z.string().optional(),
   /**
@@ -83,7 +86,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent verbatim. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope (run_id, worktree_path, tail_url); chat-available default is to spawn crew-wait <run_id> in background on Claude Code, or check via get_run_status / list_runs on a later turn (Codex/Gemini). Do not block the turn long-polling get_run_status.';
+  'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent with optional structured peer_messages prepended as worker context. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope (run_id, worktree_path, tail_url); chat-available default is to spawn crew-wait <run_id> in background on Claude Code, or check via get_run_status / list_runs on a later turn (Codex/Gemini). Do not block the turn long-polling get_run_status.';
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;
@@ -124,13 +127,8 @@ export interface RunAgentDispatchPlan {
    */
   readonly readOnly: boolean;
   readonly adapter: AgentAdapter;
-  readonly task: {
-    toolCallId: string;
-    toolName: 'run_agent';
-    runId: string;
-    input: Record<string, unknown>;
-    run: (ctx: DispatchTaskContext) => Promise<unknown>;
-  };
+  readonly toolCallId: string;
+  readonly buildTask: (composedPrompt: string) => DispatchTask;
 }
 
 export interface RunAgentErrorPlan {
@@ -152,7 +150,6 @@ export type RunAgentPlan = RunAgentDispatchPlan | RunAgentErrorPlan;
  */
 export async function planRunAgent(
   input: RunAgentInput,
-  toolCallId: string,
   ctx: RunAgentHandlerContext,
 ): Promise<RunAgentPlan> {
   const adapter = await getRegistryAdapter(ctx.registry, input.agent_id);
@@ -198,19 +195,15 @@ export async function planRunAgent(
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
   const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs);
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
+  const toolCallId = randomUUID();
   ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
-  return {
-    kind: 'dispatched',
-    runId,
-    worktreePath,
-    readOnly,
-    adapter,
-    task: buildAdapterDispatchTask({
+  const buildTask = (composedPrompt: string): DispatchTask =>
+    buildAdapterDispatchTask({
       toolCallId,
       runId,
       adapter,
-      prompt: input.prompt,
+      prompt: composedPrompt,
       effectiveWorkingDirectory,
       worktreePath,
       readOnly,
@@ -218,7 +211,16 @@ export async function planRunAgent(
       effectiveEffort,
       worktreeManager: ctx.worktreeManager,
       input: { ...input },
-    }),
+    });
+
+  return {
+    kind: 'dispatched',
+    runId,
+    worktreePath,
+    readOnly,
+    adapter,
+    toolCallId,
+    buildTask,
   };
 }
 
@@ -308,7 +310,7 @@ export function buildAdapterDispatchTask(args: {
   readonly effectiveEffort?: EffortLevel;
   readonly worktreeManager: WorktreeManager;
   readonly input: Record<string, unknown>;
-}): RunAgentDispatchPlan['task'] {
+}): DispatchTask {
   return {
     toolCallId: args.toolCallId,
     toolName: 'run_agent' as const,

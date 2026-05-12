@@ -419,6 +419,24 @@ describe('CodexAdapter', () => {
   });
 
   describe('execute', () => {
+    it('passes the composed prompt through the codex exec argv', async () => {
+      const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
+      mockExeca.mockResolvedValueOnce({
+        stdout: `${JSON.stringify({ type: 'agent_message', text: 'ok' })}\n`,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: composedPrompt,
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args[0]).toBe('exec');
+      expect(args[1]).toBe(composedPrompt);
+    });
+
     it('parses JSONL output successfully', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,
