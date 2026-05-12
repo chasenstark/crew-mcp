@@ -5,21 +5,50 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
-## Update - 2026-05-11 Peer Messages Phase 2 State Lock
+## Update - 2026-05-12 Peer Messages Phase 1-3 Runtime Surface
 
-Phase 2 of `docs/plans/active/peer-messages-parameter.md` added a per-run
-state lock under `<crewHome>/state-locks/<runId>/`, created at
-`RunStateStore` startup and acquired with atomic `mkdir` for `create()` and
-`appendPrompt()`. Lock reclaim mirrors the worktree lock owner heuristic:
-alive PIDs, including `EPERM`, are not reclaimed; dead-PID locks are reclaimed
-only after stale mtime.
+Phases 1-3 of
+[`docs/plans/active/peer-messages-parameter.md`](../plans/active/peer-messages-parameter.md)
+added structured captain-to-worker context forwarding. Both `run_agent` and
+`continue_run` now accept optional `peer_messages: PeerMessageInput[]`; each
+item is `{body, kind, from_label?, files?, excerpts?}`. The captain-facing API
+guidance lives in `skills/crew-captain.body.md` under `Forwarding peer
+context`, with the cap table under its `Caps` subsection.
 
-`RunStateStore.create()` and `appendPrompt()` are now async and own the peer
+When a dispatch uses `peer_messages`, `state.json.prompts[].peer_messages_input`
+is present and stores the post-pipeline rendered form. Dispatches without peer
+messages omit the field. This audit record is bounded, post-truncation, and
+byte-reproducible with the prepended worker prompt block.
+
+`RunStateStore.create()` and `appendPrompt()` are now async and run the peer
 message cap pipeline, composed-prompt cap check, prompt composition, and
-per-turn audit recording before any `state.json` write. `markTerminal()` and
-post-terminal transitions remain sync and outside this narrow lock, so the
-documented `appendPrompt` versus terminal-update residual race remains a known
-future full-state-lock-sweep item.
+per-turn audit recording before any `state.json` write. They serialize through
+a per-run `mkdir` lock at
+`<crewHome>/state-locks/<encodeURIComponent(runId)>/`: release checks
+`ownerId`, alive PIDs including `EPERM` are not reclaimed, and dead-PID locks
+are reclaimed only after stale mtime (default >60s). The timeout and stale
+threshold are configurable with `CREW_STATE_LOCK_TIMEOUT_MS` and
+`CREW_STATE_LOCK_STALE_MS`. `markTerminal()` and post-terminal transitions
+remain sync and outside this narrow lock, so the documented `appendPrompt`
+versus terminal-update residual race remains a known future full-state-lock
+sweep item.
+
+Peer-message wire errors all use `peer_messages.<code>:` and currently include
+`no_op`, `too_many`, `too_many_excerpts`, `run_unknown`, `run_in_flight`,
+`run_terminal`, `composed_prompt_too_large`, `state_lock_timeout`,
+`state_lock_unavailable`, and `item_too_large`. Dispatch envelope warnings are
+non-fatal and include `body_truncated`, `excerpt_truncated`,
+`aggregate_cap_reached`, `hard_ceiling_dropped_excerpts`,
+`hard_ceiling_dropped_files`, `hard_ceiling_reached`, and
+`cap_overrides_invalid`.
+
+Runtime cap env overrides are
+`CREW_PEER_MESSAGE_BODY_CAP_CHARS`, `CREW_PEER_MESSAGE_EXCERPT_CAP_CHARS`,
+`CREW_PEER_MESSAGE_MAX_EXCERPTS`, `CREW_PEER_MESSAGES_MAX_ITEMS`,
+`CREW_PEER_MESSAGES_PREPEND_CAP_CHARS`, `CREW_PEER_MESSAGES_HARD_CEILING`,
+and `CREW_DISPATCH_PROMPT_CAP_CHARS`. Invalid aggregate/hard-ceiling/composed
+relationships are recovered deterministically and surfaced once on the first
+dispatch that uses `peer_messages` as `peer_messages.cap_overrides_invalid:`.
 
 ## Update - 2026-05-11 Configurable Merge Confirmation Gate
 
