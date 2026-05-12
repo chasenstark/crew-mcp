@@ -33,6 +33,8 @@ import { WorktreeManager } from '../../git/worktree.js';
 import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
 import { filterEventsTailNoise } from '../../orchestrator/events-filter.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
+import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
+import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.js';
 import {
   listAgents,
   listAgentsInputSchema,
@@ -208,10 +210,8 @@ export interface RunEnvelope {
   readonly files_changed: readonly string[];
   /**
    * Advisory messages from the dispatch layer (not the agent itself).
-   * Today's only producer is the read-only run dirty-tree probe in
-   * run-agent.ts. Surfaced through the envelope so the captain can
-   * relay contract violations to the user without parsing the
-   * summary text.
+   * Producers: read-only dirty-tree probe (markTerminal) and peer_messages
+   * truncation/cap warnings (run_agent / continue_run dispatch).
    */
   readonly warnings?: readonly string[];
   /**
@@ -408,9 +408,15 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: runAgentInputSchema.shape,
     },
     async (args, extra) => {
-      const toolCallId = randomUUID();
+      let validatedInput: readonly PeerMessageInput[];
+      try {
+        validatedInput = validatePeerMessagesPreflight(args.peer_messages, runStateStore.caps);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+
       const agentPrefs = readAgentPrefsFile(crewHome);
-      const plan = await planRunAgent(args, toolCallId, {
+      const plan = await planRunAgent(args, {
         registry,
         worktreeManager,
         agentPrefs,
@@ -423,24 +429,41 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         };
       }
 
+      let createResult: Awaited<ReturnType<RunStateStore['create']>>;
       try {
-        await runStateStore.create({
+        createResult = await runStateStore.create({
           runId: plan.runId,
           agentId: args.agent_id,
           worktreePath: plan.worktreePath,
           initialPrompt: args.prompt,
+          initialPeerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
           readOnly: plan.readOnly,
         });
       } catch (err) {
+        if (!plan.readOnly) {
+          try {
+            await worktreeManager.cleanupByRunId(plan.runId);
+          } catch (cleanupErr) {
+            logger.warn(
+              `run_agent cleanup after rejection failed: ${
+                cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+              }`,
+            );
+          }
+        }
         return errorContent(err instanceof Error ? err.message : String(err));
       }
+
+      const { composedPrompt, warnings } = createResult;
+      const task = plan.buildTask(composedPrompt);
 
       return runDispatchAndRespond({
         runId: plan.runId,
         agentName: args.agent_id,
         worktreePath: plan.worktreePath,
-        toolCallId,
-        task: plan.task,
+        toolCallId: plan.toolCallId,
+        task,
+        warnings,
         dispatcher,
         runStateStore,
         progress: progressNotifierFrom(extra, args.agent_id, progressTokenSeen),
@@ -457,10 +480,23 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: continueRunInputSchema.shape,
     },
     async (args, extra) => {
+      const userPrompt = args.prompt ?? '';
       const preState = runStateStore.read(args.run_id);
       if (!preState) {
         return errorContent(`Unknown run_id "${args.run_id}".`);
       }
+
+      let validatedInput: readonly PeerMessageInput[];
+      try {
+        validatedInput = validatePeerMessagesPreflight(args.peer_messages, runStateStore.caps);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+
+      if (userPrompt === '' && validatedInput.length === 0) {
+        return errorContent('peer_messages.no_op: continue_run requires either prompt or peer_messages');
+      }
+
       if (preState.status === 'running') {
         return errorContent('continue_run: run is currently running; call cancel_run first.');
       }
@@ -502,12 +538,27 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       let appendResult: Awaited<ReturnType<RunStateStore['appendPrompt']>>;
       try {
         appendResult = await runStateStore.appendPrompt(args.run_id, {
-          userPrompt: args.prompt,
+          userPrompt,
+          peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
         });
       } catch (err) {
         return errorContent(err instanceof Error ? err.message : String(err));
       }
-      const { state, composedPrompt } = appendResult;
+      const { state, composedPrompt, warnings } = appendResult;
+
+      // Re-mirror uncommitted host state into the worktree so changes
+      // the user made between turns are visible to this turn's agent.
+      // Skip for read-only runs — they don't have a worktree we own.
+      // Best-effort: failures are logged inside the manager.
+      if (state.readOnly !== true) {
+        try {
+          await worktreeManager.syncUncommittedToRunWorktree(args.run_id);
+        } catch (err) {
+          logger.warn(
+            `continue_run: uncommitted-state sync failed for ${args.run_id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
 
       const task = buildAdapterDispatchTask({
         toolCallId,
@@ -527,26 +578,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         input: { ...args },
       });
 
-      // Re-mirror uncommitted host state into the worktree so changes
-      // the user made between turns are visible to this turn's agent.
-      // Skip for read-only runs — they don't have a worktree we own.
-      // Best-effort: failures are logged inside the manager.
-      if (state.readOnly !== true) {
-        try {
-          await worktreeManager.syncUncommittedToRunWorktree(args.run_id);
-        } catch (err) {
-          logger.warn(
-            `continue_run: uncommitted-state sync failed for ${args.run_id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
-
       return runDispatchAndRespond({
         runId: args.run_id,
         agentName: state.agentId,
         worktreePath: state.worktreePath,
         toolCallId,
         task,
+        warnings,
         dispatcher,
         runStateStore,
         progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
@@ -917,6 +955,13 @@ interface DispatchAndRespondArgs {
   dispatcher: ToolDispatcher;
   runStateStore: RunStateStore;
   /**
+   * Advisory warnings generated before dispatch, such as peer_messages
+   * truncation or cap repair notices. These are shown in the immediate
+   * dispatch envelope while terminal adapter warnings continue to persist
+   * through markTerminal().
+   */
+  warnings?: readonly string[];
+  /**
    * Optional MCP progress notifier — when supplied, each adapter
    * onOutput chunk fires `notifications/progress` so the host CLI
    * can render live streaming output during the tool call. Absent
@@ -991,6 +1036,10 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     status: 'running',
     summary,
     files_changed: [],
+    ...mergeEnvelopeWarnings(
+      args.runStateStore.read(args.runId)?.warnings,
+      args.warnings,
+    ),
   };
   return {
     content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, args.clientKind) }],
@@ -1048,7 +1097,22 @@ function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientKind): s
     `- Next: ${nextStepSentence(clientKind)}`,
     `- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``,
   );
+  if (env.warnings && env.warnings.length > 0) {
+    lines.push(
+      '',
+      '## Warnings',
+      '',
+      ...env.warnings.map((warning) => `- ${warning}`),
+    );
+  }
   return lines.join('\n');
+}
+
+function mergeEnvelopeWarnings(
+  ...warnings: Array<readonly string[] | undefined>
+): { warnings?: readonly string[] } {
+  const merged = warnings.flatMap((entry) => entry ?? []);
+  return merged.length > 0 ? { warnings: merged } : {};
 }
 
 /**

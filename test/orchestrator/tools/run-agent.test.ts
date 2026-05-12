@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import {
   planRunAgent,
@@ -82,7 +81,6 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'nonexistent', prompt: 'do a thing' },
-      randomUUID(),
       ctx,
     );
     expect(plan.kind).toBe('error');
@@ -100,12 +98,10 @@ describe('planRunAgent', () => {
     };
     const planA = await planRunAgent(
       { agent_id: 'codex', prompt: 'first' },
-      'call-a',
       ctx,
     );
     const planB = await planRunAgent(
       { agent_id: 'codex', prompt: 'second' },
-      'call-b',
       ctx,
     );
     expect(planA.kind).toBe('dispatched');
@@ -116,7 +112,7 @@ describe('planRunAgent', () => {
     }
   });
 
-  it('invokes the adapter.execute with the supplied prompt + working directory', async () => {
+  it('invokes the adapter.execute with the composed prompt + working directory', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
       output: 'done',
       filesModified: [],
@@ -134,12 +130,11 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'fix the typo' },
-      'call-x',
       ctx,
     );
     expect(plan.kind).toBe('dispatched');
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    const result = await plan.task.run({ signal: makeAbortSignal() });
+    const result = await plan.buildTask('composed prompt').run({ signal: makeAbortSignal() });
     expect(result).toEqual({
       output: 'done',
       filesModified: [],
@@ -152,7 +147,7 @@ describe('planRunAgent', () => {
       context: { workingDirectory: string };
       constraints: { model?: string; sandbox?: string; writablePaths?: readonly string[] };
     };
-    expect(args.prompt).toBe('fix the typo');
+    expect(args.prompt).toBe('composed prompt');
     expect(args.context.workingDirectory).toBe(plan.worktreePath);
     expect(args.constraints.model).toBe('preferred-model');
     expect(args.constraints.sandbox).toBe('workspace-write');
@@ -181,12 +176,11 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'create a file' },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
 
-    const result = await plan.task.run({ signal: makeAbortSignal() });
+    const result = await plan.buildTask('create a file').run({ signal: makeAbortSignal() });
 
     // The dispatch enriches filesModified from the worktree status, but does
     // NOT merge: the file lives only in the worktree, not at project root.
@@ -224,12 +218,11 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'create a file' },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
 
-    const result = await plan.task.run({ signal: makeAbortSignal() });
+    const result = await plan.buildTask('create a file').run({ signal: makeAbortSignal() });
 
     expect(getModifiedFilesByRun).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -255,11 +248,10 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'do x', model: 'explicit-model' },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    await plan.task.run({ signal: makeAbortSignal() });
+    await plan.buildTask('do x').run({ signal: makeAbortSignal() });
     const args = executeMock.mock.calls[0][0] as { constraints: { model?: string } };
     expect(args.constraints.model).toBe('explicit-model');
   });
@@ -279,11 +271,10 @@ describe('planRunAgent', () => {
     const custom = join(root, 'custom-wd');
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'x', working_directory: custom },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    await plan.task.run({ signal: makeAbortSignal() });
+    await plan.buildTask('x').run({ signal: makeAbortSignal() });
     const args = executeMock.mock.calls[0][0] as { context: { workingDirectory: string } };
     expect(args.context.workingDirectory).toBe(custom);
   });
@@ -297,7 +288,6 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'do x' },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
@@ -306,6 +296,21 @@ describe('planRunAgent', () => {
       runId: plan.runId,
       worktreePath: plan.worktreePath,
     });
+  });
+
+  it('preserves the planner toolCallId in tasks built after prompt composition', async () => {
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([makeMockAdapter({ name: 'codex' })]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'do x' },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    const task = plan.buildTask('composed after state create');
+    expect(task.toolCallId).toBe(plan.toolCallId);
+    expect(task.runId).toBe(plan.runId);
   });
 
   it('threads the resolved effort into the dispatched task constraints', async () => {
@@ -327,11 +332,10 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'go', effort: 'high' },
-      'tool-call-1',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    await plan.buildTask('go').run({ signal: makeAbortSignal(), onStream: () => undefined });
     // Per-call wins over agents.json override.
     expect(observedEffort).toBe('high');
   });
@@ -351,12 +355,14 @@ describe('planRunAgent', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'codex', prompt: 'commit from the run worktree' },
-      'tool-call-1',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
 
-    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    await plan.buildTask('commit from the run worktree').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    });
 
     const expected = worktreeManager.getRunGitCommitWritablePaths(plan.runId);
     expect(observedWritablePaths).toEqual(expected.paths);
@@ -405,7 +411,6 @@ describe('planRunAgent — read_only path', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'reviewer', prompt: 'just look', read_only: true },
-      'call-ro',
       ctx,
     );
     expect(plan.kind).toBe('dispatched');
@@ -420,7 +425,7 @@ describe('planRunAgent — read_only path', () => {
     const metas = readdirSync(metaDir).filter((f) => f.endsWith('.json'));
     expect(metas).toHaveLength(0);
 
-    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    await plan.buildTask('just look').run({ signal: makeAbortSignal(), onStream: () => undefined });
     expect(observedWorkingDir).toBe(root);
   });
 
@@ -446,12 +451,11 @@ describe('planRunAgent — read_only path', () => {
         read_only: true,
         working_directory: target,
       },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
     expect(plan.worktreePath).toBe(target);
-    await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined });
+    await plan.buildTask('p').run({ signal: makeAbortSignal(), onStream: () => undefined });
     expect(observed).toBe(target);
   });
 
@@ -471,11 +475,13 @@ describe('planRunAgent — read_only path', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'reviewer', prompt: 'just review', read_only: true },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    const result = await plan.buildTask('just review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
     expect(result.warnings).toBeDefined();
     expect(result.warnings?.length).toBeGreaterThan(0);
     expect(result.warnings?.[0]).toMatch(/leaked\.md/);
@@ -499,11 +505,13 @@ describe('planRunAgent — read_only path', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'reviewer', prompt: 'review', read_only: true },
-      'call-x',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    const result = await plan.buildTask('review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
     expect(result.warnings).toBeUndefined();
   });
 
@@ -533,11 +541,13 @@ describe('planRunAgent — read_only path', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'reviewer', prompt: 'review', read_only: true },
-      'call-pre-dirty-clean',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    const result = await plan.buildTask('review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
     expect(result.warnings).toBeUndefined();
   });
 
@@ -561,11 +571,13 @@ describe('planRunAgent — read_only path', () => {
     };
     const plan = await planRunAgent(
       { agent_id: 'reviewer', prompt: 'review', read_only: true },
-      'call-pre-dirty-leak',
       ctx,
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    const result = await plan.task.run({ signal: makeAbortSignal(), onStream: () => undefined }) as TaskResult;
+    const result = await plan.buildTask('review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
     expect(result.warnings).toBeDefined();
     expect(result.warnings?.length).toBe(1);
     // Warning names the agent-introduced file, NOT the pre-existing

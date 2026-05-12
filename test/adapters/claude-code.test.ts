@@ -93,6 +93,24 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   describe('execute', () => {
+    it('passes the composed prompt through the claude -p argv', async () => {
+      const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: composedPrompt,
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args[0]).toBe('-p');
+      expect(args[1]).toBe(composedPrompt);
+    });
+
     it('parses successful JSON output', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,

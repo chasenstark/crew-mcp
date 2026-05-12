@@ -11,6 +11,30 @@ describe('OpenAiCompatibleAdapter', () => {
     vi.unstubAllGlobals();
   });
 
+  it('passes the composed prompt as the user chat message', async () => {
+    const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+
+    await adapter.execute({
+      prompt: composedPrompt,
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    expect(body.messages).toEqual([{ role: 'user', content: composedPrompt }]);
+  });
+
   it('adds a synthetic assistant tool_calls message before synthetic tool results', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({

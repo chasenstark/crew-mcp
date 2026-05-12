@@ -14,10 +14,12 @@
  */
 
 import { z } from 'zod';
+import { peerMessageInputSchema } from '../peer-messages/schema.js';
 
 export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
-  prompt: z.string().min(1),
+  prompt: z.string().default(''),
+  peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
   model: z.string().optional(),
   /**
    * Per-call reasoning effort override. Same precedence as run_agent:
@@ -30,4 +32,4 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with a new prompt when the same agent should continue in the same worktree. Input takes run_id, prompt, and optional model/effort overrides; read_only mode stays sticky from the original run. Returns the same async dispatch envelope as run_agent (run_id, tail_url); on Claude Code spawn crew-wait <run_id> in background, on other hosts check via get_run_status / list_runs on a later turn. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run with a new prompt and/or structured peer_messages when the same agent should continue in the same worktree. Input takes run_id, optional prompt, optional peer_messages, and optional model/effort overrides; read_only mode stays sticky from the original run. Returns the same async dispatch envelope as run_agent (run_id, tail_url); on Claude Code spawn crew-wait <run_id> in background, on other hosts check via get_run_status / list_runs on a later turn. Do not block the turn long-polling get_run_status.';
