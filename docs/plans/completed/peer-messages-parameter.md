@@ -1,7 +1,19 @@
 # `peer_messages` parameter — design plan (standalone)
 
-**Status:** Draft v6 2026-05-11 (post round-5 review). Extracted from
-[`captain-inbox-and-peer-messages.md`](./captain-inbox-and-peer-messages.md);
+> **Status:** Shipped 2026-05-12. **Anchor commits:**
+> `bd14ebb1` Phase 1 (schema + prepend + cap pipeline) → `f694cbf6`
+> Phase 2 (`withStateLock` + async `RunStateStore`) → `cca6cf28`
+> Phase 3 (run_agent / continue_run wiring + planner refactor +
+> envelope warnings + captain skill) → `e81688e1` Phase 4 (verify
+> probes + status doc baseline). Final test count: 937 passed /
+> 5 skipped. Reviewed across all four phases (1 codex per phase
+> + Claude code-reviewer added for Phase 3 where it caught
+> blockers codex missed). Dogfood held for captain-driven live
+> validation post-merge — see `skills/crew-captain.body.md`
+> §Forwarding peer context for the captain-facing API doc.
+
+**Status (original):** Draft v6 2026-05-11 (post round-5 review).
+Extracted from [`captain-inbox-and-peer-messages.md`](../active/captain-inbox-and-peer-messages.md);
 this plan is **authoritative** for the captain-to-worker prepend half.
 Parent plan's peer_messages references (lines 1275-1404) are
 superseded by this document.

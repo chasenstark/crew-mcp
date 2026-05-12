@@ -8,7 +8,7 @@ logs, and source code each time.
 ## Update - 2026-05-12 Peer Messages Phase 1-3 Runtime Surface
 
 Phases 1-3 of
-[`docs/plans/active/peer-messages-parameter.md`](../plans/active/peer-messages-parameter.md)
+[`docs/plans/completed/peer-messages-parameter.md`](../plans/completed/peer-messages-parameter.md)
 added structured captain-to-worker context forwarding. Both `run_agent` and
 `continue_run` now accept optional `peer_messages: PeerMessageInput[]`; each
 item is `{body, kind, from_label?, files?, excerpts?}`. The captain-facing API
