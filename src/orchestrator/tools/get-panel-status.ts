@@ -41,6 +41,7 @@ export interface GetPanelStatusOutput {
   readonly failed_reviewers: ReadonlyArray<{
     readonly agent_id: string;
     readonly error: string;
+    readonly dispatch_warnings: readonly string[];
   }>;
 }
 
@@ -115,6 +116,7 @@ export function getPanelStatusHandler(
       .map((reviewer) => ({
         agent_id: reviewer.agentId,
         error: reviewer.error,
+        dispatch_warnings: reviewer.dispatchWarnings,
       })),
   };
 }

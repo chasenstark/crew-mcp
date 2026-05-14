@@ -84,7 +84,7 @@ describe('getPanelStatusHandler', () => {
     expect(out.terminal_count).toBe(1);
     expect(out.running_count).toBe(1);
     expect(out.failed_reviewers).toEqual([
-      { agent_id: 'missing', error: 'agent unavailable' },
+      { agent_id: 'missing', error: 'agent unavailable', dispatch_warnings: [] },
     ]);
     expect(out.reviewers[0]).toMatchObject({
       run_id: 'r-success',
@@ -156,6 +156,28 @@ describe('getPanelStatusHandler', () => {
 
     const out = getPanelStatusHandler({ panel_id: 'panel-1' }, h.ctx);
     expect(out.reviewers[0].dispatch_warnings).toEqual([
+      'peer_messages.body_truncated: item[0]',
+    ]);
+  });
+
+  it('preserves dispatch_warnings from panel.json for failed reviewers', () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: null,
+          agentId: 'reviewer',
+          dispatched: false,
+          error: 'dispatcher.start failed',
+          dispatchWarnings: ['peer_messages.body_truncated: item[0]'],
+        },
+      ],
+    }));
+
+    const out = getPanelStatusHandler({ panel_id: 'panel-1' }, h.ctx);
+    expect(out.failed_reviewers[0]?.dispatch_warnings).toEqual([
       'peer_messages.body_truncated: item[0]',
     ]);
   });
