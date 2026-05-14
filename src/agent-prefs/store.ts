@@ -64,6 +64,11 @@ export function isEffortLevel(value: unknown): value is EffortLevel {
 
 export interface AgentPreferences {
   /**
+   * Optional adapter implementation for custom agents. Built-in entries
+   * usually omit this and use the file only for routing/model hints.
+   */
+  readonly adapter?: string;
+  /**
    * Soft routing hints (free-form strings). Empty = "no strengths
    * declared." Captain reads as nudges, not constraints.
    */
@@ -79,6 +84,14 @@ export interface AgentPreferences {
    * hasn't expressed a per-machine preference.
    */
   readonly model?: string;
+  /** Base URL for OpenAI-compatible custom agents. */
+  readonly apiBase?: string;
+  /** API key or provider-specific sentinel for OpenAI-compatible agents. */
+  readonly apiKey?: string;
+  /** Shell command for generic custom agents. */
+  readonly command?: string;
+  /** Argument template for generic custom agents. */
+  readonly args?: readonly string[];
 }
 
 export type AgentPrefsMap = Record<string, AgentPreferences>;
@@ -137,6 +150,15 @@ function coerceEntry(agentName: string, value: unknown): AgentPreferences | unde
   }
   const record = value as Record<string, unknown>;
   const out: { -readonly [K in keyof AgentPreferences]: AgentPreferences[K] } = {};
+  if ('adapter' in record) {
+    if (typeof record.adapter === 'string' && record.adapter.trim().length > 0) {
+      out.adapter = record.adapter.trim();
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".adapter must be a non-empty string; dropping field`,
+      );
+    }
+  }
   if ('strengths' in record) {
     if (Array.isArray(record.strengths)) {
       out.strengths = record.strengths.filter((v): v is string => typeof v === 'string');
@@ -161,6 +183,42 @@ function coerceEntry(agentName: string, value: unknown): AgentPreferences | unde
     } else {
       logger.warn(
         `[agent-prefs] "${agentName}".model must be a non-empty string; dropping field`,
+      );
+    }
+  }
+  if ('apiBase' in record) {
+    if (typeof record.apiBase === 'string' && record.apiBase.trim().length > 0) {
+      out.apiBase = record.apiBase.trim();
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".apiBase must be a non-empty string; dropping field`,
+      );
+    }
+  }
+  if ('apiKey' in record) {
+    if (typeof record.apiKey === 'string' && record.apiKey.trim().length > 0) {
+      out.apiKey = record.apiKey.trim();
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".apiKey must be a non-empty string; dropping field`,
+      );
+    }
+  }
+  if ('command' in record) {
+    if (typeof record.command === 'string' && record.command.trim().length > 0) {
+      out.command = record.command.trim();
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".command must be a non-empty string; dropping field`,
+      );
+    }
+  }
+  if ('args' in record) {
+    if (Array.isArray(record.args)) {
+      out.args = record.args.filter((v): v is string => typeof v === 'string');
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".args must be an array of strings; dropping field`,
       );
     }
   }

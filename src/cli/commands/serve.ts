@@ -30,7 +30,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
-import { createBuiltinRegistry } from '../../adapters/registry.js';
+import {
+  BUILTIN_ADAPTER_NAMES,
+  createBuiltinRegistry,
+  mergeCustomAgents,
+} from '../../adapters/registry.js';
 import type { TaskResult } from '../../adapters/types.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
@@ -354,6 +358,21 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const projectRoot = options.cwd ?? process.cwd();
   const crewHome = options.crewHome ?? resolveCrewHome();
   const registry = options.registry ?? createBuiltinRegistry();
+  if (!options.registry) {
+    const before = new Set(registry.listAvailable().map((adapter) => adapter.name));
+    const agentPrefs = readAgentPrefsFile(crewHome);
+    const { warnings } = mergeCustomAgents(registry, agentPrefs, {
+      reservedNames: BUILTIN_ADAPTER_NAMES,
+    });
+    for (const warning of warnings) {
+      logger.warn(warning);
+    }
+    for (const adapter of registry.listAvailable()) {
+      if (!before.has(adapter.name)) {
+        logger.info(`Registered custom agent "${adapter.name}" from agents.json`);
+      }
+    }
+  }
   const worktreeManager = options.worktreeManager
     ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher();

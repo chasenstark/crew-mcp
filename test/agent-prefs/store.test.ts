@@ -289,3 +289,45 @@ describe('model field', () => {
     });
   });
 });
+
+describe('custom adapter fields', () => {
+  it('round-trips openai-compatible custom agent fields through write+read', () => {
+    writeAgentPrefsFile(crewHome, {
+      gemma4: {
+        adapter: 'openai-compatible',
+        model: 'gemma4:latest',
+        apiBase: 'http://localhost:11434/v1',
+        apiKey: 'ollama',
+        strengths: ['local', 'private', 'fast-iteration'],
+      },
+    });
+
+    expect(readAgentPrefsFile(crewHome)).toEqual({
+      gemma4: {
+        adapter: 'openai-compatible',
+        model: 'gemma4:latest',
+        apiBase: 'http://localhost:11434/v1',
+        apiKey: 'ollama',
+        strengths: ['local', 'private', 'fast-iteration'],
+      },
+    });
+  });
+
+  it('round-trips generic custom agent fields through write+read', () => {
+    writeAgentPrefsFile(crewHome, {
+      shell: {
+        adapter: 'generic',
+        command: 'agent-shell',
+        args: ['--prompt', '{{prompt}}'],
+      },
+    });
+
+    expect(readAgentPrefsFile(crewHome)).toEqual({
+      shell: {
+        adapter: 'generic',
+        command: 'agent-shell',
+        args: ['--prompt', '{{prompt}}'],
+      },
+    });
+  });
+});
