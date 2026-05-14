@@ -9,7 +9,7 @@
  * process.argv[1] (which under vitest points at vitest itself).
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   chmodSync,
   existsSync,
@@ -27,6 +27,7 @@ import { uninstallCommand } from '../../../src/cli/commands/uninstall.js';
 import { verifyCommand } from '../../../src/cli/commands/verify.js';
 import { HOST_ADAPTERS } from '../../../src/install/hosts/index.js';
 import { manifestPath } from '../../../src/install/install-manifest.js';
+import { logger } from '../../../src/utils/logger.js';
 
 const STUB_BIN = {
   command: '/usr/local/bin/node',
@@ -46,9 +47,11 @@ describe('install / verify / uninstall — happy path', () => {
   });
   afterEach(() => {
     rmSync(home, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   it('install --target codex writes skill + config + manifest', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const result = await installCommand({
       target: 'codex',
       home,
@@ -59,6 +62,9 @@ describe('install / verify / uninstall — happy path', () => {
     });
     expect(result.installed).toEqual(['codex']);
     expect(result.skipped).toEqual([]);
+    expect(info).toHaveBeenCalledWith(
+      'Run `crew-mcp agents add` to register additional models (Ollama, LM Studio, OpenAI-compatible endpoints).',
+    );
 
     const adapter = HOST_ADAPTERS.codex;
 

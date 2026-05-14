@@ -229,6 +229,9 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
         + 'Edit it (or run `crew agents edit`) to tune per-agent strengths/effort.',
       );
     }
+    logger.info(
+      'Run `crew-mcp agents add` to register additional models (Ollama, LM Studio, OpenAI-compatible endpoints).',
+    );
   }
 
   return result;

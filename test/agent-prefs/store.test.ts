@@ -152,6 +152,10 @@ describe('seedAgentPrefsFile', () => {
     // _readme should physically exist in the file (helps users editing it).
     const onDiskRaw = readFileSync(resolveAgentPrefsPath(crewHome), 'utf-8');
     expect(onDiskRaw).toContain('_readme');
+    const parsed = JSON.parse(onDiskRaw) as { _readme: string[] };
+    expect(parsed._readme.join(' ')).toContain(
+      'Run `crew-mcp agents add` to register a custom OpenAI-compatible or generic agent',
+    );
   });
 
   it('does NOT overwrite an existing file', () => {

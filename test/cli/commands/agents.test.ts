@@ -411,7 +411,9 @@ describe('agents list', () => {
     expect(output).toContain('available');
     expect(output).toContain('custom');
     expect(output).toContain('available (ollama 0.9.0)');
-    expect(output).toContain('crew-mcp agents add');
+    expect(output).toContain(
+      'Run `crew-mcp agents add` to register more models, or `crew-mcp agents edit` to tweak this file directly.',
+    );
   });
 });
 
