@@ -32,6 +32,11 @@ import type { TaskResult } from '../../adapters/types.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
 import { filterEventsTailNoise } from '../../orchestrator/events-filter.js';
+import {
+  formatProgressLines,
+  type ProgressNotifier,
+} from '../../orchestrator/progress.js';
+import { dispatchRunAgentInternal } from '../../orchestrator/dispatch-run-agent-internal.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
 import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.js';
@@ -47,7 +52,6 @@ import {
 } from '../../orchestrator/tools/list-runs.js';
 import {
   buildAdapterDispatchTask,
-  planRunAgent,
   resolveEffectiveEffort,
   resolveEffectiveModel,
   runAgentInputSchema,
@@ -148,6 +152,7 @@ const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
 // Canonical definitions live in `orchestrator/tools/get-run-status` so
 // the schema bound and the default share one source of truth.
 export { DEFAULT_MAX_EVENTS_TAIL, MAX_EVENTS_TAIL_CAP };
+export { formatProgressLines } from '../../orchestrator/progress.js';
 
 export interface ServeOptions {
   /**
@@ -408,67 +413,51 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: runAgentInputSchema.shape,
     },
     async (args, extra) => {
-      let validatedInput: readonly PeerMessageInput[];
-      try {
-        validatedInput = validatePeerMessagesPreflight(args.peer_messages, runStateStore.caps);
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-
       const agentPrefs = readAgentPrefsFile(crewHome);
-      const plan = await planRunAgent(args, {
-        registry,
-        worktreeManager,
-        agentPrefs,
-      });
-
-      if (plan.kind === 'error') {
-        return {
-          content: [{ type: 'text' as const, text: plan.message }],
-          isError: true,
-        };
-      }
-
-      let createResult: Awaited<ReturnType<RunStateStore['create']>>;
+      const progress = progressNotifierFrom(extra, args.agent_id, progressTokenSeen);
+      let dispatchResult: Awaited<ReturnType<typeof dispatchRunAgentInternal>>;
       try {
-        createResult = await runStateStore.create({
-          runId: plan.runId,
-          agentId: args.agent_id,
-          worktreePath: plan.worktreePath,
-          initialPrompt: args.prompt,
-          initialPeerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
-          readOnly: plan.readOnly,
+        dispatchResult = await dispatchRunAgentInternal({
+          input: args,
+          ctx: {
+            registry,
+            worktreeManager,
+            runStateStore,
+            agentPrefs,
+            dispatcher,
+            crewHome,
+            repoRoot: runStateStore.repoRoot,
+            projectRoot,
+          },
+          progress,
         });
       } catch (err) {
-        if (!plan.readOnly) {
-          try {
-            await worktreeManager.cleanupByRunId(plan.runId);
-          } catch (cleanupErr) {
-            logger.warn(
-              `run_agent cleanup after rejection failed: ${
-                cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
-              }`,
-            );
-          }
-        }
         return errorContent(err instanceof Error ? err.message : String(err));
       }
 
-      const { composedPrompt, warnings } = createResult;
-      const task = plan.buildTask(composedPrompt);
-
-      return runDispatchAndRespond({
-        runId: plan.runId,
-        agentName: args.agent_id,
-        worktreePath: plan.worktreePath,
-        toolCallId: plan.toolCallId,
-        task,
-        warnings,
-        dispatcher,
-        runStateStore,
-        progress: progressNotifierFrom(extra, args.agent_id, progressTokenSeen),
-        clientKind: getClientKind(),
-      });
+      const clientKind = getClientKind();
+      const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(clientKind)}`;
+      const eventsLogPath = runStateStore.eventsLogPath(dispatchResult.runId);
+      const env: FullRunEnvelope = {
+        run_id: dispatchResult.runId,
+        agent_id: args.agent_id,
+        worktree_path: dispatchResult.worktreePath,
+        events_log_path: eventsLogPath,
+        tail_command_path: dispatchResult.tailCommandPath,
+        tail_command_url: fileUrlHref(dispatchResult.tailCommandPath),
+        tail_url: dispatchResult.tailUrl,
+        status: 'running',
+        summary,
+        files_changed: [],
+        ...mergeEnvelopeWarnings(
+          runStateStore.read(dispatchResult.runId)?.warnings,
+          dispatchResult.warnings,
+        ),
+      };
+      return {
+        content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, clientKind) }],
+        structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
+      };
     },
   );
 
@@ -980,16 +969,6 @@ interface DispatchAndRespondArgs {
 }
 
 /**
- * Shape of a per-call progress notifier. `send(message)` increments
- * an internal monotonic counter and fires `notifications/progress`.
- * Returns void; failures are swallowed so a transport hiccup can't
- * fail the dispatch.
- */
-interface ProgressNotifier {
-  send(message: string): void;
-}
-
-/**
  * Async-first dispatch — pre-2026-05 this raced a sync window against
  * the terminal event so fast runs could return inline; now it always
  * returns `status: "running"` immediately and the captain yields the
@@ -1239,67 +1218,6 @@ function installRunLifecycleListeners(args: {
       }),
     );
   });
-}
-
-/**
- * Maximum per-line length sent in a `notifications/progress` message.
- * Picked so a chunk fits comfortably in Claude Code's inline progress
- * area (~one terminal line at default width) without truncating
- * anything that's actually load-bearing in adapter output. Bigger
- * payloads get truncated with an ellipsis suffix. The same bounded,
- * prefixed lines are written to `events.log`, keeping `events_tail`
- * and inline progress consistent.
- */
-const PROGRESS_LINE_MAX_LEN = 240;
-
-/**
- * Format an adapter `onOutput` chunk into one or more progress
- * notification messages. Splits on newlines (multi-line chunks
- * become multiple notifications), drops empty lines, trims trailing
- * whitespace, truncates over-long lines, and prefixes each line
- * with `[<agentName>] ` so the host inline display labels who's
- * speaking.
- *
- * Exported for tests. The contract is intentionally narrow: input
- * is a raw chunk + agent id, output is the lines to feed into
- * `progress.send` in order. No parsing of JSON event lines (that's
- * the domain of the parked structured-events plan); we only do
- * presentation cleanup.
- */
-export function formatProgressLines(agentName: string, chunk: string): string[] {
-  const out: string[] = [];
-  for (const raw of chunk.split(/\r\n|\r|\n/)) {
-    const trimmed = raw.replace(/\s+$/, '');
-    if (trimmed.length === 0) continue;
-    const prefix = `[${agentName}] `;
-    if (prefix.length >= PROGRESS_LINE_MAX_LEN) {
-      out.push(takeCodePointBudget(prefix, PROGRESS_LINE_MAX_LEN));
-      continue;
-    }
-    const bodyBudget = PROGRESS_LINE_MAX_LEN - prefix.length;
-    const unprefixed = trimmed.startsWith(prefix)
-      ? trimmed.slice(prefix.length)
-      : trimmed;
-    const body =
-      unprefixed.length > bodyBudget
-        ? `${takeCodePointBudget(unprefixed, bodyBudget - 1)}…`
-        : unprefixed;
-    out.push(`${prefix}${body}`);
-  }
-  return out;
-}
-
-function takeCodePointBudget(value: string, maxCodeUnits: number): string {
-  if (maxCodeUnits <= 0) return '';
-  let used = 0;
-  let out = '';
-  for (const codePoint of value) {
-    const next = used + codePoint.length;
-    if (next > maxCodeUnits) break;
-    out += codePoint;
-    used = next;
-  }
-  return out;
 }
 
 /**

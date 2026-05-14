@@ -244,7 +244,7 @@ const EVENT_LOG_SCAN_CHUNK_BYTES = 64 * 1024;
 export class RunStateStore {
   private readonly crewHome: string;
   private readonly runsBasePath: string;
-  private readonly repoRoot: string;
+  private readonly repoRootPath: string;
   private readonly resolvedCaps: ResolvedCaps;
   private overridesInvalidPending: boolean;
 
@@ -253,9 +253,13 @@ export class RunStateStore {
     this.runsBasePath = join(options.crewHome, 'runs');
     mkdirSync(this.runsBasePath, { recursive: true });
     mkdirSync(join(options.crewHome, 'state-locks'), { recursive: true });
-    this.repoRoot = resolveRepoRoot(options.repoRoot);
+    this.repoRootPath = resolveRepoRoot(options.repoRoot);
     this.resolvedCaps = resolvePeerMessageCaps(process.env);
     this.overridesInvalidPending = this.resolvedCaps.overridesInvalid !== undefined;
+  }
+
+  get repoRoot(): string {
+    return this.repoRootPath;
   }
 
   get caps(): ResolvedCaps {
