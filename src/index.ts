@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { CREW_MCP_VERSION } from './cli/version.js';
+import { registerAgentsCommand } from './cli/commands/agents.js';
 import { setLogLevel } from './utils/logger.js';
 
 // v2 entry points: `crew-mcp serve` (M1, stdio MCP server) and the
@@ -119,19 +120,7 @@ export function buildProgram(): Command {
       }
     });
 
-  const agents = program
-    .command('agents')
-    .description('Manage per-machine agent preferences (strengths + effort)');
-
-  agents
-    .command('edit')
-    .description('Open ~/.crew/agents.json in $EDITOR (creates with defaults if missing)')
-    .action(async () => {
-      applyDebugFlag(program);
-      const { agentsEditCommand } = await import('./cli/commands/agents.js');
-      const code = await agentsEditCommand();
-      if (code !== 0) process.exitCode = code;
-    });
+  registerAgentsCommand(program, () => applyDebugFlag(program));
 
   program
     .command('uninstall')
