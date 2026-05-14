@@ -232,6 +232,18 @@ describe('install / verify / uninstall — happy path', () => {
     expect(existsSync(join(home, '.crew', 'state-locks'))).toBe(true);
   });
 
+  it('verify reports panels/ writable when the crew home allows probes', async () => {
+    const report = await verifyCommand({ home });
+    const probe = report.probes.find((item) => item.name === 'panels-writable');
+
+    expect(report.ok).toBe(true);
+    expect(probe).toMatchObject({
+      status: 'ok',
+      message: expect.stringContaining('panels/'),
+    });
+    expect(existsSync(join(home, '.crew', 'panels'))).toBe(true);
+  });
+
   it('verify reports a clear state-locks/ error when the crew home is unwritable', async () => {
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       return;
@@ -253,6 +265,31 @@ describe('install / verify / uninstall — happy path', () => {
       expect(probe?.message).toContain('Fix permissions');
     } finally {
       chmodSync(crewHome, 0o700);
+    }
+  });
+
+  it('verify reports a clear panels/ error when the panels dir is unwritable', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return;
+    }
+
+    const crewHome = join(home, '.crew');
+    const panelsDir = join(crewHome, 'panels');
+    mkdirSync(panelsDir, { recursive: true });
+    chmodSync(panelsDir, 0o500);
+
+    try {
+      const report = await verifyCommand({ home });
+      const probe = report.probes.find((item) => item.name === 'panels-writable');
+
+      expect(report.ok).toBe(false);
+      expect(probe?.status).toBe('error');
+      expect(probe?.message).toContain('panels/');
+      expect(probe?.message).toContain(panelsDir);
+      expect(probe?.message).toMatch(/EACCES|EPERM/);
+      expect(probe?.message).toContain('Fix permissions');
+    } finally {
+      chmodSync(panelsDir, 0o700);
     }
   });
 

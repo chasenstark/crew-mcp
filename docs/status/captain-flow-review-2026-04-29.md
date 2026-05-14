@@ -5,6 +5,15 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-14 Run Panel Phase 1 Runtime Surface
+
+Phase 1 of [`docs/plans/active/run-panel.md`](../plans/active/run-panel.md)
+extracted `dispatchRunAgentInternal` from the live `run_agent` path and added
+the panel review surface: `run_panel`, `get_panel_status`, and
+`aggregate_panel`. Captains can now dispatch parallel reviewers, inspect panel
+progress, and aggregate terminal reviewer output into `peer_messages` for a
+follow-up `continue_run`.
+
 ## Update - 2026-05-12 Peer Messages Phase 1-3 Runtime Surface
 
 Phases 1-3 of

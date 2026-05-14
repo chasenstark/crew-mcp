@@ -531,3 +531,97 @@ KB; composed prompt total: 256 KB.
 
 Errors all use `peer_messages.<code>:` prefix. See plan for full
 list. Truncation and drops emit `warnings` on the envelope (non-fatal).
+
+## Review panels
+
+When you want N agents to review the same implementer in parallel,
+`run_panel` collapses dispatch + collection into three calls.
+
+### `run_panel`: parallel reviewers with shared context
+
+Bound to an implementer:
+
+```
+run_panel({
+  implementer_run_id: "A",
+  reviewers: [
+    { agent_id: "codex", prompt: "correctness pass" },
+    { agent_id: "claude-code", prompt: "style + repo-conventions pass" },
+  ],
+})
+```
+
+When bound: each reviewer is auto-dispatched with `read_only: true`,
+`working_directory: <A.worktree>`, and a prepended `peer_message`
+carrying A's summary + files_changed. The reviewers can READ A's
+edits directly. If you explicitly set `read_only: false` on a
+reviewer, you take responsibility for that reviewer's
+`working_directory` — the panel won't auto-point at A's worktree
+(prevents accidental mutation).
+
+Standalone (no implementer):
+
+```
+run_panel({
+  reviewers: [
+    { agent_id: "codex", prompt: "...", read_only: true },
+    { agent_id: "gemini-cli", prompt: "...", working_directory: "/path", peer_messages: [...] },
+  ],
+})
+```
+
+When unbound: each reviewer is a plain `run_agent` call.
+`read_only: true` reviewers default to running in the host repo
+root (no worktree allocated). `read_only: false` or unset
+reviewers allocate a fresh run worktree (the standard `run_agent`
+default). You can override either with explicit `working_directory`.
+
+### Lifecycle
+
+`run_panel` returns immediately with `panel_id` and per-reviewer
+`run_id` + `tail_url`. Each reviewer follows the existing dispatch
+lifecycle independently. On Claude Code, spawn the watcher overlay
+per reviewer:
+
+```
+Bash("{{CREW_WAIT_COMMAND}} <reviewer.run_id>", run_in_background: true)
+```
+
+On Codex / Gemini, rely on the next-user-turn snapshot.
+
+### Aggregating findings
+
+Once all reviewers are terminal:
+
+```
+aggregate_panel({ panel_id })
+  → { peer_messages: [...] }   // one message per reviewer
+
+continue_run({
+  run_id: "A",
+  peer_messages: <aggregated>,
+  prompt: "revise per these findings",
+})
+```
+
+`aggregate_panel` rejects with `run_panel.aggregate_not_ready:` if
+any reviewer is still running. It emits all reviewer messages
+even when they're identical — different reviewers reaching the
+same conclusion is signal, not noise.
+
+### Partial dispatch
+
+If any reviewer fails to dispatch (agent unavailable, worktree
+allocation failure, etc.), the rest still run. The response
+envelope includes a `failed_reviewers` array; `aggregate_panel`
+emits an inline "(reviewer dispatch failed: ...)" message so the
+implementer sees what happened. You decide whether to proceed.
+
+### When NOT to use run_panel
+
+- One reviewer only: just `run_agent` with `read_only: true` +
+  `working_directory`. Panel is overhead.
+- Reviewers need wildly different context per-reviewer: use
+  `run_agent` per reviewer for tighter `peer_messages` control.
+- You want auto-cancel-on-blocker: not supported (yet). Cancel
+  per-reviewer with `cancel_run`.
