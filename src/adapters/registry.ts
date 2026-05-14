@@ -17,6 +17,12 @@ type BuiltinAdapterId =
   | AdapterId.CODEX
   | AdapterId.GEMINI_CLI;
 
+export const BUILTIN_ADAPTER_NAMES: readonly BuiltinAdapterId[] = [
+  AdapterId.CLAUDE_CODE,
+  AdapterId.CODEX,
+  AdapterId.GEMINI_CLI,
+];
+
 interface LazyAdapterMetadata {
   readonly name: string;
   readonly aliases?: readonly string[];
@@ -307,6 +313,138 @@ function toStrengths(config: AgentConfig): AgentStrength[] {
   return normalized;
 }
 
+function registerGenericAdapter(
+  registry: AdapterRegistry,
+  name: string,
+  config: AgentConfig,
+): void {
+  const strengths = toStrengths(config);
+
+  registry.registerLazy(
+    {
+      name,
+      strengths,
+      supportsJsonSchema: false,
+      captainCapabilities: GENERIC_CAPABILITIES,
+    },
+    async () => {
+      const { GenericAdapter } = await import('./generic.js');
+      return new GenericAdapter({
+        name,
+        command: config.command!,
+        argsTemplate: config.args ?? ['{{prompt}}'],
+        strengths,
+      });
+    },
+  );
+}
+
+function registerOpenAiCompatibleAdapter(
+  registry: AdapterRegistry,
+  name: string,
+  config: AgentConfig,
+): void {
+  const strengths = toStrengths(config);
+  registry.registerLazy(
+    {
+      name,
+      strengths,
+      supportsJsonSchema: false,
+      captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+      hasExecuteWithSchema: true,
+      hasExecuteWithTools: true,
+    },
+    async () => {
+      const { OpenAiCompatibleAdapter } = await import('./openai-compatible.js');
+      return new OpenAiCompatibleAdapter({
+        name,
+        model: config.model,
+        apiBase: config.apiBase,
+        apiKey: config.apiKey,
+        strengths,
+      });
+    },
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+export interface MergeCustomAgentsOptions {
+  readonly reservedNames?: readonly string[];
+}
+
+export interface MergeCustomAgentsResult {
+  readonly warnings: string[];
+}
+
+export function mergeCustomAgents(
+  registry: AdapterRegistry,
+  configMap: Record<string, unknown>,
+  opts: MergeCustomAgentsOptions = {},
+): MergeCustomAgentsResult {
+  const warnings: string[] = [];
+  const reservedNames = new Set(opts.reservedNames ?? BUILTIN_ADAPTER_NAMES);
+
+  for (const [name, rawConfig] of Object.entries(configMap)) {
+    if (!isRecord(rawConfig)) {
+      warnings.push(`[agents] entry "${name}" must be an object; skipping custom adapter registration`);
+      continue;
+    }
+
+    const config = rawConfig as AgentConfig;
+    const adapterType = config.adapter;
+    const isCustomAdapter =
+      adapterType === AdapterId.OPENAI_COMPATIBLE
+      || adapterType === AdapterId.GENERIC;
+
+    if (reservedNames.has(name)) {
+      if (isCustomAdapter) {
+        throw new Error(
+          `Custom agent "${name}" collides with built-in adapter name "${name}". Choose a different agent name.`,
+        );
+      }
+      continue;
+    }
+
+    if (adapterType === AdapterId.OPENAI_COMPATIBLE) {
+      if (typeof config.apiBase !== 'string' || config.apiBase.trim().length === 0) {
+        warnings.push(
+          `[agents] custom agent "${name}" uses adapter "${AdapterId.OPENAI_COMPATIBLE}" but apiBase must be a non-empty string; skipping`,
+        );
+        continue;
+      }
+      try {
+        registerOpenAiCompatibleAdapter(registry, name, config);
+      } catch (err) {
+        warnings.push(
+          `[agents] custom agent "${name}" could not be registered: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      continue;
+    }
+
+    if (adapterType === AdapterId.GENERIC) {
+      if (typeof config.command !== 'string' || config.command.trim().length === 0) {
+        warnings.push(
+          `[agents] custom agent "${name}" uses adapter "${AdapterId.GENERIC}" but command must be a non-empty string; skipping`,
+        );
+        continue;
+      }
+      try {
+        registerGenericAdapter(registry, name, config);
+      } catch (err) {
+        warnings.push(
+          `[agents] custom agent "${name}" could not be registered: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  return { warnings };
+}
+
 export function createRegistryFromConfig(
   agents: Record<string, AgentConfig>,
 ): AdapterRegistry {
@@ -321,50 +459,12 @@ export function createRegistryFromConfig(
           `Agent "${name}" uses adapter "${AdapterId.GENERIC}" but no command is configured.`,
         );
       }
-      const strengths = toStrengths(config);
-
-      registry.registerLazy(
-        {
-          name,
-          strengths,
-          supportsJsonSchema: false,
-          captainCapabilities: GENERIC_CAPABILITIES,
-        },
-        async () => {
-          const { GenericAdapter } = await import('./generic.js');
-          return new GenericAdapter({
-            name,
-            command: config.command!,
-            argsTemplate: config.args ?? ['{{prompt}}'],
-            strengths,
-          });
-        },
-      );
+      registerGenericAdapter(registry, name, config);
       continue;
     }
 
     if (adapterType === AdapterId.OPENAI_COMPATIBLE) {
-      const strengths = toStrengths(config);
-      registry.registerLazy(
-        {
-          name,
-          strengths,
-          supportsJsonSchema: false,
-          captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
-          hasExecuteWithSchema: true,
-          hasExecuteWithTools: true,
-        },
-        async () => {
-          const { OpenAiCompatibleAdapter } = await import('./openai-compatible.js');
-          return new OpenAiCompatibleAdapter({
-            name,
-            model: config.model,
-            apiBase: config.apiBase,
-            apiKey: config.apiKey,
-            strengths,
-          });
-        },
-      );
+      registerOpenAiCompatibleAdapter(registry, name, config);
       continue;
     }
 

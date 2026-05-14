@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { AdapterRegistry, createBuiltinRegistry, createRegistryFromConfig } from '../../src/adapters/registry.js';
+import {
+  AdapterRegistry,
+  createBuiltinRegistry,
+  createRegistryFromConfig,
+  mergeCustomAgents,
+} from '../../src/adapters/registry.js';
 import { ModelId } from '../../src/workflow/models.js';
 import type { AgentAdapter } from '../../src/adapters/types.js';
 
@@ -79,6 +84,79 @@ describe('createBuiltinRegistry', () => {
     expect(registry.get('claude-code')).toBeDefined();
     expect(registry.get('codex')).toBeDefined();
     expect(registry.get('gemini-cli')).toBeDefined();
+  });
+});
+
+describe('mergeCustomAgents', () => {
+  it('registers an openai-compatible custom agent on top of built-ins', () => {
+    const registry = createBuiltinRegistry();
+    const result = mergeCustomAgents(registry, {
+      gemma4: {
+        adapter: 'openai-compatible',
+        apiBase: 'http://127.0.0.1:11434/v1',
+        model: 'gemma4:latest',
+        apiKey: 'ollama',
+        strengths: ['local', 'private', 'fast-iteration'],
+      },
+    });
+
+    expect(result.warnings).toEqual([]);
+    const gemma4 = registry.get('gemma4');
+    expect(gemma4).toBeDefined();
+    expect(gemma4?.name).toBe('gemma4');
+    expect(registry.listAvailable().map((adapter) => adapter.name)).toContain('gemma4');
+  });
+
+  it('rejects custom adapters that collide with a built-in name', () => {
+    const registry = createBuiltinRegistry();
+
+    expect(() =>
+      mergeCustomAgents(registry, {
+        'claude-code': {
+          adapter: 'openai-compatible',
+          apiBase: 'http://127.0.0.1:11434/v1',
+          model: 'gemma4:latest',
+        },
+      }),
+    ).toThrow(/claude-code/);
+
+    expect(registry.get('claude-code')?.name).toBe('claude-code');
+  });
+
+  it('warns and skips malformed custom entries while processing other entries', () => {
+    const registry = createBuiltinRegistry();
+    const result = mergeCustomAgents(registry, {
+      bad: { adapter: 'openai-compatible' },
+      good: {
+        adapter: 'openai-compatible',
+        apiBase: 'http://127.0.0.1:11434/v1',
+        model: 'gemma4:latest',
+      },
+    });
+
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/bad.*apiBase/);
+    expect(registry.get('bad')).toBeUndefined();
+    expect(registry.get('good')).toBeDefined();
+  });
+
+  it('registers generic custom agents using the shared generic adapter factory', () => {
+    const registry = createBuiltinRegistry();
+    const result = mergeCustomAgents(registry, {
+      shell: {
+        adapter: 'generic',
+        command: 'echo',
+        args: ['{{prompt}}'],
+        strengths: ['scriptable'],
+      },
+    });
+
+    expect(result.warnings).toEqual([]);
+    const shell = registry.get('shell');
+    expect(shell).toBeDefined();
+    expect(shell?.name).toBe('shell');
+    expect(shell?.strengths).toEqual(['scriptable']);
+    expect(registry.listAvailable().map((adapter) => adapter.name)).toContain('shell');
   });
 });
 

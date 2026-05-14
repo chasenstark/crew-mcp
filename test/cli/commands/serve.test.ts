@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync } from 'child_process';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -46,6 +47,7 @@ import {
 } from '../../../src/orchestrator/tools/get-run-status.js';
 import { logger } from '../../../src/utils/logger.js';
 import * as configStore from '../../../src/utils/config-store.js';
+import { AGENT_PREFS_FILENAME } from '../../../src/agent-prefs/store.js';
 
 // --- helpers ---
 
@@ -96,6 +98,17 @@ interface Harness {
   root: string;
   crewHome: string;
   close: () => Promise<void>;
+}
+
+interface OpenAiCompatibleMock {
+  readonly apiBase: string;
+  readonly requests: Array<{
+    readonly method: string;
+    readonly url: string;
+    readonly authorization?: string;
+    readonly body?: unknown;
+  }>;
+  readonly close: () => Promise<void>;
 }
 
 function createDeferred<T = void>(): {
@@ -174,6 +187,82 @@ function runWorktreeCount(crewHome: string): number {
     .length;
 }
 
+function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json',
+    Connection: 'close',
+  });
+  res.end(JSON.stringify(body));
+}
+
+async function readRequestBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  if (chunks.length === 0) return undefined;
+  const text = Buffer.concat(chunks).toString('utf-8');
+  return JSON.parse(text);
+}
+
+async function startOpenAiCompatibleMock(): Promise<OpenAiCompatibleMock> {
+  const requests: OpenAiCompatibleMock['requests'] = [];
+  const server = createServer(async (req, res) => {
+    const method = req.method ?? 'GET';
+    const url = req.url ?? '/';
+    const authorization = req.headers.authorization;
+    const body = method === 'POST' ? await readRequestBody(req) : undefined;
+    requests.push({ method, url, authorization, body });
+
+    if (method === 'GET' && url === '/v1/models') {
+      writeJson(res, 200, { data: [{ id: 'gemma4:latest' }] });
+      return;
+    }
+
+    if (method === 'POST' && url === '/v1/chat/completions') {
+      writeJson(res, 200, {
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: 'custom adapter response',
+            },
+          },
+        ],
+      });
+      return;
+    }
+
+    writeJson(res, 404, { error: 'not found' });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Expected TCP server address.');
+  }
+
+  return {
+    apiBase: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    close: () => closeServer(server),
+  };
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.closeAllConnections();
+    server.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 async function startHarness(
   adapters: AgentAdapter[],
   options: { fullEnvelope?: boolean; clientName?: string } = {},
@@ -206,6 +295,67 @@ async function startHarness(
   // serve tests classify as `unknown` and don't silently exercise the
   // Claude Code branch. Tests that need a specific host (e.g. to
   // assert watcher-phrased copy) pass `clientName` explicitly.
+  const client = new Client({
+    name: options.clientName ?? 'crew-test-client',
+    version: '0.0.0',
+  });
+
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+  return {
+    client,
+    dispatcher,
+    worktreeManager,
+    runStateStore,
+    root,
+    crewHome,
+    close: async () => {
+      await client.close();
+      await server.close();
+      await getStaleRunSweep();
+      if (previousFullEnvelope === undefined) {
+        delete process.env.CREW_FULL_ENVELOPE;
+      } else {
+        process.env.CREW_FULL_ENVELOPE = previousFullEnvelope;
+      }
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    },
+  };
+}
+
+async function startDefaultRegistryHarness(
+  agentsJson: Record<string, unknown>,
+  options: { fullEnvelope?: boolean; clientName?: string } = {},
+): Promise<Harness> {
+  const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
+  const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
+  const previousFullEnvelope = process.env.CREW_FULL_ENVELOPE;
+  if (options.fullEnvelope ?? true) {
+    process.env.CREW_FULL_ENVELOPE = '1';
+  } else {
+    delete process.env.CREW_FULL_ENVELOPE;
+  }
+  execSync('git init -q', { cwd: root });
+  execSync('git config user.email test@crew.local', { cwd: root });
+  execSync('git config user.name test', { cwd: root });
+  writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+  execSync('git add README.md', { cwd: root });
+  execSync('git commit -q -m init', { cwd: root });
+  writeFileSync(
+    join(crewHome, AGENT_PREFS_FILENAME),
+    JSON.stringify(agentsJson, null, 2),
+    'utf-8',
+  );
+
+  const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
+  const { server, dispatcher, runStateStore } = buildCrewMcpServer({
+    cwd: root,
+    crewHome,
+    worktreeManager,
+  });
+
+  const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({
     name: options.clientName ?? 'crew-test-client',
     version: '0.0.0',
@@ -394,6 +544,67 @@ describe('crew serve — list_agents tool', () => {
     await h.client.callTool({ name: 'list_agents', arguments: { refresh: true } });
 
     expect(healthCheck).toHaveBeenCalledWith({ refresh: true });
+  });
+
+  it('loads custom agents.json entries into the default serve registry and dispatches through them', async () => {
+    await h.close();
+    const openAiMock = await startOpenAiCompatibleMock();
+    try {
+      h = await startDefaultRegistryHarness({
+        gemma4: {
+          adapter: 'openai-compatible',
+          model: 'gemma4:latest',
+          apiBase: openAiMock.apiBase,
+          apiKey: 'ollama',
+          strengths: ['local', 'private', 'fast-iteration'],
+        },
+      });
+
+      const emptyPath = mkdtempSync(join(tmpdir(), 'crew-empty-path-'));
+      const restorePath = withEnv({ PATH: emptyPath });
+      let list: Awaited<ReturnType<Client['callTool']>>;
+      try {
+        list = await h.client.callTool({ name: 'list_agents', arguments: {} });
+      } finally {
+        restorePath();
+        rmSync(emptyPath, { recursive: true, force: true });
+      }
+      const structured = list.structuredContent as {
+        agents: Array<{ name: string; available: boolean; strengths: string[] }>;
+      };
+      const gemma4 = structured.agents.find((agent) => agent.name === 'gemma4');
+      expect(gemma4).toMatchObject({
+        name: 'gemma4',
+        available: true,
+        strengths: ['local', 'private', 'fast-iteration'],
+      });
+
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'gemma4', prompt: 'say ok' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      const terminal = await pollUntilTerminal(h.client, runEnv.run_id);
+      expect(terminal.status).toBe('success');
+      expect(terminal.state.summary).toBe('custom adapter response');
+
+      expect(openAiMock.requests).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            method: 'GET',
+            url: '/v1/models',
+            authorization: 'Bearer ollama',
+          }),
+          expect.objectContaining({
+            method: 'POST',
+            url: '/v1/chat/completions',
+            authorization: 'Bearer ollama',
+          }),
+        ]),
+      );
+    } finally {
+      await openAiMock.close();
+    }
   });
 });
 
