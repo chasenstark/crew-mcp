@@ -268,6 +268,9 @@ export function seedAgentPrefsFile(
       '    your ~/.claude.json or ~/.codex/config.toml).',
       'Per-call overrides via run_agent({model, effort}) always win.',
       'Underscore-prefixed keys are ignored. Delete this file to reset.',
+      'Run `crew-mcp agents add` to register a custom OpenAI-compatible',
+      'or generic agent — it walks you through provider, model, and',
+      'verification without hand-editing this file.',
     ],
     ...defaults,
   };

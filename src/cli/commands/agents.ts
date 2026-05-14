@@ -136,7 +136,7 @@ export async function agentsListCommand(opts: AgentsListOptions = {}): Promise<v
     const strengths = configured?.strengths ?? adapter.strengths;
     stdout.write(`${adapter.name.padEnd(16)} ${healthText.padEnd(28)} ${strengths.join(', ')}\n`);
   }
-  stdout.write('\nRun `crew-mcp agents add` to register a model, or `crew-mcp agents edit` for raw JSON edits.\n');
+  stdout.write('\nRun `crew-mcp agents add` to register more models, or `crew-mcp agents edit` to tweak this file directly.\n');
 }
 
 export interface AgentsRemoveOptions {
