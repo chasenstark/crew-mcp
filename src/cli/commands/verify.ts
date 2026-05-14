@@ -14,8 +14,9 @@
  * idempotent, but may create expected Crew state directories.
  */
 
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -168,6 +169,7 @@ interface RuntimeProbeOptions {
 async function runRuntimeProbes(options: RuntimeProbeOptions): Promise<VerifyProbeReport[]> {
   const probes = [
     await verifyStateLocksWritable(options.crewHome),
+    await verifyPanelsWritable(options.crewHome),
     verifyPeerMessagesPipeline(options.env),
   ];
 
@@ -195,7 +197,8 @@ async function verifyStateLocksWritable(crewHome: string): Promise<VerifyProbeRe
     return {
       name: 'state-locks-writable',
       status: 'error',
-      message: formatStateLocksError(
+      message: formatWritableProbeError(
+        'state-locks/',
         'create',
         stateLocksDir,
         error,
@@ -210,7 +213,7 @@ async function verifyStateLocksWritable(crewHome: string): Promise<VerifyProbeRe
     return {
       name: 'state-locks-writable',
       status: 'error',
-      message: formatStateLocksError('write', probePath, error, stateLocksDir),
+      message: formatWritableProbeError('state-locks/', 'write', probePath, error, stateLocksDir),
     };
   }
 
@@ -220,7 +223,7 @@ async function verifyStateLocksWritable(crewHome: string): Promise<VerifyProbeRe
     return {
       name: 'state-locks-writable',
       status: 'error',
-      message: formatStateLocksError('delete', probePath, error, stateLocksDir),
+      message: formatWritableProbeError('state-locks/', 'delete', probePath, error, stateLocksDir),
     };
   }
 
@@ -228,6 +231,68 @@ async function verifyStateLocksWritable(crewHome: string): Promise<VerifyProbeRe
     name: 'state-locks-writable',
     status: 'ok',
     message: `state-locks/ writable at ${stateLocksDir}`,
+  };
+}
+
+async function verifyPanelsWritable(crewHome: string): Promise<VerifyProbeReport> {
+  const panelsDir = join(crewHome, 'panels');
+  const probeDir = join(panelsDir, `crew-mcp-verify-probe-${randomUUID()}`);
+  const probePath = join(probeDir, 'probe.txt');
+
+  try {
+    await mkdir(panelsDir, { recursive: true });
+  } catch (error) {
+    return {
+      name: 'panels-writable',
+      status: 'error',
+      message: formatWritableProbeError('panels/', 'create', panelsDir, error, panelsDir),
+    };
+  }
+
+  try {
+    await mkdir(probeDir);
+  } catch (error) {
+    return {
+      name: 'panels-writable',
+      status: 'error',
+      message: formatWritableProbeError('panels/', 'create', probeDir, error, panelsDir),
+    };
+  }
+
+  try {
+    await writeFile(probePath, 'crew-mcp verify panels probe\n', 'utf-8');
+  } catch (error) {
+    return {
+      name: 'panels-writable',
+      status: 'error',
+      message: formatWritableProbeError('panels/', 'write', probePath, error, panelsDir),
+    };
+  }
+
+  try {
+    await rm(probePath);
+  } catch (error) {
+    return {
+      name: 'panels-writable',
+      status: 'error',
+      message: formatWritableProbeError('panels/', 'delete', probePath, error, panelsDir),
+    };
+  }
+
+  try {
+    await rmdir(probeDir);
+  } catch (error) {
+    return {
+      name: 'panels-writable',
+      status: 'error',
+      message: formatWritableProbeError('panels/', 'delete', probeDir, error, panelsDir),
+    };
+  }
+
+  return {
+    name: 'panels-writable',
+    status: 'ok',
+    message: `panels/ writable at ${panelsDir}`,
   };
 }
 
@@ -313,17 +378,18 @@ function verifyPeerMessagesPipeline(env: NodeJS.ProcessEnv): VerifyProbeReport {
   }
 }
 
-function formatStateLocksError(
+function formatWritableProbeError(
+  label: string,
   action: string,
   path: string,
   error: unknown,
-  stateLocksDir: string,
+  rootDir: string,
 ): string {
   const code = errorCode(error);
   const reason = formatErrorForMessage(error);
   return (
-    `state-locks/ probe failed to ${action} ${path}: ${code} ${reason}. ` +
-    `Fix permissions so crew-mcp can create, write, and delete files under ${stateLocksDir}.`
+    `${label} probe failed to ${action} ${path}: ${code} ${reason}. ` +
+    `Fix permissions so crew-mcp can create, write, and delete files under ${rootDir}.`
   );
 }
 
