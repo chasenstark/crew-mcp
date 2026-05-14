@@ -285,18 +285,21 @@ describe('crew serve — listTools surface', () => {
     await h.close();
   });
 
-  it('exposes the v2 tool surface (8 tools incl. list_runs)', async () => {
+  it('exposes the v2 tool surface (11 tools incl. panel tools)', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'aggregate_panel',
       'cancel_run',
       'continue_run',
       'discard_run',
+      'get_panel_status',
       'get_run_status',
       'list_agents',
       'list_runs',
       'merge_run',
       'run_agent',
+      'run_panel',
     ]);
   });
 
@@ -1193,6 +1196,58 @@ describe('crew serve — peer_messages integration', () => {
         from_label: 'reviewer-A',
         files: ['src/edge.ts'],
         rendered_in_turn: 1,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('run_panel prepends the implementer-context peer_message byte-for-byte', async () => {
+    const prompts: string[] = [];
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        prompts.push(task.prompt);
+        if (prompts.length === 1) {
+          return {
+            output: 'Implementation summary',
+            filesModified: ['src/impl.ts'],
+            status: 'success',
+            metadata: {},
+          };
+        }
+        return { output: 'review ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const impl = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'implement the feature' },
+      });
+      const implEnv = impl.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, implEnv.run_id);
+
+      const panel = await h.client.callTool({
+        name: 'run_panel',
+        arguments: {
+          implementer_run_id: implEnv.run_id,
+          reviewers: [{ agent_id: 'mock-coder', prompt: 'review the feature' }],
+        },
+      });
+      const panelEnv = panel.structuredContent as {
+        reviewers: Array<{ run_id: string }>;
+      };
+      await pollUntilTerminal(h.client, panelEnv.reviewers[0].run_id);
+
+      const state = readPersistedState(h, panelEnv.reviewers[0].run_id);
+      const stored = state.prompts[0].peer_messages_input ?? [];
+      const expectedBlock = renderStoredPeerMessages(stored, h);
+      expect(prompts[1]).toBe(`${expectedBlock}review the feature`);
+      expect(stored[0]).toMatchObject({
+        body: 'Implementation summary',
+        kind: 'review',
+        files: ['src/impl.ts'],
       });
     } finally {
       await h.close();

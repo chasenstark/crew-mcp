@@ -1,7 +1,7 @@
 // `crew-mcp serve` — the v2 stdio MCP server entry point.
 //
 // The host CLI (Claude Code / Codex / Gemini) spawns this command at session
-// start via its MCP config block. We expose v2's full 8-tool surface over
+// start via its MCP config block. We expose v2's MCP tool surface over
 // stdio:
 //
 //   list_agents      — synchronous probe of the agent registry
@@ -14,6 +14,9 @@
 //   discard_run      — abandon a worktree without merging
 //   cancel_run       — abort an in-flight run
 //   get_run_status   — poll a run's state.json + tail of events.log
+//   run_panel        — dispatch a parallel reviewer panel
+//   get_panel_status — read panel reviewer status
+//   aggregate_panel  — build peer_messages from panel results
 //
 // Logging discipline: stdout is reserved for the MCP wire protocol. The
 // project's logger (src/utils/logger.ts) emits to stderr via console.error,
@@ -79,6 +82,21 @@ import {
   GET_RUN_STATUS_DESCRIPTION,
   MAX_EVENTS_TAIL_CAP,
 } from '../../orchestrator/tools/get-run-status.js';
+import {
+  runPanelHandler,
+  runPanelInputSchema,
+  RUN_PANEL_DESCRIPTION,
+} from '../../orchestrator/tools/run-panel.js';
+import {
+  getPanelStatusHandler,
+  getPanelStatusInputSchema,
+  GET_PANEL_STATUS_DESCRIPTION,
+} from '../../orchestrator/tools/get-panel-status.js';
+import {
+  aggregatePanelHandler,
+  aggregatePanelInputSchema,
+  AGGREGATE_PANEL_DESCRIPTION,
+} from '../../orchestrator/tools/aggregate-panel.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { readConfigFile } from '../../utils/config-store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
@@ -458,6 +476,68 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, clientKind) }],
         structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
       };
+    },
+  );
+
+  // ---- run_panel -------------------------------------------------------
+  server.registerTool(
+    'run_panel',
+    {
+      description: RUN_PANEL_DESCRIPTION,
+      inputSchema: runPanelInputSchema.shape,
+    },
+    async (args, extra) => {
+      const agentPrefs = readAgentPrefsFile(crewHome);
+      try {
+        const out = await runPanelHandler(args, {
+          registry,
+          worktreeManager,
+          runStateStore,
+          agentPrefs,
+          dispatcher,
+          crewHome,
+          repoRoot: runStateStore.repoRoot,
+          projectRoot,
+          progress: progressNotifierFrom(extra, 'run_panel', progressTokenSeen),
+        });
+        return jsonContent(out);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ---- get_panel_status ------------------------------------------------
+  server.registerTool(
+    'get_panel_status',
+    {
+      description: GET_PANEL_STATUS_DESCRIPTION,
+      inputSchema: getPanelStatusInputSchema.shape,
+    },
+    async (args) => {
+      try {
+        const out = getPanelStatusHandler(args, { crewHome, runStateStore });
+        return jsonContent(out);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // ---- aggregate_panel -------------------------------------------------
+  server.registerTool(
+    'aggregate_panel',
+    {
+      description: AGGREGATE_PANEL_DESCRIPTION,
+      inputSchema: aggregatePanelInputSchema.shape,
+    },
+    async (args) => {
+      try {
+        const out = aggregatePanelHandler(args, { crewHome, runStateStore });
+        return jsonContent(out);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
     },
   );
 
