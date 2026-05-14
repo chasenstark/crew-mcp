@@ -1,4 +1,4 @@
-// v2 tool barrel — the 8-tool surface.
+// v2 tool barrel — the tool surface.
 //
 // run_agent + list_agents survive from v0.1 (with run_agent's auto-merge
 // removed in M1). list_runs adds repo-scoped run recovery. The lifecycle
@@ -63,3 +63,31 @@ export {
   CANCEL_RUN_DESCRIPTION,
   type CancelRunInput,
 } from './cancel-run.js';
+export {
+  runPanelHandler,
+  runPanelInputSchema,
+  RUN_PANEL_DESCRIPTION,
+  type FailedReviewerEnvelope,
+  type ReviewerDispatchEnvelope,
+  type RunPanelHandlerContext,
+  type RunPanelInput,
+  type RunPanelOutput,
+} from './run-panel.js';
+export {
+  getPanelStatusHandler,
+  getPanelStatusInputSchema,
+  GET_PANEL_STATUS_DESCRIPTION,
+  isTerminalRunStatus,
+  type GetPanelStatusHandlerContext,
+  type GetPanelStatusInput,
+  type GetPanelStatusOutput,
+  type PanelReviewerStatus,
+} from './get-panel-status.js';
+export {
+  aggregatePanelHandler,
+  aggregatePanelInputSchema,
+  AGGREGATE_PANEL_DESCRIPTION,
+  type AggregatePanelHandlerContext,
+  type AggregatePanelInput,
+  type AggregatePanelOutput,
+} from './aggregate-panel.js';

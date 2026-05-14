@@ -13,13 +13,16 @@
  */
 
 import {
+  AGGREGATE_PANEL_DESCRIPTION,
   CANCEL_RUN_DESCRIPTION,
   CONTINUE_RUN_DESCRIPTION,
   DISCARD_RUN_DESCRIPTION,
+  GET_PANEL_STATUS_DESCRIPTION,
   GET_RUN_STATUS_DESCRIPTION,
   LIST_AGENTS_DESCRIPTION,
   LIST_RUNS_DESCRIPTION,
   MERGE_RUN_DESCRIPTION,
+  RUN_PANEL_DESCRIPTION,
   RUN_AGENT_DESCRIPTION,
 } from '../orchestrator/tools/index.js';
 import type { SkillTool } from './skill-renderer.js';
@@ -33,6 +36,9 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'discard_run', description: DISCARD_RUN_DESCRIPTION },
   { name: 'get_run_status', description: GET_RUN_STATUS_DESCRIPTION },
   { name: 'cancel_run', description: CANCEL_RUN_DESCRIPTION },
+  { name: 'run_panel', description: RUN_PANEL_DESCRIPTION },
+  { name: 'get_panel_status', description: GET_PANEL_STATUS_DESCRIPTION },
+  { name: 'aggregate_panel', description: AGGREGATE_PANEL_DESCRIPTION },
 ];
 
 export function getCatalogToolNames(): readonly string[] {

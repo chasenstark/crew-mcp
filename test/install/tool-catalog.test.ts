@@ -23,6 +23,7 @@ import { CATALOG_TOOLS } from '../../src/install/tool-catalog.js';
 import { CONTINUE_RUN_DESCRIPTION } from '../../src/orchestrator/tools/continue-run.js';
 import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run-status.js';
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
+import * as toolsIndex from '../../src/orchestrator/tools/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -45,6 +46,19 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       await client.close();
       rmSync(crewHome, { recursive: true, force: true });
     }
+  });
+
+  it('declares panel tools in both the catalog and tools/index barrel', () => {
+    const catalogNames = CATALOG_TOOLS.map((tool) => tool.name);
+    for (const toolName of ['run_panel', 'get_panel_status', 'aggregate_panel']) {
+      expect(catalogNames).toContain(toolName);
+    }
+    expect(toolsIndex.runPanelInputSchema).toBeDefined();
+    expect(toolsIndex.runPanelHandler).toBeDefined();
+    expect(toolsIndex.getPanelStatusInputSchema).toBeDefined();
+    expect(toolsIndex.getPanelStatusHandler).toBeDefined();
+    expect(toolsIndex.aggregatePanelInputSchema).toBeDefined();
+    expect(toolsIndex.aggregatePanelHandler).toBeDefined();
   });
 
   it('uses the on-demand get_run_status description from the tool source', () => {
