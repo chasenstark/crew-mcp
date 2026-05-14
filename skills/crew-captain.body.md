@@ -452,15 +452,10 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   - Without the flag, dispatching a reviewer at another worktree
     still works but allocates a wasted worktree — prefer the flag.
 
-- **Effort.** `run_agent` / `continue_run` accept
-  `effort: "low" | "medium" | "high" | "xhigh" | "max"` (codex's
-  `model_reasoning_effort` set); `list_agents` surfaces the
-  per-machine default. Accept the default by passing nothing.
-  **When you override**, do BOTH: (a) pass `effort: "<level>"` so
-  codex flips its native knob (claude-code / gemini-cli /
-  openai-compatible ignore it harmlessly); (b) restate it in the
-  prompt in one short line — those adapters only see the
-  prompt-level signal. Mapping:
+- **Effort.** `run_agent` / `continue_run` accept the canonical
+  `effort: "low" | "medium" | "high" | "xhigh" | "max"` scale. `list_agents` surfaces the per-machine default; accept it by passing nothing. **When you override**, do BOTH: (a) pass
+  `effort: "<level>"` (b) restate it in the prompt in one short line.
+  Mapping:
   - `low` / `medium`: typo fixes through ordinary implementation or review.
   - `high`: cross-file reasoning, non-trivial refactors, root-cause triage.
   - `xhigh` / `max`: correctness-critical work (auth, money, migrations), architectural changes, or "exhaustive pass" requests.
@@ -486,6 +481,7 @@ array. Each item is `{body, kind, from_label, files, excerpts}`. The
 dispatcher prepends a typed block to the worker's prompt.
 
 Use cases:
+
 - Forward run A's output to run B's review prompt.
 - Forward synthesized feedback from multiple reviewers back to the
   implementer.
@@ -500,16 +496,16 @@ Use cases:
    the next user-turn snapshot on Codex/Gemini), read `A.summary` and
    `A.files_changed` via `get_run_status`.
 3. `run_agent(reviewer, "review this implementation", read_only: true,
-   working_directory: <A.worktree_path>, peer_messages: [{body:
-   A.summary, kind: 'review', from_label: "A (implementer)", files:
-   A.files_changed}])` → run B. The `read_only` + `working_directory`
+working_directory: <A.worktree_path>, peer_messages: [{body:
+A.summary, kind: 'review', from_label: "A (implementer)", files:
+A.files_changed}])` → run B. The `read_only` + `working_directory`
    pair lets the reviewer read A's edits without allocating its own
    worktree; the `peer_messages` array forwards A's synthesis as
    typed context.
 4. When B reaches terminal, read `B.summary`.
 5. If revisions needed: `continue_run(A, peer_messages: [{body:
-   B.summary, from_label: "B (reviewer)", kind: 'review'}],
-   prompt: "revise per these findings")`.
+B.summary, from_label: "B (reviewer)", kind: 'review'}],
+prompt: "revise per these findings")`.
 
 Worker findings flow back via the existing `terminal.summary` path.
 There is no `send_message` / inbox return path in this plan.

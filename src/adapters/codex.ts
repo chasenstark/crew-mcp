@@ -358,10 +358,19 @@ export class CodexAdapter implements AgentAdapter {
     'autonomous-loops',
     'code-implementation',
   ];
-  // Codex CLI takes `-c model_reasoning_effort=<low|medium|high>`. Default
-  // to medium — matches Codex's own default and gives the user a knob in
-  // both directions. Per-call override comes via Task.constraints.effort.
+  // Codex CLI takes `-c model_reasoning_effort=<low|medium|high|xhigh>`.
+  // Default to medium — matches Codex's own default and gives the user a
+  // knob in both directions. Per-call override comes via
+  // Task.constraints.effort.
   readonly defaultEffort: EffortLevel = 'medium';
+  // Codex 0.130 rejects unknown variants with a hard
+  // `unknown variant ..., expected one of none, minimal, low, medium,
+  // high, xhigh` error before the run starts. The canonical EffortLevel
+  // includes `max`, so we declare the supported subset here and let
+  // resolveEffectiveEffort clamp captain-provided `max` down to `xhigh`.
+  // (`none` and `minimal` are codex extensions outside the canonical
+  // scale; we don't surface them upward.)
+  readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
   readonly supportsJsonSchema = true;
   // Codex emits structured `file_change` events for in-band file edits; treat
   // that terminal list as authoritative so an empty array means no file_change

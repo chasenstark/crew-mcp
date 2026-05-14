@@ -128,6 +128,24 @@ export interface AgentAdapter {
    * to `run_agent` / `continue_run`, which wins over both.
    */
   readonly defaultEffort?: EffortLevel;
+  /**
+   * Canonical effort levels this adapter's CLI actually accepts. The
+   * captain always passes one of the five canonical levels
+   * (`low|medium|high|xhigh|max`); `resolveEffectiveEffort` clamps that
+   * value into this set before it reaches `execute()` so the captain
+   * never has to memorize per-CLI vocabulary (e.g., codex 0.130 rejects
+   * `max` with an `unknown variant` error).
+   *
+   * Clamp rule: walk DOWN the canonical order from the requested level
+   * and return the first supported level. Falling back upward only
+   * happens when no supported level is `≤ requested`, which is a
+   * theoretical case we don't expect to hit today.
+   *
+   * Omit when the adapter has no native effort knob (claude-code,
+   * gemini-cli, generic, openai-compatible) — those ignore the value
+   * regardless, so the clamp would be wasted work.
+   */
+  readonly supportedEfforts?: readonly EffortLevel[];
   readonly supportsJsonSchema: boolean;
   /**
    * True when `TaskResult.filesModified` is authoritative for this adapter,
@@ -184,13 +202,68 @@ export type AgentStrength = string;
  * the value (and log a debug breadcrumb so the captain's pick isn't
  * silently swallowed).
  *
- * Five-level scale matching codex's `model_reasoning_effort` set
- * (`low|medium|high|xhigh|max`) — the only adapter that wires this
- * natively today, so we mirror its vocabulary verbatim. Other adapters
- * either ignore the value (gemini-cli, generic) or rely on the captain
- * restating the level in the prompt (see skill body).
+ * Canonical five-level scale used everywhere captain-facing. Adapters
+ * whose CLI accepts only a subset declare `supportedEfforts` and the
+ * dispatch layer clamps automatically — captain never has to think about
+ * which CLI accepts which slice. Today codex (0.130) accepts
+ * `low|medium|high|xhigh` only; `max` is clamped to `xhigh` on the way
+ * in.
  */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/**
+ * Canonical ascending order for `EffortLevel`. Used by
+ * `clampEffortToSupported` to translate an arbitrary canonical level into
+ * an adapter's supported set, and as the single source of truth for "is
+ * X stronger than Y" comparisons. Keep in sync with the `EffortLevel`
+ * union — there is no compile-time check that the array matches.
+ */
+export const EFFORT_ORDER: readonly EffortLevel[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+
+/**
+ * Map a canonical effort level into an adapter's supported set. Used by
+ * `resolveEffectiveEffort` so per-CLI vocabulary stays out of the
+ * captain's prompt. Returns `undefined` when the canonical level can't
+ * be expressed at all (caller treats it as "no effort flag").
+ *
+ * Algorithm:
+ *   1. If `supported` is undefined → no constraint, return `level`
+ *      unchanged. Adapters that omit `supportedEfforts` either accept
+ *      everything or ignore the field entirely.
+ *   2. If `level` is already in `supported` → return it.
+ *   3. Walk DOWN the canonical order from `level`'s index; return the
+ *      first supported level. (codex `max` → `xhigh`.)
+ *   4. If nothing is found stepping down, walk UP from `level+1` and
+ *      return the first supported level. Defensive; not exercised
+ *      today (no adapter declares only high-tier efforts).
+ *   5. If `supported` is empty, return undefined.
+ */
+export function clampEffortToSupported(
+  level: EffortLevel,
+  supported: readonly EffortLevel[] | undefined,
+): EffortLevel | undefined {
+  if (!supported) return level;
+  if (supported.length === 0) return undefined;
+  const set = new Set<EffortLevel>(supported);
+  if (set.has(level)) return level;
+  const idx = EFFORT_ORDER.indexOf(level);
+  if (idx < 0) return level;
+  for (let i = idx - 1; i >= 0; i--) {
+    const candidate = EFFORT_ORDER[i];
+    if (set.has(candidate)) return candidate;
+  }
+  for (let i = idx + 1; i < EFFORT_ORDER.length; i++) {
+    const candidate = EFFORT_ORDER[i];
+    if (set.has(candidate)) return candidate;
+  }
+  return undefined;
+}
 
 export interface Task {
   prompt: string;

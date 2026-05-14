@@ -591,8 +591,11 @@ describe('planRunAgent — read_only path', () => {
 });
 
 describe('resolveEffectiveEffort', () => {
-  function adapterWith(defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'): AgentAdapter {
-    return makeMockAdapter({ name: 'codex', defaultEffort });
+  function adapterWith(
+    defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+    supportedEfforts?: readonly ('low' | 'medium' | 'high' | 'xhigh' | 'max')[],
+  ): AgentAdapter {
+    return makeMockAdapter({ name: 'codex', defaultEffort, supportedEfforts });
   }
 
   it('per-call > agents.json > adapter default', () => {
@@ -614,6 +617,31 @@ describe('resolveEffectiveEffort', () => {
   it('returns undefined when adapter has no default and no override exists', () => {
     const a = adapterWith(undefined);
     expect(resolveEffectiveEffort(a, undefined, {})).toBeUndefined();
+  });
+
+  it('clamps per-call max down to xhigh when adapter declares supportedEfforts', () => {
+    // Codex 0.130 rejects `max` with an `unknown variant` error. The
+    // captain should be able to pass canonical `max` without knowing
+    // that; resolveEffectiveEffort silently maps to the nearest
+    // supported level (`xhigh`).
+    const a = adapterWith('medium', ['low', 'medium', 'high', 'xhigh']);
+    expect(resolveEffectiveEffort(a, 'max', undefined)).toBe('xhigh');
+  });
+
+  it('clamps agents.json override above adapter supported set', () => {
+    const a = adapterWith('medium', ['low', 'medium', 'high', 'xhigh']);
+    expect(resolveEffectiveEffort(a, undefined, { codex: { effort: 'max' } })).toBe('xhigh');
+  });
+
+  it('leaves supported levels untouched', () => {
+    const a = adapterWith('medium', ['low', 'medium', 'high', 'xhigh']);
+    expect(resolveEffectiveEffort(a, 'xhigh', undefined)).toBe('xhigh');
+    expect(resolveEffectiveEffort(a, 'low', undefined)).toBe('low');
+  });
+
+  it('does not clamp when adapter omits supportedEfforts (no constraint)', () => {
+    const a = adapterWith('medium');
+    expect(resolveEffectiveEffort(a, 'max', undefined)).toBe('max');
   });
 });
 

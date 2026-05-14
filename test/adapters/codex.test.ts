@@ -132,6 +132,16 @@ describe('CodexAdapter', () => {
     it('declares defaultEffort = "medium" (mirrors codex CLI default)', () => {
       expect(adapter.defaultEffort).toBe('medium');
     });
+
+    it('declares supportedEfforts excluding "max" so the resolver clamps it down', () => {
+      // Codex 0.130 rejects `max` with `unknown variant ..., expected
+      // one of none, minimal, low, medium, high, xhigh`. The canonical
+      // EffortLevel includes `max`; declaring the supported subset lets
+      // resolveEffectiveEffort clamp captain-provided `max` to `xhigh`
+      // before it reaches the CLI.
+      expect(adapter.supportedEfforts).toEqual(['low', 'medium', 'high', 'xhigh']);
+      expect(adapter.supportedEfforts).not.toContain('max');
+    });
   });
 
   describe('getCliVersionTag', () => {

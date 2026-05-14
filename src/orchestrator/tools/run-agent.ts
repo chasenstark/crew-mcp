@@ -31,12 +31,14 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
+import { clampEffortToSupported } from '../../adapters/types.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
 import type { DispatchTask } from '../tool-dispatcher.js';
 import type { WorktreeManager } from '../../git/worktree.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * Minimal registry surface for run_agent. Accepts either AdapterRegistry or
@@ -241,21 +243,43 @@ async function getRegistryAdapter(
  *   3. adapter's defaultEffort
  *   4. undefined (adapter has no native effort concept)
  *
- * Exported for tests that want to verify the precedence without
- * driving the full dispatch.
+ * Then clamp into `adapter.supportedEfforts` if declared, so a captain
+ * passing `max` against codex doesn't have to know codex 0.130 rejects
+ * `max` — we silently translate to the nearest supported level
+ * (`xhigh` today) and log a debug breadcrumb. This keeps the canonical
+ * five-level vocabulary in captain-facing surfaces (skill body, MCP
+ * schema, agents.json) decoupled from per-CLI quirks.
+ *
+ * Exported for tests that want to verify the precedence + clamp
+ * without driving the full dispatch.
  */
 export function resolveEffectiveEffort(
   adapter: AgentAdapter,
   perCall: EffortLevel | undefined,
   prefs: AgentPrefsMap | undefined,
 ): EffortLevel | undefined {
-  if (perCall) return perCall;
-  const merged = effectiveAgentPrefs(
-    adapter.name,
-    { effort: adapter.defaultEffort },
-    prefs ?? {},
-  );
-  return merged.effort;
+  let resolved: EffortLevel | undefined;
+  if (perCall) {
+    resolved = perCall;
+  } else {
+    const merged = effectiveAgentPrefs(
+      adapter.name,
+      { effort: adapter.defaultEffort },
+      prefs ?? {},
+    );
+    resolved = merged.effort;
+  }
+  if (resolved === undefined) return undefined;
+  const clamped = clampEffortToSupported(resolved, adapter.supportedEfforts);
+  if (clamped !== resolved) {
+    logger.debug('[run-agent] clamped effort to adapter supported set', {
+      agent: adapter.name,
+      requested: resolved,
+      clamped,
+      supported: adapter.supportedEfforts,
+    });
+  }
+  return clamped;
 }
 
 /**
