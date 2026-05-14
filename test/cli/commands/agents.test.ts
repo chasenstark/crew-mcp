@@ -17,6 +17,7 @@ import {
   agentsRemoveCommand,
 } from '../../../src/cli/commands/agents.js';
 import { agentsAddCommand } from '../../../src/cli/commands/agents/add.js';
+import type { PromptIO } from '../../../src/install/interactive-target.js';
 
 let crewHome: string;
 
@@ -167,6 +168,7 @@ describe('agents add', () => {
         nonInteractive: true,
         provider: 'openai-compatible',
         apiBase: 'http://localhost:11434/v1',
+        apiKey: 'local',
         model: 'gemma4:latest',
         name: 'claude-code',
         noVerify: true,
@@ -239,6 +241,145 @@ describe('agents add', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toBe('http://localhost:11434');
+  });
+
+  it('prompts for a generic args template in interactive mode', async () => {
+    const output: string[] = [];
+    const io = promptIo(['node', 'agent.js, --prompt, {{prompt}}', 'local-shell'], output);
+
+    await agentsAddCommand({
+      crewHome,
+      provider: 'generic',
+      isInteractive: true,
+      io,
+      detectServeRunning: async () => false,
+    });
+
+    expect(readJson()['local-shell']).toEqual({
+      adapter: 'generic',
+      command: 'node',
+      args: ['agent.js', '--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+  });
+
+  it('requires an explicit api key for non-interactive OpenAI-compatible providers', async () => {
+    await expect(
+      addAgent({
+        crewHome,
+        nonInteractive: true,
+        provider: 'openai-compatible',
+        apiBase: 'https://foo/v1',
+        model: 'bar',
+        name: 'baz',
+      }),
+    ).rejects.toThrow(/--api-key is required for --provider openai-compatible/);
+
+    expect(existsSync(resolveAgentPrefsPath(crewHome))).toBe(false);
+  });
+
+  it('adds an Ollama model through the interactive prompt flow', async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const textUrl = String(url);
+      if (textUrl === 'http://localhost:11434') return { ok: true, status: 200 } as Response;
+      if (textUrl === 'http://localhost:11434/v1/models') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ id: 'gemma4:latest' }] }),
+        } as Response;
+      }
+      if (textUrl === 'http://localhost:11434/v1/chat/completions') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: 'ok' } }] }),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${textUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const output: string[] = [];
+    const io = promptIo(['1', 'gemma4', 'local, coding'], output);
+
+    const result = await agentsAddCommand({
+      crewHome,
+      provider: 'ollama',
+      isInteractive: true,
+      io,
+      detectServeRunning: async () => false,
+    });
+
+    expect(result.added).toEqual(['gemma4']);
+    expect(readJson().gemma4).toEqual({
+      adapter: 'openai-compatible',
+      model: 'gemma4:latest',
+      apiBase: 'http://localhost:11434/v1',
+      apiKey: 'ollama',
+      strengths: ['local', 'coding'],
+    });
+    expect(output.join('')).toContain('Choose model(s) to register');
+  });
+
+  it('rejects an existing custom agent name without changing agents.json', async () => {
+    writeJson({
+      gemma4: {
+        adapter: 'openai-compatible',
+        model: 'gemma4:latest',
+        apiBase: 'http://localhost:11434/v1',
+        apiKey: 'ollama',
+        strengths: ['local'],
+      },
+    });
+    const before = readFileSync(resolveAgentPrefsPath(crewHome), 'utf-8');
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200 }) as Response));
+
+    await expect(
+      addAgent({
+        crewHome,
+        nonInteractive: true,
+        provider: 'ollama',
+        model: 'gemma4:latest',
+        name: 'gemma4',
+      }),
+    ).rejects.toThrow(/"gemma4" already exists in agents\.json/);
+
+    const after = readFileSync(resolveAgentPrefsPath(crewHome), 'utf-8');
+    expect(after).toBe(before);
+  });
+
+  it('writes in interactive mode when verify fails and the user confirms', async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const textUrl = String(url);
+      if (textUrl === 'http://localhost:11434') return { ok: true, status: 200 } as Response;
+      if (textUrl === 'http://localhost:11434/v1/chat/completions') {
+        return {
+          ok: false,
+          status: 500,
+          text: async () => 'boom',
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${textUrl}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const output: string[] = [];
+    const io = promptIo(['', 'y'], output);
+
+    await agentsAddCommand({
+      crewHome,
+      provider: 'ollama',
+      model: 'gemma4:latest',
+      name: 'gemma4',
+      isInteractive: true,
+      io,
+      detectServeRunning: async () => false,
+    });
+
+    expect(readJson().gemma4).toMatchObject({
+      adapter: 'openai-compatible',
+      model: 'gemma4:latest',
+    });
+    expect(output.join('')).toContain('verify failed for gemma4');
   });
 });
 
@@ -320,6 +461,21 @@ function addAgent(opts: Parameters<typeof agentsAddCommand>[0]): ReturnType<type
     },
     detectServeRunning: async () => false,
   });
+}
+
+function promptIo(answers: readonly string[], output: string[] = []): PromptIO {
+  const queue = [...answers];
+  return {
+    write: (chunk) => {
+      output.push(String(chunk));
+    },
+    question: async (prompt) => {
+      output.push(prompt);
+      const answer = queue.shift();
+      if (answer === undefined) throw new Error(`unexpected prompt in test: ${prompt}`);
+      return answer;
+    },
+  };
 }
 
 function makeAdapter(name: string, strengths: readonly string[], version?: string): AgentAdapter {

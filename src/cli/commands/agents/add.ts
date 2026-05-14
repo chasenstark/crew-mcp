@@ -177,7 +177,12 @@ async function resolveProviderConfig(
       nonInteractive,
       '--command is required for --provider generic',
     );
-    const args = normalizeArgs(opts.args);
+    const rawArgs = opts.args ?? (
+      nonInteractive
+        ? undefined
+        : await promptWithDefault(io, 'Args template (comma-separated)', '{{prompt}}')
+    );
+    const args = normalizeArgs(rawArgs);
     return {
       provider,
       adapter: 'generic',
@@ -192,21 +197,23 @@ async function resolveProviderConfig(
   let apiBase = opts.apiBase?.trim();
   let apiKey = opts.apiKey?.trim();
 
-  if (provider === 'ollama' && !apiBase) {
-    const probe = await detectOllama();
-    if (!probe.reachable) {
-      if (nonInteractive) {
-        throw new Error(
-          `crew agents add: Ollama was not reachable at ${probe.url}: ${probe.reason}. `
-          + 'Start Ollama or pass --api-base.',
-        );
+  if (provider === 'ollama') {
+    if (!apiBase) {
+      const probe = await detectOllama();
+      if (!probe.reachable) {
+        if (nonInteractive) {
+          throw new Error(
+            `crew agents add: Ollama was not reachable at ${probe.url}: ${probe.reason}. `
+            + 'Start Ollama or pass --api-base.',
+          );
+        }
+        io.write(`crew agents add: Ollama was not reachable at ${probe.url}: ${probe.reason}\n`);
+        const custom = await askYesNo(io, 'Enter a custom URL instead? [Y/n] ', true);
+        if (!custom) throw new Error('crew agents add: cancelled.');
+        apiBase = await promptRequired(io, 'OpenAI-compatible base URL: ', false, '');
+      } else {
+        apiBase = OLLAMA_DEFAULT_API_BASE;
       }
-      io.write(`crew agents add: Ollama was not reachable at ${probe.url}: ${probe.reason}\n`);
-      const custom = await askYesNo(io, 'Enter a custom URL instead? [Y/n] ', true);
-      if (!custom) throw new Error('crew agents add: cancelled.');
-      apiBase = await promptRequired(io, 'OpenAI-compatible base URL: ', false, '');
-    } else {
-      apiBase = OLLAMA_DEFAULT_API_BASE;
     }
     if (!apiKey) {
       apiKey = 'ollama';
@@ -214,21 +221,23 @@ async function resolveProviderConfig(
         'Ollama does not use an API key; writing apiKey "ollama" because the OpenAI client requires a non-empty value.\n',
       );
     }
-  } else if (provider === 'lm-studio' && !apiBase) {
-    const probe = await detectLmStudio();
-    if (!probe.reachable) {
-      if (nonInteractive) {
-        throw new Error(
-          `crew agents add: LM Studio was not reachable at ${probe.url}: ${probe.reason}. `
-          + 'Start LM Studio or pass --api-base.',
-        );
+  } else if (provider === 'lm-studio') {
+    if (!apiBase) {
+      const probe = await detectLmStudio();
+      if (!probe.reachable) {
+        if (nonInteractive) {
+          throw new Error(
+            `crew agents add: LM Studio was not reachable at ${probe.url}: ${probe.reason}. `
+            + 'Start LM Studio or pass --api-base.',
+          );
+        }
+        io.write(`crew agents add: LM Studio was not reachable at ${probe.url}: ${probe.reason}\n`);
+        const custom = await askYesNo(io, 'Enter a custom URL instead? [Y/n] ', true);
+        if (!custom) throw new Error('crew agents add: cancelled.');
+        apiBase = await promptRequired(io, 'OpenAI-compatible base URL: ', false, '');
+      } else {
+        apiBase = LM_STUDIO_DEFAULT_API_BASE;
       }
-      io.write(`crew agents add: LM Studio was not reachable at ${probe.url}: ${probe.reason}\n`);
-      const custom = await askYesNo(io, 'Enter a custom URL instead? [Y/n] ', true);
-      if (!custom) throw new Error('crew agents add: cancelled.');
-      apiBase = await promptRequired(io, 'OpenAI-compatible base URL: ', false, '');
-    } else {
-      apiBase = LM_STUDIO_DEFAULT_API_BASE;
     }
     if (!apiKey) {
       apiKey = 'ollama';
@@ -237,6 +246,7 @@ async function resolveProviderConfig(
       );
     }
   } else {
+    // vLLM may be unauthenticated, but requiring an explicit sentinel keeps keyless writes intentional.
     apiBase ??= await promptRequired(
       io,
       'OpenAI-compatible base URL: ',
@@ -247,9 +257,21 @@ async function resolveProviderConfig(
       apiKey = (await io.question('API key (blank allowed for self-hosted): ')).trim();
     }
     if (!apiKey) {
-      apiKey = 'ollama';
+      if (nonInteractive) {
+        throw new Error(
+          `crew agents add: --api-key is required for --provider ${provider} `
+          + '(pass a literal sentinel like \'local\' for self-hosted endpoints that ignore the header).',
+        );
+      }
+      const proceed = await askYesNo(
+        io,
+        'No API key set. This is OK for local/self-hosted; for hosted endpoints, requests will fail. Continue with the \'local\' sentinel? [y/N] ',
+        false,
+      );
+      if (!proceed) throw new Error('crew agents add: cancelled.');
+      apiKey = 'local';
       io.write(
-        'No API key provided; writing apiKey "ollama" as a local/self-hosted sentinel because the OpenAI client requires a non-empty value.\n',
+        'No API key provided; writing apiKey "local" as a local/self-hosted sentinel because the OpenAI client requires a non-empty value.\n',
       );
     }
   }
