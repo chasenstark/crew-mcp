@@ -42,25 +42,25 @@ The async dispatch paths return immediately. `runDispatchAndRespond()` documents
 
 The full dispatch envelope includes `agent_id`, `events_log_path`, `tail_command_path`, and `tail_command_url` at `src/cli/commands/serve.ts:1089` through `src/cli/commands/serve.ts:1094`. It also includes `status: "running"` at `src/cli/commands/serve.ts:1095`; the default structured envelope is trimmed unless `CREW_FULL_ENVELOPE=1`.
 
-`continue_run` supports per-call `model` and `effort` overrides; the schema declares those fields at `src/orchestrator/tools/continue-run.ts:20` and `src/orchestrator/tools/continue-run.ts:26`. The server resolves those overrides before building the dispatch task at `src/cli/commands/serve.ts:357` through `src/cli/commands/serve.ts:366`.
+`continue_run` supports per-call `model` and `effort` overrides; the schema declares those fields at `src/orchestrator/tools/continue-run.ts:20` and `src/orchestrator/tools/continue-run.ts:26`. The server resolves those overrides before building the dispatch task at `src/cli/commands/serve.ts:597` through `src/cli/commands/serve.ts:606`.
 
 ## Status Tool
 
-`get_run_status` has snapshot behavior when `wait_for_change_ms` is absent or zero, and long-poll behavior when it is positive; the handler branches on `useLongPoll` at `src/cli/commands/serve.ts:557` through `src/cli/commands/serve.ts:562`.
+`get_run_status` has snapshot behavior when `wait_for_change_ms` is absent or zero, and long-poll behavior when it is positive; the handler branches on `useLongPoll` at `src/cli/commands/serve.ts:822` through `src/cli/commands/serve.ts:826`.
 
-While the run is `running`, the response is intentionally lean: `status`, `events_tail`, and `next_event_line` are the only always-present fields according to `src/cli/commands/serve.ts:1116` through `src/cli/commands/serve.ts:1120`, and running poll returns suppress `events_tail` content at `src/cli/commands/serve.ts:1231` through `src/cli/commands/serve.ts:1242`.
+While the run is `running`, the response is intentionally lean: `status`, `events_tail`, and `next_event_line` are the only always-present fields according to `src/cli/commands/serve.ts:1398` through `src/cli/commands/serve.ts:1404`, and running poll returns suppress `events_tail` content at `src/cli/commands/serve.ts:1460` through `src/cli/commands/serve.ts:1466` and `src/cli/commands/serve.ts:1521` through `src/cli/commands/serve.ts:1525`.
 
-Terminal responses add `filesChanged`, `prompts`, `summary`, conditional `lastError`, `mergeStatus`, `warnings`, `readOnly`, and capped `events_tail`; those terminal-only fields are documented at `src/cli/commands/serve.ts:1125` through `src/cli/commands/serve.ts:1133` and built at `src/cli/commands/serve.ts:1257` through `src/cli/commands/serve.ts:1270`.
+Terminal responses add `filesChanged`, `prompts`, `summary`, conditional `lastError`, `mergeStatus`, `warnings`, `readOnly`, and capped `events_tail`; those terminal-only fields are documented at `src/cli/commands/serve.ts:1406` through `src/cli/commands/serve.ts:1415` and built at `src/cli/commands/serve.ts:1543` through `src/cli/commands/serve.ts:1555`.
 
 `max_events_tail` defaults to `10` and caps at `500`; the constants are `DEFAULT_MAX_EVENTS_TAIL` at `src/orchestrator/tools/get-run-status.ts:36` and `MAX_EVENTS_TAIL_CAP` at `src/orchestrator/tools/get-run-status.ts:44`. The input schema exposes `max_events_tail` at `src/orchestrator/tools/get-run-status.ts:86`.
 
 ## Merge, Discard, Cancel
 
-`merge_run` is the explicit branch-mutation boundary. Its schema includes `force`, `commit_title`, and `commit_body` at `src/orchestrator/tools/merge-run.ts:36`, `src/orchestrator/tools/merge-run.ts:45`, and `src/orchestrator/tools/merge-run.ts:51`; the server passes those values into `mergeRunWorktree()` at `src/cli/commands/serve.ts:451` through `src/cli/commands/serve.ts:456`.
+`merge_run` is the explicit branch-mutation boundary. Its schema includes `force`, `commit_title`, and `commit_body` at `src/orchestrator/tools/merge-run.ts:36`, `src/orchestrator/tools/merge-run.ts:45`, and `src/orchestrator/tools/merge-run.ts:51`; the server passes those values into `mergeRunWorktree()` at `src/cli/commands/serve.ts:713` through `src/cli/commands/serve.ts:718`.
 
-On successful merge, the server marks the run merged at `src/cli/commands/serve.ts:459` and performs best-effort worktree cleanup at `src/cli/commands/serve.ts:469`. On discard, the server marks state discarded at `src/cli/commands/serve.ts:531`; write-mode runs clean the worktree first at `src/cli/commands/serve.ts:528`.
+On successful merge, the server marks the run merged at `src/cli/commands/serve.ts:721` through `src/cli/commands/serve.ts:724` and performs best-effort worktree cleanup at `src/cli/commands/serve.ts:731` through `src/cli/commands/serve.ts:732`. On discard, the server marks state discarded at `src/cli/commands/serve.ts:796`; write-mode runs clean the worktree first at `src/cli/commands/serve.ts:793` through `src/cli/commands/serve.ts:794`.
 
-`cancel_run` finds an in-flight dispatcher task by `run_id` at `src/cli/commands/serve.ts:638` through `src/cli/commands/serve.ts:640`; the underlying schema is only `run_id` at `src/orchestrator/tools/cancel-run.ts:24` through `src/orchestrator/tools/cancel-run.ts:26`.
+`cancel_run` finds an in-flight dispatcher task by `run_id` at `src/cli/commands/serve.ts:904` through `src/cli/commands/serve.ts:906`; the underlying schema is only `run_id` at `src/orchestrator/tools/cancel-run.ts:24` through `src/orchestrator/tools/cancel-run.ts:26`.
 
 ## Adding A Tool
 
