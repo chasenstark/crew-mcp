@@ -34,14 +34,17 @@ describe.skipIf(!hasBuild)('crew-mcp serve — subprocess wire protocol', () => 
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
       expect(names).toEqual([
+        'aggregate_panel',
         'cancel_run',
         'continue_run',
         'discard_run',
+        'get_panel_status',
         'get_run_status',
         'list_agents',
         'list_runs',
         'merge_run',
         'run_agent',
+        'run_panel',
       ]);
     } finally {
       await client.close();
