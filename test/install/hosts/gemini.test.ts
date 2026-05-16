@@ -18,10 +18,47 @@ describe('geminiAdapter paths', () => {
     );
   });
 
-  it('points at the extension SKILL.md for skill', () => {
+  it('points at ~/.gemini/skills/crew/SKILL.md for the umbrella skill', () => {
+    // Phase 0 outcome (crew-iterate-skill plan): Gemini relocates from
+    // the broken ~/.gemini/extensions/crew/ path (which never loaded)
+    // to sibling-flat ~/.gemini/skills/<dir>/.
     expect(geminiAdapter.skillPath('/home/me')).toBe(
-      join('/home/me', '.gemini', 'extensions', 'crew', 'SKILL.md'),
+      join('/home/me', '.gemini', 'skills', 'crew', 'SKILL.md'),
     );
+  });
+});
+
+describe('geminiAdapter.skillInstallSpecFor', () => {
+  it('produces a sibling-flat user-skills path for the umbrella', () => {
+    const spec = geminiAdapter.skillInstallSpecFor('/home/me', {
+      id: 'crew',
+      slug: 'crew',
+      bodyFile: 'crew-captain.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe(
+      join('/home/me', '.gemini', 'skills', 'crew', 'SKILL.md'),
+    );
+    expect(spec.frontmatterName).toBe('crew');
+    expect(spec.legacyPathsToRemove).toEqual([
+      join('/home/me', '.gemini', 'extensions', 'crew', 'SKILL.md'),
+    ]);
+  });
+
+  it('produces a sibling-flat user-skills path for crew:iterate', () => {
+    const spec = geminiAdapter.skillInstallSpecFor('/home/me', {
+      id: 'crew:iterate',
+      slug: 'iterate',
+      bodyFile: 'crew-iterate.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe(
+      join('/home/me', '.gemini', 'skills', 'crew-iterate', 'SKILL.md'),
+    );
+    expect(spec.frontmatterName).toBe('crew-iterate');
+    expect(spec.legacyPathsToRemove).toEqual([
+      join('/home/me', '.gemini', 'extensions', 'crew-iterate', 'SKILL.md'),
+    ]);
   });
 });
 

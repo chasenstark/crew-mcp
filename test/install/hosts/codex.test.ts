@@ -27,6 +27,32 @@ describe('codexAdapter.skillPath (Finding 5)', () => {
   });
 });
 
+describe('codexAdapter.skillInstallSpecFor', () => {
+  it('produces the v1-canonical path for the umbrella skill', () => {
+    const spec = codexAdapter.skillInstallSpecFor('/home/me', {
+      id: 'crew',
+      slug: 'crew',
+      bodyFile: 'crew-captain.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe('/home/me/.codex/skills/crew/SKILL.md');
+    expect(spec.frontmatterName).toBe('crew');
+    expect(spec.legacyPathsToRemove).toEqual([]);
+  });
+
+  it('produces a sibling-flat path for crew:iterate', () => {
+    const spec = codexAdapter.skillInstallSpecFor('/home/me', {
+      id: 'crew:iterate',
+      slug: 'iterate',
+      bodyFile: 'crew-iterate.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe('/home/me/.codex/skills/crew-iterate/SKILL.md');
+    expect(spec.frontmatterName).toBe('crew-iterate');
+    expect(spec.legacyPathsToRemove).toEqual([]);
+  });
+});
+
 describe('codexAdapter.mergeMcpBlock', () => {
   it('writes the block as the entire file when input is empty', () => {
     const out = codexAdapter.mergeMcpBlock('', CMD, ARGS);

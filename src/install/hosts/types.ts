@@ -18,6 +18,8 @@
  * commands ship as "do the right thing regardless of current state."
  */
 
+import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js';
+
 export interface HostAdapter {
   /** Stable id used in CLI args (--target=<id>) and install.json. */
   readonly id: 'claude-code' | 'codex' | 'gemini';
@@ -28,8 +30,22 @@ export interface HostAdapter {
   /** Path to host's MCP config file, e.g. ~/.codex/config.toml. */
   configPath(home: string): string;
 
-  /** Path to host's skill / prompt file. */
+  /**
+   * Path to the umbrella `crew` skill file. Kept for back-compat
+   * (uninstall consults the install manifest's recorded path, but
+   * old call sites and tests still reach for this directly). New
+   * code should call `skillInstallSpecFor` for the multi-skill spec.
+   */
   skillPath(home: string): string;
+
+  /**
+   * Per-skill install spec — where to write the rendered SKILL.md and
+   * which frontmatter `name:` to bake in. Plus any legacy on-disk
+   * paths the install must remove (e.g., Gemini's deprecated
+   * `~/.gemini/extensions/crew/SKILL.md`). Adapters compute this from
+   * the skill's `slug` plus host-specific path conventions.
+   */
+  skillInstallSpecFor(home: string, skill: SkillManifestEntry): SkillInstallSpec;
 
   /**
    * Merge the crew MCP block into the host's config. `existing` is the

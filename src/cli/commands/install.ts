@@ -18,9 +18,15 @@
  * the binary present, but most users won't want that).
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -44,9 +50,11 @@ import {
   type CrewBinaryResolver,
 } from '../../install/crew-binary.js';
 import {
+  readInstallManifest,
   recordInstalledTarget,
   type InstalledTarget,
 } from '../../install/install-manifest.js';
+import { withInstallLock, writeFileAtomic } from '../../install/atomic-write.js';
 import {
   selectTargets as defaultSelectTargets,
   type DetectedHost,
@@ -54,7 +62,10 @@ import {
 import {
   renderSkill,
   resolvePackageRoot,
+  SKILL_MANIFEST,
   templatePathForHost,
+  type SkillInstallSpec,
+  type SkillManifestEntry,
 } from '../../install/skill-renderer.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import { logger } from '../../utils/logger.js';
@@ -167,47 +178,53 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
 
   const result: InstallResult = { installed: [], skipped: [] };
 
-  for (const targetId of targets) {
-    const adapter = HOST_ADAPTERS[targetId];
-    try {
-      // Decide whether to install based on detection vs force flag.
-      if (!forceWithoutBinary) {
-        const detected = await adapter.detectInstalled();
-        if (!detected.installed) {
-          logger.info(`crew install: skipping ${adapter.displayName} (binary not on PATH)`);
-          result.skipped.push({ host: targetId, reason: 'binary-not-found' });
-          continue;
+  // Per-home install lock serializes concurrent `crew-mcp install`
+  // invocations against the same HOME, so two installs can't race on
+  // the manifest or the skill directory. Stale locks from crashed
+  // holders are detected via PID liveness check (see atomic-write.ts).
+  await withInstallLock(home, async () => {
+    for (const targetId of targets) {
+      const adapter = HOST_ADAPTERS[targetId];
+      try {
+        // Decide whether to install based on detection vs force flag.
+        if (!forceWithoutBinary) {
+          const detected = await adapter.detectInstalled();
+          if (!detected.installed) {
+            logger.info(`crew install: skipping ${adapter.displayName} (binary not on PATH)`);
+            result.skipped.push({ host: targetId, reason: 'binary-not-found' });
+            continue;
+          }
         }
-      }
 
-      await installSingleTarget({
-        adapter,
-        home,
-        packageRoot,
-        crewBin,
-        crewArgs,
-        autoApprove: opts.autoApprove ?? true,
-        isCrewWaitOnPath: opts.isCrewWaitOnPath ?? isCrewWaitOnPath,
-        resolveCrewWaitBinary: opts.resolveCrewWaitBinary ?? resolveCrewWaitBinary,
-      });
+        await installSingleTarget({
+          adapter,
+          home,
+          packageRoot,
+          crewBin,
+          crewArgs,
+          autoApprove: opts.autoApprove ?? true,
+          isCrewWaitOnPath: opts.isCrewWaitOnPath ?? isCrewWaitOnPath,
+          resolveCrewWaitBinary: opts.resolveCrewWaitBinary ?? resolveCrewWaitBinary,
+        });
 
-      if (!opts.skipRunningCheck) {
-        const running = await adapter.detectRunning();
-        if (running) {
-          logger.warn(
-            `${adapter.displayName} appears to be running. Restart any open sessions to pick up the new MCP server.`,
-          );
+        if (!opts.skipRunningCheck) {
+          const running = await adapter.detectRunning();
+          if (running) {
+            logger.warn(
+              `${adapter.displayName} appears to be running. Restart any open sessions to pick up the new MCP server.`,
+            );
+          }
         }
-      }
 
-      result.installed.push(targetId);
-      logger.info(`crew install: ${adapter.displayName} ✓`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`crew install: ${adapter.displayName} failed — ${message}`);
-      result.skipped.push({ host: targetId, reason: message });
+        result.installed.push(targetId);
+        logger.info(`crew install: ${adapter.displayName} ✓`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(`crew install: ${adapter.displayName} failed — ${message}`);
+        result.skipped.push({ host: targetId, reason: message });
+      }
     }
-  }
+  });
 
   // After at least one successful install, seed the per-machine agent
   // prefs file (`<crewHome>/agents.json`) with every registered
@@ -293,26 +310,20 @@ export async function installSingleTarget(args: {
       : (args.resolveCrewWaitBinary ?? resolveCrewWaitBinary)();
   }
 
-  // 1. Render skill.
-  const templatePath = templatePathForHost(packageRoot, adapter.id);
-  const skillContent = await renderSkill({
-    templatePath,
-    tools: CATALOG_TOOLS,
-    crewWaitCommand,
+  // 1+2. Render + write each skill in the manifest via the helper
+  // (single seam for preflight + legacy-removal + atomic-write).
+  const { skillsMap, writtenPaths, skillPath } = await renderAndWriteSkills({
+    adapter,
+    home,
     packageRoot,
+    crewWaitCommand,
   });
-
-  // 2. Write skill file.
-  const skillPath = adapter.skillPath(home);
-  mkdirSync(dirname(skillPath), { recursive: true });
-  writeFileSync(skillPath, skillContent, 'utf-8');
 
   // 3. Merge MCP block into host config.
   const configPath = adapter.configPath(home);
   const existing = existsSync(configPath) ? await readFile(configPath, 'utf-8') : '';
   const merged = adapter.mergeMcpBlock(existing, crewBin, crewArgs);
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, merged, 'utf-8');
+  writeFileAtomic(configPath, merged);
 
   // 4. Apply auto-approval (or clear it if the user opted out). The
   // post-install state matches the flag regardless of prior state, so
@@ -328,8 +339,7 @@ export async function installSingleTarget(args: {
       ? adapter.writeAutoApproval(approvalExisting, CATALOG_TOOLS.map((t) => t.name))
       : adapter.clearAutoApproval(approvalExisting);
     if (approvalUpdated !== approvalExisting) {
-      mkdirSync(dirname(approvalFile), { recursive: true });
-      writeFileSync(approvalFile, approvalUpdated, 'utf-8');
+      writeFileAtomic(approvalFile, approvalUpdated);
     }
   }
 
@@ -345,8 +355,7 @@ export async function installSingleTarget(args: {
       `Bash(${crewWaitCommand}:*)`,
     );
     if (approvalUpdated !== approvalExisting) {
-      mkdirSync(dirname(approvalFile), { recursive: true });
-      writeFileSync(approvalFile, approvalUpdated, 'utf-8');
+      writeFileAtomic(approvalFile, approvalUpdated);
     }
     logger.info(
       `crew install: Claude Code crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
@@ -358,6 +367,8 @@ export async function installSingleTarget(args: {
   const entry: InstalledTarget = {
     configPath,
     skillPath,
+    skills: skillsMap,
+    writtenPaths,
     version: CREW_MCP_VERSION,
     installedAt: new Date().toISOString(),
     serverCommand: crewBin,
@@ -367,6 +378,237 @@ export async function installSingleTarget(args: {
   await recordInstalledTarget(home, adapter.id, entry);
 
   return entry;
+}
+
+/**
+ * Render every skill in the manifest and write each into its
+ * adapter-resolved location. Strict two-phase commit per plan
+ * §"Per-host migration":
+ *
+ *   1. Preflight collision check across ALL specs (refuse if any
+ *      target SKILL.md exists AND is not crew-owned per the current
+ *      install manifest).
+ *   2. Phase 1 — render every skill into a sibling staging file
+ *      (`<finalPath>.crew-staging-<pid>-<ts>`). A render failure here
+ *      throws BEFORE any final-path mutation; staging files are
+ *      cleaned up in finally.
+ *   3. Remove `legacyPathsToRemove` (different paths from finals —
+ *      Gemini's old `extensions/` location). Doing this after Phase 1
+ *      means a render failure never trashes the legacy file.
+ *   4. Phase 2 — atomic-swap each staging file into its final
+ *      destination. For each swap: back up any existing destination,
+ *      then rename staging → final. Track every step in a rollback
+ *      ledger so a mid-loop rename failure restores prior content.
+ *   5. Clean up backups on success.
+ *
+ * Returns the per-skill paths so the caller can record them in the
+ * install manifest entry.
+ */
+async function renderAndWriteSkills(args: {
+  readonly adapter: HostAdapter;
+  readonly home: string;
+  readonly packageRoot: string;
+  readonly crewWaitCommand: string;
+}): Promise<{
+  readonly skillsMap: Record<string, string>;
+  readonly writtenPaths: string[];
+  readonly skillPath: string;
+}> {
+  const { adapter, home, packageRoot, crewWaitCommand } = args;
+  const templatePath = templatePathForHost(packageRoot, adapter.id);
+
+  // Resolve all specs up front so the preflight check sees every
+  // target before we touch anything on disk.
+  const specs = SKILL_MANIFEST.map((skill) => ({
+    skill,
+    spec: adapter.skillInstallSpecFor(home, skill),
+  }));
+
+  // Preflight: refuse if any destination SKILL.md exists AND wasn't
+  // written by a prior crew install. Plan §"Atomicity & locking
+  // requirements" — preflight collision check.
+  const ownedPaths = await collectCrewOwnedPaths(home);
+  for (const { spec } of specs) {
+    if (existsSync(spec.skillPath) && !ownedPaths.has(spec.skillPath)) {
+      throw new Error(
+        `crew install: refusing to overwrite ${spec.skillPath} — `
+        + 'a file exists at that path but was not written by a prior crew install. '
+        + 'Move or delete the file, then re-run install.',
+      );
+    }
+  }
+
+  // Phase 1: render all skills into sibling staging files. Using a
+  // sibling guarantees same-FS rename in Phase 2 (POSIX atomic).
+  // A failure here throws before any final-dest mutation; the finally
+  // cleans up partial staging files.
+  const stagingSuffix = `.crew-staging-${process.pid}-${Date.now()}`;
+  const staged: Array<{
+    skill: SkillManifestEntry;
+    spec: SkillInstallSpec;
+    stagingPath: string;
+  }> = [];
+  try {
+    for (const { skill, spec } of specs) {
+      const skillContent = await renderSkill({
+        templatePath,
+        skill,
+        spec,
+        tools: CATALOG_TOOLS,
+        crewWaitCommand,
+        packageRoot,
+      });
+      const stagingPath = `${spec.skillPath}${stagingSuffix}`;
+      mkdirSync(dirname(stagingPath), { recursive: true });
+      writeFileSync(stagingPath, skillContent, 'utf-8');
+      staged.push({ skill, spec, stagingPath });
+    }
+
+    // Legacy removal AFTER Phase 1 (so a render failure doesn't trash
+    // the legacy file) and BEFORE Phase 2 (so the swap loop sees a
+    // consistent destination layout).
+    for (const { spec } of staged) {
+      for (const legacy of spec.legacyPathsToRemove) {
+        if (existsSync(legacy)) {
+          rmSync(legacy, { force: true });
+        }
+      }
+    }
+
+    // Phase 2: per-skill swap with rollback ledger. Each entry records
+    // what we need to undo if a later swap fails. Backup paths use
+    // `.crew-backup-...` to avoid colliding with Phase 1's staging
+    // suffix or writeFileAtomic's `.tmp` suffix.
+    interface LedgerEntry {
+      readonly finalPath: string;
+      readonly backupPath: string | null;
+    }
+    const ledger: LedgerEntry[] = [];
+    try {
+      for (const { spec, stagingPath } of staged) {
+        const backupPath = existsSync(spec.skillPath)
+          ? `${spec.skillPath}.crew-backup-${process.pid}-${Date.now()}-${ledger.length}`
+          : null;
+        if (backupPath !== null) {
+          renameSync(spec.skillPath, backupPath);
+        }
+        try {
+          renameSync(stagingPath, spec.skillPath);
+        } catch (renameErr) {
+          // Inner-swap failure: the destination is empty (we already
+          // moved the original to backup, and the new file didn't
+          // land). Restore the backup before re-throwing so the outer
+          // rollback only has to undo COMPLETED swaps (those already
+          // in the ledger).
+          if (backupPath !== null && existsSync(backupPath)) {
+            try {
+              renameSync(backupPath, spec.skillPath);
+            } catch {
+              // Best-effort; if restore fails too, the user is in a
+              // degraded state and `verify` will surface it.
+            }
+          }
+          throw renameErr;
+        }
+        ledger.push({ finalPath: spec.skillPath, backupPath });
+      }
+    } catch (swapErr) {
+      // Roll back completed swaps in reverse order. Each entry either
+      // had a prior file (restore backup) or didn't (delete the new).
+      for (let i = ledger.length - 1; i >= 0; i--) {
+        const { finalPath, backupPath } = ledger[i];
+        try {
+          if (backupPath !== null) {
+            try {
+              unlinkSync(finalPath);
+            } catch {
+              // The replaced file may already be gone — fine.
+            }
+            if (existsSync(backupPath)) {
+              renameSync(backupPath, finalPath);
+            }
+          } else {
+            try {
+              unlinkSync(finalPath);
+            } catch {
+              // Already gone — fine.
+            }
+          }
+        } catch (rollbackErr) {
+          // Don't mask the original swap error; log loudly so the
+          // user knows manual cleanup may be needed.
+          const msg = rollbackErr instanceof Error
+            ? rollbackErr.message
+            : String(rollbackErr);
+          logger.error(
+            `crew install: rollback of ${finalPath} failed during multi-skill swap recovery — manual cleanup may be needed: ${msg}`,
+          );
+        }
+      }
+      throw swapErr;
+    }
+
+    // Phase 2 success — clean up backups. Best-effort; a leftover
+    // `.crew-backup-*` file is harmless (verify ignores them, the
+    // path is unique per install) but we tidy up so the host's
+    // skills/ dir stays clean.
+    for (const { backupPath } of ledger) {
+      if (backupPath !== null && existsSync(backupPath)) {
+        try {
+          unlinkSync(backupPath);
+        } catch {
+          // ignore — backup cleanup is best-effort
+        }
+      }
+    }
+
+    const skillsMap: Record<string, string> = {};
+    const writtenPaths: string[] = [];
+    for (const { skill, spec } of staged) {
+      skillsMap[skill.id] = spec.skillPath;
+      writtenPaths.push(spec.skillPath);
+    }
+    // Back-compat `skillPath` (umbrella crew) for older callers that
+    // haven't migrated to the multi-skill map.
+    const skillPath = skillsMap['crew'] ?? adapter.skillPath(home);
+    return { skillsMap, writtenPaths, skillPath };
+  } finally {
+    // Always clean up leftover staging files (render-failure or
+    // swap-failure paths). On full success they've already been
+    // renamed and existsSync is false.
+    for (const { stagingPath } of staged) {
+      if (existsSync(stagingPath)) {
+        try {
+          unlinkSync(stagingPath);
+        } catch {
+          // ignore — best-effort cleanup
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Collect every path the current install manifest records as written
+ * by crew. Used by the preflight collision check to decide whether an
+ * existing file at a target SKILL.md path is safe to overwrite.
+ */
+async function collectCrewOwnedPaths(home: string): Promise<Set<string>> {
+  const owned = new Set<string>();
+  try {
+    const manifest = await readInstallManifest(home);
+    for (const target of Object.values(manifest.targets)) {
+      if (!target) continue;
+      for (const p of target.writtenPaths) owned.add(p);
+      for (const p of Object.values(target.skills)) owned.add(p);
+      if (target.skillPath) owned.add(target.skillPath);
+    }
+  } catch {
+    // If the manifest is unreadable, treat NO paths as owned. The
+    // preflight will then refuse any existing target SKILL.md — safest
+    // default. The user can clean up + retry.
+  }
+  return owned;
 }
 
 function addClaudePermission(existing: string, pattern: string): string {

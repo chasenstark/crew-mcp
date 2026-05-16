@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { HostAdapter } from './types.js';
+import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,6 +45,7 @@ export const claudeCodeAdapter: HostAdapter = {
 
   configPath: (home) => join(home, '.claude.json'),
   skillPath: (home) => join(home, '.claude', 'skills', 'crew', 'SKILL.md'),
+  skillInstallSpecFor: claudeCodeSkillInstallSpecFor,
 
   mergeMcpBlock(existing, crewBin, crewArgs) {
     const parsed = parseClaudeConfig(existing);
@@ -131,6 +133,26 @@ export const claudeCodeAdapter: HostAdapter = {
     return stringifyPermissions(parsed);
   },
 };
+
+/**
+ * Resolve the per-skill install spec. Sibling-flat personal-skills
+ * layout (Phase 0 outcome): `~/.claude/skills/<dir>/SKILL.md` where
+ * `<dir>` is the skill's id with `:` replaced by `-`. Frontmatter
+ * `name:` uses the same hyphenated form so the slash command works
+ * cleanly (`/crew-iterate`). The v1 umbrella path IS canonical, so
+ * `legacyPathsToRemove` is empty on Claude Code.
+ */
+function claudeCodeSkillInstallSpecFor(
+  home: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
+  const dir = skill.id.replace(':', '-');
+  return {
+    skillPath: join(home, '.claude', 'skills', dir, 'SKILL.md'),
+    frontmatterName: dir,
+    legacyPathsToRemove: [],
+  };
+}
 
 function parseClaudeConfig(raw: string): ClaudeConfigShape {
   if (raw.trim().length === 0) return {};

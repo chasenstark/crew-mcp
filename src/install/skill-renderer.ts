@@ -1,20 +1,18 @@
 /**
- * Skill renderer — combines the canonical body with a per-host template
- * and the live tool list to produce the markdown that gets written into
- * the host CLI's skills/prompts directory.
+ * Skill renderer — combines a per-skill canonical body with a per-host
+ * template and the live tool list to produce the markdown that gets
+ * written into the host CLI's skills/prompts directory.
  *
- * The canonical body (`skills/crew-captain.body.md`) is the orchestration
- * playbook — single source of truth, edited in the repo. Per-host
- * templates (`skills/targets/<host>.md.tmpl`) wrap it in host-specific
- * frontmatter and opening framing. The renderer interpolates four
- * placeholders:
+ * Two skills ship today (per `crew-iterate-skill.md` plan):
  *
- *   {{BODY}}         — the canonical body
- *   {{TOOL_LIST}}    — the live tool list rendered from the catalog (so
- *                      `crew-mcp verify` can parity-check the rendered skill
- *                      against the MCP surface)
- *   {{DESCRIPTION}}  — Claude Code skill description (auto-match phrase)
- *   {{CREW_VERSION}} — package version, useful as a footer marker
+ *   - `crew` (umbrella) — `skills/crew-captain.body.md`
+ *   - `crew-iterate`    — `skills/crew-iterate.body.md`
+ *
+ * Both render through the same per-host templates; the template
+ * placeholders that vary per-skill are `{{NAME}}` (frontmatter name)
+ * and `{{DESCRIPTION}}` (the auto-match matcher phrase). `{{BODY}}` is
+ * loaded from the skill's `bodyFile`. `{{TOOL_LIST}}` and
+ * `{{CREW_WAIT_COMMAND}}` are shared across skills.
  *
  * Path resolution: `crew-mcp install` runs from the installed package, so we
  * resolve `skills/` relative to the source file's compiled location. The
@@ -48,13 +46,94 @@ import { SERVE_VERSION } from '../cli/commands/serve.js';
 export const SKILL_DESCRIPTION =
   'Dispatch work to another AI agent (Claude, Codex, Gemini, sonnet, opus, local models) — coding, code review, investigations, exploration, spec-writing, refactors, audits, drafts, prototypes, spikes, triage. Runs in an isolated git worktree by default, or read-only against the current tree for review/triage. TRIGGER when the user: asks another model or agent (by name or generically) to do, review, critique, investigate, audit, draft, prototype, spike, or double-check work; wants a second opinion, second pair of eyes, cross-model comparison, panel of agents, or crew run; says "have/ask/send to/use <model>", "another Claude/Codex/Gemini", "subagent", "peer", "crew", "panel", "in parallel", "in the background", "while I…", "offload", "hand off", "delegate", "fan out", "kick off", "spawn", "fire off", or "race"; or wants long-running work that doesn\'t block the chat. SKIP when the user wants an inline subagent (TaskCreate) or a local shell command.';
 
+/**
+ * Auto-match phrase for the `crew-iterate` skill. Distinct from
+ * SKILL_DESCRIPTION so Claude Code's matcher routes "ship-quality"
+ * loops here rather than the umbrella `crew` dispatch skill. Keep the
+ * vocabulary narrow to "keep iterating until acceptance criteria pass"
+ * to avoid poaching one-shot dispatches.
+ */
+export const ITERATE_SKILL_DESCRIPTION =
+  'Keep iterating on an implementation until acceptance criteria pass and reviewers approve. Loads when the user wants to ship-quality something via a multi-agent loop — phrasings like "keep working on X with review", "implement X and review until it\'s good", "iterate to convergence", "ship-quality loop", "use Claude + Codex to push this until criteria pass". The captain derives acceptance criteria, confirms with the user, dispatches an implementer with criteria embedded, runs dual review (inline + dispatched) scoring per criterion, and folds findings back via continue_run until every criterion is PASS and every reviewer\'s overall verdict is APPROVE. Composes run_agent, continue_run, run_panel, aggregate_panel, merge_run.';
+
 export interface SkillTool {
   readonly name: string;
   readonly description: string;
 }
 
+/**
+ * One entry in the canonical SKILL_MANIFEST. The install command loops
+ * over the manifest and writes one rendered SKILL.md per entry.
+ */
+export interface SkillManifestEntry {
+  /** Skill ID, including namespace. `crew` for the umbrella, `crew:iterate` for the sub-skill. */
+  readonly id: string;
+  /**
+   * Bare slug after the namespace prefix. Used by adapters to compute
+   * the on-disk path and the frontmatter `name:` value.
+   * - `crew` → slug `crew`
+   * - `crew:iterate` → slug `iterate`
+   */
+  readonly slug: string;
+  /** Path (relative to packageRoot/skills/) to the body file. */
+  readonly bodyFile: string;
+  /** Description string for the host matcher. */
+  readonly description: string;
+}
+
+/**
+ * The canonical list of skills crew installs. Order matters for
+ * deterministic test output and for predictable install logging, but
+ * each entry is independent.
+ */
+export const SKILL_MANIFEST: readonly SkillManifestEntry[] = [
+  {
+    id: 'crew',
+    slug: 'crew',
+    bodyFile: 'crew-captain.body.md',
+    description: SKILL_DESCRIPTION,
+  },
+  {
+    id: 'crew:iterate',
+    slug: 'iterate',
+    bodyFile: 'crew-iterate.body.md',
+    description: ITERATE_SKILL_DESCRIPTION,
+  },
+];
+
+/**
+ * Per-host install spec returned by `HostAdapter.skillInstallSpecFor`.
+ * Tells the install command WHERE to write the rendered SKILL.md and
+ * what frontmatter `name:` to bake into it.
+ */
+export interface SkillInstallSpec {
+  /** Final on-disk path for the rendered SKILL.md. */
+  readonly skillPath: string;
+  /** Literal value written to the frontmatter `name:` field. */
+  readonly frontmatterName: string;
+  /**
+   * Legacy paths the install must remove (v1 SKILL.md locations).
+   * Empty for Claude/Codex (their current v1 paths ARE canonical);
+   * populated for Gemini (relocates from `~/.gemini/extensions/crew/SKILL.md`
+   * to `~/.gemini/skills/crew/SKILL.md`).
+   */
+  readonly legacyPathsToRemove: readonly string[];
+}
+
 export interface RenderSkillArgs {
   readonly templatePath: string;
+  /**
+   * Manifest entry being rendered. Determines which `bodyFile` to load
+   * and which `description` to substitute. Optional for back-compat:
+   * if omitted, defaults to the umbrella `crew` entry (SKILL_MANIFEST[0]).
+   */
+  readonly skill?: SkillManifestEntry;
+  /**
+   * Per-host install spec computed by the adapter. Provides the
+   * frontmatter `name:` value. Optional for back-compat: if omitted,
+   * the frontmatter name defaults to the skill's slug.
+   */
+  readonly spec?: SkillInstallSpec;
   readonly tools: readonly SkillTool[];
   /**
    * Literal `Bash` invocation the captain should use to spawn the
@@ -65,10 +144,6 @@ export interface RenderSkillArgs {
    * absolute-path fallback. Hosts that don't run the watcher (Codex,
    * Gemini) still receive the literal so the prose reads sensibly,
    * but they default to the portable baseline anyway.
-   *
-   * Optional with a sane default (`crew-wait`) so existing render
-   * sites without coupling-aware install logic keep working; new
-   * sites should always pass the actually-resolved command.
    */
   readonly crewWaitCommand?: string;
   /**
@@ -107,15 +182,26 @@ export function resolvePackageRoot(override?: string): string {
 }
 
 /**
- * Load the canonical body. Strips HTML comments (intended for repo
- * readers — provenance notes, editing rules — not for the host CLI's
- * context window) and trims trailing whitespace; the renderer adds a
- * single trailing newline.
+ * Load a skill body file by name (relative to `<packageRoot>/skills/`).
+ * Strips HTML comments (intended for repo readers — provenance notes,
+ * editing rules — not for the host CLI's context window) and trims
+ * trailing whitespace; the renderer adds a single trailing newline.
  */
-export async function loadCanonicalBody(packageRoot: string): Promise<string> {
-  const path = join(packageRoot, 'skills', 'crew-captain.body.md');
+export async function loadSkillBody(
+  packageRoot: string,
+  bodyFile: string,
+): Promise<string> {
+  const path = join(packageRoot, 'skills', bodyFile);
   const raw = await readFile(path, 'utf-8');
   return stripHtmlComments(raw).trimEnd();
+}
+
+/**
+ * Back-compat alias for the umbrella body. Existing callers (and tests)
+ * that load `crew-captain.body.md` directly keep working.
+ */
+export async function loadCanonicalBody(packageRoot: string): Promise<string> {
+  return loadSkillBody(packageRoot, 'crew-captain.body.md');
 }
 
 /**
@@ -138,14 +224,23 @@ export function stripHtmlComments(input: string): string {
 }
 
 /**
- * Render a skill file from a template + the canonical body + the live
+ * Render a skill file from a template + the skill's body + the live
  * tool list. Returns the final markdown ready to be written to the host's
  * skills directory. Does NOT write the file (that's the install command's
  * job).
+ *
+ * Substitutions:
+ *   {{BODY}}              — the skill's body (loaded from `skill.bodyFile`)
+ *   {{NAME}}              — `spec.frontmatterName` (defaults to `skill.slug`)
+ *   {{DESCRIPTION}}       — `skill.description`
+ *   {{CREW_VERSION}}      — package version
+ *   {{CREW_WAIT_COMMAND}} — `crewWaitCommand`
+ *   {{TOOL_LIST}}         — rendered tool catalog (substituted into the body)
  */
 export async function renderSkill(args: RenderSkillArgs): Promise<string> {
   const packageRoot = resolvePackageRoot(args.packageRoot);
-  const body = await loadCanonicalBody(packageRoot);
+  const skill = args.skill ?? SKILL_MANIFEST[0];
+  const body = await loadSkillBody(packageRoot, skill.bodyFile);
   const templateRaw = await readFile(args.templatePath, 'utf-8');
 
   const toolList = renderToolList(args.tools);
@@ -154,9 +249,12 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
     .replace('{{TOOL_LIST}}', toolList)
     .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
 
+  const frontmatterName = args.spec?.frontmatterName ?? skill.slug;
+
   const rendered = templateRaw
     .replace('{{BODY}}', bodyWithTools)
-    .replace(/\{\{DESCRIPTION\}\}/g, SKILL_DESCRIPTION)
+    .replace(/\{\{NAME\}\}/g, frontmatterName)
+    .replace(/\{\{DESCRIPTION\}\}/g, skill.description)
     .replace(/\{\{CREW_VERSION\}\}/g, SERVE_VERSION)
     .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
 

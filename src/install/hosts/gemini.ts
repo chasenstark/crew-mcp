@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { HostAdapter } from './types.js';
+import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,7 +34,14 @@ export const geminiAdapter: HostAdapter = {
   displayName: 'Gemini CLI',
 
   configPath: (home) => join(home, '.gemini', 'settings.json'),
-  skillPath: (home) => join(home, '.gemini', 'extensions', 'crew', 'SKILL.md'),
+  // skillPath here points at the NEW canonical location post-Phase-1
+  // (sibling-flat user-skills layout, ~/.gemini/skills/crew/SKILL.md).
+  // The legacy `~/.gemini/extensions/crew/SKILL.md` path is migrated
+  // via `skillInstallSpecFor`'s `legacyPathsToRemove`. Old install
+  // manifests still pointing at the extensions path get cleaned up
+  // through the manifest-recorded `skillPath` consulted by uninstall.
+  skillPath: (home) => join(home, '.gemini', 'skills', 'crew', 'SKILL.md'),
+  skillInstallSpecFor: geminiSkillInstallSpecFor,
 
   mergeMcpBlock(existing, crewBin, crewArgs) {
     const parsed = parseGeminiConfig(existing);
@@ -106,6 +114,33 @@ export const geminiAdapter: HostAdapter = {
     return stringifyGeminiConfig(parsed);
   },
 };
+
+/**
+ * Resolve the per-skill install spec. Sibling-flat user-skills layout
+ * (Phase 0 outcome): `~/.gemini/skills/<dir>/SKILL.md` where `<dir>` is
+ * the skill's id with `:` replaced by `-`. Frontmatter `name:` uses the
+ * same hyphenated form.
+ *
+ * Gemini RELOCATES the umbrella `crew` skill from the deprecated
+ * `~/.gemini/extensions/crew/SKILL.md` path (which never loaded due to
+ * the missing `gemini-extension.json`; see Phase 0 probe 1). The
+ * sub-skill `crew-iterate` doesn't have a legacy path. Both share the
+ * same `legacyPathsToRemove` rule by convention — anything at the old
+ * `~/.gemini/extensions/<dir>/SKILL.md` location gets cleaned up.
+ */
+function geminiSkillInstallSpecFor(
+  home: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
+  const dir = skill.id.replace(':', '-');
+  return {
+    skillPath: join(home, '.gemini', 'skills', dir, 'SKILL.md'),
+    frontmatterName: dir,
+    legacyPathsToRemove: [
+      join(home, '.gemini', 'extensions', dir, 'SKILL.md'),
+    ],
+  };
+}
 
 function parseGeminiConfig(raw: string): GeminiConfigShape {
   if (raw.trim().length === 0) return {};

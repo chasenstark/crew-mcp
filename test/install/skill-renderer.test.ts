@@ -11,12 +11,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  ITERATE_SKILL_DESCRIPTION,
   renderSkill,
   renderToolList,
   resolvePackageRoot,
+  SKILL_MANIFEST,
   stripHtmlComments,
   templatePathForHost,
   SKILL_DESCRIPTION,
+  type SkillManifestEntry,
   type SkillTool,
 } from '../../src/install/skill-renderer.js';
 
@@ -223,7 +226,9 @@ describe('renderSkill (codex template)', () => {
 });
 
 describe('renderSkill (gemini template)', () => {
-  it('substitutes BODY but uses no frontmatter', async () => {
+  it('emits SKILL.md frontmatter with name + description', async () => {
+    // Phase 0 outcome: Gemini relocates to ~/.gemini/skills/<dir>/SKILL.md
+    // and the template now carries a frontmatter block.
     const templatePath = templatePathForHost(REPO_ROOT, 'gemini');
     const out = await renderSkill({
       templatePath,
@@ -231,10 +236,112 @@ describe('renderSkill (gemini template)', () => {
       packageRoot: REPO_ROOT,
     });
 
-    expect(out).not.toMatch(/^---/);
+    expect(out).toMatch(/^---\nname: crew\ndescription: /);
+    expect(out).toContain(SKILL_DESCRIPTION);
     expect(out).toContain('# crew — orchestration playbook');
-    expect(out).toContain('Loaded as a Gemini extension');
     expect(out).toContain('mcp__crew__merge_run');
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+  });
+});
+
+describe('SKILL_MANIFEST', () => {
+  it('has unique skill ids and unique slugs', () => {
+    const ids = new Set<string>();
+    const slugs = new Set<string>();
+    for (const entry of SKILL_MANIFEST) {
+      expect(ids.has(entry.id)).toBe(false);
+      expect(slugs.has(entry.slug)).toBe(false);
+      ids.add(entry.id);
+      slugs.add(entry.slug);
+    }
+  });
+
+  it('has umbrella `crew` entry first (slug `crew`, body crew-captain.body.md)', () => {
+    const [umbrella] = SKILL_MANIFEST;
+    expect(umbrella.id).toBe('crew');
+    expect(umbrella.slug).toBe('crew');
+    expect(umbrella.bodyFile).toBe('crew-captain.body.md');
+    expect(umbrella.description).toBe(SKILL_DESCRIPTION);
+  });
+
+  it('has a `crew:iterate` entry with body crew-iterate.body.md', () => {
+    const iterate = SKILL_MANIFEST.find((s) => s.id === 'crew:iterate');
+    expect(iterate).toBeDefined();
+    expect(iterate?.slug).toBe('iterate');
+    expect(iterate?.bodyFile).toBe('crew-iterate.body.md');
+    expect(iterate?.description).toBe(ITERATE_SKILL_DESCRIPTION);
+  });
+
+  it('every entry has non-empty fields', () => {
+    for (const entry of SKILL_MANIFEST) {
+      expect(entry.id.length).toBeGreaterThan(0);
+      expect(entry.slug.length).toBeGreaterThan(0);
+      expect(entry.bodyFile.length).toBeGreaterThan(0);
+      expect(entry.description.length).toBeGreaterThan(20);
+    }
+  });
+});
+
+describe('renderSkill (crew:iterate skill)', () => {
+  const ITERATE_ENTRY = SKILL_MANIFEST.find((s) => s.id === 'crew:iterate')!;
+
+  it('renders the iterate body via the claude-code template', async () => {
+    const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
+    const spec = {
+      skillPath: '/tmp/ignored',
+      frontmatterName: 'crew-iterate',
+      legacyPathsToRemove: [],
+    };
+    const out = await renderSkill({
+      templatePath,
+      skill: ITERATE_ENTRY,
+      spec,
+      tools: TOOLS,
+      packageRoot: REPO_ROOT,
+    });
+
+    expect(out).toMatch(/^---\nname: crew-iterate\ndescription: /);
+    expect(out).toContain(ITERATE_SKILL_DESCRIPTION);
+    expect(out).toContain('iterate-to-acceptance playbook');
+    expect(out).toContain('acceptance criteria');
+    expect(out).toContain('Step 0');
+    // Tool list still substitutes.
+    expect(out).toContain('mcp__crew__run_agent');
+    // No placeholders left over.
+    expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+  });
+
+  it('honors per-host frontmatter name from spec', async () => {
+    const templatePath = templatePathForHost(REPO_ROOT, 'codex');
+    const spec: SkillManifestEntry & { frontmatterName: string } = {
+      ...ITERATE_ENTRY,
+      frontmatterName: 'crew-iterate',
+    };
+    const out = await renderSkill({
+      templatePath,
+      skill: ITERATE_ENTRY,
+      spec: {
+        skillPath: '/tmp/ignored',
+        frontmatterName: spec.frontmatterName,
+        legacyPathsToRemove: [],
+      },
+      tools: TOOLS,
+      packageRoot: REPO_ROOT,
+    });
+
+    expect(out).toMatch(/^---\nname: crew-iterate\n/);
+  });
+
+  it('defaults frontmatter name to skill slug when spec is omitted', async () => {
+    const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
+    const out = await renderSkill({
+      templatePath,
+      skill: ITERATE_ENTRY,
+      tools: TOOLS,
+      packageRoot: REPO_ROOT,
+    });
+
+    // Default falls back to skill.slug ("iterate").
+    expect(out).toMatch(/^---\nname: iterate\n/);
   });
 });

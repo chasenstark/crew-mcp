@@ -4,11 +4,42 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
 
 import { claudeCodeAdapter } from '../../../src/install/hosts/claude-code.js';
 
 const CMD = '/usr/local/bin/node';
 const ARGS = ['/abs/path/dist/index.js', 'serve'];
+
+describe('claudeCodeAdapter.skillInstallSpecFor', () => {
+  it('produces the v1-canonical path for the umbrella skill', () => {
+    const spec = claudeCodeAdapter.skillInstallSpecFor('/home/me', {
+      id: 'crew',
+      slug: 'crew',
+      bodyFile: 'crew-captain.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe(
+      join('/home/me', '.claude', 'skills', 'crew', 'SKILL.md'),
+    );
+    expect(spec.frontmatterName).toBe('crew');
+    expect(spec.legacyPathsToRemove).toEqual([]);
+  });
+
+  it('produces a sibling-flat path for crew:iterate (hyphenated dir + name)', () => {
+    const spec = claudeCodeAdapter.skillInstallSpecFor('/home/me', {
+      id: 'crew:iterate',
+      slug: 'iterate',
+      bodyFile: 'crew-iterate.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe(
+      join('/home/me', '.claude', 'skills', 'crew-iterate', 'SKILL.md'),
+    );
+    expect(spec.frontmatterName).toBe('crew-iterate');
+    expect(spec.legacyPathsToRemove).toEqual([]);
+  });
+});
 
 describe('claudeCodeAdapter.mergeMcpBlock', () => {
   it('writes a fresh config when input is empty', () => {

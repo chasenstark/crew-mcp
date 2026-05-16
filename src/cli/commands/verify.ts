@@ -88,14 +88,29 @@ export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     const entry = manifest.targets[targetId]!;
     const issues: string[] = [];
 
-    // 1. Skill file present.
-    if (!existsSync(entry.skillPath)) {
-      issues.push(`skill file missing: ${entry.skillPath}`);
-    } else {
-      const skill = await readFile(entry.skillPath, 'utf-8');
-      const referenced = extractToolReferences(skill);
-      const missing = expectedNames.filter((name) => !referenced.has(name));
-      const extras = [...referenced].filter((name) => !expectedNames.includes(name));
+    // 1. Skill file(s) present + tool-reference parity. Union references
+    // across ALL recorded skill files before comparing to the live
+    // catalog — a tool present in only one skill is fine; the failure
+    // mode is a live tool absent from every skill we installed.
+    const recordedSkillPaths = entry.skills && Object.keys(entry.skills).length > 0
+      ? Object.values(entry.skills)
+      : [entry.skillPath];
+    const union = new Set<string>();
+    let anySkillRead = false;
+    for (const skillPath of recordedSkillPaths) {
+      if (!existsSync(skillPath)) {
+        issues.push(`skill file missing: ${skillPath}`);
+        continue;
+      }
+      const skill = await readFile(skillPath, 'utf-8');
+      for (const ref of extractToolReferences(skill)) {
+        union.add(ref);
+      }
+      anySkillRead = true;
+    }
+    if (anySkillRead) {
+      const missing = expectedNames.filter((name) => !union.has(name));
+      const extras = [...union].filter((name) => !expectedNames.includes(name));
       if (missing.length > 0) {
         issues.push(`skill missing tool references: ${missing.join(', ')}`);
       }

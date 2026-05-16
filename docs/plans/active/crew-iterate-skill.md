@@ -1315,13 +1315,32 @@ The canonical ordering for every host migration is uniform:
 1. Acquire `home` install lock (POSIX `flock`).
 2. Preflight collision check: refuse if a target SKILL.md exists
    and is not crew-owned (per install manifest's `writtenPaths`).
-3. **Remove `legacyPathsToRemove` FIRST** (before staging the new
-   files). For Gemini, this removes the broken v1 file at
-   `~/.gemini/extensions/crew/SKILL.md`. For Claude/Codex,
-   `legacyPathsToRemove` is empty; the current v1 path IS canonical
-   and is overwritten in place during the atomic swap.
-4. Stage all rendered SKILL.md files to a temp directory.
-5. Atomically swap staged files into final positions.
+3. **Phase 1 — stage all rendered SKILL.md files** to siblings of
+   their final destinations (`<finalPath>.crew-staging-<pid>-<ts>`).
+   Sibling staging guarantees same-filesystem rename in Phase 2, which
+   is the only path POSIX guarantees atomic. **Renders happen BEFORE
+   any final-path mutation** so a render failure throws cleanly with
+   no orphaned files; the staging siblings are cleaned up in a
+   `finally`. (Amended 2026-05-16 from v5's "stage to a temp directory"
+   wording: sibling staging is a strict improvement; a central temp
+   dir can't guarantee same-FS rename when `~/.crew` and `~/.<host>`
+   are on different mounts.)
+4. **Remove `legacyPathsToRemove`** AFTER Phase 1 (so a render
+   failure doesn't trash the legacy file) and BEFORE Phase 2 (so the
+   swap loop sees a consistent destination layout). For Gemini, this
+   removes the broken v1 file at `~/.gemini/extensions/crew/SKILL.md`.
+   For Claude/Codex, `legacyPathsToRemove` is empty; the current v1
+   path IS canonical and is overwritten in place during the atomic
+   swap. (Amended 2026-05-16 from v5's "remove FIRST" wording: the
+   between-phases ordering is a strict improvement — render-failure
+   rollback now preserves the legacy file too.)
+5. **Phase 2 — atomic-swap each staging file into its final
+   destination** via a rollback ledger. For each swap: back up any
+   existing destination (`<finalPath>.crew-backup-<pid>-<ts>-<n>`),
+   then rename staging → final. On any swap failure mid-loop, reverse
+   completed swaps in reverse order (restore backup if there was one,
+   else unlink the new file). Backups are cleaned up best-effort on
+   success.
 6. Update install manifest (`writtenPaths`, `skills` map).
 7. Release lock.
 

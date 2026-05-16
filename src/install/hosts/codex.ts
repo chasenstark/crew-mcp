@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { HostAdapter } from './types.js';
+import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -79,6 +80,7 @@ export const codexAdapter: HostAdapter = {
 
   configPath: (home) => join(home, '.codex', 'config.toml'),
   skillPath: (home) => join(home, '.codex', 'skills', 'crew', 'SKILL.md'),
+  skillInstallSpecFor: codexSkillInstallSpecFor,
 
   mergeMcpBlock(existing, crewBin, crewArgs) {
     const block = renderCodexBlock(crewBin, crewArgs);
@@ -152,6 +154,25 @@ export const codexAdapter: HostAdapter = {
     return removeCrewToolBlocks(existing);
   },
 };
+
+/**
+ * Resolve the per-skill install spec. Sibling-flat personal-skills
+ * layout (Phase 0 outcome): `~/.codex/skills/<dir>/SKILL.md` where
+ * `<dir>` is the skill's id with `:` replaced by `-`. Frontmatter
+ * `name:` uses the same hyphenated form. The v1 umbrella path IS
+ * canonical, so `legacyPathsToRemove` is empty on Codex.
+ */
+function codexSkillInstallSpecFor(
+  home: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
+  const dir = skill.id.replace(':', '-');
+  return {
+    skillPath: join(home, '.codex', 'skills', dir, 'SKILL.md'),
+    frontmatterName: dir,
+    legacyPathsToRemove: [],
+  };
+}
 
 // Codex's per-tool approval_mode schema: auto | prompt | approve.
 // Empirically (codex-cli 0.128.0):

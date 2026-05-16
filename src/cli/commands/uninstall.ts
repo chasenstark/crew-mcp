@@ -65,14 +65,19 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
         }
       }
 
-      // 2. Delete skill file(s). Try the manifest-recorded path first
-      // (truth for what we actually wrote), then the current adapter
-      // path (for installs whose manifest entry was lost). Both are
-      // idempotent — missing files are no-ops.
-      const recorded = manifest.targets[targetId]?.skillPath;
-      const current = adapter.skillPath(home);
-      const skillPaths = recorded && recorded !== current ? [recorded, current] : [current];
-      for (const skillPath of skillPaths) {
+      // 2. Delete skill file(s). Walk every path we might have written
+      // — `writtenPaths` (authoritative v2 list), `skills` (multi-skill
+      // map), the back-compat `skillPath` (for hand-edited manifests
+      // pointing at a legacy location), and the current adapter's
+      // umbrella path (for installs whose manifest entry was lost).
+      // All operations are idempotent — missing files are no-ops.
+      const target = manifest.targets[targetId];
+      const candidatePaths = new Set<string>();
+      for (const p of target?.writtenPaths ?? []) candidatePaths.add(p);
+      for (const p of Object.values(target?.skills ?? {})) candidatePaths.add(p);
+      if (target?.skillPath) candidatePaths.add(target.skillPath);
+      candidatePaths.add(adapter.skillPath(home));
+      for (const skillPath of candidatePaths) {
         if (existsSync(skillPath)) {
           rmSync(skillPath, { force: true });
         }

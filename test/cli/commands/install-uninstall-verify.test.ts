@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -73,20 +74,42 @@ describe('install / verify / uninstall — happy path', () => {
     expect(skill).toContain('## Crew — orchestration playbook');
     expect(skill).toContain('mcp__crew__run_agent');
 
+    // crew:iterate sub-skill also written (Phase 2 of crew-iterate-skill plan)
+    const iteratePath = adapter.skillInstallSpecFor(home, {
+      id: 'crew:iterate',
+      slug: 'iterate',
+      bodyFile: 'crew-iterate.body.md',
+      description: '',
+    }).skillPath;
+    expect(existsSync(iteratePath)).toBe(true);
+    const iterateSkill = readFileSync(iteratePath, 'utf-8');
+    expect(iterateSkill).toContain('acceptance criteria');
+    expect(iterateSkill).toContain('Step 0');
+    expect(iterateSkill).toContain('mcp__crew__run_agent');
+
     // Config file merged
     const config = readFileSync(adapter.configPath(home), 'utf-8');
     expect(config).toContain('[mcp_servers.crew]');
     expect(config).toContain(`command = "${STUB_BIN.command}"`);
 
-    // Manifest written
+    // Manifest written (v2 schema; multi-skill `skills` map).
     const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
       schemaVersion: number;
-      targets: Record<string, { configPath: string; skillPath: string; version: string }>;
+      targets: Record<string, {
+        configPath: string;
+        skillPath: string;
+        skills: Record<string, string>;
+        writtenPaths: string[];
+        version: string;
+      }>;
     };
-    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.schemaVersion).toBe(2);
     expect(manifest.targets.codex).toBeDefined();
     expect(manifest.targets.codex.configPath).toBe(adapter.configPath(home));
     expect(manifest.targets.codex.skillPath).toBe(adapter.skillPath(home));
+    expect(manifest.targets.codex.skills.crew).toBe(adapter.skillPath(home));
+    expect(manifest.targets.codex.skills['crew:iterate']).toMatch(/crew-iterate\/SKILL\.md$/);
+    expect(manifest.targets.codex.writtenPaths).toContain(adapter.skillPath(home));
     expect(manifest.targets.codex.version).toMatch(/0\.2\.0/);
   });
 
@@ -360,10 +383,22 @@ describe('install / verify / uninstall — happy path', () => {
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
       ...CLAUDE_CREW_WAIT_ON_PATH,
     });
-    const skillPath = HOST_ADAPTERS.codex.skillPath(home);
-    const original = readFileSync(skillPath, 'utf-8');
-    const corrupted = original.replace(/mcp__crew__merge_run/g, 'NUKED');
-    writeFileSync(skillPath, corrupted, 'utf-8');
+    // Verify unions tool references across ALL installed skill files
+    // (per crew-iterate-skill plan §verify parity). Corrupt every
+    // skill that was written so the union is genuinely missing the
+    // reference.
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { skills?: Record<string, string>; skillPath: string }>;
+    };
+    const codexTarget = manifest.targets.codex;
+    const allSkillPaths = codexTarget.skills
+      ? Object.values(codexTarget.skills)
+      : [codexTarget.skillPath];
+    for (const skillPath of allSkillPaths) {
+      const original = readFileSync(skillPath, 'utf-8');
+      const corrupted = original.replace(/mcp__crew__merge_run/g, 'NUKED');
+      writeFileSync(skillPath, corrupted, 'utf-8');
+    }
 
     const report = await verifyCommand({ home });
     expect(report.ok).toBe(false);
@@ -774,6 +809,186 @@ describe('install / verify / uninstall — happy path', () => {
       selectTargets: async () => [],
     });
     expect(result.installed).toEqual([]);
+    expect(result.skipped).toEqual([]);
+  });
+
+  it('preflight refuses to overwrite a non-crew-owned SKILL.md', async () => {
+    // Plan §"Atomicity & locking requirements" preflight collision
+    // check: if a target SKILL.md exists at the install destination
+    // AND wasn't recorded as crew-owned in the manifest, refuse.
+    const adapter = HOST_ADAPTERS.codex;
+    const skillPath = adapter.skillPath(home);
+    mkdirSync(dirname(skillPath), { recursive: true });
+    writeFileSync(skillPath, '# user-authored skill file, not ours\n', 'utf-8');
+
+    const result = await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    expect(result.installed).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0].reason).toMatch(/refusing to overwrite/);
+    // User's file is untouched.
+    expect(readFileSync(skillPath, 'utf-8')).toBe('# user-authored skill file, not ours\n');
+  });
+
+  it('after a successful install, no .crew-staging-* or .crew-backup-* files remain', async () => {
+    // Hygiene check for the two-phase commit (plan §"Per-host migration"
+    // steps 4-5): renderAndWriteSkills must clean up both the staging
+    // sibling files (after rename in Phase 2) and any backup files
+    // (after Phase 2 success).
+    const args = {
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    };
+    await installCommand(args);
+
+    // Reinstall — this exercises the backup-existing-then-rename path.
+    await installCommand(args);
+
+    // Walk both crew-skill directories and assert no leftover artifacts.
+    const skillRoots = [
+      join(home, '.codex', 'skills', 'crew'),
+      join(home, '.codex', 'skills', 'crew-iterate'),
+    ];
+    for (const root of skillRoots) {
+      const entries = readdirSync(root);
+      const leftovers = entries.filter((f) =>
+        f.includes('.crew-staging-') || f.includes('.crew-backup-'),
+      );
+      expect(leftovers).toEqual([]);
+    }
+  });
+
+  it('Phase 1 render failure leaves no skill files written and no staging leftovers', async () => {
+    // Point install at a packageRoot whose skills/ directory is
+    // missing crew-iterate.body.md. Phase 1 will render the umbrella
+    // skill OK, write it to a staging sibling, then fail trying to
+    // load the iterate body. Phase 2 must NOT have run (nothing on
+    // final destinations) and the staging files must be cleaned up.
+    const pkgRoot = mkdtempSync(join(tmpdir(), 'crew-pkg-partial-'));
+    try {
+      // Copy targets/ verbatim — they don't depend on the bodies.
+      const srcTargets = join(process.cwd(), 'skills', 'targets');
+      const dstTargets = join(pkgRoot, 'skills', 'targets');
+      mkdirSync(dstTargets, { recursive: true });
+      for (const f of readdirSync(srcTargets)) {
+        writeFileSync(
+          join(dstTargets, f),
+          readFileSync(join(srcTargets, f), 'utf-8'),
+          'utf-8',
+        );
+      }
+      // Only the umbrella body — iterate body is intentionally absent.
+      writeFileSync(
+        join(pkgRoot, 'skills', 'crew-captain.body.md'),
+        '## Crew umbrella\n\n{{TOOL_LIST}}\n',
+        'utf-8',
+      );
+
+      const result = await installCommand({
+        target: 'codex',
+        home,
+        packageRoot: pkgRoot,
+        skipRunningCheck: true,
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      });
+      expect(result.installed).toEqual([]);
+      expect(result.skipped).toHaveLength(1);
+
+      // Final destinations untouched (Phase 2 never ran).
+      const adapter = HOST_ADAPTERS.codex;
+      expect(existsSync(adapter.skillPath(home))).toBe(false);
+      const iteratePath = join(home, '.codex', 'skills', 'crew-iterate', 'SKILL.md');
+      expect(existsSync(iteratePath)).toBe(false);
+
+      // Staging hygiene: no leftover .crew-staging-* siblings anywhere
+      // under the host's skills dir.
+      const crewSkillDir = join(home, '.codex', 'skills', 'crew');
+      const iterateSkillDir = join(home, '.codex', 'skills', 'crew-iterate');
+      for (const dir of [crewSkillDir, iterateSkillDir]) {
+        if (!existsSync(dir)) continue;
+        const leftovers = readdirSync(dir).filter((f) => f.includes('.crew-staging-'));
+        expect(leftovers).toEqual([]);
+      }
+    } finally {
+      rmSync(pkgRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('Phase 1 render failure preserves prior install content (no half-overwrite)', async () => {
+    // Full install with the real package root → both skills land.
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const adapter = HOST_ADAPTERS.codex;
+    const umbrellaBefore = readFileSync(adapter.skillPath(home), 'utf-8');
+    const iteratePath = join(home, '.codex', 'skills', 'crew-iterate', 'SKILL.md');
+    const iterateBefore = readFileSync(iteratePath, 'utf-8');
+
+    // Re-install against a broken packageRoot (missing iterate body).
+    const pkgRoot = mkdtempSync(join(tmpdir(), 'crew-pkg-partial-'));
+    try {
+      const srcTargets = join(process.cwd(), 'skills', 'targets');
+      const dstTargets = join(pkgRoot, 'skills', 'targets');
+      mkdirSync(dstTargets, { recursive: true });
+      for (const f of readdirSync(srcTargets)) {
+        writeFileSync(
+          join(dstTargets, f),
+          readFileSync(join(srcTargets, f), 'utf-8'),
+          'utf-8',
+        );
+      }
+      // Umbrella present, iterate absent — render of iterate will throw.
+      writeFileSync(
+        join(pkgRoot, 'skills', 'crew-captain.body.md'),
+        '## Different umbrella content\n\n{{TOOL_LIST}}\n',
+        'utf-8',
+      );
+
+      const result = await installCommand({
+        target: 'codex',
+        home,
+        packageRoot: pkgRoot,
+        skipRunningCheck: true,
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      });
+      expect(result.installed).toEqual([]);
+
+      // Prior files MUST remain — the failed install must not have
+      // replaced the umbrella with the new (different) content.
+      expect(readFileSync(adapter.skillPath(home), 'utf-8')).toBe(umbrellaBefore);
+      expect(readFileSync(iteratePath, 'utf-8')).toBe(iterateBefore);
+    } finally {
+      rmSync(pkgRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preflight allows re-install over a crew-owned SKILL.md (idempotency preserved)', async () => {
+    // After a successful install, the SKILL.md is in writtenPaths;
+    // re-running install MUST NOT trip the preflight.
+    const args = {
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    };
+    await installCommand(args);
+    const result = await installCommand(args);
+    expect(result.installed).toEqual(['codex']);
     expect(result.skipped).toEqual([]);
   });
 });
