@@ -380,3 +380,355 @@ implementation locks in:
    working Gemini extension (e.g., one of the official Google
    marketplace extensions) before committing to the user-skills
    migration.
+
+## Probe results (Phase 0 - 2026-05-16)
+
+**Execution note:** The setup script was run in the captain's
+session after the codex implementer drafted the source-confirmed
+outcomes. Empirical verification then performed via fresh
+`claude -p` and `codex exec` sessions, which led to substantial
+revision of two probe outcomes from source-confirmed PASS to
+empirical FAIL.
+
+**Headline finding:** The plan's Claude Code plugin-layout
+proposal is **NOT VIABLE** as drafted. Dropping
+`.claude-plugin/plugin.json` files in `~/.claude/skills/` does
+NOT register a plugin — Claude Code requires explicit installation
+via marketplace (`claude plugin install <plugin>@<marketplace>`)
+with plugins cached under `~/.claude/plugins/cache/`. The only
+viable Claude Code option for crew is **sibling-flat
+personal-skills** (no namespace, `/crew` and `/crew-iterate` as
+slash triggers). For Codex, the plugin layout DOES work, but for
+cross-host simplicity, sibling-flat is recommended everywhere.
+
+### Probe 1 - Gemini current-install validity
+
+**Files written:** none. Direct inspection only; the real install at
+`~/.gemini/extensions/crew/` was not modified.
+
+**Method used:** `direct-inspection` + `source-code`.
+
+**Outcome:** FAIL. The current install has only
+`~/.gemini/extensions/crew/SKILL.md`; it has no
+`gemini-extension.json` and no `skills/` subdirectory. Gemini's
+extension manager loads skills from
+`path.join(effectiveExtensionPath, 'skills')`, and the skill loader
+returns no skills when that directory is absent.
+
+**Source reference:** `google-gemini/gemini-cli`
+`packages/cli/src/config/extension-manager.ts:921-923`;
+`packages/core/src/skills/skillLoader.ts:121-128`.
+
+**Phase 1 plan impact:** Confirms the relocation concern in
+`docs/plans/active/crew-iterate-skill.md:383` and
+`docs/plans/active/crew-iterate-skill.md:398`. The Gemini migration
+should treat the current extension-root `SKILL.md` as non-loading
+skill state unless a user reload proves otherwise.
+
+### Probe 2 - Claude plugin-layout multi-skill discovery
+
+**Files written:** setup script target:
+`~/.claude/skills/crew-iterate-spike-plugin/.claude-plugin/plugin.json`,
+`~/.claude/skills/crew-iterate-spike-plugin/skills/test-spike-one/SKILL.md`,
+and
+`~/.claude/skills/crew-iterate-spike-plugin/skills/test-spike-two/SKILL.md`.
+
+**Method used:** `empirical-host-reload` via `claude -p`.
+
+**Outcome:** **FAIL.** A fresh `claude -p` session does NOT
+discover `/crew-iterate-spike-plugin:test-spike-one` or
+`:test-spike-two`. They are absent from the available-skills
+list, while sibling personal-skill paths (probe 3) ARE
+discovered in the same listing.
+
+**Root cause:** Claude Code's plugin discovery only loads
+plugins INSTALLED through `claude plugin install <plugin>@<marketplace>`.
+Installed plugins live at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`
+with their state tracked in `~/.claude/plugins/installed_plugins.json`.
+Dropping `.claude-plugin/plugin.json` files under `~/.claude/skills/`
+is treated as a personal-skill directory whose root SKILL.md
+(if present) would be the personal skill; nested
+`skills/<name>/SKILL.md` files inside that directory are
+**ignored**. The docs are accurate about the *bundled* plugin
+layout but did not specify the *sideload* pathway, which does
+not exist.
+
+**Source reference:** Empirical evidence + `claude plugin --help`
+shows install/uninstall/enable/disable via marketplaces;
+`~/.claude/plugins/installed_plugins.json` tracks the v2 plugin
+state.
+
+**Phase 1 plan impact (CRITICAL):** The Claude Code plugin
+layout proposal in `docs/plans/active/crew-iterate-skill.md:337–359`
+must be dropped. Replace with sibling-flat personal-skills layout:
+`~/.claude/skills/crew/SKILL.md` (umbrella, `name: crew`) +
+`~/.claude/skills/crew-iterate/SKILL.md` (sub-skill, `name:
+crew-iterate`). Slash triggers become `/crew` and `/crew-iterate`
+(no namespace). This is identical to the fallback layout the
+plan already documented as a backup.
+
+### Probe 3 - Claude sibling-flat fallback
+
+**Files written:** setup script target:
+`~/.claude/skills/crew-iterate-spike-flat/SKILL.md`.
+
+**Method used:** `empirical-host-reload` via `claude -p`.
+
+**Outcome:** **PASS (empirical).** Fresh `claude -p` session
+discovers `crew-iterate-spike-flat` in the available-skills list.
+
+**Source reference:** Claude Code docs
+`https://code.claude.com/docs/en/skills` lines 155-164.
+
+**Phase 1 plan impact:** Keeps the fallback in
+`docs/plans/active/crew-iterate-skill.md:1469` through
+`docs/plans/active/crew-iterate-skill.md:1475` viable if probe 2
+fails under local reload.
+
+### Probe 4 - Codex sibling-flat fallback
+
+**Files written:** setup script target:
+`~/.codex/skills/crew-iterate-spike-flat/SKILL.md`.
+
+**Method used:** `empirical-host-reload` via `codex exec`.
+
+**Outcome:** **PASS (empirical).** Codex's skill list includes
+`crew-iterate-spike-flat`.
+
+**Source reference:** `openai/codex`
+`codex-rs/core-skills/src/loader.rs:121-123`,
+`codex-rs/core-skills/src/loader.rs:456-575`, and
+`codex-rs/core-skills/src/loader.rs:615-621`.
+
+**Phase 1 plan impact:** Supports the Codex loader assumptions in
+`docs/plans/active/crew-iterate-skill.md:378` through
+`docs/plans/active/crew-iterate-skill.md:381`.
+
+### Probe 5 - Gemini marketplace extension convention spot-check
+
+**Files written:** none.
+
+**Method used:** `source-code`.
+
+**Outcome:** PASS. The upstream Gemini extension manager hydrates an
+extension and then calls `loadSkillsFromDir(path.join(
+effectiveExtensionPath, 'skills'))`; the skill loader itself only
+globs `SKILL.md` and `*/SKILL.md` under the directory it is handed.
+That confirms the spike's claim that extension skills belong under
+`<extension>/skills/`, not the extension root.
+
+**Source reference:** `google-gemini/gemini-cli`
+`packages/cli/src/config/extension-manager.ts:921-927`;
+`packages/core/src/skills/skillLoader.ts:115-128`.
+
+**Phase 1 plan impact:** Reinforces the Gemini relocation plan in
+`docs/plans/active/crew-iterate-skill.md:383` through
+`docs/plans/active/crew-iterate-skill.md:404`.
+
+### Probe 6 - Claude plugin.json minimum field set
+
+**Files written:** setup script target variants:
+`~/.claude/skills/crew-iterate-spike-min-name-version/.claude-plugin/plugin.json`,
+`~/.claude/skills/crew-iterate-spike-min-name-only/.claude-plugin/plugin.json`,
+and
+`~/.claude/skills/crew-iterate-spike-min-empty/.claude-plugin/plugin.json`,
+each with a `skills/min-fields/SKILL.md` stub.
+
+**Method used:** `empirical-host-reload` via both `claude -p` and
+`codex exec`.
+
+**Outcome (Claude):** **N/A.** None of the three plugin-layout
+variants registered, because Claude rejects ALL sideloaded
+plugin layouts in `~/.claude/skills/` (see Probe 2). The
+minimum-fields question is moot for Claude.
+
+**Outcome (Codex, bonus finding):** **All three variants PASS,
+including `{}`.** Codex discovers
+`crew-iterate-spike-min-name-version:min-fields`,
+`crew-iterate-spike-min-name-only:min-fields`, AND
+`crew-iterate-spike-min-empty:min-fields`. Codex's namespace
+logic accepts any well-formed `.claude-plugin/plugin.json`
+including an empty object — it does NOT validate fields.
+
+**Phase 1 plan impact:** The "Claude plugin minimum field set"
+question is moot — Claude doesn't sideload plugins. For Codex,
+the `{"name": "...", "version": "..."}` manifest is fine (Codex
+is permissive); no field-set adjustment needed.
+
+### Probe 7 - Codex v1/v2 coexistence behavior
+
+**Files written:** setup script target:
+`~/.codex/skills/crew-iterate-spike-coex/SKILL.md` (v1 root, no
+plugin manifest) and
+`~/.codex/skills/crew-iterate-spike-coex/skills/crew-iterate-spike-coex/SKILL.md`
+(v2 nested, with `.claude-plugin/plugin.json` in the ancestor —
+**note: setup script puts `.claude-plugin/` in the Claude path
+for this probe, not the Codex path; Codex's nested SKILL.md
+inherits the namespace from the Claude-side manifest because
+the codex skill tree is sibling but Codex's plugin_namespace
+resolver only searches the SAME tree, so this test was incomplete
+on Codex** — see resolution below).
+
+**Method used:** `empirical-host-reload` via `codex exec`.
+
+**Outcome:** **CONFIRMED DOUBLE-LOAD (different namespaces).**
+Codex's skill list shows BOTH `crew-iterate-spike-coex` (the v1
+root, with bare name) AND
+`crew-iterate-spike-coex:crew-iterate-spike-coex` (the v2 nested,
+namespaced via the plugin manifest that Codex found via its
+6-deep BFS-with-ancestor-search). These are different names so
+there's no strict collision, but a user sees two entries that
+look like duplicates.
+
+**Phase 1 plan impact:** Reinforces "remove v1 first" rule.
+However, with the recommended simplification to **sibling-flat
+on ALL hosts** (per Probe 2's revised outcome), Codex would
+use `~/.codex/skills/crew/SKILL.md` + `~/.codex/skills/crew-iterate/SKILL.md`
+(no plugin manifest), so the plugin-coexistence scenario no
+longer applies. The remove-v1-first ordering is still good
+hygiene for any future migration scenario.
+
+**Source reference:** `openai/codex`
+`codex-rs/core-skills/src/loader.rs:193-205`,
+`codex-rs/core-skills/src/loader.rs:220-225`,
+`codex-rs/core-skills/src/loader.rs:572-575`, and
+`codex-rs/core-skills/src/loader.rs:651-660`.
+
+**Phase 1 plan impact:** Confirms the "remove v1 first" ordering in
+`docs/plans/active/crew-iterate-skill.md:1388` through
+`docs/plans/active/crew-iterate-skill.md:1392` and the Codex
+double-load warning in `docs/plans/active/crew-iterate-skill.md:1421`
+through `docs/plans/active/crew-iterate-skill.md:1428`.
+
+### Probe 8 - Claude v1/v2 coexistence behavior
+
+**Files written:** setup script targets:
+`~/.claude/skills/crew-iterate-spike-coex/SKILL.md` (v1 personal
+root),
+`~/.claude/skills/crew-iterate-spike-coex/.claude-plugin/plugin.json`
+(plugin manifest), and
+`~/.claude/skills/crew-iterate-spike-coex/skills/crew-iterate-spike-coex/SKILL.md`
+(v2 nested plugin-style).
+
+**Method used:** `empirical-host-reload` via `claude -p`.
+
+**Outcome:** **The v2 plugin path NEVER registers; only v1
+personal-skill loads.** Claude's available-skills list shows
+only `crew-iterate-spike-coex` (the v1 root SKILL.md). The v2
+nested `crew-iterate-spike-coex:crew-iterate-spike-coex` does
+NOT appear, confirming Probe 2's finding that plugin layouts
+sideloaded under `~/.claude/skills/` are ignored.
+
+**Phase 1 plan impact:** With the recommended simplification to
+sibling-flat on Claude (per Probe 2's revised outcome), there
+is no v1/v2 coexistence scenario — both real install paths
+become `~/.claude/skills/crew/SKILL.md` and
+`~/.claude/skills/crew-iterate/SKILL.md`. The current v1 install
+at `~/.claude/skills/crew/SKILL.md` is already at the canonical
+Phase 1 location; only the new sibling at `crew-iterate/` needs
+to be added. **Migration becomes a pure-add operation on Claude
+— no relocation needed.**
+
+## User reload verification
+
+Run the setup script first:
+
+```bash
+./scripts/phase0-probes-setup.sh
+```
+
+Then verify the host-visible probes:
+
+```bash
+# Claude Code: start a fresh session, then inspect /skills.
+claude
+/skills
+# Expected entries:
+# /crew-iterate-spike-plugin:test-spike-one
+# /crew-iterate-spike-plugin:test-spike-two
+# /crew-iterate-spike-flat
+# Probe 8: record whether both, one, or neither of these appear:
+# /crew-iterate-spike-coex
+# /crew-iterate-spike-coex:crew-iterate-spike-coex
+
+# Codex: start a fresh session and inspect available skills.
+codex
+# Ask: "List available skills named crew-iterate-spike-flat or crew-iterate-spike-coex."
+# Expected from source:
+# crew-iterate-spike-flat
+# two crew-iterate-spike-coex entries with different SKILL.md paths
+
+# Gemini current install check, without writing spike files:
+gemini
+/skills list
+# Expected from source/direct inspection:
+# crew should NOT appear from ~/.gemini/extensions/crew/SKILL.md.
+```
+
+Cleanup after verification:
+
+```bash
+./scripts/phase0-probes-cleanup.sh
+```
+
+## Next steps for Phase 1 (revised 2026-05-16 post-empirical)
+
+The empirical results force a **major plan simplification**:
+sibling-flat personal-skills layout on ALL THREE hosts. Plugin
+layouts are dropped from the plan.
+
+**Revised install layout per host:**
+
+| Host | Umbrella `crew` | Sub-skill `crew-iterate` | Frontmatter `name:` | Slash trigger |
+| --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude/skills/crew/SKILL.md` | `~/.claude/skills/crew-iterate/SKILL.md` | `crew` / `crew-iterate` | `/crew`, `/crew-iterate` |
+| Codex | `~/.codex/skills/crew/SKILL.md` | `~/.codex/skills/crew-iterate/SKILL.md` | `crew` / `crew-iterate` | `crew`, `crew-iterate` |
+| Gemini | `~/.gemini/skills/crew/SKILL.md` | `~/.gemini/skills/crew-iterate/SKILL.md` | `crew` / `crew-iterate` | `crew-iterate` |
+
+**What this simplification eliminates from the plan:**
+
+1. `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`
+   writes — gone.
+2. `PluginManifestSpec` type and the `pluginManifests` field on
+   `SkillInstallSpec` — can be removed (or kept empty for
+   future plugin-marketplace support).
+3. The Claude umbrella SKILL.md "move from
+   `~/.claude/skills/crew/SKILL.md` to
+   `~/.claude/skills/crew/skills/crew/SKILL.md`" migration — not
+   needed. The current v1 location IS the canonical path under
+   sibling-flat.
+4. Codex v1/v2 layout move — not needed. Current v1 location
+   `~/.codex/skills/crew/SKILL.md` IS canonical.
+5. Plugin manifest minimum-field probe — moot.
+6. The cross-host trigger-name divergence note that contrasted
+   `/crew:iterate` vs `crew:iterate` vs `crew-iterate` — now
+   simpler: `/crew-iterate` vs `crew-iterate` vs `crew-iterate`,
+   with Claude using the slash prefix and the others not.
+
+**What remains in the plan:**
+
+1. `SKILL_MANIFEST` with two entries (`crew` and `crew:iterate`).
+2. `SkillInstallSpec` per host (path + frontmatter name +
+   legacy paths to remove).
+3. `verify` parity union across both skill files.
+4. v1→v2 install-manifest schema bump tracking BOTH skill paths.
+5. Gemini relocation from `~/.gemini/extensions/crew/SKILL.md`
+   (broken today, per probe 1) to `~/.gemini/skills/crew/SKILL.md`
+   + add `~/.gemini/skills/crew-iterate/SKILL.md`.
+6. Atomic writes + per-`home` install lock (POSIX flock).
+7. `writtenPaths` tracking for thorough uninstall.
+
+**What changes on the iterate skill body:**
+
+- `name: crew-iterate` (not `crew:iterate`) on all three hosts —
+  Claude's lack of colon-in-name personal skills aligns it with
+  Gemini's existing constraint.
+- Slash trigger note simplifies: "Claude: `/crew-iterate`;
+  Codex/Gemini: `crew-iterate`."
+- All previous discussion of "namespacing varies per host" can
+  be condensed.
+
+**Future work (V2+):** if Claude Code adds a sideload-able
+plugin pathway, OR if crew migrates to a Claude Code marketplace
+plugin distribution model, the plan can be revisited. For now,
+sibling-flat is the canonical path.
