@@ -30,13 +30,23 @@ import { fileURLToPath } from 'node:url';
 import { SERVE_VERSION } from '../cli/commands/serve.js';
 
 /**
- * Phrase tuned for Claude Code's skill auto-matcher. Triggers on intent
- * like "have <agent> review this" or "dispatch X to Y" — the phrasings
- * we want to load on. Keep concise; Claude's matcher weights the
- * description heavily.
+ * Phrase tuned for Claude Code's skill auto-matcher. Uses the
+ * TRIGGER/SKIP format (cf. the built-in `claude-api` skill) to widen
+ * the net: enumerates supported model aliases the user is likely to
+ * name (Claude/sonnet/opus, Codex, Gemini, local), task types beyond
+ * coding (review, investigation, spec-writing, audits, spikes, triage),
+ * project-specific vocabulary the user actually reaches for (crew,
+ * panel, subagent, peer), dispatch verbs (have/ask/send to, kick off,
+ * spawn, fan out, offload, hand off, delegate, race, fire off), and a
+ * SKIP clause that sharpens the matcher by ruling out inline TaskCreate
+ * dispatches and local shell commands. Worktree isolation is described
+ * as the default rather than universal — read-only runs reuse the
+ * current tree (`run_agent --read_only`). Loaded into every session's
+ * context, so the byte cost is permanent — keep additions matcher-load-
+ * bearing, not decorative.
  */
 export const SKILL_DESCRIPTION =
-  'Dispatch coding work to other AI agents (Claude, Codex, Gemini, local models) in worktree-isolated runs. Use when the user wants to have one agent review another, run parallel implementations, or delegate to a different model. Provides run_agent / continue_run / merge_run / discard_run / get_run_status verbs.';
+  'Dispatch work to another AI agent (Claude, Codex, Gemini, sonnet, opus, local models) — coding, code review, investigations, exploration, spec-writing, refactors, audits, drafts, prototypes, spikes, triage. Runs in an isolated git worktree by default, or read-only against the current tree for review/triage. TRIGGER when the user: asks another model or agent (by name or generically) to do, review, critique, investigate, audit, draft, prototype, spike, or double-check work; wants a second opinion, second pair of eyes, cross-model comparison, panel of agents, or crew run; says "have/ask/send to/use <model>", "another Claude/Codex/Gemini", "subagent", "peer", "crew", "panel", "in parallel", "in the background", "while I…", "offload", "hand off", "delegate", "fan out", "kick off", "spawn", "fire off", or "race"; or wants long-running work that doesn\'t block the chat. SKIP when the user wants an inline subagent (TaskCreate) or a local shell command.';
 
 export interface SkillTool {
   readonly name: string;
