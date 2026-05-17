@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 import {
   ITERATE_SKILL_DESCRIPTION,
@@ -242,6 +243,59 @@ describe('renderSkill (gemini template)', () => {
     expect(out).toContain('mcp__crew__merge_run');
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
+});
+
+describe('renderSkill frontmatter — YAML parses cleanly (regression guard)', () => {
+  // The description string contains colon-space sequences ("TRIGGER
+  // when the user: asks...") that break unquoted YAML scalars. The
+  // template MUST emit the description as a block/quoted scalar so the
+  // installed SKILL.md parses without `mapping values are not allowed`
+  // errors at host CLI load time. This test parses the rendered
+  // frontmatter and asserts the round-tripped value matches the
+  // source constant byte-for-byte.
+
+  function parseFrontmatter(rendered: string): Record<string, unknown> {
+    const match = rendered.match(/^---\n([\s\S]*?)\n---/);
+    if (!match) throw new Error('no frontmatter block found');
+    return parseYaml(match[1]) as Record<string, unknown>;
+  }
+
+  it.each(['claude-code', 'codex', 'gemini'] as const)(
+    '%s template renders description as a YAML scalar matching SKILL_DESCRIPTION',
+    async (host) => {
+      const templatePath = templatePathForHost(REPO_ROOT, host);
+      const out = await renderSkill({
+        templatePath,
+        tools: TOOLS,
+        packageRoot: REPO_ROOT,
+      });
+      const fm = parseFrontmatter(out);
+      expect(fm.name).toBe('crew');
+      expect(fm.description).toBe(SKILL_DESCRIPTION);
+    },
+  );
+
+  it.each(['claude-code', 'codex', 'gemini'] as const)(
+    '%s template renders crew-iterate description matching ITERATE_SKILL_DESCRIPTION',
+    async (host) => {
+      const iterate = SKILL_MANIFEST.find((s) => s.id === 'crew:iterate')!;
+      const templatePath = templatePathForHost(REPO_ROOT, host);
+      const out = await renderSkill({
+        templatePath,
+        skill: iterate,
+        spec: {
+          skillPath: '/tmp/ignored',
+          frontmatterName: 'crew-iterate',
+          legacyPathsToRemove: [],
+        },
+        tools: TOOLS,
+        packageRoot: REPO_ROOT,
+      });
+      const fm = parseFrontmatter(out);
+      expect(fm.name).toBe('crew-iterate');
+      expect(fm.description).toBe(ITERATE_SKILL_DESCRIPTION);
+    },
+  );
 });
 
 describe('SKILL_MANIFEST', () => {
