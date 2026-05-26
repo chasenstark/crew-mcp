@@ -18,6 +18,22 @@ export interface WorkflowExecutionConfig {
   mode: 'linear' | 'judgment';
 }
 
+export interface IterateAgentDefaultsConfig {
+  implementer?: string;
+  reviewers?: string[];
+  banList?: string[];
+}
+
+export interface PanelAgentDefaultsConfig {
+  reviewers?: string[];
+  banList?: string[];
+}
+
+export interface WorkflowAgentDefaultsConfig {
+  iterate?: IterateAgentDefaultsConfig;
+  panel?: PanelAgentDefaultsConfig;
+}
+
 export interface AgentConfig {
   adapter?: string;
   auth?: string;
@@ -39,6 +55,7 @@ export interface WorkflowConfig {
   execution?: WorkflowExecutionConfig;
   steps: WorkflowStep[];
   roleModels?: Record<string, string>;
+  agentDefaults?: WorkflowAgentDefaultsConfig;
   completion: {
     strategy: string;
     fallback: string;

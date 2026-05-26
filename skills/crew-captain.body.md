@@ -536,6 +536,38 @@ list. Truncation and drops emit `warnings` on the envelope (non-fatal).
 
 When you want N agents to review the same implementer in parallel,
 `run_panel` collapses dispatch + collection into three calls.
+Agent-picking for iterate loops happens in `crew-iterate` Step 0.5;
+the gate below is the parallel flow for ad hoc review panels.
+
+### Confirm reviewer picks
+
+Before calling `run_panel` without an explicit reviewer list, confirm
+the reviewers with the user. Call `list_agents`, then call
+`get_crew_preferences({scope: "panel"})` if that tool exists in this
+install. Respect `panel.reviewers` and `panel.banList` from the
+preferences, filter out unavailable agents and your own host product,
+then fall back to the same heterogeneity heuristic only when no user
+default is present.
+
+Surface to the user verbatim:
+
+> Agents for this panel:
+> - Reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
+>
+> Override (e.g., "add reviewer <id>", "drop reviewer <id>",
+> "use only <id>") or OK.
+
+Wait for OK. Silence is not consent. If the user overrides, restate
+the final reviewer list and ask again. Include the final reviewer-pick
+block in downstream panel prompts so later reviewers can audit
+agent-drift across rounds.
+
+#### Override grammar
+
+Recognize these phrases consistently:
+- `add reviewer <id>` / `drop reviewer <id>` → mutate reviewer set.
+- `use only <id>` → collapse to a single reviewer.
+- `no <id>` / `never <id>` → session-scoped ban only; do not persist.
 
 ### `run_panel`: parallel reviewers with shared context
 
@@ -545,8 +577,8 @@ Bound to an implementer:
 run_panel({
   implementer_run_id: "A",
   reviewers: [
-    { agent_id: "codex", prompt: "correctness pass" },
-    { agent_id: "claude-code", prompt: "style + repo-conventions pass" },
+    { agent_id: "<reviewer>", prompt: "correctness pass" },
+    { agent_id: "<reviewer>", prompt: "style + repo-conventions pass" },
   ],
 })
 ```
@@ -564,8 +596,8 @@ Standalone (no implementer):
 ```
 run_panel({
   reviewers: [
-    { agent_id: "codex", prompt: "...", read_only: true },
-    { agent_id: "gemini-cli", prompt: "...", working_directory: "/path", peer_messages: [...] },
+    { agent_id: "<reviewer>", prompt: "...", read_only: true },
+    { agent_id: "<reviewer>", prompt: "...", working_directory: "/path", peer_messages: [...] },
   ],
 })
 ```

@@ -20,21 +20,26 @@ import {
 import { buildImplementerPeerMessage } from '../panels/implementer-message.js';
 import { validateRunPanelPreflight } from '../panels/preflight.js';
 import { panelDir, writePanelStateAtomic } from '../panels/store.js';
+import { loadWorkflowConfig } from '../../workflow/loader.js';
+import type { FullConfig } from '../../workflow/types.js';
+
+const runPanelReviewerInputSchema = z.object({
+  agent_id: z.string().min(1),
+  prompt: z.string().min(1),
+  model: z.string().optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  working_directory: z.string().optional(),
+  read_only: z.boolean().optional(),
+  peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
+}).strict();
 
 export const runPanelInputSchema = z.object({
   implementer_run_id: z.string().min(1).optional(),
-  reviewers: z.array(z.object({
-    agent_id: z.string().min(1),
-    prompt: z.string().min(1),
-    model: z.string().optional(),
-    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-    working_directory: z.string().optional(),
-    read_only: z.boolean().optional(),
-    peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
-  }).strict()).min(1).max(100),
+  reviewers: z.array(runPanelReviewerInputSchema).max(100).optional(),
 }).strict();
 
 export type RunPanelInput = z.infer<typeof runPanelInputSchema>;
+type RunPanelReviewerInput = z.infer<typeof runPanelReviewerInputSchema>;
 
 export interface ReviewerDispatchEnvelope {
   readonly run_id: string;
@@ -60,19 +65,24 @@ export interface RunPanelHandlerContext extends DispatchContext {
   readonly progress?: ProgressNotifier;
   readonly dispatchRunAgentInternalImpl?: typeof dispatchRunAgentInternal;
   readonly onPanelStateWritten?: (state: PanelStateV1) => void | Promise<void>;
+  readonly loadConfig?: (projectRoot: string) => FullConfig;
+  readonly sameHostAgentId?: string;
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages and default reviewers to read_only against that worktree. Returns panel_id, successful reviewer run_ids, and failed_reviewers.';
+  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Returns panel_id, successful reviewer run_ids, and failed_reviewers.';
 
 const PANEL_IMPLEMENTER_TERMINAL = new Set(['success', 'partial', 'error', 'cancelled']);
+const DEFAULT_PANEL_REVIEW_PROMPT =
+  'Review the target changes for correctness, regressions, and missing tests. Return concrete findings with file/line references when possible.';
 
 export async function runPanelHandler(
   args: unknown,
   ctx: RunPanelHandlerContext,
 ): Promise<RunPanelOutput> {
   const input = runPanelInputSchema.parse(args);
-  validateRunPanelPreflight(input.reviewers);
+  const reviewers = resolvePanelReviewers(input.reviewers, ctx);
+  validateRunPanelPreflight(reviewers);
 
   const implementerState = input.implementer_run_id
     ? readImplementerState(input.implementer_run_id, ctx)
@@ -92,7 +102,7 @@ export async function runPanelHandler(
   const dispatchEnvelopes: ReviewerDispatchEnvelope[] = [];
   const dispatchImpl = ctx.dispatchRunAgentInternalImpl ?? dispatchRunAgentInternal;
 
-  for (const reviewer of input.reviewers) {
+  for (const reviewer of reviewers) {
     const composed = composePeerMessages(implementerMessage, reviewer.peer_messages);
     const reviewerHasExplicitReadOnly = reviewer.read_only !== undefined;
     const effectiveReadOnly = reviewer.read_only ?? (implementerState !== undefined);
@@ -174,6 +184,39 @@ export async function runPanelHandler(
         error: reviewer.error,
       })),
   };
+}
+
+function resolvePanelReviewers(
+  reviewers: readonly RunPanelReviewerInput[] | undefined,
+  ctx: RunPanelHandlerContext,
+): RunPanelReviewerInput[] {
+  if (reviewers && reviewers.length > 0) {
+    return [...reviewers];
+  }
+
+  const config = (ctx.loadConfig ?? loadWorkflowConfig)(ctx.projectRoot);
+  const panelDefaults = config.workflow.agentDefaults?.panel;
+  const configuredReviewers = panelDefaults?.reviewers ?? [];
+  const banList = new Set(panelDefaults?.banList ?? []);
+  if (ctx.sameHostAgentId) {
+    banList.add(ctx.sameHostAgentId);
+  }
+
+  const selected = configuredReviewers.filter((agentId) => !banList.has(agentId));
+  if (selected.length === 0) {
+    throw new Error(
+      'run_panel.no_reviewers: no reviewers were provided and workflow.agentDefaults.panel.reviewers ' +
+      'is empty after banList and same-host filtering. Configure reviewers with ' +
+      '`crew-mcp config set workflow.agentDefaults.panel.reviewers \'["<agent_id>"]\'` ' +
+      'or pass an explicit reviewers array for this run.',
+    );
+  }
+
+  return selected.map((agentId) => ({
+    agent_id: agentId,
+    prompt: DEFAULT_PANEL_REVIEW_PROMPT,
+    read_only: true,
+  }));
 }
 
 function readImplementerState(

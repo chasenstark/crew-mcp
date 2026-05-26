@@ -218,6 +218,53 @@ describe('config-service', () => {
     expect(projectConfig?.agents['local-gemma'].strengths).toEqual(['code-review', 'fast-iteration']);
   });
 
+  it('round-trips workflow agentDefaults through config set/show', () => {
+    setConfigValue(cwd, 'workflow.agentDefaults.iterate.implementer', 'codex');
+    setConfigValue(cwd, 'workflow.agentDefaults.iterate.reviewers', '["claude-code"]');
+    setConfigValue(cwd, 'workflow.agentDefaults.iterate.banList', '["gemini-cli"]');
+    setConfigValue(cwd, 'workflow.agentDefaults.panel.reviewers', '["codex","claude-code"]');
+
+    const shown = showConfig(cwd);
+    expect(shown.effectiveConfig.workflow.agentDefaults).toEqual({
+      iterate: {
+        implementer: 'codex',
+        reviewers: ['claude-code'],
+        banList: ['gemini-cli'],
+      },
+      panel: {
+        reviewers: ['codex', 'claude-code'],
+      },
+    });
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.workflow.agentDefaults?.iterate?.implementer).toBe('codex');
+  });
+
+  it('rejects agentDefaults reviewer and banList collisions', () => {
+    setConfigValue(cwd, 'workflow.agentDefaults.panel.reviewers', '["codex","claude-code"]');
+    expect(() =>
+      setConfigValue(cwd, 'workflow.agentDefaults.panel.banList', '["codex"]'),
+    ).toThrow(/workflow\.agentDefaults\.panel\.banList/);
+  });
+
+  it('rejects empty agentDefaults ids', () => {
+    expect(() =>
+      setConfigValue(cwd, 'workflow.agentDefaults.iterate.implementer', ''),
+    ).toThrow(/non-empty string/);
+    expect(() =>
+      setConfigValue(cwd, 'workflow.agentDefaults.iterate.reviewers', '[""]'),
+    ).toThrow(/non-empty strings/);
+  });
+
+  it('allows partial agentDefaults population', () => {
+    setConfigValue(cwd, 'workflow.agentDefaults.panel.banList', '["gemini-cli"]');
+    const shown = showConfig(cwd);
+    expect(shown.effectiveConfig.workflow.agentDefaults).toEqual({
+      panel: {
+        banList: ['gemini-cli'],
+      },
+    });
+  });
+
   it('supports cycling with "next" for model fields', () => {
     const result = setConfigValue(cwd, 'captain.model', 'next');
     expect(typeof result.nextValue).toBe('string');

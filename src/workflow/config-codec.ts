@@ -12,7 +12,10 @@ import type {
   CaptainModelMap,
   CaptainModelSpec,
   FullConfig,
+  IterateAgentDefaultsConfig,
+  PanelAgentDefaultsConfig,
   PresetConfig,
+  WorkflowAgentDefaultsConfig,
   WorkflowConfig,
 } from './types.js';
 import { resolveModelAliasOrThrow } from './models.js';
@@ -89,6 +92,123 @@ function omitUndefined<T extends Record<string, unknown>>(value: T): Record<stri
   );
 }
 
+function mergeIterateAgentDefaults(
+  base: IterateAgentDefaultsConfig | undefined,
+  override: IterateAgentDefaultsConfig | undefined,
+): IterateAgentDefaultsConfig | undefined {
+  const merged = {
+    ...(base ?? {}),
+    ...(override ?? {}),
+  };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function mergePanelAgentDefaults(
+  base: PanelAgentDefaultsConfig | undefined,
+  override: PanelAgentDefaultsConfig | undefined,
+): PanelAgentDefaultsConfig | undefined {
+  const merged = {
+    ...(base ?? {}),
+    ...(override ?? {}),
+  };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function mergeAgentDefaults(
+  base: WorkflowAgentDefaultsConfig | undefined,
+  override: WorkflowAgentDefaultsConfig | undefined,
+): WorkflowAgentDefaultsConfig | undefined {
+  const iterate = mergeIterateAgentDefaults(base?.iterate, override?.iterate);
+  const panel = mergePanelAgentDefaults(base?.panel, override?.panel);
+  const merged = {
+    ...(iterate ? { iterate } : {}),
+    ...(panel ? { panel } : {}),
+  };
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function parseOptionalAgentId(raw: unknown, path: string): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string') {
+    throw new Error(`${path} must be a string`);
+  }
+  return raw;
+}
+
+function parseOptionalAgentIdList(raw: unknown, path: string): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new Error(`${path} must be an array of strings`);
+  }
+  return raw.map((value, index) => {
+    if (typeof value !== 'string') {
+      throw new Error(`${path}[${index}] must be a string`);
+    }
+    return value;
+  });
+}
+
+function parseAgentDefaults(raw: unknown): WorkflowAgentDefaultsConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const root = asObject(raw);
+  const iterateRoot = asObject(root.iterate);
+  const panelRoot = asObject(root.panel);
+  const iterate = omitUndefined({
+    implementer: parseOptionalAgentId(
+      iterateRoot.implementer,
+      'workflow.agent_defaults.iterate.implementer',
+    ),
+    reviewers: parseOptionalAgentIdList(
+      iterateRoot.reviewers,
+      'workflow.agent_defaults.iterate.reviewers',
+    ),
+    banList: parseOptionalAgentIdList(
+      iterateRoot.ban_list ?? iterateRoot.banList,
+      'workflow.agent_defaults.iterate.ban_list',
+    ),
+  }) as unknown as IterateAgentDefaultsConfig;
+  const panel = omitUndefined({
+    reviewers: parseOptionalAgentIdList(
+      panelRoot.reviewers,
+      'workflow.agent_defaults.panel.reviewers',
+    ),
+    banList: parseOptionalAgentIdList(
+      panelRoot.ban_list ?? panelRoot.banList,
+      'workflow.agent_defaults.panel.ban_list',
+    ),
+  }) as unknown as PanelAgentDefaultsConfig;
+
+  const out = {
+    ...(Object.keys(iterate).length > 0 ? { iterate } : {}),
+    ...(Object.keys(panel).length > 0 ? { panel } : {}),
+  };
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function serializeAgentDefaults(
+  defaults: WorkflowAgentDefaultsConfig | undefined,
+): unknown {
+  if (!defaults) return undefined;
+  const iterate = defaults.iterate
+    ? omitUndefined({
+        implementer: defaults.iterate.implementer,
+        reviewers: defaults.iterate.reviewers,
+        ban_list: defaults.iterate.banList,
+      })
+    : undefined;
+  const panel = defaults.panel
+    ? omitUndefined({
+        reviewers: defaults.panel.reviewers,
+        ban_list: defaults.panel.banList,
+      })
+    : undefined;
+  const out = omitUndefined({
+    iterate: iterate && Object.keys(iterate).length > 0 ? iterate : undefined,
+    panel: panel && Object.keys(panel).length > 0 ? panel : undefined,
+  });
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig {
   const mergedAgents: Record<string, AgentConfig> = { ...base.agents };
   for (const [name, agentOverride] of Object.entries(override.agents)) {
@@ -121,6 +241,10 @@ export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig
         ? override.workflow.steps
         : base.workflow.steps,
       roleModels: Object.keys(mergedRoleModels).length > 0 ? mergedRoleModels : undefined,
+      agentDefaults: mergeAgentDefaults(
+        base.workflow.agentDefaults,
+        override.workflow.agentDefaults,
+      ),
       completion: override.workflow.completion ?? base.workflow.completion,
     },
     agents: mergedAgents,
@@ -147,6 +271,9 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
   // with `execution: { mode: linear }` is accepted and silently coerced.
   const parsedCompletion = asObject(parsedWorkflow.completion);
   const parsedRoleModels = asObject(parsedWorkflow.role_models);
+  const parsedAgentDefaults = parseAgentDefaults(
+    parsedWorkflow.agent_defaults ?? parsedWorkflow.agentDefaults,
+  );
   const parsedErrorHandling = asObject(parsed.error_handling);
   const parsedErrorDefault = asObject(parsedErrorHandling.default);
   const parsedAgentsRoot = asObject(parsed.agents);
@@ -296,6 +423,7 @@ export function parseWorkflowYaml(yamlContent: string): FullConfig {
       roleModels: Object.keys(roleModels).length > 0
         ? roleModels
         : undefined,
+      agentDefaults: parsedAgentDefaults,
       completion: {
         strategy: typeof parsedCompletion.strategy === 'string' ? parsedCompletion.strategy : 'judge_approval',
         fallback: typeof parsedCompletion.fallback === 'string' ? parsedCompletion.fallback : 'max_passes',
@@ -342,6 +470,7 @@ export function serializeWorkflowYaml(config: FullConfig): string {
       role_models: config.workflow.roleModels && Object.keys(config.workflow.roleModels).length > 0
         ? config.workflow.roleModels
         : undefined,
+      agent_defaults: serializeAgentDefaults(config.workflow.agentDefaults),
       completion: {
         strategy: config.workflow.completion.strategy,
         fallback: config.workflow.completion.fallback,

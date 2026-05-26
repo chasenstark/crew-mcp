@@ -435,7 +435,7 @@ describe('crew serve — listTools surface', () => {
     await h.close();
   });
 
-  it('exposes the v2 tool surface (11 tools incl. panel tools)', async () => {
+  it('exposes the v2 tool surface (12 tools incl. preferences + panel tools)', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -443,6 +443,7 @@ describe('crew serve — listTools surface', () => {
       'cancel_run',
       'continue_run',
       'discard_run',
+      'get_crew_preferences',
       'get_panel_status',
       'get_run_status',
       'list_agents',

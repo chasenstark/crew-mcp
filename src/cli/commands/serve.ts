@@ -5,6 +5,7 @@
 // stdio:
 //
 //   list_agents      — synchronous probe of the agent registry
+//   get_crew_preferences — read configured agent defaults
 //   list_runs        — recover persisted run records for the current repo
 //   run_agent        — dispatch into a fresh worktree (block-and-stream
 //                      with 60s async-fallback)
@@ -52,6 +53,11 @@ import {
   listAgentsInputSchema,
   LIST_AGENTS_DESCRIPTION,
 } from '../../orchestrator/tools/list-agents.js';
+import {
+  getCrewPreferencesHandler,
+  getCrewPreferencesInputSchema,
+  GET_CREW_PREFERENCES_DESCRIPTION,
+} from '../../orchestrator/tools/get-crew-preferences.js';
 import {
   listRuns,
   listRunsInputSchema,
@@ -162,6 +168,19 @@ export function nextStepSentence(kind: ClientKind): string {
       return 'End your turn after this dispatch returns; user is free to chat.';
     case 'unknown':
       return 'End your turn after dispatch; user is free to chat.';
+  }
+}
+
+function agentIdForClientKind(kind: ClientKind): string | undefined {
+  switch (kind) {
+    case 'claude-code':
+      return 'claude-code';
+    case 'codex':
+      return 'codex';
+    case 'gemini':
+      return 'gemini-cli';
+    case 'unknown':
+      return undefined;
   }
 }
 
@@ -429,6 +448,28 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     },
   );
 
+  // ---- get_crew_preferences -------------------------------------------
+  server.registerTool(
+    'get_crew_preferences',
+    {
+      description: GET_CREW_PREFERENCES_DESCRIPTION,
+      inputSchema: getCrewPreferencesInputSchema.shape,
+    },
+    async (args) => {
+      const agentPrefs = readAgentPrefsFile(crewHome);
+      try {
+        const out = await getCrewPreferencesHandler(args, {
+          projectRoot,
+          registry,
+          agentPrefs,
+        });
+        return jsonContent(out);
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
   // ---- list_runs -------------------------------------------------------
   server.registerTool(
     'list_runs',
@@ -517,6 +558,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           crewHome,
           repoRoot: runStateStore.repoRoot,
           projectRoot,
+          sameHostAgentId: agentIdForClientKind(getClientKind()),
           progress: progressNotifierFrom(extra, 'run_panel', progressTokenSeen),
         });
         return jsonContent(out);

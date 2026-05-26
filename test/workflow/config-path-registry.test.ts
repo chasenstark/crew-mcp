@@ -14,6 +14,11 @@ describe('config path registry', () => {
       'captain.preset',
       'workflow.execution.mode',
       'workflow.roleModels.<role>',
+      'workflow.agentDefaults.iterate.implementer',
+      'workflow.agentDefaults.iterate.reviewers',
+      'workflow.agentDefaults.iterate.banList',
+      'workflow.agentDefaults.panel.reviewers',
+      'workflow.agentDefaults.panel.banList',
       'agents.<name>.adapter',
       'agents.<name>.model',
       'agents.<name>.command',
@@ -23,6 +28,59 @@ describe('config path registry', () => {
       'workflow.reviewer.maxPasses',
       'errorHandling.default.retry',
     ]);
+  });
+
+  describe('workflow.agentDefaults', () => {
+    it('parses + writes iterate implementer and reviewer lists', () => {
+      const config = getDefaultConfig();
+      const implementer = resolveConfigPath('workflow.agentDefaults.iterate.implementer');
+      const reviewers = resolveConfigPath('workflow.agentDefaults.iterate.reviewers');
+      expect(implementer).not.toBeNull();
+      expect(reviewers).not.toBeNull();
+
+      const parsedImplementer = implementer!.descriptor.parse(
+        'codex',
+        config,
+        implementer!.params,
+        'workflow.agentDefaults.iterate.implementer',
+      );
+      implementer!.descriptor.write(
+        config,
+        implementer!.params,
+        parsedImplementer,
+        'workflow.agentDefaults.iterate.implementer',
+      );
+      const parsedReviewers = reviewers!.descriptor.parse(
+        '["claude-code"]',
+        config,
+        reviewers!.params,
+        'workflow.agentDefaults.iterate.reviewers',
+      );
+      reviewers!.descriptor.write(
+        config,
+        reviewers!.params,
+        parsedReviewers,
+        'workflow.agentDefaults.iterate.reviewers',
+      );
+
+      expect(config.workflow.agentDefaults?.iterate).toEqual({
+        implementer: 'codex',
+        reviewers: ['claude-code'],
+      });
+    });
+
+    it('rejects empty strings in agent default lists', () => {
+      const config = getDefaultConfig();
+      const resolved = resolveConfigPath('workflow.agentDefaults.panel.reviewers');
+      expect(() =>
+        resolved!.descriptor.parse(
+          '[""]',
+          config,
+          resolved!.params,
+          'workflow.agentDefaults.panel.reviewers',
+        ),
+      ).toThrow(/non-empty strings/);
+    });
   });
 
   describe('captain.preset (M5-5a)', () => {

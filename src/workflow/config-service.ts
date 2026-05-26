@@ -47,6 +47,16 @@ export interface ConfigSetResult {
   config: FullConfig;
 }
 
+export interface ConfigUnsetResult {
+  scope: ConfigScope;
+  profile: string;
+  filePath: string;
+  path: string;
+  previousValue: unknown;
+  nextValue: unknown;
+  config: FullConfig;
+}
+
 export interface ConfigResetResult {
   scope: ConfigScope;
   profile: string;
@@ -267,6 +277,53 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
   return next;
 }
 
+function pruneAgentDefaults(config: FullConfig): void {
+  const defaults = config.workflow.agentDefaults;
+  if (!defaults) return;
+  if (defaults.iterate && Object.keys(defaults.iterate).length === 0) {
+    delete defaults.iterate;
+  }
+  if (defaults.panel && Object.keys(defaults.panel).length === 0) {
+    delete defaults.panel;
+  }
+  if (Object.keys(defaults).length === 0) {
+    delete config.workflow.agentDefaults;
+  }
+}
+
+function deleteConfigValue(config: FullConfig, path: string): void {
+  switch (path) {
+    case 'workflow.agentDefaults.iterate.implementer':
+      if (config.workflow.agentDefaults?.iterate) {
+        delete config.workflow.agentDefaults.iterate.implementer;
+      }
+      break;
+    case 'workflow.agentDefaults.iterate.reviewers':
+      if (config.workflow.agentDefaults?.iterate) {
+        delete config.workflow.agentDefaults.iterate.reviewers;
+      }
+      break;
+    case 'workflow.agentDefaults.iterate.banList':
+      if (config.workflow.agentDefaults?.iterate) {
+        delete config.workflow.agentDefaults.iterate.banList;
+      }
+      break;
+    case 'workflow.agentDefaults.panel.reviewers':
+      if (config.workflow.agentDefaults?.panel) {
+        delete config.workflow.agentDefaults.panel.reviewers;
+      }
+      break;
+    case 'workflow.agentDefaults.panel.banList':
+      if (config.workflow.agentDefaults?.panel) {
+        delete config.workflow.agentDefaults.panel.banList;
+      }
+      break;
+    default:
+      throw unsupportedPathError(path);
+  }
+  pruneAgentDefaults(config);
+}
+
 function validateConfigOrThrow(config: FullConfig): void {
   const diagnostics = validateConfig(config);
   if (diagnostics.length > 0) {
@@ -451,6 +508,33 @@ export function setConfigValue(
   const current = loadEffectiveConfig(cwd, { profile });
   const previousValue = readConfigValue(current, path);
   const next = applyConfigPatch(current, { path, value: rawValue });
+
+  validateConfigOrThrow(next);
+  const filePath = saveConfigByScope(scope, cwd, next, { profile });
+
+  return {
+    scope,
+    profile,
+    filePath,
+    path,
+    previousValue,
+    nextValue: readConfigValue(next, path),
+    config: next,
+  };
+}
+
+export function unsetConfigValue(
+  cwd: string,
+  path: string,
+  options: { scope?: ConfigScope; profile?: string } = {},
+): ConfigUnsetResult {
+  const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
+  const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
+  const current = loadEffectiveConfig(cwd, { profile });
+  const previousValue = readConfigValue(current, path);
+  const next = structuredClone(current);
+  deleteConfigValue(next, path.trim());
+  normalizeIncompatibleModels(next);
 
   validateConfigOrThrow(next);
   const filePath = saveConfigByScope(scope, cwd, next, { profile });

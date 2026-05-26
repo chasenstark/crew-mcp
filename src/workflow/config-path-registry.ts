@@ -144,6 +144,80 @@ function parseDelimitedStringList(path: string, raw: unknown, example: string): 
   return uniqueOrdered(values);
 }
 
+function parseNonEmptyStringList(path: string, raw: unknown, example: string): string[] {
+  const normalize = (values: unknown[]): string[] => {
+    const normalized: string[] = [];
+    for (const value of values) {
+      if (typeof value !== 'string') {
+        throw new Error(invalidValueMessage(path, 'array of non-empty strings', raw, example));
+      }
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        throw new Error(invalidValueMessage(path, 'array of non-empty strings', raw, example));
+      }
+      normalized.push(trimmed);
+    }
+    return uniqueOrdered(normalized);
+  };
+
+  if (Array.isArray(raw)) {
+    return normalize(raw);
+  }
+
+  const normalized = String(raw).trim();
+  if (!normalized) {
+    throw new Error(invalidValueMessage(path, 'comma-separated list of strings or []', raw, example));
+  }
+  if (normalized === '[]') return [];
+
+  if (normalized.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(normalized);
+      if (!Array.isArray(parsed)) {
+        throw new Error('not array');
+      }
+      return normalize(parsed);
+    } catch {
+      throw new Error(
+        invalidValueMessage(
+          path,
+          'JSON array of non-empty strings, comma-delimited values, or []',
+          raw,
+          example,
+        ),
+      );
+    }
+  }
+
+  return normalize(normalized.split(','));
+}
+
+function agentDefaultOptions(config: FullConfig, current: unknown): string[] {
+  const known = [
+    ...Object.keys(config.agents),
+    ...BUILTIN_WORKER_AGENTS,
+  ].sort();
+  if (Array.isArray(current)) return withCurrentOption(known, current.join(','));
+  return withCurrentOption(known, current);
+}
+
+function ensureWorkflowAgentDefaults(config: FullConfig): NonNullable<FullConfig['workflow']['agentDefaults']> {
+  config.workflow.agentDefaults ??= {};
+  return config.workflow.agentDefaults;
+}
+
+function ensureIterateAgentDefaults(config: FullConfig): NonNullable<NonNullable<FullConfig['workflow']['agentDefaults']>['iterate']> {
+  const defaults = ensureWorkflowAgentDefaults(config);
+  defaults.iterate ??= {};
+  return defaults.iterate;
+}
+
+function ensurePanelAgentDefaults(config: FullConfig): NonNullable<NonNullable<FullConfig['workflow']['agentDefaults']>['panel']> {
+  const defaults = ensureWorkflowAgentDefaults(config);
+  defaults.panel ??= {};
+  return defaults.panel;
+}
+
 function resolveCaptainAdapterType(config: FullConfig): string | undefined {
   const captainAgent = config.agents[config.captain.cli];
   return captainAgent?.adapter ?? config.captain.cli;
@@ -330,6 +404,96 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
     options: (config, params) => withCurrentOption(
       modelPresetsForRole(config, params.role),
       config.workflow.roleModels?.[params.role],
+    ),
+  },
+  {
+    path: 'workflow.agentDefaults.iterate.implementer',
+    examples: ['/config set workflow.agentDefaults.iterate.implementer codex'],
+    match: exactPath('workflow.agentDefaults.iterate.implementer'),
+    read: (config) => config.workflow.agentDefaults?.iterate?.implementer,
+    parse: (raw, _config, _params, path) => parseNonEmptyString(
+      path,
+      raw,
+      '/config set workflow.agentDefaults.iterate.implementer codex',
+    ),
+    write: (config, _params, value) => {
+      ensureIterateAgentDefaults(config).implementer = String(value);
+    },
+    options: (config) => agentDefaultOptions(
+      config,
+      config.workflow.agentDefaults?.iterate?.implementer,
+    ),
+  },
+  {
+    path: 'workflow.agentDefaults.iterate.reviewers',
+    examples: ['/config set workflow.agentDefaults.iterate.reviewers \'["claude-code"]\''],
+    match: exactPath('workflow.agentDefaults.iterate.reviewers'),
+    read: (config) => config.workflow.agentDefaults?.iterate?.reviewers,
+    parse: (raw, _config, _params, path) => parseNonEmptyStringList(
+      path,
+      raw,
+      '/config set workflow.agentDefaults.iterate.reviewers \'["claude-code"]\'',
+    ),
+    write: (config, _params, value) => {
+      ensureIterateAgentDefaults(config).reviewers = value as string[];
+    },
+    options: (config) => agentDefaultOptions(
+      config,
+      config.workflow.agentDefaults?.iterate?.reviewers,
+    ),
+  },
+  {
+    path: 'workflow.agentDefaults.iterate.banList',
+    examples: ['/config set workflow.agentDefaults.iterate.banList \'["gemini-cli"]\''],
+    match: exactPath('workflow.agentDefaults.iterate.banList'),
+    read: (config) => config.workflow.agentDefaults?.iterate?.banList,
+    parse: (raw, _config, _params, path) => parseNonEmptyStringList(
+      path,
+      raw,
+      '/config set workflow.agentDefaults.iterate.banList \'["gemini-cli"]\'',
+    ),
+    write: (config, _params, value) => {
+      ensureIterateAgentDefaults(config).banList = value as string[];
+    },
+    options: (config) => agentDefaultOptions(
+      config,
+      config.workflow.agentDefaults?.iterate?.banList,
+    ),
+  },
+  {
+    path: 'workflow.agentDefaults.panel.reviewers',
+    examples: ['/config set workflow.agentDefaults.panel.reviewers \'["codex","claude-code"]\''],
+    match: exactPath('workflow.agentDefaults.panel.reviewers'),
+    read: (config) => config.workflow.agentDefaults?.panel?.reviewers,
+    parse: (raw, _config, _params, path) => parseNonEmptyStringList(
+      path,
+      raw,
+      '/config set workflow.agentDefaults.panel.reviewers \'["codex","claude-code"]\'',
+    ),
+    write: (config, _params, value) => {
+      ensurePanelAgentDefaults(config).reviewers = value as string[];
+    },
+    options: (config) => agentDefaultOptions(
+      config,
+      config.workflow.agentDefaults?.panel?.reviewers,
+    ),
+  },
+  {
+    path: 'workflow.agentDefaults.panel.banList',
+    examples: ['/config set workflow.agentDefaults.panel.banList \'["gemini-cli"]\''],
+    match: exactPath('workflow.agentDefaults.panel.banList'),
+    read: (config) => config.workflow.agentDefaults?.panel?.banList,
+    parse: (raw, _config, _params, path) => parseNonEmptyStringList(
+      path,
+      raw,
+      '/config set workflow.agentDefaults.panel.banList \'["gemini-cli"]\'',
+    ),
+    write: (config, _params, value) => {
+      ensurePanelAgentDefaults(config).banList = value as string[];
+    },
+    options: (config) => agentDefaultOptions(
+      config,
+      config.workflow.agentDefaults?.panel?.banList,
     ),
   },
   {

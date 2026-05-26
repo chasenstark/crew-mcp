@@ -37,6 +37,10 @@ function expectContainsCI(haystack: string, needle: string): void {
   }
 }
 
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
 describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', () => {
   it('mentions every load-bearing rule phrase', async () => {
     const body = await loadBody();
@@ -73,6 +77,22 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     expect(
       body.includes('new epoch') || body.includes('new loop epoch'),
     ).toBe(true);
+  });
+});
+
+describe('crew-iterate body — Step 0.5 agent picks', () => {
+  it('contains the load-bearing agent-pick anchors', async () => {
+    const body = await loadBody();
+    expect(body).toContain('### Step 0.5 — Confirm agent picks');
+    expect(body).toContain('Agents for this iteration:');
+    expect(body).toContain('Override grammar');
+
+    const start = body.indexOf('### Step 0.5 — Confirm agent picks');
+    const end = body.indexOf('### Step 1 — Dispatch implementer', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const step = body.slice(start, end);
+    expect(countOccurrences(step, 'get_crew_preferences')).toBe(1);
   });
 });
 

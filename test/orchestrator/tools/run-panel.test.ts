@@ -17,6 +17,7 @@ import {
   runPanelHandler,
   type RunPanelHandlerContext,
 } from '../../../src/orchestrator/tools/run-panel.js';
+import { setConfigValue } from '../../../src/workflow/config-service.js';
 import { getPanelStatusHandler } from '../../../src/orchestrator/tools/get-panel-status.js';
 import {
   createDeferred,
@@ -26,6 +27,7 @@ import {
   type PanelHarness,
   waitFor,
 } from './panel-test-harness.js';
+import { getDefaultConfig } from '../../../src/workflow/config-codec.js';
 
 const cleanups: Array<() => void> = [];
 
@@ -67,6 +69,74 @@ function fakeDispatchResult(agentId: string, index: number): DispatchRunAgentInt
 }
 
 describe('runPanelHandler', () => {
+  it('fills empty reviewers from panel agent defaults', async () => {
+    const h = makeHarness([
+      makeMockAdapter({ name: 'codex' }),
+      makeMockAdapter({ name: 'claude-code' }),
+    ]);
+    cleanupHarness(h);
+    setConfigValue(h.root, 'workflow.agentDefaults.panel.reviewers', '["codex","claude-code"]');
+    const dispatched: string[] = [];
+
+    const out = await runPanelHandler({
+      reviewers: [],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: async (args) => {
+        dispatched.push(args.input.agent_id);
+        return fakeDispatchResult(args.input.agent_id, dispatched.length);
+      },
+    });
+
+    expect(out.reviewers.map((reviewer) => reviewer.agent_id)).toEqual(['codex', 'claude-code']);
+    expect(dispatched).toEqual(['codex', 'claude-code']);
+  });
+
+  it('rejects empty preference-filled reviewers after banList filtering', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'codex' })]);
+    cleanupHarness(h);
+
+    await expect(runPanelHandler({
+      reviewers: [],
+    }, {
+      ...h.ctx,
+      loadConfig: () => {
+        const config = getDefaultConfig();
+        config.workflow.agentDefaults = {
+          panel: {
+            reviewers: ['codex'],
+            banList: ['codex'],
+          },
+        };
+        return config;
+      },
+    })).rejects.toThrow(/^run_panel\.no_reviewers:/);
+  });
+
+  it('lets explicit reviewers override preferences and banList', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'codex' })]);
+    cleanupHarness(h);
+    setConfigValue(h.root, 'workflow.agentDefaults.panel.reviewers', '["codex"]');
+    setConfigValue(h.root, 'workflow.agentDefaults.panel.banList', '["explicit-reviewer"]');
+    const dispatched: Array<{ agent_id: string; prompt: string }> = [];
+
+    const out = await runPanelHandler({
+      reviewers: [{ agent_id: 'explicit-reviewer', prompt: 'review explicitly' }],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: async (args) => {
+        dispatched.push({
+          agent_id: args.input.agent_id,
+          prompt: args.input.prompt,
+        });
+        return fakeDispatchResult(args.input.agent_id, dispatched.length);
+      },
+    });
+
+    expect(out.reviewers.map((reviewer) => reviewer.agent_id)).toEqual(['explicit-reviewer']);
+    expect(dispatched).toEqual([{ agent_id: 'explicit-reviewer', prompt: 'review explicitly' }]);
+  });
+
   it('dispatches two bound reviewers with stub and incremental panel writes', async () => {
     const terminals = [createDeferred<TaskResult>(), createDeferred<TaskResult>()];
     const executions: Array<{

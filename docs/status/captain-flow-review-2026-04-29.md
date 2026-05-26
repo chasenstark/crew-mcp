@@ -5,6 +5,21 @@ Wednesday, April 29, 2026. It is intended to be updated after major captain-flow
 changes so the team does not need to rediscover the same context from plans,
 logs, and source code each time.
 
+## Update - 2026-05-26 Configurable Agent Defaults for Iterate + Panels
+
+[`docs/plans/active/iterate-panel-agent-defaults.md`](../plans/active/iterate-panel-agent-defaults.md)
+adds persistent `workflow.agentDefaults` for iterate implementer/reviewer
+picks, panel reviewers, and per-scope `banList` entries. Captains now have a
+Step 0.5 / panel-pick confirmation gate in the installed skill prose, and the
+new read-only `get_crew_preferences` MCP tool lets them surface configured
+defaults and warnings for ids absent from `list_agents`.
+
+The dispatch wire contract remains intentionally narrow: `run_agent` still
+requires an explicit `agent_id`, while `run_panel` fills omitted or empty
+reviewers from `workflow.agentDefaults.panel.reviewers` after `banList` and
+same-host filtering. Explicit `run_panel({reviewers: [...]})` remains a
+per-run override and bypasses preferences.
+
 ## Update - 2026-05-14 Run Panel Phase 1 Runtime Surface
 
 Phase 1 of [`docs/plans/active/run-panel.md`](../plans/active/run-panel.md)
