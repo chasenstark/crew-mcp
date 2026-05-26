@@ -16,6 +16,29 @@
 
 import { emitKeypressEvents } from 'node:readline';
 
+import {
+  CheckboxListScreen,
+  type CheckboxListEntry,
+} from './config-tui/checkbox-list-screen.js';
+import {
+  AgentDefaultsScreen,
+  type AgentInventory,
+} from './config-tui/agent-defaults-screen.js';
+import {
+  AgentDefaultsState,
+  applyAgentDefaultsState,
+} from './config-tui/agent-defaults-state.js';
+import {
+  isPushResult,
+  type Screen,
+} from './config-tui/screen.js';
+import { readAgentPrefsFile } from '../../agent-prefs/store.js';
+import {
+  BUILTIN_ADAPTER_NAMES,
+  createBuiltinRegistry,
+  mergeCustomAgents,
+} from '../../adapters/registry.js';
+import { listAgents } from '../../orchestrator/tools/list-agents.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   type CrewConfig,
@@ -29,8 +52,10 @@ import {
   showConfig as showWorkflowConfig,
   unsetConfigValue,
 } from '../../workflow/config-service.js';
+import type { WorkflowAgentDefaultsConfig } from '../../workflow/types.js';
+import { logger } from '../../utils/logger.js';
 
-type MutableCrewConfig = {
+export type MutableCrewConfig = {
   notifications: {
     success: boolean;
     error: boolean;
@@ -83,11 +108,14 @@ export interface ConfigCommandOptions {
   readonly stdout?: NodeJS.WriteStream;
   readonly cwd?: string;
   readonly crewHome?: string;
+  /** Test seam — override list_agents discovery. Called once per TUI startup. */
+  readonly listAgentInventory?: () => Promise<AgentInventory>;
 }
 
 export async function configCommand(opts: ConfigCommandOptions = {}): Promise<number> {
   const stdin = opts.stdin ?? process.stdin;
   const stdout = opts.stdout ?? process.stdout;
+  const cwd = opts.cwd ?? process.cwd();
   const crewHome = opts.crewHome ?? resolveCrewHome();
   const configPath = resolveConfigPath(crewHome);
   const entries = buildEntries();
@@ -101,6 +129,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       const value = entry.get(current);
       stdout.write(`  ${entry.label}: ${value ? 'on' : 'off'}\n`);
     }
+    writeAgentDefaultsSummary(stdout, showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults);
     stdout.write(
       `\nInteractive editing requires a TTY. Edit ${configPath} directly,\n`
       + 'or run `crew-mcp config` in a real terminal.\n',
@@ -115,7 +144,28 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     },
     confirmBeforeMerge: current.confirmBeforeMerge,
   };
-  const result = await driveTui({ stdin, stdout, entries, state });
+  const agentInventory = await loadAgentInventory({
+    crewHome,
+    listAgentInventory: opts.listAgentInventory,
+  });
+  const agentDefaultsState = new AgentDefaultsState(
+    showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults,
+  );
+  const agentDefaultsScreen = new AgentDefaultsScreen(agentDefaultsState, agentInventory);
+  const rootScreen = createRootScreen({
+    entries,
+    state,
+    beforeSave: () => agentDefaultsState.validateForSave(),
+    extraEntries: [
+      {
+        kind: 'action',
+        label: 'Agent defaults...',
+        description: 'Configure default agents for iterate and panel workflows',
+        onActivate: () => ({ push: agentDefaultsScreen }),
+      },
+    ],
+  });
+  const result = await driveTui({ stdin, stdout, screens: [rootScreen] });
 
   if (result === 'cancelled') {
     stdout.write('\ncrew-mcp config: cancelled (no changes written).\n');
@@ -124,9 +174,18 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
 
   // Only write if something actually changed — avoids touching the
   // file mtime on a no-op save.
-  if (!sameConfig(current, state, entries)) {
+  const crewChanged = !sameConfig(current, state, entries);
+  const agentDefaultsChanged = agentDefaultsState.hasChanges();
+  if (crewChanged) {
     writeConfigFile(crewHome, state);
+  }
+  if (agentDefaultsChanged) {
+    applyAgentDefaultsState(cwd, agentDefaultsState);
+  }
+  if (crewChanged && !agentDefaultsChanged) {
     stdout.write(`\ncrew-mcp config: saved to ${configPath}\n`);
+  } else if (crewChanged || agentDefaultsChanged) {
+    stdout.write('\ncrew-mcp config: saved.\n');
   } else {
     stdout.write('\ncrew-mcp config: no changes.\n');
   }
@@ -275,18 +334,54 @@ function sameConfig(
     === JSON.stringify(entries.map((entry) => entry.get(b)));
 }
 
+function writeAgentDefaultsSummary(
+  stdout: Pick<NodeJS.WriteStream, 'write'>,
+  defaults: WorkflowAgentDefaultsConfig | undefined,
+): void {
+  stdout.write('\n');
+  stdout.write(
+    `  ${AGENT_DEFAULT_PATH_LABELS.iterateImplementer}: ${defaults?.iterate?.implementer ?? '(unset)'}\n`,
+  );
+  stdout.write(
+    `  ${AGENT_DEFAULT_PATH_LABELS.iterateReviewers}: ${formatList(defaults?.iterate?.reviewers)}\n`,
+  );
+  stdout.write(
+    `  ${AGENT_DEFAULT_PATH_LABELS.iterateBanList}: ${formatList(defaults?.iterate?.banList)}\n`,
+  );
+  stdout.write(
+    `  ${AGENT_DEFAULT_PATH_LABELS.panelReviewers}: ${formatList(defaults?.panel?.reviewers)}\n`,
+  );
+  stdout.write(
+    `  ${AGENT_DEFAULT_PATH_LABELS.panelBanList}: ${formatList(defaults?.panel?.banList)}\n`,
+  );
+}
+
+const AGENT_DEFAULT_PATH_LABELS = {
+  iterateImplementer: 'workflow.agentDefaults.iterate.implementer',
+  iterateReviewers: 'workflow.agentDefaults.iterate.reviewers',
+  iterateBanList: 'workflow.agentDefaults.iterate.banList',
+  panelReviewers: 'workflow.agentDefaults.panel.reviewers',
+  panelBanList: 'workflow.agentDefaults.panel.banList',
+} as const;
+
+function formatList(values: readonly string[] | undefined): string {
+  return values && values.length > 0 ? values.join(', ') : '(empty)';
+}
+
 interface TuiArgs {
   readonly stdin: NodeJS.ReadStream;
   readonly stdout: NodeJS.WriteStream;
-  readonly entries: readonly ConfigEntry[];
-  readonly state: MutableCrewConfig;
+  readonly screens: readonly Screen[];
 }
 
 type TuiResult = 'saved' | 'cancelled';
 
-function driveTui(args: TuiArgs): Promise<TuiResult> {
-  const { stdin, stdout, entries, state } = args;
-  let cursor = 0;
+export function driveTui(args: TuiArgs): Promise<TuiResult> {
+  const { stdin, stdout } = args;
+  const screenStack = [...args.screens];
+  if (screenStack.length === 0) {
+    throw new Error('driveTui requires at least one screen.');
+  }
   let renderedLines = 0;
 
   // Clip each line to the terminal width so a narrow terminal can't
@@ -307,22 +402,12 @@ function driveTui(args: TuiArgs): Promise<TuiResult> {
       stdout.write(`\x1b[${renderedLines}A`);
       stdout.write('\x1b[0J');
     }
-    const lines: string[] = [];
-    lines.push('crew-mcp config — toggle settings');
-    lines.push('');
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const value = entry.get(state);
-      const checkbox = value ? '[x]' : '[ ]';
-      const pointer = i === cursor ? '>' : ' ';
-      const label = entry.label.padEnd(22);
-      lines.push(`${pointer} ${checkbox} ${label}  ${entry.description}`);
-    }
-    lines.push('');
-    lines.push('↑/↓ or j/k: move    space: toggle    enter: save    q / esc: cancel');
+    const lines = currentScreen().render();
     for (const line of lines) stdout.write(`${clip(line)}\n`);
     renderedLines = lines.length;
   };
+
+  const currentScreen = (): Screen => screenStack[screenStack.length - 1];
 
   return new Promise<TuiResult>((resolve) => {
     emitKeypressEvents(stdin);
@@ -381,31 +466,29 @@ function driveTui(args: TuiArgs): Promise<TuiResult> {
           cleanup('cancelled');
           return;
         }
-        switch (key.name) {
-          case 'up':
-          case 'k':
-            cursor = (cursor - 1 + entries.length) % entries.length;
+        const result = currentScreen().onKey(key);
+        if (isPushResult(result)) {
+          screenStack.push(result.push);
+          render();
+          return;
+        }
+        switch (result) {
+          case 'continue':
             render();
             return;
-          case 'down':
-          case 'j':
-            cursor = (cursor + 1) % entries.length;
-            render();
-            return;
-          case 'space': {
-            const entry = entries[cursor];
-            entry.set(state, !entry.get(state));
-            render();
-            return;
-          }
-          case 'return':
-            cleanup('saved');
-            return;
-          case 'q':
-          case 'escape':
+          case 'pop':
+            if (screenStack.length > 1) {
+              screenStack.pop();
+              render();
+              return;
+            }
             cleanup('cancelled');
             return;
-          default:
+          case 'save':
+            cleanup('saved');
+            return;
+          case 'cancel':
+            cleanup('cancelled');
             return;
         }
       } catch (err) {
@@ -426,4 +509,68 @@ function driveTui(args: TuiArgs): Promise<TuiResult> {
       onFatal(err instanceof Error ? err : new Error(String(err)));
     }
   });
+}
+
+function createRootScreen(args: {
+  readonly entries: readonly ConfigEntry[];
+  readonly state: MutableCrewConfig;
+  readonly beforeSave?: () => string | undefined;
+  readonly extraEntries?: readonly CheckboxListEntry<MutableCrewConfig>[];
+}): CheckboxListScreen<MutableCrewConfig> {
+  return new CheckboxListScreen<MutableCrewConfig>({
+    title: 'crew-mcp config — toggle settings',
+    entries: [
+      ...args.entries,
+      ...(args.extraEntries ?? []),
+    ],
+    state: args.state,
+    beforeSave: args.beforeSave,
+  });
+}
+
+async function loadAgentInventory(args: {
+  readonly crewHome: string;
+  readonly listAgentInventory?: () => Promise<AgentInventory>;
+}): Promise<AgentInventory> {
+  if (args.listAgentInventory) {
+    return normalizeInventory(await args.listAgentInventory());
+  }
+
+  const registry = createBuiltinRegistry();
+  const agentPrefs = readAgentPrefsFile(args.crewHome);
+  const { warnings } = mergeCustomAgents(registry, agentPrefs, {
+    reservedNames: BUILTIN_ADAPTER_NAMES,
+  });
+  for (const warning of warnings) {
+    logger.warn(warning);
+  }
+  const out = await listAgents({ registry, agentPrefs });
+  return normalizeInventory({
+    agentIds: out.agents.map((agent) => agent.name),
+    knownIds: new Set(out.agents.flatMap((agent) => [
+      agent.name,
+      ...(agent.aliases ?? []),
+    ])),
+  });
+}
+
+function normalizeInventory(inventory: AgentInventory): AgentInventory {
+  const agentIds = uniqueStrings(inventory.agentIds);
+  const knownIds = new Set(uniqueStrings([
+    ...agentIds,
+    ...inventory.knownIds,
+  ]));
+  return { agentIds, knownIds };
+}
+
+function uniqueStrings(values: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }
