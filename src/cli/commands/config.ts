@@ -224,7 +224,8 @@ export async function configSetCommand(
     return 0;
   }
 
-  const result = setConfigValue(opts.cwd ?? process.cwd(), path, rawValue);
+  const scope = isAgentDefaultsPath(path) ? { scope: 'global' as const } : {};
+  const result = setConfigValue(opts.cwd ?? process.cwd(), path, rawValue, scope);
   stdout.write(`${path}: ${JSON.stringify(result.nextValue)}\n`);
   return 0;
 }
@@ -243,7 +244,8 @@ export async function configUnsetCommand(
     return 0;
   }
 
-  const result = unsetConfigValue(opts.cwd ?? process.cwd(), path);
+  const scope = isAgentDefaultsPath(path) ? { scope: 'global' as const } : {};
+  const result = unsetConfigValue(opts.cwd ?? process.cwd(), path, scope);
   stdout.write(`${path}: ${JSON.stringify(result.nextValue)}\n`);
   return 0;
 }
@@ -561,6 +563,10 @@ function normalizeInventory(inventory: AgentInventory): AgentInventory {
     ...inventory.knownIds,
   ]));
   return { agentIds, knownIds };
+}
+
+function isAgentDefaultsPath(path: string): boolean {
+  return path.startsWith('workflow.agentDefaults.');
 }
 
 function uniqueStrings(values: Iterable<string>): string[] {

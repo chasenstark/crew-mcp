@@ -1,7 +1,7 @@
 import type { WorkflowAgentDefaultsConfig } from '../../../workflow/types.js';
 import {
-  setConfigValue as defaultSetConfigValue,
-  unsetConfigValue as defaultUnsetConfigValue,
+  setConfigValue as rawSetConfigValue,
+  unsetConfigValue as rawUnsetConfigValue,
 } from '../../../workflow/config-service.js';
 
 export const AGENT_DEFAULT_PATHS = {
@@ -147,8 +147,12 @@ export function applyAgentDefaultsState(
   state: AgentDefaultsState,
   persistence: AgentDefaultsPersistence = {},
 ): void {
-  const setConfigValue = persistence.setConfigValue ?? defaultSetConfigValue;
-  const unsetConfigValue = persistence.unsetConfigValue ?? defaultUnsetConfigValue;
+  const setConfigValue = persistence.setConfigValue
+    ?? ((cwd: string, path: string, rawValue: unknown) =>
+      rawSetConfigValue(cwd, path, rawValue, { scope: 'global' }));
+  const unsetConfigValue = persistence.unsetConfigValue
+    ?? ((cwd: string, path: string) =>
+      rawUnsetConfigValue(cwd, path, { scope: 'global' }));
   const implementer = state.getSingle(AGENT_DEFAULT_PATHS.iterateImplementer);
   if (implementer === undefined) {
     unsetConfigValue(cwd, AGENT_DEFAULT_PATHS.iterateImplementer);
