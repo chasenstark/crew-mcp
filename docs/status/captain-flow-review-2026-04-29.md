@@ -7,7 +7,7 @@ logs, and source code each time.
 
 ## Update - 2026-05-26 Configurable Agent Defaults for Iterate + Panels
 
-[`docs/plans/active/iterate-panel-agent-defaults.md`](../plans/active/iterate-panel-agent-defaults.md)
+[`docs/plans/completed/iterate-panel-agent-defaults.md`](../plans/completed/iterate-panel-agent-defaults.md)
 adds persistent `workflow.agentDefaults` for iterate implementer/reviewer
 picks, panel reviewers, and per-scope `banList` entries. Captains now have a
 Step 0.5 / panel-pick confirmation gate in the installed skill prose, and the

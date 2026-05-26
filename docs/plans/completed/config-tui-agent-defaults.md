@@ -1,10 +1,11 @@
 # Interactive `crew-mcp config` TUI — agent-defaults submenu
 
-**Status:** Implemented 2026-05-26 in crew worktree; pending anchor
-commit.
-**Implementation note 2026-05-26:** Move this plan to
-`docs/plans/completed/` and replace this note with the standard shipped
-header after the captain lands the anchor commit.
+> **Status:** Shipped 2026-05-26. **Anchor commit:** `5489742`
+> (Layers 1–3 landed as a single crew merge; final verification:
+> `npm test` exit 0, `npm run build` exit 0, `npm run lint` exit 0).
+> Driven by 16 user-confirmed acceptance criteria; converged in 1
+> round (inline APPROVE + dispatched codex APPROVE, no findings).
+
 **Predecessor:** `iterate-panel-agent-defaults.md` (merged as `4fa43b3`).
 That plan shipped `workflow.agentDefaults` config + the
 `get_crew_preferences` MCP tool + CLI `config set/show/unset` access.

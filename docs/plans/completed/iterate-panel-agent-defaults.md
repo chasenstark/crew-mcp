@@ -1,6 +1,14 @@
 # Configurable agent selection — iterate + panel
 
-**Status:** Draft 2026-05-26. Not started.
+> **Status:** Shipped 2026-05-26. **Anchor commit:** `4fa43b3`
+> (Layers 1–3 landed as a single crew merge; final verification:
+> `npm test` 1128 passed / 3 skipped, `npm run build` exit 0,
+> `npm run lint` exit 0). Driven by 14 user-confirmed acceptance
+> criteria; converged in 3 implementer-and-review rounds.
+> Interactive TUI access shipped separately in
+> [`config-tui-agent-defaults.md`](./config-tui-agent-defaults.md)
+> (commit `5489742`).
+
 **Predecessor:** `config-future-settings.md` (this plan promotes the
 `defaultAgent` candidate from that backlog into a fully-realized
 multi-slot scheme).
