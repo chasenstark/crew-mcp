@@ -19,10 +19,16 @@ import { emitKeypressEvents } from 'node:readline';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   type CrewConfig,
+  DEFAULT_CONFIG,
   readConfigFile,
   resolveConfigPath,
   writeConfigFile,
 } from '../../utils/config-store.js';
+import {
+  setConfigValue,
+  showConfig as showWorkflowConfig,
+  unsetConfigValue,
+} from '../../workflow/config-service.js';
 
 type MutableCrewConfig = {
   notifications: {
@@ -75,12 +81,14 @@ export interface ConfigCommandOptions {
   /** Test seam — override the TTY assumption. */
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
+  readonly cwd?: string;
+  readonly crewHome?: string;
 }
 
 export async function configCommand(opts: ConfigCommandOptions = {}): Promise<number> {
   const stdin = opts.stdin ?? process.stdin;
   const stdout = opts.stdout ?? process.stdout;
-  const crewHome = resolveCrewHome();
+  const crewHome = opts.crewHome ?? resolveCrewHome();
   const configPath = resolveConfigPath(crewHome);
   const entries = buildEntries();
   const current = readConfigFile(crewHome);
@@ -123,6 +131,139 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     stdout.write('\ncrew-mcp config: no changes.\n');
   }
   return 0;
+}
+
+export interface ConfigSubcommandOptions {
+  readonly stdout?: Pick<NodeJS.WriteStream, 'write'>;
+  readonly cwd?: string;
+  readonly crewHome?: string;
+}
+
+export async function configShowCommand(
+  path?: string,
+  opts: ConfigSubcommandOptions = {},
+): Promise<number> {
+  const stdout = opts.stdout ?? process.stdout;
+  const payload = buildShowPayload(opts);
+  const value = path ? readShowPath(payload, path) : payload;
+  stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  return 0;
+}
+
+export async function configSetCommand(
+  path: string,
+  rawValue: string,
+  opts: ConfigSubcommandOptions = {},
+): Promise<number> {
+  const stdout = opts.stdout ?? process.stdout;
+  if (isCrewSettingPath(path)) {
+    const crewHome = opts.crewHome ?? resolveCrewHome();
+    const next = mutableConfig(readConfigFile(crewHome));
+    writeCrewSetting(next, path, parseBooleanValue(path, rawValue));
+    writeConfigFile(crewHome, next);
+    stdout.write(`${path}: ${JSON.stringify(readCrewSetting(next, path))}\n`);
+    return 0;
+  }
+
+  const result = setConfigValue(opts.cwd ?? process.cwd(), path, rawValue);
+  stdout.write(`${path}: ${JSON.stringify(result.nextValue)}\n`);
+  return 0;
+}
+
+export async function configUnsetCommand(
+  path: string,
+  opts: ConfigSubcommandOptions = {},
+): Promise<number> {
+  const stdout = opts.stdout ?? process.stdout;
+  if (isCrewSettingPath(path)) {
+    const crewHome = opts.crewHome ?? resolveCrewHome();
+    const next = mutableConfig(readConfigFile(crewHome));
+    writeCrewSetting(next, path, readCrewSetting(DEFAULT_CONFIG, path));
+    writeConfigFile(crewHome, next);
+    stdout.write(`${path}: ${JSON.stringify(readCrewSetting(next, path))}\n`);
+    return 0;
+  }
+
+  const result = unsetConfigValue(opts.cwd ?? process.cwd(), path);
+  stdout.write(`${path}: ${JSON.stringify(result.nextValue)}\n`);
+  return 0;
+}
+
+function buildShowPayload(opts: ConfigSubcommandOptions): Record<string, unknown> {
+  const crewHome = opts.crewHome ?? resolveCrewHome();
+  const workflow = showWorkflowConfig(opts.cwd ?? process.cwd());
+  const crewConfig = readConfigFile(crewHome);
+  return {
+    notifications: crewConfig.notifications,
+    confirmBeforeMerge: crewConfig.confirmBeforeMerge,
+    ...workflow.effectiveConfig,
+  };
+}
+
+function readShowPath(payload: Record<string, unknown>, path: string): unknown {
+  if (isCrewSettingPath(path)) {
+    return readCrewSetting(payload as unknown as CrewConfig, path);
+  }
+  return path.split('.').reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== 'object') return undefined;
+    return (current as Record<string, unknown>)[segment];
+  }, payload);
+}
+
+function isCrewSettingPath(path: string): path is 'notifications.success' | 'notifications.error' | 'confirmBeforeMerge' {
+  return path === 'notifications.success'
+    || path === 'notifications.error'
+    || path === 'confirmBeforeMerge';
+}
+
+function readCrewSetting(config: CrewConfig, path: string): boolean {
+  switch (path) {
+    case 'notifications.success':
+      return config.notifications.success;
+    case 'notifications.error':
+      return config.notifications.error;
+    case 'confirmBeforeMerge':
+      return config.confirmBeforeMerge;
+    default:
+      throw new Error(`Unsupported config path "${path}".`);
+  }
+}
+
+function writeCrewSetting(
+  config: MutableCrewConfig,
+  path: string,
+  value: boolean,
+): void {
+  switch (path) {
+    case 'notifications.success':
+      config.notifications.success = value;
+      return;
+    case 'notifications.error':
+      config.notifications.error = value;
+      return;
+    case 'confirmBeforeMerge':
+      config.confirmBeforeMerge = value;
+      return;
+    default:
+      throw new Error(`Unsupported config path "${path}".`);
+  }
+}
+
+function parseBooleanValue(path: string, raw: string): boolean {
+  const normalized = raw.trim().toLowerCase();
+  if (['true', 'on', '1', 'yes'].includes(normalized)) return true;
+  if (['false', 'off', '0', 'no'].includes(normalized)) return false;
+  throw new Error(`Invalid value for ${path}: expected boolean, received "${raw}".`);
+}
+
+function mutableConfig(config: CrewConfig): MutableCrewConfig {
+  return {
+    notifications: {
+      success: config.notifications.success,
+      error: config.notifications.error,
+    },
+    confirmBeforeMerge: config.confirmBeforeMerge,
+  };
 }
 
 function sameConfig(

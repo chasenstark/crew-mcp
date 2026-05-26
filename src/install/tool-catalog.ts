@@ -17,6 +17,7 @@ import {
   CANCEL_RUN_DESCRIPTION,
   CONTINUE_RUN_DESCRIPTION,
   DISCARD_RUN_DESCRIPTION,
+  GET_CREW_PREFERENCES_DESCRIPTION,
   GET_PANEL_STATUS_DESCRIPTION,
   GET_RUN_STATUS_DESCRIPTION,
   LIST_AGENTS_DESCRIPTION,
@@ -29,6 +30,7 @@ import type { SkillTool } from './skill-renderer.js';
 
 export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'list_agents', description: LIST_AGENTS_DESCRIPTION },
+  { name: 'get_crew_preferences', description: GET_CREW_PREFERENCES_DESCRIPTION },
   { name: 'list_runs', description: LIST_RUNS_DESCRIPTION },
   { name: 'run_agent', description: RUN_AGENT_DESCRIPTION },
   { name: 'continue_run', description: CONTINUE_RUN_DESCRIPTION },

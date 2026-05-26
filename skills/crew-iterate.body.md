@@ -15,7 +15,7 @@ This skill loads when the user wants a **multi-agent loop that keeps
 working on an implementation until acceptance criteria pass and
 reviewers approve** — "keep working on X with review", "implement X
 and review until it's good", "iterate to convergence", "ship-quality
-loop", "use Claude + Codex to push this until criteria pass".
+loop", "use two agents to push this until criteria pass".
 
 The mechanic: captain derives **acceptance criteria** from the user's
 request, the user confirms them, those criteria become the contract
@@ -98,8 +98,8 @@ before any dispatch. **Silence is not consent.**
 Use `crew-iterate` when ANY hold:
 - User used "review", "iterate", "until good", "keep working",
   "ship-ready", or similar quality-loop framing.
-- User wants multiple agents (Claude + Codex + …) pushing on
-  something until criteria pass.
+- User wants multiple agents pushing on something until criteria
+  pass.
 - The change should land via `merge_run` once it converges.
 
 Fall back to umbrella `crew` when:
@@ -206,6 +206,62 @@ testable predicate. Pure wording clarifications that preserve the
 predicate (typo fixes) can be applied unilaterally with a one-line
 note; prior PASSes remain valid; counter does not reset.
 
+### Step 0.5 — Confirm agent picks
+
+**Mandatory. Do not dispatch until the user OKs the picks.** Agent
+choice is part of the loop contract, not an invisible captain
+preference. This gate parallels the Review panels gate in the
+umbrella `crew` body.
+
+1. Call `list_agents`.
+2. If available in this install, call
+   `get_crew_preferences({scope: "iterate"})`. If the tool is absent,
+   skip it and fall back to the heuristic below.
+3. Filter out your own host product (invariant #5), unavailable
+   agents, and any ids in `iterate.banList`.
+4. Propose an implementer and dispatched reviewer set. Prefer the
+   user's configured `iterate.implementer` / `iterate.reviewers` when
+   present. Otherwise use the fallback heuristic: mechanical-heavy
+   criteria fit a fast-iteration implementer profile; behavioral-heavy
+   criteria fit a careful-reasoning profile; mixed work should use
+   different products for implementer and reviewer when possible.
+
+Surface to the user verbatim:
+
+> Agents for this iteration:
+> - Implementer: <id> <reason: "your default" | "heuristic: ...">
+> - Reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
+> - Inline reviewer: captain <reason: "free, always">
+>
+> Override (e.g., "swap implementer to <id>", "drop reviewer <id>",
+> "use <id> for both") or OK.
+
+Wait for OK. **Silence is not consent.** If the user overrides, restate
+the final picks and ask again.
+
+#### Override grammar
+
+Recognize these phrases consistently:
+- `swap implementer to <id>` → set implementer.
+- `add reviewer <id>` / `drop reviewer <id>` → mutate reviewer set.
+- `use only <id>` / `use <id> for both` → collapse picks.
+- `no <id>` / `never <id>` → session-scoped ban only; do not persist.
+
+After confirmation, include this block VERBATIM in every downstream
+prompt, immediately after the acceptance criteria block:
+
+```
+## Agent-pick (Step 0.5)
+Implementer: <id> (<reason>)
+Dispatched reviewer(s): <id, id> (<reason>)
+Inline reviewer: captain (free, always)
+This block is included in downstream prompts so reviewers can audit agent-drift across rounds.
+```
+
+If a later round uses different picks without a documented user
+override, stop and re-confirm. Reviewers can then detect agent drift
+the same way they detect criteria drift.
+
 ### Step 1 — Dispatch implementer
 
 ```
@@ -215,7 +271,9 @@ run_agent({
   effort: <one level higher than for raw implementation, clamped at "max">,
   peer_messages: [
     { body: <numbered criteria list, verbatim from Step 0>,
-      kind: "note", from_label: "acceptance criteria" }
+      kind: "note", from_label: "acceptance criteria" },
+    { body: <agent-pick block, verbatim from Step 0.5>,
+      kind: "note", from_label: "agent picks" }
   ]
 })
 ```
@@ -226,10 +284,11 @@ run_agent({
 - Pick `effort` one level higher than for a raw implementation
   (**clamped at `max`**) — review catches mid-effort regressions but
   can't recover from a low-effort foundation.
-- Mechanical-heavy criteria → fast-iteration implementer profile
-  (e.g., Codex). Behavioral-heavy → careful-reasoning profile (e.g.,
-  Claude Code). Mixed criteria default to one product as implementer
-  and the other as reviewer so heterogeneity shows up at review.
+- If Step 0.5 did not yield user defaults, use its fallback heuristic:
+  mechanical-heavy criteria → fast-iteration implementer profile;
+  behavioral-heavy → careful-reasoning profile; mixed criteria use
+  different products for implementer and reviewer when possible so
+  heterogeneity shows up at review.
 - Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
   the turn, spawn the watcher on Claude Code (per invariant #2).
 
@@ -258,6 +317,8 @@ run_agent({
   peer_messages: [
     { body: <acceptance criteria>, kind: "note",
       from_label: "acceptance criteria" },
+    { body: <agent-pick block>, kind: "note",
+      from_label: "agent picks" },
     { body: A.summary, files: A.files_changed,
       kind: "review", from_label: "implementer" }
   ],
@@ -376,11 +437,14 @@ If you cannot find the criteria in peer_messages: STOP. Reply with
 and needs to fix that first.
 
 Audit check (cross-round): if peer_messages contains a prior round's
-`## User-confirmed acceptance criteria (Step 0)` block AND the
-current round's block has different content (other than a documented
-unilateral clarification, per Step 0 revision rule), STOP. Reply with
-"criteria drift detected; previous and current blocks differ" — the
-captain may have silently mutated criteria without re-confirmation.
+`## User-confirmed acceptance criteria (Step 0)` block or
+`## Agent-pick (Step 0.5)` block AND the current round's corresponding
+block has different content (other than a documented unilateral
+clarification or user-approved override), STOP. Reply with
+"criteria drift detected; previous and current blocks differ" or
+"agent drift detected; previous and current picks differ" — the
+captain may have silently mutated criteria or agent choice without
+re-confirmation.
 ```
 
 Specialty-specific concerns belong INSIDE the acceptance criteria
@@ -439,6 +503,8 @@ continue_run({
   peer_messages: [
     { body: <acceptance criteria>, kind: "note",
       from_label: "acceptance criteria (unchanged)" },
+    { body: <agent-pick block>, kind: "note",
+      from_label: "agent picks (unchanged)" },
     { body: <inline review's failing criteria + findings>,
       kind: "review", from_label: "captain inline review" },
     { body: <dispatched review's failing criteria + findings>,

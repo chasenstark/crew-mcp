@@ -38,6 +38,7 @@ describe.skipIf(!hasBuild)('crew-mcp serve — subprocess wire protocol', () => 
         'cancel_run',
         'continue_run',
         'discard_run',
+        'get_crew_preferences',
         'get_panel_status',
         'get_run_status',
         'list_agents',

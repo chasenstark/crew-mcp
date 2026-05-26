@@ -50,7 +50,7 @@ export function buildProgram(): Command {
       await statusCommand();
     });
 
-  program
+  const config = program
     .command('config')
     .description('Interactively toggle per-machine crew settings (notifications, …)')
     .action(async () => {
@@ -58,6 +58,37 @@ export function buildProgram(): Command {
       const { configCommand } = await import('./cli/commands/config.js');
       const code = await configCommand();
       if (code !== 0) process.exitCode = code;
+    });
+
+  config
+    .command('show')
+    .argument('[path]', 'Optional dotted config path to show')
+    .description('Show effective crew configuration')
+    .action(async (path?: string) => {
+      applyDebugFlag(program);
+      const { configShowCommand } = await import('./cli/commands/config.js');
+      await configShowCommand(path);
+    });
+
+  config
+    .command('set')
+    .argument('<path>', 'Dotted config path')
+    .argument('<value>', 'Value to write')
+    .description('Set a crew configuration value')
+    .action(async (path: string, value: string) => {
+      applyDebugFlag(program);
+      const { configSetCommand } = await import('./cli/commands/config.js');
+      await configSetCommand(path, value);
+    });
+
+  config
+    .command('unset')
+    .argument('<path>', 'Dotted config path')
+    .description('Unset a crew configuration value')
+    .action(async (path: string) => {
+      applyDebugFlag(program);
+      const { configUnsetCommand } = await import('./cli/commands/config.js');
+      await configUnsetCommand(path);
     });
 
   program
