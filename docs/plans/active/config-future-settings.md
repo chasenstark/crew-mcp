@@ -51,7 +51,9 @@ override (matches the precedence we already established for
   [`iterate-panel-agent-defaults.md`](../active/iterate-panel-agent-defaults.md).
   The selected surface expanded from a single `defaultAgent` into
   `workflow.agentDefaults` slots for iterate implementer, iterate
-  reviewers, panel reviewers, and per-scope `banList`.
+  reviewers, panel reviewers, and per-scope `banList`. Interactive
+  TUI access shipped in
+  [`config-tui-agent-defaults.md`](../active/config-tui-agent-defaults.md).
 
 ### `defaultEffort` (low | medium | high | xhigh | max)
 - **Promotes from:** (new)
