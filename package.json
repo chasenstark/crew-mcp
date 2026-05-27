@@ -1,6 +1,11 @@
 {
   "name": "crew-mcp",
-  "version": "0.2.0-dev",
+  "version": "0.2.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chasenstark/crew-mcp.git"
+  },
   "description": "MCP server + portable captain skill that turns any AI coding CLI into the orchestrator of a worktree-isolated multi-agent crew",
   "type": "module",
   "bin": {

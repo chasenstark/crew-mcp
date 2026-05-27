@@ -45,6 +45,12 @@ isolated worktree and reports back.
 ## Install
 
 ```sh
+npm install -g crew-mcp
+```
+
+Or from source:
+
+```sh
 git clone https://github.com/chasenstark/crew-mcp.git
 cd crew-mcp
 npm install && npm run build && npm link
