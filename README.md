@@ -1,89 +1,166 @@
 # crew-mcp
 
-> v2 of [crew](https://github.com/chasenstark/crew). An MCP server +
-> portable captain skill that turns any AI coding CLI (Claude Code,
-> Codex, Gemini) into the orchestrator of a worktree-isolated
-> multi-agent crew.
+An MCP server that turns your AI coding CLI into the orchestrator of a
+multi-agent crew. Dispatch work to Claude Code, Codex, Gemini CLI, or
+local models — each run gets its own git worktree, so your working
+directory stays clean and merges happen only when you say so.
 
-**Status: pre-release (v0.2.0-dev).** Installable from source. Eval +
-field report (M4) is the remaining v0.2 milestone.
-
-## What this is
-
-v0.1 of crew was a Terminal UI hosting its own captain LLM that
-dispatched to Claude Code / Codex / Gemini as workers. v2 inverts
-the architecture: crew-mcp is an MCP server you install into your
-existing AI coding CLI, plus a captain skill that ships with it.
-The host CLI's LLM becomes the captain; crew provides the
-orchestration verbs and the playbook.
-
-See:
-
-- [docs/plans/completed/mcp-pivot/PRODUCT_VISION.md](./docs/plans/completed/mcp-pivot/PRODUCT_VISION.md) — the why
-- [docs/plans/completed/mcp-pivot/IMPLEMENTATION_PLAN.md](./docs/plans/completed/mcp-pivot/IMPLEMENTATION_PLAN.md) — the how
-- [docs/plans/completed/mcp-pivot/HISTORICAL_CONTEXT.md](./docs/plans/completed/mcp-pivot/HISTORICAL_CONTEXT.md) — what came before
-
-## Install (from source)
-
-```sh
-git clone <this repo>
-cd crew-mcp
-npm install
-npm run build
-npm link
-
-# Install into one or more host CLIs
-crew-mcp install --target codex          # ~/.codex/config.toml + ~/.codex/prompts/crew.md
-crew-mcp install --target claude-code    # ~/.claude.json + ~/.claude/skills/crew/SKILL.md
-crew-mcp install --target gemini         # ~/.gemini/settings.json + ~/.gemini/extensions/crew/SKILL.md
-crew-mcp install --target all            # auto-detects installed hosts
-
-# Verify the install (skill ↔ MCP tool surface parity)
-crew-mcp verify
-
-# Reverse it
-crew-mcp uninstall --target codex
+```
+you ── Claude Code (captain) ──┬── run_agent → Codex (worktree A)
+                                ├── run_agent → Gemini (worktree B)
+                                └── run_panel → Claude + Codex (parallel review)
 ```
 
-On macOS, dispatch output can open a side Terminal window directly for live
-run logs through an optional `crew-tail://` handler. Install it once after
-linking; without it, the manual `tail -F` line printed in dispatch output
-remains the fallback.
+## How it works
+
+Crew installs two things into your host CLI:
+
+1. **An MCP server** exposing orchestration tools (`run_agent`,
+   `run_panel`, `merge_run`, etc.)
+2. **A captain skill** — a markdown playbook that teaches the host
+   LLM when to dispatch, how to decompose work, and how to iterate
+   after review
+
+Your host CLI's LLM becomes the captain. You stay in one conversation.
+When work needs another agent, the captain dispatches it into an
+isolated worktree and reports back.
+
+## What you can do
+
+- **Dispatch work** — "have Codex implement this feature", "send this
+  to Claude for review". The captain picks the right agent, allocates a
+  worktree, and dispatches.
+- **Run review panels** — multiple models review the same diff in
+  parallel. Each model does a full independent review; the captain
+  cross-checks agreement and disagreement across models.
+- **Iterate to acceptance** — define acceptance criteria, then loop
+  between an implementer and a reviewer until every criterion passes.
+  The captain drives the loop; you watch or intervene.
+- **Use local models** — add Ollama, LM Studio, or any
+  OpenAI-compatible endpoint as a crew agent alongside the cloud CLIs.
+- **Merge when ready** — review the diff, then `merge_run` applies it
+  to your branch. Or `discard_run` to throw it away. Nothing touches
+  your working tree until you decide.
+
+## Install
+
+```sh
+git clone https://github.com/chasenstark/crew-mcp.git
+cd crew-mcp
+npm install && npm run build && npm link
+```
+
+Install into your host CLI:
+
+```sh
+crew-mcp install --target claude-code   # Claude Code
+crew-mcp install --target codex         # OpenAI Codex CLI
+crew-mcp install --target gemini        # Gemini CLI
+crew-mcp install --target all           # auto-detect installed hosts
+```
+
+Verify the install:
+
+```sh
+crew-mcp verify
+```
+
+Restart your host CLI session. The `mcp__crew__*` tools and the captain
+skill are now available.
+
+### Add local models
+
+```sh
+crew-mcp agents add --provider ollama
+crew-mcp agents add --provider lm-studio
+crew-mcp agents add --provider openai-compatible --api-base http://localhost:8080/v1
+```
+
+The interactive wizard discovers available models and registers them as
+crew agents.
+
+### Optional: live tail handler (macOS)
+
+Dispatched runs log to `~/.crew/runs/<id>/`. Install the `crew-tail://`
+URL handler to open a side Terminal window with live logs automatically:
 
 ```sh
 crew-mcp install-tail-handler
 ```
 
-Then restart your host CLI session. From inside it, ask things like
-"have Claude review this changelog parser" or "send this to Codex" —
-the skill loads and `mcp__crew__*` tools become available.
+Without it, the captain prints a `tail -F` command you can run manually.
+
+## MCP tools
+
+| Tool | Purpose |
+|------|---------|
+| `run_agent` | Dispatch work to a specific agent in an isolated worktree |
+| `run_panel` | Dispatch parallel reviewers (full-review-per-model) |
+| `aggregate_panel` | Collect panel reviewer findings |
+| `get_panel_status` | Check panel progress |
+| `get_run_status` | Check a single run's status |
+| `list_runs` | List all runs, optionally filtered by status |
+| `list_agents` | List available agents and their capabilities |
+| `merge_run` | Apply a completed run's changes to your branch |
+| `continue_run` | Send follow-up instructions to a running agent |
+| `discard_run` | Discard a run's worktree and changes |
+| `cancel_run` | Cancel a running agent |
+| `get_crew_preferences` | Read crew configuration |
 
 ## Configure
-
-Per-machine settings live in `~/.crew/config.json`. Edit them
-interactively:
 
 ```sh
 crew-mcp config
 ```
 
-The TUI lists each toggle (`↑/↓` to move, `space` to toggle, `enter`
-to save, `q` / `esc` to cancel). Entries:
+Interactive TUI for per-machine settings in `~/.crew/config.json`:
 
-- **notifications.success** — OS toast when a dispatched run succeeds.
-  Enabled by default.
-- **notifications.error** — OS toast when a dispatched run fails or
-  finishes partial. Enabled by default. Cancelled runs never notify.
-- **confirmBeforeMerge** — require `merge_run` to carry explicit
-  confirmation before mutating the host branch. Enabled by default.
+- **notifications.success / error** — OS notifications when dispatched
+  runs finish (on by default)
+- **confirmBeforeMerge** — require explicit confirmation before
+  `merge_run` mutates your branch (on by default)
 
-The env var `CREW_OS_NOTIFICATIONS=off` always overrides to off, which
-is handy for CI or one-shot quiet runs. The env var
-`CREW_CONFIRM_BEFORE_MERGE=off` disables the merge confirmation gate for
-scripted merges.
+Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 
-## v0.1
+## Supported hosts
 
-Frozen as the [v0.1-tui git tag](https://github.com/chasenstark/crew-mcp/releases/tag/v0.1-tui)
-on this repo, and as the entire [crew repo](https://github.com/chasenstark/crew)
-in archive form.
+| Host | Adapter | Install target |
+|------|---------|----------------|
+| Claude Code | `claude-code` | `--target claude-code` |
+| Codex CLI | `codex` | `--target codex` |
+| Gemini CLI | `gemini-cli` | `--target gemini` |
+| Ollama / LM Studio / vLLM | `openai-compatible` | `crew-mcp agents add` |
+| Any CLI with a command interface | `generic` | `crew-mcp agents add` |
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│  Host CLI (Claude Code / Codex / Gemini)    │
+│  ┌───────────────────────────────────────┐  │
+│  │  Captain skill (markdown playbook)    │  │
+│  └──────────────┬────────────────────────┘  │
+│                 │ MCP tool calls             │
+│  ┌──────────────▼────────────────────────┐  │
+│  │  crew-mcp server (stdio transport)    │  │
+│  │  ┌────────────┐  ┌────────────────┐   │  │
+│  │  │ Dispatcher │  │ Run state      │   │  │
+│  │  │ (worktree  │  │ (status, logs, │   │  │
+│  │  │  + adapter │  │  peer messages │   │  │
+│  │  │  + tool    │  │  panel state)  │   │  │
+│  │  │  loop)     │  │                │   │  │
+│  │  └─────┬──────┘  └────────────────┘   │  │
+│  └────────┼──────────────────────────────┘  │
+└───────────┼─────────────────────────────────┘
+            │ spawns
+  ┌─────────▼──────────┐
+  │  Worker agent       │
+  │  (own process,      │
+  │   isolated worktree │
+  │   under ~/.crew/)   │
+  └─────────────────────┘
+```
+
+Each dispatched run gets a worktree at `~/.crew/runs/<runId>/worktree/`.
+The host repo's working directory is never touched. `merge_run` does a
+`git merge --no-ff` from the run's branch into the host branch.
