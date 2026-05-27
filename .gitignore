@@ -2,6 +2,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Internal planning/architecture artifacts (keep local, not published)
+docs/
+
 # scripts
 scripts/*
 !scripts/smoke/
