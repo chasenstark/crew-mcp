@@ -346,14 +346,96 @@ Otherwise: always dispatch. The cost (~30–60s + ~$0.01) is dwarfed
 by the cost of merging a regression the inline review missed.
 
 **1+1 vs panel:**
-- **1+1** (one inline + one dispatched): single review dimension
-  (correctness OR style). Default for narrow changes.
-- **Panel** (one inline + N dispatched via `run_panel`): multiple
-  dimensions (correctness + style + security on auth change). Use
-  when the change crosses concerns. 3+ dimensions → almost always
-  panel.
-- Anti-heuristic: if all reviewers would use the same checklist with
-  the same agent, don't panel — that's just expensive triplication.
+- **1+1** (one inline + one dispatched): one full review from a
+  single dispatched model. Default for narrow changes.
+- **Panel** (one inline + N dispatched via `run_panel`): each model
+  does a **full review** of the entire diff, then the captain
+  consolidates findings and cross-checks for agreement and
+  disagreement across models. Use when you want multiple models'
+  independent perspectives on the same diff.
+- **Large-diff splitting.** When a diff is large enough that a
+  single agent can't review it thoroughly in one pass, split that
+  model's review across multiple agents of the same model. Together
+  they constitute one full review from that model. Each distinct
+  model in the panel still reviews the whole diff. See
+  §"Intra-model split mechanics" below for how to partition, prompt,
+  and merge.
+- Anti-heuristic: do NOT split the review into concern-based slices
+  (correctness, style, security) across different reviewers. Every
+  reviewer does a full review covering all concerns. The captain
+  identifies cross-model agreement and disagreement during
+  consolidation — that's where the value of heterogeneity lives.
+
+### Intra-model split mechanics (large diffs)
+
+When a single model's review needs to be split across multiple
+agents of that model, the captain partitions, dispatches, and
+merges as follows.
+
+**When to split.** Use judgment: a 200-file / 5000-line diff is a
+reasonable threshold where a single agent's review quality degrades.
+Smaller diffs should stay as one agent per model. When in doubt,
+don't split — a slightly less thorough single-pass review is better
+than a poorly partitioned split.
+
+**How to partition files.**
+
+1. **Group by module/directory.** Keep files from the same directory
+   or logical module together. Never split a file across two agents —
+   the split boundary is always at the file level.
+2. **Keep test + implementation paired.** If `foo.ts` is in partition
+   A, `foo.test.ts` must also be in partition A. The reviewer needs
+   to see both to assess coverage.
+3. **Shared files go to every partition.** Config files, type
+   definitions, and other files touched by multiple partitions are
+   included in every sub-agent's file list (marked as shared context,
+   not exclusive). Each sub-agent reviews them in the context of its
+   own partition.
+4. **Aim for roughly equal partitions** by file count, but respect
+   module boundaries over strict equality.
+
+**Prompt for sub-agents.** Each sub-agent gets:
+- The full acceptance criteria (verbatim from Step 0).
+- The implementer's full summary (not partitioned).
+- A scoped file list: "Your partition covers these files: [list].
+  Other partitions cover the remaining files — focus your review on
+  your partition but note any cross-partition concerns you spot."
+- The same review prompt template as a single-agent reviewer.
+
+**Merging sub-agent results into one per-model review.** Before
+cross-model consolidation, the captain merges sub-agent outputs
+into a single per-model review:
+
+1. **Union of criteria scores.** Each sub-agent scores every
+   criterion against its partition. A criterion is PASS for the
+   model only if every sub-agent scored it PASS (or N-A). Any FAIL
+   from any sub-agent → the criterion is FAIL for that model.
+2. **Union of findings.** Deduplicate findings that reference the
+   same file:line. When two sub-agents flag the same shared file,
+   keep the more detailed finding.
+3. **Overall verdict.** Worst-case across sub-agents: any
+   CHANGES_NEEDED → model verdict is CHANGES_NEEDED; any BLOCKING →
+   model verdict is BLOCKING.
+4. **The merged per-model review** is what enters cross-model
+   consolidation (§"Cross-model consolidation" in Step 3).
+
+**`run_panel` dispatch shape for splits:**
+
+```
+run_panel({
+  implementer_run_id: "A",
+  reviewers: [
+    // Model 1: split across 2 agents
+    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files A–M list]. Other files are covered by another codex reviewer." },
+    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files N–Z list]. Other files are covered by another codex reviewer." },
+    // Model 2: single agent (diff small enough for one pass)
+    { agent_id: "claude-code", prompt: "<full review prompt>" },
+  ],
+})
+```
+
+The captain tracks which `run_id`s belong to the same model so it
+can merge sub-agent results before cross-model consolidation.
 
 ### Review prompt template (use verbatim)
 
@@ -493,6 +575,28 @@ structurally valid APPROVE.
 
 Do not soften this guard; do not skip the user prompt because the
 N-A "looks reasonable."
+
+**Cross-model consolidation (panels).** When using a panel, the
+captain must produce a consolidated review report before iterating:
+
+1. **Per-criterion agreement matrix.** For each criterion, list every
+   model's score (PASS/FAIL/N-A). Flag disagreements — one model
+   PASS, another FAIL on the same criterion is a signal worth
+   surfacing.
+2. **Finding deduplication.** Group findings that identify the same
+   issue across models. Agreement (multiple models flag the same
+   problem) increases confidence; unique findings from a single model
+   are still valid but noted as single-source.
+3. **Consolidated verdict.** The conservative rule applies: if ANY
+   model's verdict is CHANGES_NEEDED or BLOCKING, the consolidated
+   verdict is the worst case. Disagreement on verdict is surfaced
+   explicitly.
+4. **Keep the panel running** until the captain has a complete
+   consolidated review covering the full diff. If any reviewer's
+   output is incomplete or malformed, re-dispatch that reviewer
+   before consolidating.
+
+The consolidated report feeds into the iterate path below.
 
 **Iterate path.** Aggregate FAILing criteria + CHANGES_NEEDED
 findings into `peer_messages` and `continue_run` the implementer:

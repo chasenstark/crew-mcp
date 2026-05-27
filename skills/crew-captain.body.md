@@ -571,14 +571,33 @@ Recognize these phrases consistently:
 
 ### `run_panel`: parallel reviewers with shared context
 
+**Philosophy: full review per model.** Each distinct model in the
+panel does a **full review** of the entire diff — not a
+concern-sliced partial review (don't split "correctness" to one
+reviewer and "style" to another). The captain consolidates findings
+across models afterward, cross-checking for agreement and
+disagreement. Heterogeneity of models is the value; splitting by
+concern throws that away.
+
+When a diff is large enough that a single agent can't review it
+thoroughly in one pass, split that model's review across multiple
+agents of the same model — partition by file groups (keep
+module/directory boundaries, pair tests with implementation, share
+config files across partitions). Together those agents constitute
+one full review from that model. The captain merges their outputs
+into a single per-model review before cross-model consolidation.
+
 Bound to an implementer:
 
 ```
 run_panel({
   implementer_run_id: "A",
   reviewers: [
-    { agent_id: "<reviewer>", prompt: "correctness pass" },
-    { agent_id: "<reviewer>", prompt: "style + repo-conventions pass" },
+    // Single-agent review from claude-code
+    { agent_id: "claude-code", prompt: "<full review prompt>" },
+    // Split review from codex (large diff)
+    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files A–M]." },
+    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files N–Z]." },
   ],
 })
 ```
@@ -596,8 +615,8 @@ Standalone (no implementer):
 ```
 run_panel({
   reviewers: [
-    { agent_id: "<reviewer>", prompt: "...", read_only: true },
-    { agent_id: "<reviewer>", prompt: "...", working_directory: "/path", peer_messages: [...] },
+    { agent_id: "claude-code", prompt: "<full review prompt>", read_only: true },
+    { agent_id: "gemini", prompt: "<full review prompt>", read_only: true },
   ],
 })
 ```
@@ -607,6 +626,9 @@ When unbound: each reviewer is a plain `run_agent` call.
 root (no worktree allocated). `read_only: false` or unset
 reviewers allocate a fresh run worktree (the standard `run_agent`
 default). You can override either with explicit `working_directory`.
+
+Same principle applies: each model does a full review. The captain
+consolidates cross-model findings afterward.
 
 ### Lifecycle
 
@@ -621,7 +643,7 @@ Bash("{{CREW_WAIT_COMMAND}} <reviewer.run_id>", run_in_background: true)
 
 On Codex / Gemini, rely on the next-user-turn snapshot.
 
-### Aggregating findings
+### Aggregating and consolidating findings
 
 Once all reviewers are terminal:
 
@@ -641,6 +663,22 @@ any reviewer is still running. It emits all reviewer messages
 even when they're identical — different reviewers reaching the
 same conclusion is signal, not noise.
 
+**Captain consolidation (mandatory before acting on panel results).**
+After `aggregate_panel` returns, the captain produces a consolidated
+review report before forwarding to the implementer or surfacing to
+the user:
+
+1. **Cross-model agreement.** Group findings that multiple models
+   flagged independently — these are high-confidence issues.
+2. **Single-source findings.** Note findings only one model raised.
+   Still valid, but lower confidence.
+3. **Disagreements.** Where models disagree (one says the code is
+   correct, another flags a bug), surface both arguments. The
+   captain does not silently pick a winner.
+4. **Keep the panel running** until every model's review covers the
+   full diff. If a reviewer's output is incomplete or malformed,
+   re-dispatch before consolidating.
+
 ### Partial dispatch
 
 If any reviewer fails to dispatch (agent unavailable, worktree
@@ -653,7 +691,9 @@ implementer sees what happened. You decide whether to proceed.
 
 - One reviewer only: just `run_agent` with `read_only: true` +
   `working_directory`. Panel is overhead.
-- Reviewers need wildly different context per-reviewer: use
-  `run_agent` per reviewer for tighter `peer_messages` control.
 - You want auto-cancel-on-blocker: not supported (yet). Cancel
   per-reviewer with `cancel_run`.
+- Anti-pattern: don't use `run_panel` to split a review by concern
+  (one reviewer for correctness, one for style). Each reviewer does
+  a full review; the panel's value is cross-model perspective, not
+  concern partitioning.
