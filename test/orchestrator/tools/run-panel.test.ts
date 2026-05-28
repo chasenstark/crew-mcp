@@ -1,6 +1,16 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Preference-fill reads the EFFECTIVE config, which merges the global
+// ~/.crew/workflow.yaml (resolved via os.homedir()). Mock homedir to an
+// isolated empty dir so the developer's real global agentDefaults can't
+// leak into the preference-fill assertions.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(actual.homedir) };
+});
 
 import type { TaskResult } from '../../../src/adapters/types.js';
 import {
@@ -30,9 +40,17 @@ import {
 import { getDefaultConfig } from '../../../src/workflow/config-codec.js';
 
 const cleanups: Array<() => void> = [];
+const mockedHomedir = vi.mocked(homedir);
+let isolatedHome: string;
+
+beforeEach(() => {
+  isolatedHome = mkdtempSync(join(tmpdir(), 'crew-run-panel-home-'));
+  mockedHomedir.mockReturnValue(isolatedHome);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
+  rmSync(isolatedHome, { recursive: true, force: true });
   while (cleanups.length > 0) {
     cleanups.pop()?.();
   }
