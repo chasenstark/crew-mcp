@@ -17,9 +17,10 @@ Crew installs two things into your host CLI:
 
 1. **An MCP server** exposing orchestration tools (`run_agent`,
    `run_panel`, `merge_run`, etc.)
-2. **A captain skill** — a markdown playbook that teaches the host
-   LLM when to dispatch, how to decompose work, and how to iterate
-   after review
+2. **Captain skills** — markdown playbooks that teach the host LLM how
+   to orchestrate. The umbrella `crew` skill covers dispatch, review
+   panels, and merge; the `crew-iterate` skill drives a criteria-gated
+   implement → review → iterate loop ([see below](#the-crew-iterate-skill)).
 
 Your host CLI's LLM becomes the captain. You stay in one conversation.
 When work needs another agent, the captain dispatches it into an
@@ -34,13 +35,49 @@ isolated worktree and reports back.
   parallel. Each model does a full independent review; the captain
   cross-checks agreement and disagreement across models.
 - **Iterate to acceptance** — define acceptance criteria, then loop
-  between an implementer and a reviewer until every criterion passes.
-  The captain drives the loop; you watch or intervene.
+  between an implementer and one or more reviewers until every criterion
+  passes. The captain drives the loop; you watch or intervene. See
+  [the crew-iterate skill](#the-crew-iterate-skill).
 - **Use local models** — add Ollama, LM Studio, or any
   OpenAI-compatible endpoint as a crew agent alongside the cloud CLIs.
 - **Merge when ready** — review the diff, then `merge_run` applies it
   to your branch. Or `discard_run` to throw it away. Nothing touches
   your working tree until you decide.
+
+## The crew-iterate skill
+
+For work you want pushed to ship-quality, `crew-iterate` runs a
+criteria-gated loop instead of a one-shot dispatch.
+
+Trigger it by intent — "keep working on X with review", "iterate until
+it's good", "ship-quality loop" — or invoke it directly: `/crew-iterate`
+on Claude Code (`crew-iterate` on Codex / Gemini).
+
+The loop:
+
+1. **Derive acceptance criteria** from your request and confirm them
+   with you. They become the contract for every downstream step.
+2. **Confirm agents** — the captain proposes an implementer and a
+   reviewer count scaled to the change's complexity (one reviewer for a
+   narrow change, up to three distinct models for large or high-risk
+   ones), honoring your configured defaults and bans. You OK or adjust.
+3. **Dispatch the implementer** with the criteria embedded in the prompt.
+4. **Dual review** — a free inline review by the captain plus one or more
+   dispatched reviewers, each scoring every criterion PASS/FAIL and
+   giving an overall verdict. Multiple reviewers run as a parallel panel.
+5. **Iterate** — failing criteria and findings fold back via
+   `continue_run` until every criterion passes and every reviewer
+   approves (bounded by a safety cap).
+6. **Merge** — on your explicit go, the run is squash-merged into a
+   single clean commit.
+
+Set persistent defaults so you don't re-pick every run — a default
+implementer, default reviewers, and a per-scope ban list (e.g. "never
+use Gemini"):
+
+```sh
+crew-mcp config   # → "Agent defaults…"
+```
 
 ## Install
 
@@ -119,12 +156,16 @@ Without it, the captain prints a `tail -F` command you can run manually.
 crew-mcp config
 ```
 
-Interactive TUI for per-machine settings in `~/.crew/config.json`:
+Interactive TUI for per-machine settings:
 
 - **notifications.success / error** — OS notifications when dispatched
   runs finish (on by default)
 - **confirmBeforeMerge** — require explicit confirmation before
   `merge_run` mutates your branch (on by default)
+- **Agent defaults** — default implementer and reviewers for
+  `crew-iterate`, default reviewers for `run_panel`, and per-scope ban
+  lists. Stored globally in `~/.crew/workflow.yaml`; the toggles above
+  live in `~/.crew/config.json`.
 
 Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 
@@ -168,5 +209,5 @@ Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 ```
 
 Each dispatched run gets a worktree at `~/.crew/runs/<runId>/worktree/`.
-The host repo's working directory is never touched. `merge_run` does a
-`git merge --no-ff` from the run's branch into the host branch.
+The host repo's working directory is never touched. `merge_run`
+squash-merges the run's branch into the host branch as a single commit.
