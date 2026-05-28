@@ -3,7 +3,9 @@
  * different paths.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { geminiAdapter } from '../../../src/install/hosts/gemini.js';
@@ -58,6 +60,55 @@ describe('geminiAdapter.skillInstallSpecFor', () => {
     expect(spec.frontmatterName).toBe('crew-iterate');
     expect(spec.legacyPathsToRemove).toEqual([
       join('/home/me', '.gemini', 'extensions', 'crew-iterate', 'SKILL.md'),
+    ]);
+  });
+});
+
+describe('geminiAdapter.skillInstallSpecFor — shared ~/.agents/skills/ dedupe', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'crew-gemini-shared-'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const iterateSkill = {
+    id: 'crew:iterate',
+    slug: 'iterate',
+    bodyFile: 'crew-iterate.body.md',
+    description: 'desc',
+  };
+
+  function seedSharedSkill(dir: string): string {
+    const sharedPath = join(home, '.agents', 'skills', dir, 'SKILL.md');
+    mkdirSync(join(home, '.agents', 'skills', dir), { recursive: true });
+    writeFileSync(sharedPath, '---\nname: ' + dir + '\n---\nbody\n', 'utf-8');
+    return sharedPath;
+  }
+
+  it('skips the per-host copy and points at the shared path when it exists', () => {
+    const sharedPath = seedSharedSkill('crew-iterate');
+    const spec = geminiAdapter.skillInstallSpecFor(home, iterateSkill);
+    expect(spec.skip).toBe(true);
+    expect(spec.skillPath).toBe(sharedPath);
+    // Removes the deprecated extensions path AND the stale per-host copy.
+    expect(spec.legacyPathsToRemove).toEqual([
+      join(home, '.gemini', 'extensions', 'crew-iterate', 'SKILL.md'),
+      join(home, '.gemini', 'skills', 'crew-iterate', 'SKILL.md'),
+    ]);
+  });
+
+  it('writes the per-host copy when the shared path is absent', () => {
+    const spec = geminiAdapter.skillInstallSpecFor(home, iterateSkill);
+    expect(spec.skip).toBeUndefined();
+    expect(spec.skillPath).toBe(
+      join(home, '.gemini', 'skills', 'crew-iterate', 'SKILL.md'),
+    );
+    expect(spec.legacyPathsToRemove).toEqual([
+      join(home, '.gemini', 'extensions', 'crew-iterate', 'SKILL.md'),
     ]);
   });
 });

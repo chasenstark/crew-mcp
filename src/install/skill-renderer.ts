@@ -118,6 +118,16 @@ export interface SkillInstallSpec {
    * to `~/.gemini/skills/crew/SKILL.md`).
    */
   readonly legacyPathsToRemove: readonly string[];
+  /**
+   * When true, the install renders nothing to `skillPath` for this
+   * host — it only processes `legacyPathsToRemove`. Used when the host
+   * already discovers the skill from a shared location on its search
+   * path (e.g. Gemini natively scans `~/.agents/skills/`, which Claude
+   * Code populates), so a per-host copy would be a duplicate the host
+   * warns about. The skipped skill is excluded from the install
+   * manifest's written-paths and skills map.
+   */
+  readonly skip?: boolean;
 }
 
 export interface RenderSkillArgs {

@@ -92,9 +92,18 @@ export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     // across ALL recorded skill files before comparing to the live
     // catalog — a tool present in only one skill is fine; the failure
     // mode is a live tool absent from every skill we installed.
-    const recordedSkillPaths = entry.skills && Object.keys(entry.skills).length > 0
-      ? Object.values(entry.skills)
-      : [entry.skillPath];
+    // Skills crew wrote for this host, PLUS skills it loads from a
+    // shared search-path location (sharedSkills — e.g. Gemini reading
+    // the shared ~/.agents/skills/ copy). Both must exist and parse for
+    // the host to function. Fall back to the back-compat single
+    // skillPath only when neither map carries anything.
+    const recordedSkillPaths = [
+      ...Object.values(entry.skills ?? {}),
+      ...Object.values(entry.sharedSkills ?? {}),
+    ];
+    if (recordedSkillPaths.length === 0 && entry.skillPath) {
+      recordedSkillPaths.push(entry.skillPath);
+    }
     const union = new Set<string>();
     let anySkillRead = false;
     for (const skillPath of recordedSkillPaths) {

@@ -1,8 +1,8 @@
 import { mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   configCommand,
@@ -11,6 +11,14 @@ import {
   configUnsetCommand,
 } from '../../../src/cli/commands/config.js';
 import { readConfigFile } from '../../../src/utils/config-store.js';
+
+// workflow.agentDefaults.* writes resolve to the GLOBAL workflow config
+// (~/.crew/workflow.yaml via os.homedir()), so mock homedir to keep the
+// test off the real user config.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(actual.homedir) };
+});
 
 class CaptureStdout {
   text = '';
@@ -55,6 +63,7 @@ class TtyStdin extends EventEmitter {
 }
 
 describe('crew-mcp config subcommands', () => {
+  const mockedHomedir = vi.mocked(homedir);
   let cwd: string;
   let crewHome: string;
 
@@ -64,10 +73,15 @@ describe('crew-mcp config subcommands', () => {
     crewHome = join(root, 'home', '.crew');
     mkdirSync(cwd, { recursive: true });
     mkdirSync(crewHome, { recursive: true });
+    // Global workflow config (~/.crew/workflow.yaml) resolves via
+    // homedir(); point it at the test root so agentDefaults writes stay
+    // isolated.
+    mockedHomedir.mockReturnValue(join(root, 'home'));
   });
 
   afterEach(() => {
     rmSync(join(cwd, '..'), { recursive: true, force: true });
+    mockedHomedir.mockRestore();
   });
 
   it('sets, shows, and unsets workflow agentDefaults dotted keys', async () => {

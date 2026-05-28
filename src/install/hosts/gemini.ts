@@ -14,6 +14,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -23,6 +24,19 @@ import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js'
 const execFileAsync = promisify(execFile);
 
 const MCP_BLOCK_KEY = 'crew';
+
+/**
+ * The shared "Agent Skills" standard directory. Gemini CLI scans it
+ * natively (in addition to its own `~/.gemini/skills/`), and Claude
+ * Code populates it on machines where `~/.claude/skills` is symlinked
+ * here. When a skill already lives in this shared dir, a per-host
+ * `~/.gemini/skills/` copy is a duplicate Gemini warns about
+ * ("overriding the same skill"), so we skip it. See
+ * `geminiSkillInstallSpecFor`.
+ */
+function sharedAgentSkillPath(home: string, dir: string): string {
+  return join(home, '.agents', 'skills', dir, 'SKILL.md');
+}
 
 interface GeminiConfigShape {
   mcpServers?: Record<string, unknown>;
@@ -127,18 +141,46 @@ export const geminiAdapter: HostAdapter = {
  * sub-skill `crew-iterate` doesn't have a legacy path. Both share the
  * same `legacyPathsToRemove` rule by convention — anything at the old
  * `~/.gemini/extensions/<dir>/SKILL.md` location gets cleaned up.
+ *
+ * Shared-dir dedupe: Gemini CLI ALSO scans the shared
+ * `~/.agents/skills/` standard dir. When the skill already lives there
+ * (Claude Code installs into it on machines where `~/.claude/skills`
+ * is symlinked to `~/.agents/skills`), writing a per-host
+ * `~/.gemini/skills/` copy makes Gemini load it twice and warn. So if
+ * the shared copy is present, we `skip` the per-host write and add the
+ * `~/.gemini/skills/` path to `legacyPathsToRemove` to clear any stale
+ * duplicate from a prior install. Frontmatter is identical across host
+ * renders, so the shared copy serves Gemini correctly. (`-t all`
+ * installs Claude before Gemini, so the shared copy is in place by the
+ * time this resolves; a Gemini-only install on a fresh machine simply
+ * writes the per-host copy, and the next `install`/`refresh`
+ * self-heals once the shared copy appears.)
  */
 function geminiSkillInstallSpecFor(
   home: string,
   skill: SkillManifestEntry,
 ): SkillInstallSpec {
   const dir = skill.id.replace(':', '-');
+  const perHostPath = join(home, '.gemini', 'skills', dir, 'SKILL.md');
+  const extensionsLegacy = join(home, '.gemini', 'extensions', dir, 'SKILL.md');
+  const sharedPath = sharedAgentSkillPath(home, dir);
+  if (existsSync(sharedPath)) {
+    // The shared copy is on Gemini's search path. Don't write a
+    // per-host copy (it would duplicate); point the install at the
+    // shared path so the manifest records where Gemini loads it, and
+    // sweep away any stale per-host copy + the deprecated extensions
+    // location.
+    return {
+      skillPath: sharedPath,
+      frontmatterName: dir,
+      skip: true,
+      legacyPathsToRemove: [extensionsLegacy, perHostPath],
+    };
+  }
   return {
-    skillPath: join(home, '.gemini', 'skills', dir, 'SKILL.md'),
+    skillPath: perHostPath,
     frontmatterName: dir,
-    legacyPathsToRemove: [
-      join(home, '.gemini', 'extensions', dir, 'SKILL.md'),
-    ],
+    legacyPathsToRemove: [extensionsLegacy],
   };
 }
 

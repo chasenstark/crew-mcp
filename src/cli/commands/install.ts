@@ -21,8 +21,10 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -312,7 +314,7 @@ export async function installSingleTarget(args: {
 
   // 1+2. Render + write each skill in the manifest via the helper
   // (single seam for preflight + legacy-removal + atomic-write).
-  const { skillsMap, writtenPaths, skillPath } = await renderAndWriteSkills({
+  const { skillsMap, writtenPaths, skillPath, sharedSkills } = await renderAndWriteSkills({
     adapter,
     home,
     packageRoot,
@@ -369,6 +371,7 @@ export async function installSingleTarget(args: {
     skillPath,
     skills: skillsMap,
     writtenPaths,
+    ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
     version: CREW_MCP_VERSION,
     installedAt: new Date().toISOString(),
     serverCommand: crewBin,
@@ -413,6 +416,7 @@ async function renderAndWriteSkills(args: {
   readonly skillsMap: Record<string, string>;
   readonly writtenPaths: string[];
   readonly skillPath: string;
+  readonly sharedSkills: Record<string, string>;
 }> {
   const { adapter, home, packageRoot, crewWaitCommand } = args;
   const templatePath = templatePathForHost(packageRoot, adapter.id);
@@ -429,6 +433,7 @@ async function renderAndWriteSkills(args: {
   // requirements" — preflight collision check.
   const ownedPaths = await collectCrewOwnedPaths(home);
   for (const { spec } of specs) {
+    if (spec.skip) continue;
     if (existsSync(spec.skillPath) && !ownedPaths.has(spec.skillPath)) {
       throw new Error(
         `crew install: refusing to overwrite ${spec.skillPath} — `
@@ -450,6 +455,17 @@ async function renderAndWriteSkills(args: {
   }> = [];
   try {
     for (const { skill, spec } of specs) {
+      // Skipped skills render nothing — the host already discovers
+      // them from a shared search-path location (e.g. Gemini's
+      // ~/.agents/skills/). Their legacyPathsToRemove still runs below,
+      // and the shared path they load from is recorded as a sharedSkill.
+      if (spec.skip) {
+        logger.info(
+          `crew install: ${adapter.displayName} — '${skill.id}' already on the host's shared skill `
+          + `search path (${spec.skillPath}); using the shared copy and removing any per-host duplicate`,
+        );
+        continue;
+      }
       const skillContent = await renderSkill({
         templatePath,
         skill,
@@ -466,11 +482,24 @@ async function renderAndWriteSkills(args: {
 
     // Legacy removal AFTER Phase 1 (so a render failure doesn't trash
     // the legacy file) and BEFORE Phase 2 (so the swap loop sees a
-    // consistent destination layout).
-    for (const { spec } of staged) {
+    // consistent destination layout). Iterate ALL specs (not just
+    // staged) so a skipped skill's stale per-host duplicate is still
+    // cleaned up.
+    for (const { spec } of specs) {
       for (const legacy of spec.legacyPathsToRemove) {
         if (existsSync(legacy)) {
           rmSync(legacy, { force: true });
+          // Prune the now-empty parent dir (e.g. ~/.gemini/skills/crew/
+          // after removing its SKILL.md) so a skipped/relocated skill
+          // doesn't leave an empty directory behind. Best-effort.
+          const parent = dirname(legacy);
+          try {
+            if (readdirSync(parent).length === 0) {
+              rmdirSync(parent);
+            }
+          } catch {
+            // Parent missing or non-empty — leave it.
+          }
         }
       }
     }
@@ -568,10 +597,22 @@ async function renderAndWriteSkills(args: {
       skillsMap[skill.id] = spec.skillPath;
       writtenPaths.push(spec.skillPath);
     }
+    // Skills served from a shared search-path location (skip === true):
+    // record where the host loads them so verify can confirm presence,
+    // but keep them OUT of skillsMap/writtenPaths so uninstall never
+    // removes a file another host owns.
+    const sharedSkills: Record<string, string> = {};
+    for (const { skill, spec } of specs) {
+      if (spec.skip) sharedSkills[skill.id] = spec.skillPath;
+    }
     // Back-compat `skillPath` (umbrella crew) for older callers that
-    // haven't migrated to the multi-skill map.
-    const skillPath = skillsMap['crew'] ?? adapter.skillPath(home);
-    return { skillsMap, writtenPaths, skillPath };
+    // haven't migrated to the multi-skill map. When `crew` is served
+    // from a shared location (skipped), leave this empty: the manifest
+    // reader back-fills `skills['crew']` from a non-empty skillPath, and
+    // that path would be the per-host copy we deliberately didn't write.
+    const skillPath = skillsMap['crew']
+      ?? (sharedSkills['crew'] ? '' : adapter.skillPath(home));
+    return { skillsMap, writtenPaths, skillPath, sharedSkills };
   } finally {
     // Always clean up leftover staging files (render-failure or
     // swap-failure paths). On full success they've already been

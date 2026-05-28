@@ -50,6 +50,16 @@ export interface InstalledTarget {
    * empty parent directories up to the host-skills root.
    */
   writtenPaths: readonly string[];
+  /**
+   * Skills this host LOADS from a shared search-path location that crew
+   * did NOT write for this host. Map of skill id → the shared SKILL.md
+   * path the host resolves (e.g. Gemini discovering a skill from the
+   * shared `~/.agents/skills/` dir that Claude Code populates). Verify
+   * checks these exist + parses their tool references; uninstall
+   * IGNORES them, because another host owns the file. Optional /
+   * back-compat: absent treated as `{}`.
+   */
+  sharedSkills?: Readonly<Record<string, string>>;
   /** Crew version that did the install. */
   version: string;
   /** ISO 8601 install time. */
@@ -288,11 +298,19 @@ function normalizeTargetEntry(value: unknown): InstalledTarget | null {
       if (path) writtenPaths.push(path);
     }
   }
+  const sharedSkillsRaw = v.sharedSkills;
+  const sharedSkills: Record<string, string> = {};
+  if (sharedSkillsRaw && typeof sharedSkillsRaw === 'object' && !Array.isArray(sharedSkillsRaw)) {
+    for (const [k, val] of Object.entries(sharedSkillsRaw as Record<string, unknown>)) {
+      if (typeof val === 'string') sharedSkills[k] = val;
+    }
+  }
   return {
     configPath,
     skillPath: skillPath || skills['crew'] || '',
     skills,
     writtenPaths,
+    ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
     version: typeof v.version === 'string' ? v.version : '',
     installedAt: typeof v.installedAt === 'string' ? v.installedAt : '',
     serverCommand: typeof v.serverCommand === 'string' ? v.serverCommand : '',
