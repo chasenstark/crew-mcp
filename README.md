@@ -11,6 +11,20 @@ you ── Claude Code (captain) ──┬── run_agent → Codex (worktree A
                                 └── run_panel → Claude + Codex (parallel review)
 ```
 
+## Quickstart
+
+Once installed (see [Install](#install)), just talk to your host CLI:
+
+> have Codex implement the rate limiter and review it until the tests pass
+
+The captain derives acceptance criteria, dispatches Codex into an
+isolated worktree, runs review, folds the findings back, and asks before
+merging — all while you stay in one conversation.
+
+Prefer to drive explicitly? Name the agent ("send this to Gemini"), ask
+for a panel ("have Claude and Codex both review this"), or kick off the
+ship-quality loop directly with `/crew-iterate`.
+
 ## How it works
 
 Crew installs two things into your host CLI:
@@ -79,6 +93,15 @@ use Gemini"):
 crew-mcp config   # → "Agent defaults…"
 ```
 
+## Requirements
+
+- **Node.js ≥ 20**
+- **git** (worktrees are how runs stay isolated)
+- **At least one host CLI** — [Claude Code](https://claude.com/claude-code),
+  [Codex CLI](https://github.com/openai/codex), or
+  [Gemini CLI](https://github.com/google-gemini/gemini-cli) — installed
+  and authenticated. Local models (Ollama, LM Studio, …) work too.
+
 ## Install
 
 ```sh
@@ -133,6 +156,16 @@ crew-mcp install-tail-handler
 
 Without it, the captain prints a `tail -F` command you can run manually.
 
+### Uninstall
+
+Removes the crew MCP block and skills from a host CLI (your runs and
+config under `~/.crew/` are left untouched):
+
+```sh
+crew-mcp uninstall --target claude-code
+crew-mcp uninstall --target all
+```
+
 ## MCP tools
 
 | Tool | Purpose |
@@ -169,6 +202,21 @@ Interactive TUI for per-machine settings:
 
 Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 
+## Managing agents
+
+Agents live in `~/.crew/agents.json`. Each carries `strengths`, a
+default `effort`, and a `model` — the captain reads these to route work
+when you don't name an agent explicitly.
+
+```sh
+crew-mcp agents add      # register a model (interactive wizard)
+crew-mcp agents edit     # tune strengths / effort / model
+crew-mcp agents remove   # drop an agent
+```
+
+The `add` wizard also discovers local models — see
+[Add local models](#add-local-models) above.
+
 ## Supported hosts
 
 | Host | Adapter | Install target |
@@ -178,6 +226,24 @@ Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 | Gemini CLI | `gemini-cli` | `--target gemini` |
 | Ollama / LM Studio / vLLM | `openai-compatible` | `crew-mcp agents add` |
 | Any CLI with a command interface | `generic` | `crew-mcp agents add` |
+
+## Troubleshooting
+
+**`mcp__crew__*` tools don't show up.** Restart your host CLI session
+after install — the MCP server is loaded at startup. Then run
+`crew-mcp verify` to confirm the config block and skills are in place.
+
+**The captain says crew may be misconfigured.** Re-run
+`crew-mcp install --target <host>` and restart the session. `crew-mcp
+verify` reports exactly which host is missing the MCP block or skill.
+
+**Gemini warns about a skill conflict.** Harmless if it persists, but
+re-running `crew-mcp install --target gemini` resolves duplicate skill
+copies (Gemini also reads the shared `~/.agents/skills/` directory).
+
+**A run is stuck or unwanted.** `crew-mcp` exposes `cancel_run` (stop a
+running agent) and `discard_run` (throw away its worktree); ask the
+captain, or inspect runs under `~/.crew/runs/`.
 
 ## Architecture
 
@@ -211,3 +277,7 @@ Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 Each dispatched run gets a worktree at `~/.crew/runs/<runId>/worktree/`.
 The host repo's working directory is never touched. `merge_run`
 squash-merges the run's branch into the host branch as a single commit.
+
+## License
+
+[MIT](LICENSE)
