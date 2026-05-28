@@ -12,6 +12,8 @@ interface MockGitClient {
   revparse: ReturnType<typeof vi.fn>;
   checkout: ReturnType<typeof vi.fn>;
   merge: ReturnType<typeof vi.fn>;
+  diff: ReturnType<typeof vi.fn>;
+  reset: ReturnType<typeof vi.fn>;
   add: ReturnType<typeof vi.fn>;
   commit: ReturnType<typeof vi.fn>;
 }
@@ -60,6 +62,9 @@ function createGitClient(cwd: string): MockGitClient {
     revparse: vi.fn(async () => 'main'),
     checkout: vi.fn(async () => undefined),
     merge: vi.fn(async () => undefined),
+    // Default: squash staged a non-empty diff, so the squash commit proceeds.
+    diff: vi.fn(async () => 'file.ts\n'),
+    reset: vi.fn(async () => undefined),
     add: vi.fn(async () => undefined),
     commit: vi.fn(async () => undefined),
   };
@@ -563,16 +568,12 @@ describe('WorktreeManager', () => {
       const result = await manager.mergeRunWorktree('run-1');
 
       expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
-      // Fallback message when no commit_title is supplied:
-      // generic subject + Crew-Run trailer. Merge target is the
-      // worktree's actual HEAD SHA, not the recorded branch ref —
-      // see the bug fix in mergeRunWorktree() for rationale.
-      expect(rootGit.merge).toHaveBeenCalledWith([
-        'worktree-sha',
-        '--no-ff',
-        '-m',
-        'Merge crew run run-1\n\nCrew-Run: run-1',
-      ]);
+      // Squash-merge by the worktree's actual HEAD SHA (not the recorded
+      // branch ref — see the bug fix in mergeRunWorktree() for rationale),
+      // then a single ordinary commit with the fallback subject (no
+      // commit_title supplied) and no machine trailer.
+      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
+      expect(rootGit.commit).toHaveBeenCalledWith('crew run run-1');
       expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
     });
 
@@ -646,12 +647,8 @@ describe('WorktreeManager', () => {
       targetHead.resolve('target-sha');
 
       await expect(merge).resolves.toEqual({ status: 'merged', commitSha: 'merged-sha' });
-      expect(rootGit.merge).toHaveBeenCalledWith([
-        'worktree-sha',
-        '--no-ff',
-        '-m',
-        'Merge crew run run-1\n\nCrew-Run: run-1',
-      ]);
+      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
+      expect(rootGit.commit).toHaveBeenCalledWith('crew run run-1');
     });
 
     it('mergeRunWorktree uses captain-supplied commit_title + commit_body in the merge commit', async () => {
@@ -674,21 +671,17 @@ describe('WorktreeManager', () => {
       });
 
       expect(result).toEqual({ status: 'merged', commitSha: 'merged-sha' });
-      expect(rootGit.merge).toHaveBeenCalledWith([
-        'worktree-sha',
-        '--no-ff',
-        '-m',
+      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
+      expect(rootGit.commit).toHaveBeenCalledWith(
         [
           'fix(parser): handle empty-line input correctly',
           '',
           'Adds the empty-line guard to parseLine() with a regression test.',
-          '',
-          'Crew-Run: run-1',
         ].join('\n'),
-      ]);
+      );
     });
 
-    it('mergeRunWorktree commit_title without commit_body still appends the Crew-Run trailer', async () => {
+    it('mergeRunWorktree squashes with the commit_title (no body, no trailer)', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-1')
         .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
@@ -706,12 +699,8 @@ describe('WorktreeManager', () => {
         commitTitle: 'docs: update README install steps',
       });
 
-      expect(rootGit.merge).toHaveBeenCalledWith([
-        'worktree-sha',
-        '--no-ff',
-        '-m',
-        'docs: update README install steps\n\nCrew-Run: run-1',
-      ]);
+      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
+      expect(rootGit.commit).toHaveBeenCalledWith('docs: update README install steps');
     });
 
     it('mergeRunWorktree reuses commit_title for the pre-merge auto-commit when worktree has uncommitted changes', async () => {
@@ -787,15 +776,10 @@ describe('WorktreeManager', () => {
       const result = await manager.mergeRunWorktree('run-1');
 
       expect(result).toEqual({ status: 'merged', commitSha: 'post-merge-sha' });
-      // The merge target must be the worktree's actual HEAD SHA — not
+      // The squash target must be the worktree's actual HEAD SHA — not
       // `record.branchName` ('crew-run/run-1-aaaaaaaa'), which would
       // silently no-op when the agent worked on a different branch.
-      expect(rootGit.merge).toHaveBeenCalledWith([
-        'actual-work-sha',
-        '--no-ff',
-        '-m',
-        'Merge crew run run-1\n\nCrew-Run: run-1',
-      ]);
+      expect(rootGit.merge).toHaveBeenCalledWith(['actual-work-sha', '--squash']);
     });
 
     it('mergeRunWorktree warn-logs when worktree HEAD is on a different branch than record.branchName', async () => {

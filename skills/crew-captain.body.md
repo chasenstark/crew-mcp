@@ -121,10 +121,12 @@ concretely so they know what they're approving:
 Not just "Should I merge?" The same goes for `discard_run` — confirm
 before throwing away work the user might still want. If `merge_run`
 returns conflicts, surface the conflicting paths to the user; do
-not attempt automated resolution. The host repo may now be in a
-mid-merge state — let the user resolve by hand or run
-`git merge --abort`. Don't run `merge --abort` yourself without
-asking; it discards their position in the merge.
+not attempt automated resolution. merge_run squash-merges, so the
+host has conflict markers staged but no `MERGE_HEAD` — `git merge
+--abort` does NOT apply. The user resolves in place (edit, `git add`,
+`git commit` to land the squashed commit) or bails with `git reset
+--hard HEAD`. Don't run `git reset --hard` yourself without asking;
+it throws away their working state.
 
 By default the server enforces this boundary too:
 `merge_run` requires `{ confirmed: true }` when
@@ -140,13 +142,12 @@ merge prompt, wait for an affirmative answer, then retry
 `merge_run` with `confirmed: true`. Do not retry automatically.
 
 **Always pass a meaningful `commit_title`** (and optionally
-`commit_body`) to `merge_run`. The merge commit's subject becomes
-permanent git history the user reads later — "Merge crew run
-abc123…" is the useless fallback. Compose a conventional-style
-subject from the prompt, summary, and diff: short imperative
-(≤72 chars) describing what the run accomplished, not that it was
-a crew run. The `Crew-Run: <run_id>` trailer is appended
-automatically — don't include it manually.
+`commit_body`) to `merge_run`. The run is squash-merged into a single
+ordinary commit, and its subject becomes permanent git history the
+user reads later — "crew run abc123…" is the useless fallback.
+Compose a conventional-style subject from the prompt, summary, and
+diff: short imperative (≤72 chars) describing what the run
+accomplished, not that it was a crew run.
 
 ## When to ask the user — rubric, not vibes
 
@@ -561,6 +562,7 @@ install.
 Surface to the user verbatim:
 
 > Agents for this panel:
+>
 > - Reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
 >
 > Override (e.g., "add reviewer <id>", "drop reviewer <id>",
@@ -574,6 +576,7 @@ agent-drift across rounds.
 #### Override grammar
 
 Recognize these phrases consistently:
+
 - `add reviewer <id>` / `drop reviewer <id>` → mutate reviewer set.
 - `use only <id>` → collapse to a single reviewer.
 - `no <id>` / `never <id>` → session-scoped ban only; do not persist.

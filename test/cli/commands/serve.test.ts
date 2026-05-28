@@ -2004,6 +2004,19 @@ describe('crew serve — merge_run tool', () => {
       };
       expect(status.status).toBe('merged');
       expect(status.mergeStatus?.commitSha).toBe(mergeEnv.commit_sha);
+
+      // Squash merge: the landed commit is a single-parent ordinary
+      // commit, NOT an empty two-parent `--no-ff` wrapper.
+      const parents = execSync(`git rev-list --parents -n 1 ${mergeEnv.commit_sha}`, {
+        cwd: h.root,
+      }).toString().trim().split(/\s+/);
+      // [commit, parent1] — exactly one parent, no second merge parent.
+      expect(parents.length).toBe(2);
+      // And no machine trailer on the message.
+      const body = execSync(`git log -1 --format=%B ${mergeEnv.commit_sha}`, {
+        cwd: h.root,
+      }).toString();
+      expect(body).not.toMatch(/Crew-Run:/);
     } finally {
       await h.close();
     }
@@ -2276,7 +2289,10 @@ describe('crew serve — merge_run tool', () => {
       const continueText = (continueRes.content as Array<{ text: string }>)[0].text;
       expect(continueText).toMatch(/merge_conflict/);
 
-      execSync('git merge --abort', { cwd: h.root });
+      // merge_run squash-merges, so the conflict leaves staged conflict
+      // markers but no MERGE_HEAD — `git merge --abort` does not apply.
+      // Bail with a hard reset back to the target tip.
+      execSync('git reset --hard HEAD', { cwd: h.root });
 
       const retry = await h.client.callTool({
         name: 'merge_run',
@@ -2287,7 +2303,7 @@ describe('crew serve — merge_run tool', () => {
       expect(retryEnv.status).toBe('conflict');
       expect(retryEnv.conflicts).toContain('shared.txt');
 
-      execSync('git merge --abort', { cwd: h.root });
+      execSync('git reset --hard HEAD', { cwd: h.root });
 
       const discard = await h.client.callTool({
         name: 'discard_run',
@@ -2297,11 +2313,12 @@ describe('crew serve — merge_run tool', () => {
       const discardEnv = discard.structuredContent as { ok: boolean };
       expect(discardEnv.ok).toBe(true);
     } finally {
-      // Clean up the in-progress merge on the host so afterEach's rmSync works.
+      // Clean up any staged squash conflict on the host so afterEach's
+      // rmSync works.
       try {
-        execSync('git merge --abort', { cwd: h.root, stdio: 'ignore' });
+        execSync('git reset --hard HEAD', { cwd: h.root, stdio: 'ignore' });
       } catch {
-        /* no in-progress merge */
+        /* nothing to reset */
       }
       await h.close();
     }

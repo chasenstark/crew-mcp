@@ -531,18 +531,33 @@ export class WorktreeManager {
         + `\`git branch -D ${actualBranch}\` if you don't need it.`,
       );
     }
+    // Squash the run into a single ordinary commit on the target rather
+    // than a `--no-ff` merge commit. `--squash` stages the combined diff
+    // without committing and without recording a second parent, so the
+    // run lands as one clean commit (the captain's title/body) instead
+    // of an empty two-parent wrapper. The run branch is force-deleted at
+    // cleanup, so leaving it "unmerged" in git's eyes is fine.
     try {
-      await this.git.merge([worktreeHead, '--no-ff', '-m', mergeMessage]);
+      await this.git.merge([worktreeHead, '--squash']);
     } catch (err) {
-      // simple-git throws on merge conflicts. Capture the conflicting
-      // paths and leave the merge in-progress for the user to resolve
-      // (this matches `git merge`'s natural behavior).
+      // simple-git throws on conflicts. Capture the conflicting paths and
+      // leave the staged squash in-progress for the user to resolve
+      // (matches `git merge --squash`'s natural behavior).
       const conflicts = await this.detectConflicts();
       if (conflicts.length > 0) {
         return { status: 'conflict', conflicts };
       }
       throw err;
     }
+    // Defensive: if the run's commits net to no change against the
+    // target (e.g. a change and its revert), nothing is staged and a
+    // commit would fail. Reset the staged squash and report no-changes.
+    const stagedAfterSquash = (await this.git.diff(['--cached', '--name-only'])).trim();
+    if (stagedAfterSquash.length === 0) {
+      await this.git.reset(['--hard', target]);
+      return { status: 'no-changes' };
+    }
+    await this.git.commit(mergeMessage);
     const commitSha = (await this.git.revparse(['HEAD'])).trim();
     return { status: 'merged', commitSha };
   }
@@ -1045,11 +1060,9 @@ export class WorktreeManager {
 }
 
 /**
- * Compose the merge commit message from captain-supplied title +
- * body, appending a `Crew-Run: <runId>` trailer so every merge is
- * traceable back to its run record. Falls back to a generic title
- * when the captain didn't pass one (deliberately ugly, since human
- * git history is the audience).
+ * Compose the squashed-commit message from the captain-supplied title +
+ * body. Falls back to a generic title when the captain didn't pass one
+ * (deliberately plain, since human git history is the audience).
  *
  * Format:
  *
@@ -1057,21 +1070,19 @@ export class WorktreeManager {
  *
  *   <body, when supplied>
  *
- *   Crew-Run: <runId>
- *
- * The trailer follows git's conventional `Token: value` shape, so
- * `git log --format='%(trailers:key=Crew-Run)'` and similar tools
- * pick it up cleanly.
+ * No machine trailer is appended: merge_run squashes the run into a
+ * single ordinary commit, and the previous `Crew-Run: <runId>` trailer
+ * had no reader anywhere in the codebase — it only forced an empty
+ * `--no-ff` wrapper commit to carry it.
  */
 export function buildMergeCommitMessage(args: {
   runId: string;
   title?: string;
   body?: string;
 }): string {
-  const subject = args.title?.trim() || `Merge crew run ${args.runId}`;
+  const subject = args.title?.trim() || `crew run ${args.runId}`;
   const parts = [subject];
   const body = args.body?.trim();
   if (body) parts.push('', body);
-  parts.push('', `Crew-Run: ${args.runId}`);
   return parts.join('\n');
 }

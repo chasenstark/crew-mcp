@@ -741,9 +741,9 @@ merge_run({
 })
 ```
 
-`commit_title` should describe what the run accomplished, not "merge
-crew run abc123…". `Crew-Run: <run_id>` trailer is appended
-automatically — don't add it manually.
+`commit_title` should describe what the run accomplished, not "crew
+run abc123…". The run is squash-merged into a single commit carrying
+this title — no merge-commit wrapper, no machine trailer.
 
 After merge, `discard_run` the read-only reviewer runs (cleanup) and
 acknowledge to the user.

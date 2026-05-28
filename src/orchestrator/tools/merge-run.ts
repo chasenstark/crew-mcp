@@ -12,10 +12,10 @@
  *     before merge").
  *   - Refuses if the host's working directory has uncommitted changes,
  *     unless force=true.
- *   - Always uses --no-ff so the merge is explicit and auditable.
- *   - Merge commit message: `commit_title` (subject) +
- *     `commit_body` (optional paragraph) + a `Crew-Run: <run_id>`
- *     trailer. Falls back to `Merge crew run <runId>` only when
+ *   - Squash-merges the run into a single ordinary commit on the target
+ *     (no empty `--no-ff` wrapper commit).
+ *   - Commit message: `commit_title` (subject) + `commit_body`
+ *     (optional paragraph). Falls back to `crew run <runId>` only when
  *     no commit_title is provided — captains should provide one.
  *   - Returns { status: 'merged', commit_sha } on success, or
  *     { status: 'conflict', conflicts: [...] } on conflict (worktree
@@ -25,9 +25,11 @@
  *     (the merged commit is permanently in the host's HEAD, so the
  *     worktree has no remaining value). state.json + events.log
  *     persist for archeology. On `conflict` or `no-changes` the
- *     worktree is preserved. On `conflict`, either resolve conflicts
- *     in the host repo and retry `merge_run`, or `git merge --abort`
- *     and `discard_run` to throw away the run.
+ *     worktree is preserved. On `conflict`, the host has conflict
+ *     markers staged but no `MERGE_HEAD` (squash merge), so `git merge
+ *     --abort` does NOT apply — resolve in place (`git add` + `git
+ *     commit` lands the squashed commit) or bail with `git reset --hard
+ *     HEAD` and `discard_run` to throw away the run.
  */
 
 import { z } from 'zod';
@@ -42,18 +44,16 @@ export const mergeRunInputSchema = z.object({
    */
   confirmed: z.boolean().optional(),
   /**
-   * Conventional-commit-style subject line for the merge commit.
+   * Conventional-commit-style subject line for the squashed commit.
    * Should describe what the run actually changed (the captain
    * has the prompt + summary + diff context to compose this).
-   * Recommended ≤72 chars; not enforced. When omitted, the merge
-   * commit falls back to `Merge crew run <runId>` — strongly
-   * suboptimal for human-readable history.
+   * Recommended ≤72 chars; not enforced. When omitted, the commit
+   * falls back to `crew run <runId>` — strongly suboptimal for
+   * human-readable history.
    */
   commit_title: z.string().min(1).max(200).optional(),
   /**
-   * Additional paragraphs for the merge-commit body. The
-   * `Crew-Run: <run_id>` trailer is appended automatically; do
-   * not include it manually.
+   * Additional paragraphs for the squashed-commit body.
    */
   commit_body: z.string().optional(),
 });
@@ -61,4 +61,4 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input takes run_id plus optional target_branch, force, confirmed, commit_title, and commit_body; when config confirmBeforeMerge is true, confirmed:true is required and must only follow explicit user approval. The merge commit automatically receives a `Crew-Run: <run_id>` trailer. Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up, while conflict/no-changes worktrees are preserved.";
+  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input takes run_id plus optional target_branch, force, confirmed, commit_title, and commit_body; when config confirmBeforeMerge is true, confirmed:true is required and must only follow explicit user approval. The run is squash-merged into a single ordinary commit (no empty merge-commit wrapper). Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up, while conflict/no-changes worktrees are preserved.";
