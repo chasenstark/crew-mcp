@@ -1,9 +1,20 @@
-# crew-mcp
+# 🚢 crew-mcp
 
-An MCP server that turns your AI coding CLI into the orchestrator of a
-multi-agent crew. Dispatch work to Claude Code, Codex, Gemini CLI, or
+An MCP server that turns your AI coding CLI into the **orchestrator of a
+multi-agent crew**. Dispatch work to Claude Code, Codex, Gemini CLI, or
 local models — each run gets its own git worktree, so your working
 directory stays clean and merges happen only when you say so.
+
+## 💡 The vision — no API keys, just the CLIs you already have
+
+Crew drives the AI coding CLIs you've **already installed and logged in**.
+Every dispatched run goes through Claude Code, Codex, or Gemini on **your
+existing subscription** — 🔑 no API keys to wrangle, 💸 no per-token
+billing, no second bill for the same models. Want it fully private? 🏠 Add
+local models (Ollama, LM Studio) and those runs never leave your machine.
+
+That's the whole idea: a multi-agent crew built on the plans you're
+already paying for. 🤝
 
 ```
 you ── Claude Code (captain) ──┬── run_agent → Codex (worktree A)
@@ -11,9 +22,9 @@ you ── Claude Code (captain) ──┬── run_agent → Codex (worktree A
                                 └── run_panel → Claude + Codex (parallel review)
 ```
 
-## Quickstart
+## ⚡ Quickstart
 
-Once installed (see [Install](#install)), just talk to your host CLI:
+Once installed (see **📦 Install** below), just talk to your host CLI:
 
 > have Codex implement the rate limiter and review it until the tests pass
 
@@ -25,7 +36,7 @@ Prefer to drive explicitly? Name the agent ("send this to Gemini"), ask
 for a panel ("have Claude and Codex both review this"), or kick off the
 ship-quality loop directly with `/crew-iterate`.
 
-## How it works
+## 🧭 How it works
 
 Crew installs two things into your host CLI:
 
@@ -34,13 +45,14 @@ Crew installs two things into your host CLI:
 2. **Captain skills** — markdown playbooks that teach the host LLM how
    to orchestrate. The umbrella `crew` skill covers dispatch, review
    panels, and merge; the `crew-iterate` skill drives a criteria-gated
-   implement → review → iterate loop ([see below](#the-crew-iterate-skill)).
+   implement → review → iterate loop (see **🔁 The crew-iterate skill**
+   below).
 
 Your host CLI's LLM becomes the captain. You stay in one conversation.
 When work needs another agent, the captain dispatches it into an
 isolated worktree and reports back.
 
-## What you can do
+## ✨ What you can do
 
 - **Dispatch work** — "have Codex implement this feature", "send this
   to Claude for review". The captain picks the right agent, allocates a
@@ -51,14 +63,14 @@ isolated worktree and reports back.
 - **Iterate to acceptance** — define acceptance criteria, then loop
   between an implementer and one or more reviewers until every criterion
   passes. The captain drives the loop; you watch or intervene. See
-  [the crew-iterate skill](#the-crew-iterate-skill).
+  **🔁 The crew-iterate skill** below.
 - **Use local models** — add Ollama, LM Studio, or any
   OpenAI-compatible endpoint as a crew agent alongside the cloud CLIs.
 - **Merge when ready** — review the diff, then `merge_run` applies it
   to your branch. Or `discard_run` to throw it away. Nothing touches
   your working tree until you decide.
 
-## The crew-iterate skill
+## 🔁 The crew-iterate skill
 
 For work you want pushed to ship-quality, `crew-iterate` runs a
 criteria-gated loop instead of a one-shot dispatch.
@@ -93,7 +105,7 @@ use Gemini"):
 crew-mcp config   # → "Agent defaults…"
 ```
 
-## Requirements
+## 📋 Requirements
 
 - **Node.js ≥ 20**
 - **git** (worktrees are how runs stay isolated)
@@ -102,7 +114,7 @@ crew-mcp config   # → "Agent defaults…"
   [Gemini CLI](https://github.com/google-gemini/gemini-cli) — installed
   and authenticated. Local models (Ollama, LM Studio, …) work too.
 
-## Install
+## 📦 Install
 
 ```sh
 npm install -g crew-mcp
@@ -134,7 +146,7 @@ crew-mcp verify
 Restart your host CLI session. The `mcp__crew__*` tools and the captain
 skill are now available.
 
-### Add local models
+### 🤖 Add local models
 
 ```sh
 crew-mcp agents add --provider ollama
@@ -145,7 +157,7 @@ crew-mcp agents add --provider openai-compatible --api-base http://localhost:808
 The interactive wizard discovers available models and registers them as
 crew agents.
 
-### Optional: live tail handler (macOS)
+### 🖥️ Optional: live tail handler (macOS)
 
 Dispatched runs log to `~/.crew/runs/<id>/`. Install the `crew-tail://`
 URL handler to open a side Terminal window with live logs automatically:
@@ -156,7 +168,7 @@ crew-mcp install-tail-handler
 
 Without it, the captain prints a `tail -F` command you can run manually.
 
-### Uninstall
+### 🧹 Uninstall
 
 Removes the crew MCP block and skills from a host CLI (your runs and
 config under `~/.crew/` are left untouched):
@@ -166,7 +178,7 @@ crew-mcp uninstall --target claude-code
 crew-mcp uninstall --target all
 ```
 
-## MCP tools
+## 🧰 MCP tools
 
 | Tool | Purpose |
 |------|---------|
@@ -183,7 +195,7 @@ crew-mcp uninstall --target all
 | `cancel_run` | Cancel a running agent |
 | `get_crew_preferences` | Read crew configuration |
 
-## Configure
+## ⚙️ Configure
 
 ```sh
 crew-mcp config
@@ -202,7 +214,7 @@ Interactive TUI for per-machine settings:
 
 Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 
-## Managing agents
+## 👥 Managing agents
 
 Agents live in `~/.crew/agents.json`. Each carries `strengths`, a
 default `effort`, and a `model` — the captain reads these to route work
@@ -214,10 +226,10 @@ crew-mcp agents edit     # tune strengths / effort / model
 crew-mcp agents remove   # drop an agent
 ```
 
-The `add` wizard also discovers local models — see
-[Add local models](#add-local-models) above.
+The `add` wizard also discovers local models — see **🤖 Add local
+models** above.
 
-## Supported hosts
+## 🔌 Supported hosts
 
 | Host | Adapter | Install target |
 |------|---------|----------------|
@@ -227,7 +239,7 @@ The `add` wizard also discovers local models — see
 | Ollama / LM Studio / vLLM | `openai-compatible` | `crew-mcp agents add` |
 | Any CLI with a command interface | `generic` | `crew-mcp agents add` |
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
 **`mcp__crew__*` tools don't show up.** Restart your host CLI session
 after install — the MCP server is loaded at startup. Then run
@@ -245,7 +257,7 @@ copies (Gemini also reads the shared `~/.agents/skills/` directory).
 running agent) and `discard_run` (throw away its worktree); ask the
 captain, or inspect runs under `~/.crew/runs/`.
 
-## Architecture
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -278,6 +290,6 @@ Each dispatched run gets a worktree at `~/.crew/runs/<runId>/worktree/`.
 The host repo's working directory is never touched. `merge_run`
 squash-merges the run's branch into the host branch as a single commit.
 
-## License
+## 📄 License
 
 [MIT](LICENSE)
