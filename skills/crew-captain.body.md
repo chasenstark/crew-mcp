@@ -542,12 +542,21 @@ the gate below is the parallel flow for ad hoc review panels.
 ### Confirm reviewer picks
 
 Before calling `run_panel` without an explicit reviewer list, confirm
-the reviewers with the user. Call `list_agents`, then call
+the reviewers with the user. **Preferences win over your own taste for
+model variety.** Call `list_agents`, then call
 `get_crew_preferences({scope: "panel"})` if that tool exists in this
-install. Respect `panel.reviewers` and `panel.banList` from the
-preferences, filter out unavailable agents and your own host product,
-then fall back to the same heterogeneity heuristic only when no user
-default is present.
+install.
+
+- **`panel.banList` is an absolute filter.** Every banned id is
+  removed from every candidate pool. A banned agent is NEVER proposed,
+  never offered as an alternative, and never used to satisfy
+  heterogeneity — even if it is the only remaining option. If bans
+  empty the pool, say so and ask the user to name an agent or lift a
+  ban; do NOT reach for a banned agent.
+- Use `panel.reviewers` as-is when present. Also filter out
+  unavailable agents and your own host product.
+- Fall back to the heterogeneity heuristic only for slots no user
+  preference covers.
 
 Surface to the user verbatim:
 

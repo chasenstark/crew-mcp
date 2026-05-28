@@ -213,18 +213,39 @@ choice is part of the loop contract, not an invisible captain
 preference. This gate parallels the Review panels gate in the
 umbrella `crew` body.
 
+**Preferences win — this is the overriding rule of this step.** The
+user's configured defaults and bans are the decision, not hints you
+weigh against your own taste for model variety. Heterogeneity is a
+distant tiebreaker used only to fill a role the user left open. Never
+trade a user preference for "a different model would surface different
+bugs."
+
 1. Call `list_agents`.
-2. If available in this install, call
-   `get_crew_preferences({scope: "iterate"})`. If the tool is absent,
-   skip it and fall back to the heuristic below.
-3. Filter out your own host product (invariant #5), unavailable
-   agents, and any ids in `iterate.banList`.
-4. Propose an implementer and dispatched reviewer set. Prefer the
-   user's configured `iterate.implementer` / `iterate.reviewers` when
-   present. Otherwise use the fallback heuristic: mechanical-heavy
-   criteria fit a fast-iteration implementer profile; behavioral-heavy
-   criteria fit a careful-reasoning profile; mixed work should use
-   different products for implementer and reviewer when possible.
+2. Call `get_crew_preferences({scope: "iterate"})`. **Not optional
+   when the tool exists** — you cannot honor preferences you never
+   read. Only skip it (and fall back to the heuristic) if the tool is
+   genuinely absent from this install.
+3. **Apply `iterate.banList` as an absolute filter.** Every id in the
+   banList is removed from every candidate pool — implementer,
+   reviewers, fallbacks, all of it. A banned agent is NEVER proposed,
+   never offered as an alternative, and never used to satisfy
+   heterogeneity or availability, even if it is the only remaining
+   option. If banning empties a role, leave that role unfilled and ask
+   the user — do NOT reach for a banned agent to fill it.
+4. Also remove your own host product (invariant #5) and any
+   `available: false` agents.
+5. Fill each role by this precedence, highest first:
+   a. **Per-run override** the user states in this conversation.
+   b. **Configured preference** — `iterate.implementer` for the
+      implementer; `iterate.reviewers` (in order) for reviewers. Use
+      them as-is. If the user configured the same product for multiple
+      roles, honor that — do NOT inject a different model for variety.
+   c. **Fallback heuristic** — only for a role no preference covers.
+      Mechanical-heavy criteria fit a fast-iteration implementer
+      profile; behavioral-heavy fit a careful-reasoning profile.
+      Heterogeneity (different product for implementer vs reviewer) is
+      a tiebreaker among otherwise-equal candidates here — never a
+      reason to override (a) or (b).
 
 Surface to the user verbatim:
 
@@ -232,6 +253,9 @@ Surface to the user verbatim:
 > - Implementer: <id> <reason: "your default" | "heuristic: ...">
 > - Reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
 > - Inline reviewer: captain <reason: "free, always">
+> [if a role is unfilled because bans excluded every candidate:]
+> - <role>: unfilled — your banList excludes all remaining
+>   candidates. Name an agent or lift a ban.
 >
 > Override (e.g., "swap implementer to <id>", "drop reviewer <id>",
 > "use <id> for both") or OK.
@@ -284,11 +308,12 @@ run_agent({
 - Pick `effort` one level higher than for a raw implementation
   (**clamped at `max`**) — review catches mid-effort regressions but
   can't recover from a low-effort foundation.
-- If Step 0.5 did not yield user defaults, use its fallback heuristic:
-  mechanical-heavy criteria → fast-iteration implementer profile;
-  behavioral-heavy → careful-reasoning profile; mixed criteria use
-  different products for implementer and reviewer when possible so
-  heterogeneity shows up at review.
+- Use the implementer confirmed in Step 0.5. If that pick came from
+  the fallback heuristic (no user default covered it), match the
+  criteria profile: mechanical-heavy → fast-iteration profile;
+  behavioral-heavy → careful-reasoning profile. Heterogeneity between
+  implementer and reviewer is only a tiebreaker for heuristic picks —
+  never a reason to deviate from a confirmed Step 0.5 pick.
 - Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
   the turn, spawn the watcher on Claude Code (per invariant #2).
 
@@ -305,9 +330,11 @@ SAME schema the dispatched reviewer uses (§"Review prompt template"
 below). Inline review costs zero MCP round-trips and sees the full
 diff in your context window.
 
-**(b) Dispatched review (default-on).** Pick a reviewer from
-`list_agents` (different model than the implementer when possible —
-heterogeneity surfaces different bugs):
+**(b) Dispatched review (default-on).** Use the reviewer(s) confirmed
+in Step 0.5 — do not re-pick here, and do not swap in a different
+model for variety. (If Step 0.5 left the reviewer to the fallback
+heuristic, heterogeneity with the implementer was already its
+tiebreaker.)
 
 ```
 run_agent({
