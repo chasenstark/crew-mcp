@@ -72,7 +72,7 @@ export function truncateInputs(
       }
       return {
         file: excerpt.file,
-        range: [...excerpt.range] as readonly [number, number],
+        range: [excerpt.range[0], excerpt.range[1]] as readonly [number, number],
         text: text.value,
       };
     });

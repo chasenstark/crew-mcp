@@ -13,7 +13,11 @@ export const peerMessageInputSchema = z.object({
   files: z.array(z.string().max(4096)).max(1000).optional(),
   excerpts: z.array(z.object({
     file: z.string().max(4096),
-    range: z.tuple([z.number().int().min(1), z.number().int().min(1)]),
+    // z.array(...).length(2) instead of z.tuple([...]): tuple emits JSON Schema
+    // `items: [schema, schema]`, which Gemini's function-declaration validator
+    // rejects (it requires `items` to be a single object). This emits a single
+    // `items` schema with minItems/maxItems 2 — same runtime guarantee.
+    range: z.array(z.number().int().min(1)).length(2),
     text: z.string(),
   })).max(1000).optional(),
 });
