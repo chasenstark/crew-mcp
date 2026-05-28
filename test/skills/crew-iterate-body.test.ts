@@ -94,6 +94,18 @@ describe('crew-iterate body — Step 0.5 agent picks', () => {
     const step = body.slice(start, end);
     expect(countOccurrences(step, 'get_crew_preferences')).toBe(1);
   });
+
+  it('tells the captain to scale the reviewer count to change complexity', async () => {
+    const body = await loadBody();
+    const start = body.indexOf('### Step 0.5 — Confirm agent picks');
+    const end = body.indexOf('### Step 1 — Dispatch implementer', start);
+    const step = body.slice(start, end);
+    // The count is a complexity-driven captain decision, not a fixed 1.
+    expectContainsCI(step, 'How many reviewers');
+    expect(step).toContain('1 dispatched reviewer');
+    expect(step).toContain('2 distinct-model reviewers');
+    expect(step).toContain('3 distinct-model reviewers');
+  });
 });
 
 describe('crew-iterate body — standalone safety invariants', () => {

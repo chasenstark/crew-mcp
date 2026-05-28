@@ -247,18 +247,47 @@ bugs."
       a tiebreaker among otherwise-equal candidates here — never a
       reason to override (a) or (b).
 
+**How many reviewers — scale the count to the change.** The number of
+dispatched reviewers is the captain's call, sized to complexity and
+risk (this is in addition to the always-on free inline review):
+
+- **1 dispatched reviewer** (the default): narrow, localized, low-risk
+  change — a handful of files, no load-bearing code.
+- **2 distinct-model reviewers**: moderate complexity, OR a small but
+  high-risk change — auth, migrations, money, concurrency, public API,
+  security, anything where a regression is expensive — where a second
+  independent model earns its keep.
+- **3 distinct-model reviewers**: large AND high-risk AND cross-cutting
+  (touches several subsystems). Stop at ~3 distinct models; beyond that
+  is diminishing returns. For a very large diff, keep the model count
+  and use intra-model splitting (Step 2) rather than adding more
+  distinct models.
+
+A panel's value is distinct **models** reviewing the same diff, so add
+different products — never repeats of one model (repeats exist only for
+intra-model splitting of a huge diff). Draw extra reviewers from the
+eligible pool (non-banned, available, not your host product). If that
+pool has only one model, you cannot scale the distinct-model count past
+one — say so rather than padding.
+
+Configured `iterate.reviewers` is the baseline roster. You MAY propose
+more reviewers than configured for a high-complexity change, or fewer
+for a trivial one — but the user confirms the final count below, so
+always show the count you chose and the one-line complexity reason.
+
 Surface to the user verbatim:
 
 > Agents for this iteration:
 > - Implementer: <id> <reason: "your default" | "heuristic: ...">
-> - Reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
+> - Reviewer(s): <id, id> <reason: "your default" | "complexity:
+>   <why this many>">
 > - Inline reviewer: captain <reason: "free, always">
 > [if a role is unfilled because bans excluded every candidate:]
 > - <role>: unfilled — your banList excludes all remaining
 >   candidates. Name an agent or lift a ban.
 >
-> Override (e.g., "swap implementer to <id>", "drop reviewer <id>",
-> "use <id> for both") or OK.
+> Override (e.g., "swap implementer to <id>", "add reviewer <id>",
+> "drop reviewer <id>", "just one reviewer", "use <id> for both") or OK.
 
 Wait for OK. **Silence is not consent.** If the user overrides, restate
 the final picks and ask again.
@@ -268,6 +297,8 @@ the final picks and ask again.
 Recognize these phrases consistently:
 - `swap implementer to <id>` → set implementer.
 - `add reviewer <id>` / `drop reviewer <id>` → mutate reviewer set.
+- `just one reviewer` / `add another reviewer` / `<N> reviewers` →
+  resize the reviewer count (pull from / add distinct eligible models).
 - `use only <id>` / `use <id> for both` → collapse picks.
 - `no <id>` / `never <id>` → session-scoped ban only; do not persist.
 
@@ -330,11 +361,18 @@ SAME schema the dispatched reviewer uses (§"Review prompt template"
 below). Inline review costs zero MCP round-trips and sees the full
 diff in your context window.
 
-**(b) Dispatched review (default-on).** Use the reviewer(s) confirmed
-in Step 0.5 — do not re-pick here, and do not swap in a different
-model for variety. (If Step 0.5 left the reviewer to the fallback
-heuristic, heterogeneity with the implementer was already its
-tiebreaker.)
+**(b) Dispatched review (default-on).** Dispatch the reviewer(s)
+confirmed in Step 0.5 — the exact set and count the user OK'd. Do not
+re-pick or resize here, and do not swap in a different model for
+variety. The dispatch mechanism depends on the count:
+
+- **One reviewer → `run_agent`** (single read-only dispatch, below).
+- **Two or more reviewers → `run_panel`** (one call, all reviewers at
+  once; see §"1+1 vs panel" and the `run_panel` dispatch shape). Never
+  fan out N separate `run_agent` calls by hand — you'd lose the
+  `panel_id` and the `aggregate_panel` consolidation hook.
+
+Single-reviewer dispatch:
 
 ```
 run_agent({
@@ -372,14 +410,16 @@ the captain plans to route the run back to the user.
 Otherwise: always dispatch. The cost (~30–60s + ~$0.01) is dwarfed
 by the cost of merging a regression the inline review missed.
 
-**1+1 vs panel:**
-- **1+1** (one inline + one dispatched): one full review from a
-  single dispatched model. Default for narrow changes.
-- **Panel** (one inline + N dispatched via `run_panel`): each model
-  does a **full review** of the entire diff, then the captain
-  consolidates findings and cross-checks for agreement and
-  disagreement across models. Use when you want multiple models'
-  independent perspectives on the same diff.
+**1+1 vs panel** (the reviewer count was decided in Step 0.5 by
+complexity — this is how each shape dispatches):
+- **1+1** (one inline + one dispatched): one full review from a single
+  dispatched model. Step 0.5 sized the change as narrow/low-risk.
+- **Panel** (one inline + N dispatched via `run_panel`): Step 0.5 sized
+  the change as moderate-to-complex or high-risk and picked ≥2 distinct
+  models. Each model does a **full review** of the entire diff, then the
+  captain consolidates findings and cross-checks for agreement and
+  disagreement across models. The independent perspectives are the
+  whole point of scaling the count up.
 - **Large-diff splitting.** When a diff is large enough that a
   single agent can't review it thoroughly in one pass, split that
   model's review across multiple agents of the same model. Together
