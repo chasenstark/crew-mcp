@@ -168,10 +168,10 @@ How to apply the choice against the confirmation gate:
   the run's commit list in your merge prompt ("3 commits — squash to
   one, or keep all three?"). The user confirms or flips; then
   `merge_run` with `confirmed: true` and the chosen `merge_strategy`.
-- **`confirmBeforeMerge` off (auto-merge):** there's no gate to flip at,
-  so **default to `squash`**. Use `preserve` only if the user gave a
-  standing or explicit "keep the commits" instruction — never silently
-  land a multi-commit stack the user didn't review.
+- **`confirmBeforeMerge` off (auto-merge):** there's no gate to surface
+  the choice at, so apply your own judgment from the run's `git log` —
+  the same heuristic above — and merge. The user opted into landing runs
+  without review, so trust your read; `squash` still fits most runs.
 
 ## When to ask the user — rubric, not vibes
 
