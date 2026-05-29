@@ -12,24 +12,30 @@
  *     before merge").
  *   - Refuses if the host's working directory has uncommitted changes,
  *     unless force=true.
- *   - Squash-merges the run into a single ordinary commit on the target
- *     (no empty `--no-ff` wrapper commit).
- *   - Commit message: `commit_title` (subject) + `commit_body`
- *     (optional paragraph). Falls back to `crew run <runId>` only when
- *     no commit_title is provided — captains should provide one.
+ *   - Lands the run linearly — never an empty `--no-ff` wrapper commit.
+ *     Two strategies (see `merge_strategy`):
+ *       - `squash` (default): collapse the whole run into one ordinary
+ *         commit on the target, titled by `commit_title` / `commit_body`
+ *         (falls back to `crew run <runId>`). For implement-then-iterate
+ *         runs (one feature + review fixups).
+ *       - `preserve`: keep the run's individual commits, replayed onto
+ *         the target tip — fast-forward when the target hasn't diverged
+ *         (exact commits), else cherry-pick the run's commit range
+ *         (rewritten onto target). For a deliberate stack of discrete,
+ *         standalone commits. `commit_title` / `commit_body` are unused.
  *   - Returns { status: 'merged', commit_sha } on success, or
  *     { status: 'conflict', conflicts: [...] } on conflict (worktree
- *     stays alive for resolution), or { status: 'no-changes' } when
- *     worktree HEAD already matches the target.
+ *     stays alive for resolution), or { status: 'no-changes' } when the
+ *     run adds nothing the target doesn't already have.
  *   - On `merged`, the worktree directory is auto-cleaned best-effort
  *     (the merged commit is permanently in the host's HEAD, so the
  *     worktree has no remaining value). state.json + events.log
  *     persist for archeology. On `conflict` or `no-changes` the
- *     worktree is preserved. On `conflict`, the host has conflict
- *     markers staged but no `MERGE_HEAD` (squash merge), so `git merge
- *     --abort` does NOT apply — resolve in place (`git add` + `git
- *     commit` lands the squashed commit) or bail with `git reset --hard
- *     HEAD` and `discard_run` to throw away the run.
+ *     worktree is preserved. On `conflict` the host is left mid-operation
+ *     with no `MERGE_HEAD` (`git merge --abort` does NOT apply): for
+ *     `squash`, resolve in place (`git add` + `git commit`) or bail with
+ *     `git reset --hard HEAD`; for `preserve`, `git cherry-pick --abort`.
+ *     Then `discard_run` to throw away the run.
  */
 
 import { z } from 'zod';
@@ -44,16 +50,28 @@ export const mergeRunInputSchema = z.object({
    */
   confirmed: z.boolean().optional(),
   /**
-   * Conventional-commit-style subject line for the squashed commit.
-   * Should describe what the run actually changed (the captain
-   * has the prompt + summary + diff context to compose this).
-   * Recommended ≤72 chars; not enforced. When omitted, the commit
-   * falls back to `crew run <runId>` — strongly suboptimal for
-   * human-readable history.
+   * How to land the run. `squash` (default) collapses it into one
+   * commit titled by commit_title/body — for implement-then-iterate
+   * runs. `preserve` keeps the run's individual commits linearly
+   * (fast-forward, or cherry-pick when the target diverged) — for a
+   * deliberate stack of discrete commits; commit_title/body are unused.
+   * The captain proposes the strategy from the run's `git log`; with
+   * confirmBeforeMerge on it surfaces the choice for the user to flip,
+   * and when merging without confirmation it defaults to squash unless
+   * the user explicitly asked to keep the commits.
+   */
+  merge_strategy: z.enum(['squash', 'preserve']).optional(),
+  /**
+   * Conventional-commit-style subject line for the squashed commit
+   * (`squash` strategy only). Should describe what the run actually
+   * changed (the captain has the prompt + summary + diff context to
+   * compose this). Recommended ≤72 chars; not enforced. When omitted,
+   * the commit falls back to `crew run <runId>` — strongly suboptimal
+   * for human-readable history.
    */
   commit_title: z.string().min(1).max(200).optional(),
   /**
-   * Additional paragraphs for the squashed-commit body.
+   * Additional paragraphs for the squashed-commit body (`squash` only).
    */
   commit_body: z.string().optional(),
 });
@@ -61,4 +79,4 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input takes run_id plus optional target_branch, force, confirmed, commit_title, and commit_body; when config confirmBeforeMerge is true, confirmed:true is required and must only follow explicit user approval. The run is squash-merged into a single ordinary commit (no empty merge-commit wrapper). Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up, while conflict/no-changes worktrees are preserved.";
+  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true is required and must follow explicit user approval. Lands linearly (never an empty merge-commit): merge_strategy 'squash' (default) collapses the run into one commit titled by commit_title/body; 'preserve' keeps its individual commits. Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up.";

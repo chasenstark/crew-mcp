@@ -842,6 +842,59 @@ describe('WorktreeManager', () => {
       expect(branchWarnCalls.length).toBe(0);
     });
 
+    it('mergeRunWorktree preserve fast-forwards when the target has not diverged', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('work-head'); // HEAD (no-changes check)
+      rootGit.revparse
+        .mockResolvedValueOnce('main')         // resolveMergeTargetBranch
+        .mockResolvedValueOnce('target-head')  // no-changes check (!= work-head)
+        .mockResolvedValueOnce('main')         // current-branch check
+        .mockResolvedValueOnce('ff-sha');      // final HEAD
+      // merge-base === targetHead → the target is an ancestor → fast-forward.
+      rootGit.raw.mockImplementation(async (args: string[]) =>
+        args[0] === 'merge-base' ? 'target-head' : '');
+
+      const result = await manager.mergeRunWorktree('run-1', { mergeStrategy: 'preserve' });
+
+      expect(result).toEqual({ status: 'merged', commitSha: 'ff-sha' });
+      expect(rootGit.merge).toHaveBeenCalledWith(['work-head', '--ff-only']);
+      // Fast-forward keeps the exact commits — no new squash commit.
+      expect(rootGit.commit).not.toHaveBeenCalled();
+    });
+
+    it('mergeRunWorktree preserve cherry-picks the run range when the target diverged', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('work-head');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')         // target
+        .mockResolvedValueOnce('target-head')  // no-changes check
+        .mockResolvedValueOnce('main')         // current branch
+        .mockResolvedValueOnce('picked-sha');  // final HEAD
+      const cherryCalls: string[][] = [];
+      rootGit.raw.mockImplementation(async (args: string[]) => {
+        // base differs from BOTH target and work head → diverged → cherry-pick.
+        if (args[0] === 'merge-base') return 'base-sha';
+        if (args[0] === 'cherry-pick') { cherryCalls.push(args); return ''; }
+        return '';
+      });
+
+      const result = await manager.mergeRunWorktree('run-1', { mergeStrategy: 'preserve' });
+
+      expect(result).toEqual({ status: 'merged', commitSha: 'picked-sha' });
+      expect(cherryCalls).toEqual([['cherry-pick', 'base-sha..work-head']]);
+      expect(rootGit.commit).not.toHaveBeenCalled();
+    });
+
     it('mergeRunWorktree refuses dirty host worktree without force', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-1')

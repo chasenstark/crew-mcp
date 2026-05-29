@@ -774,6 +774,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         const result = await worktreeManager.mergeRunWorktree(args.run_id, {
           targetBranch: args.target_branch,
           force: args.force,
+          mergeStrategy: args.merge_strategy,
           commitTitle: args.commit_title,
           commitBody: args.commit_body,
         });

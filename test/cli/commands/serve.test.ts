@@ -2022,6 +2022,52 @@ describe('crew serve — merge_run tool', () => {
     }
   });
 
+  it('merge_strategy preserve keeps the run\'s individual commits linearly', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        // Two discrete, standalone commits — a deliberate stack.
+        writeFileSync(join(cwd, 'a.txt'), 'a\n', 'utf-8');
+        execSync('git add a.txt && git commit -q -m "feat: add a"', { cwd });
+        writeFileSync(join(cwd, 'b.txt'), 'b\n', 'utf-8');
+        execSync('git add b.txt && git commit -q -m "feat: add b"', { cwd });
+        return { output: 'two commits', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'stack two commits' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const mergeRes = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id, confirmed: true, merge_strategy: 'preserve' },
+      });
+      const mergeEnv = mergeRes.structuredContent as { status: string; commit_sha?: string };
+      expect(mergeEnv.status).toBe('merged');
+
+      // Both files landed.
+      expect(existsSync(join(h.root, 'a.txt'))).toBe(true);
+      expect(existsSync(join(h.root, 'b.txt'))).toBe(true);
+
+      // The two commits are preserved as distinct, single-parent commits
+      // on top of the host branch — no squash, no merge commit.
+      const subjects = execSync('git log -2 --format=%s', { cwd: h.root })
+        .toString().trim().split('\n');
+      expect(subjects).toEqual(['feat: add b', 'feat: add a']);
+      const tipParents = execSync('git rev-list --parents -n 1 HEAD', { cwd: h.root })
+        .toString().trim().split(/\s+/);
+      expect(tipParents.length).toBe(2); // [commit, single-parent]
+    } finally {
+      await h.close();
+    }
+  });
+
   it('refuses to merge without confirmed:true when confirmBeforeMerge is enabled', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',

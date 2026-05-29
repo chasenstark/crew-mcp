@@ -775,6 +775,7 @@ Wait for explicit "yes / go / merge". Then:
 merge_run({
   run_id: A,
   confirmed: true,
+  merge_strategy: "squash",
   commit_title: <derived from criteria + implementer summary, ≤72 chars>,
   commit_body: <mentions criteria-driven loop, round count,
                 deferred/accepted findings if any>
@@ -782,8 +783,17 @@ merge_run({
 ```
 
 `commit_title` should describe what the run accomplished, not "crew
-run abc123…". The run is squash-merged into a single commit carrying
-this title — no merge-commit wrapper, no machine trailer.
+run abc123…". The run lands as a single commit carrying this title —
+no merge-commit wrapper, no machine trailer.
+
+**Strategy for the iterate loop: default `squash`.** The loop inherently
+produces an implementation commit plus per-round fixup commits
+(`continue_run` turns), so collapsing to one titled commit is almost
+always right. Use `merge_strategy: "preserve"` only if the user
+explicitly wants the individual commits kept — and confirm it, since
+the iteration fixups rarely make a clean standalone stack. See the
+umbrella `crew` body's "Pick the merge strategy" for the full rule and
+the `confirmBeforeMerge` interaction.
 
 After merge, `discard_run` the read-only reviewer runs (cleanup) and
 acknowledge to the user.

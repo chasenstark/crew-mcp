@@ -443,13 +443,19 @@ export class WorktreeManager {
       targetBranch?: string;
       force?: boolean;
       /**
-       * Subject line for the merge commit. Captain-supplied, falls
-       * back to the generic `Merge crew run <runId>` if absent.
+       * How to land the run. `squash` (default) collapses the run into a
+       * single commit titled by commitTitle/commitBody. `preserve` keeps
+       * the run's individual commits linearly — fast-forward when the
+       * target hasn't diverged, else cherry-pick the run's commit range.
+       */
+      mergeStrategy?: 'squash' | 'preserve';
+      /**
+       * Subject line for the squashed commit (squash strategy only).
+       * Captain-supplied, falls back to `crew run <runId>` if absent.
        */
       commitTitle?: string;
       /**
-       * Extra body paragraphs for the merge commit. The `Crew-Run`
-       * trailer is appended after this regardless.
+       * Extra body paragraphs for the squashed commit (squash only).
        */
       commitBody?: string;
     } = {},
@@ -499,11 +505,6 @@ export class WorktreeManager {
     if (currentBranch !== target) {
       await this.git.checkout(target);
     }
-    const mergeMessage = buildMergeCommitMessage({
-      runId,
-      title: options.commitTitle,
-      body: options.commitBody,
-    });
     // Merge by the worktree's actual HEAD SHA, not record.branchName.
     // If the agent switched branches inside the worktree (e.g., a sandbox
     // forced a non-standard branch name), the recorded branch ref is stuck
@@ -531,12 +532,22 @@ export class WorktreeManager {
         + `\`git branch -D ${actualBranch}\` if you don't need it.`,
       );
     }
-    // Squash the run into a single ordinary commit on the target rather
-    // than a `--no-ff` merge commit. `--squash` stages the combined diff
-    // without committing and without recording a second parent, so the
-    // run lands as one clean commit (the captain's title/body) instead
-    // of an empty two-parent wrapper. The run branch is force-deleted at
-    // cleanup, so leaving it "unmerged" in git's eyes is fine.
+    // `preserve` keeps the run's individual commits linearly; `squash`
+    // (default) collapses them into one. Both land without a `--no-ff`
+    // merge commit. The run branch is force-deleted at cleanup, so
+    // leaving it "unmerged" in git's eyes is fine for either path.
+    if ((options.mergeStrategy ?? 'squash') === 'preserve') {
+      return await this.preserveRunCommits(target, targetHead, worktreeHead);
+    }
+
+    // Squash: `--squash` stages the combined diff without committing and
+    // without recording a second parent, so the run lands as one clean
+    // commit carrying the captain's title/body.
+    const mergeMessage = buildMergeCommitMessage({
+      runId,
+      title: options.commitTitle,
+      body: options.commitBody,
+    });
     try {
       await this.git.merge([worktreeHead, '--squash']);
     } catch (err) {
@@ -558,6 +569,47 @@ export class WorktreeManager {
       return { status: 'no-changes' };
     }
     await this.git.commit(mergeMessage);
+    const commitSha = (await this.git.revparse(['HEAD'])).trim();
+    return { status: 'merged', commitSha };
+  }
+
+  /**
+   * `preserve` merge strategy: land the run's individual commits
+   * linearly. Fast-forward when the target is an ancestor of the run
+   * head (exact commits + SHAs kept); otherwise cherry-pick the run's
+   * unique commit range onto the target tip (rewritten, but each commit
+   * + message preserved). Never creates a merge commit. Assumes the
+   * target branch is already checked out and worktreeHead !== targetHead.
+   */
+  private async preserveRunCommits(
+    target: string,
+    targetHead: string,
+    worktreeHead: string,
+  ): Promise<MergeRunResult> {
+    const base = (await this.git.raw(['merge-base', target, worktreeHead])).trim();
+    if (base === worktreeHead) {
+      // The run head is an ancestor of the target — the target already
+      // has everything the run does. Nothing to land.
+      return { status: 'no-changes' };
+    }
+    if (base === targetHead) {
+      // Target hasn't diverged: a fast-forward keeps the exact commits.
+      await this.git.merge([worktreeHead, '--ff-only']);
+    } else {
+      // Diverged: replay the run's unique commits onto the target tip.
+      try {
+        await this.git.raw(['cherry-pick', `${base}..${worktreeHead}`]);
+      } catch (err) {
+        // cherry-pick leaves CHERRY_PICK_HEAD on conflict; recovery is
+        // `git cherry-pick --abort`. Capture the conflicting paths and
+        // leave it in-progress for the user to resolve.
+        const conflicts = await this.detectConflicts();
+        if (conflicts.length > 0) {
+          return { status: 'conflict', conflicts };
+        }
+        throw err;
+      }
+    }
     const commitSha = (await this.git.revparse(['HEAD'])).trim();
     return { status: 'merged', commitSha };
   }

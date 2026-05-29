@@ -120,13 +120,14 @@ concretely so they know what they're approving:
 
 Not just "Should I merge?" The same goes for `discard_run` — confirm
 before throwing away work the user might still want. If `merge_run`
-returns conflicts, surface the conflicting paths to the user; do
-not attempt automated resolution. merge_run squash-merges, so the
-host has conflict markers staged but no `MERGE_HEAD` — `git merge
---abort` does NOT apply. The user resolves in place (edit, `git add`,
-`git commit` to land the squashed commit) or bails with `git reset
---hard HEAD`. Don't run `git reset --hard` yourself without asking;
-it throws away their working state.
+returns conflicts, surface the conflicting paths to the user; do not
+attempt automated resolution. merge_run lands the run linearly (no
+`MERGE_HEAD`), so `git merge --abort` does NOT apply — the abort
+command depends on the strategy: `squash` leaves staged conflict
+markers (resolve in place with `git add` + `git commit`, or bail with
+`git reset --hard HEAD`); `preserve` leaves a cherry-pick in progress
+(`git cherry-pick --abort`). Don't run a reset/abort yourself without
+asking; it throws away their working state.
 
 By default the server enforces this boundary too:
 `merge_run` requires `{ confirmed: true }` when
@@ -141,13 +142,36 @@ If `merge_run` rejects with
 merge prompt, wait for an affirmative answer, then retry
 `merge_run` with `confirmed: true`. Do not retry automatically.
 
-**Always pass a meaningful `commit_title`** (and optionally
-`commit_body`) to `merge_run`. The run is squash-merged into a single
-ordinary commit, and its subject becomes permanent git history the
-user reads later — "crew run abc123…" is the useless fallback.
-Compose a conventional-style subject from the prompt, summary, and
-diff: short imperative (≤72 chars) describing what the run
-accomplished, not that it was a crew run.
+### Pick the merge strategy
+
+`merge_run` lands the run linearly — never an empty merge commit — in
+one of two shapes. Read the run's `git log` (in the run's worktree) and
+choose:
+
+- **`squash`** (default): collapse the run into one commit. Right when
+  the run is one logical change plus fixups — an implementation commit
+  followed by "address review" / "wip" commits, or just a single
+  commit. **Always pass a meaningful `commit_title`** (and optionally
+  `commit_body`); the subject becomes permanent history the user reads
+  later — "crew run abc123…" is the useless fallback. Compose a
+  conventional-style imperative (≤72 chars) describing what the run
+  accomplished.
+- **`preserve`**: keep the run's individual commits. Right when the
+  implementer produced a deliberate stack of discrete, standalone
+  commits, each with its own well-formed conventional subject.
+  `commit_title` / `commit_body` are ignored here — the commits carry
+  their own messages.
+
+How to apply the choice against the confirmation gate:
+
+- **`confirmBeforeMerge` on (default):** propose the strategy and show
+  the run's commit list in your merge prompt ("3 commits — squash to
+  one, or keep all three?"). The user confirms or flips; then
+  `merge_run` with `confirmed: true` and the chosen `merge_strategy`.
+- **`confirmBeforeMerge` off (auto-merge):** there's no gate to flip at,
+  so **default to `squash`**. Use `preserve` only if the user gave a
+  standing or explicit "keep the commits" instruction — never silently
+  land a multi-commit stack the user didn't review.
 
 ## When to ask the user — rubric, not vibes
 
