@@ -217,13 +217,14 @@ describe('crew-mcp config subcommands', () => {
     });
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
-    expect(stdout.text.split('\n').slice(0, 8)).toEqual([
+    expect(stdout.text.split('\n').slice(0, 9)).toEqual([
       'crew-mcp config — toggle settings',
       '',
       '> [x] notifications.success   OS toast on successful runs',
       '  [x] notifications.error     OS toast on failed or partial runs',
       '  [x] confirmBeforeMerge      Ask before merging dispatched runs (off = auto-merge)',
       '      Agent defaults...       Configure default agents for iterate and panel workflows',
+      '      Cleanup & retention...  Set GC retention windows and reclaim stale worktrees/run-dirs now',
       '',
       '↑/↓ or j/k: move    space: toggle    enter: save    q / esc: cancel',
     ]);
@@ -241,6 +242,40 @@ describe('crew-mcp config subcommands', () => {
       },
       confirmBeforeMerge: true,
     });
+  });
+
+  it('opens the cleanup submenu, persists a TTL change, and runs cleanup on "Run now"', async () => {
+    const stdin = new TtyStdin();
+    const stdout = new TtyStdout();
+    const run = configCommand({
+      cwd,
+      crewHome,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      listAgentInventory: async () => ({ agentIds: [], knownIds: new Set() }),
+    });
+
+    await waitForOutput(stdout, 'crew-mcp config — toggle settings');
+    // Root rows: notifications.success(0), notifications.error(1),
+    // confirmBeforeMerge(2), Agent defaults(3), Cleanup(4).
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('return'); // push CleanupScreen
+    await waitForOutput(stdout, 'Cleanup & retention');
+    // Cleanup rows: worktree(0), rundir(1), preview(2), run(3), back(4).
+    stdin.press('space'); // worktree TTL 7 → 14
+    stdin.press('down'); // rundir
+    stdin.press('down'); // preview
+    stdin.press('down'); // run
+    stdin.press('return'); // "Run cleanup now" → save + run
+
+    await expect(run).resolves.toBe(0);
+    expect(stdin.isRaw).toBe(false);
+    expect(readConfigFile(crewHome).cleanup.worktreeTtlDays).toBe(14);
+    expect(stdout.text).toContain('crew cleanup');
+    expect(stdout.text).toMatch(/Reclaimed: \d+ worktree/);
   });
 });
 

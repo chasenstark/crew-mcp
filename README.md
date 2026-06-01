@@ -214,6 +214,17 @@ Interactive TUI for per-machine settings:
 
 Env overrides: `CREW_OS_NOTIFICATIONS=off`, `CREW_CONFIRM_BEFORE_MERGE=off`.
 
+Crew garbage-collects terminal runs under `~/.crew/runs/` so worktree
+checkouts don't pile up: a terminal run's worktree is reclaimed after the
+worktree window (default 7d, branch kept unless the run was merged) and its
+run-dir deleted after the run-dir window (default 30d). The GC runs at
+server startup; run it on demand with `crew-mcp cleanup` (`--dry-run` to
+preview, `--all-repos` to sweep every repo). Tune the windows in
+`crew-mcp config` → **Cleanup & retention** (stored in `config.json` as
+`cleanup.worktreeTtlDays` / `cleanup.runDirTtlDays`; `-1` = off). Env vars
+`CREW_WORKTREE_TTL_DAYS` / `CREW_RUNDIR_TTL_DAYS` (accept `off`) override
+config for a given process.
+
 ## 👥 Managing agents
 
 Agents live in `~/.crew/agents.json`. Each carries `strengths`, a

@@ -40,6 +40,26 @@ export interface CrewNotificationsConfig {
   readonly error: boolean;
 }
 
+/** Default retention windows for the terminal-run garbage collector. */
+export const DEFAULT_WORKTREE_TTL_DAYS = 7;
+export const DEFAULT_RUNDIR_TTL_DAYS = 30;
+
+export interface CrewCleanupConfig {
+  /**
+   * Days after a run reaches a terminal state before its worktree
+   * directory is reclaimed by the GC (the branch is kept unless the run
+   * was merged). `-1` disables (never reclaim). Env var
+   * `CREW_WORKTREE_TTL_DAYS` overrides.
+   */
+  readonly worktreeTtlDays: number;
+  /**
+   * Days after a run reaches a terminal state before its entire run-dir
+   * (state.json + events.log) is deleted by the GC. `-1` disables. Env
+   * var `CREW_RUNDIR_TTL_DAYS` overrides.
+   */
+  readonly runDirTtlDays: number;
+}
+
 export interface CrewConfig {
   /**
    * Whether OS terminal-status notifications fire by status channel.
@@ -51,6 +71,8 @@ export interface CrewConfig {
    * Defaults to true.
    */
   readonly confirmBeforeMerge: boolean;
+  /** Terminal-run garbage-collection retention windows. */
+  readonly cleanup: CrewCleanupConfig;
 }
 
 export const DEFAULT_CONFIG: CrewConfig = {
@@ -59,6 +81,10 @@ export const DEFAULT_CONFIG: CrewConfig = {
     error: true,
   },
   confirmBeforeMerge: true,
+  cleanup: {
+    worktreeTtlDays: DEFAULT_WORKTREE_TTL_DAYS,
+    runDirTtlDays: DEFAULT_RUNDIR_TTL_DAYS,
+  },
 };
 
 export function resolveConfigPath(crewHome: string): string {
@@ -141,6 +167,29 @@ export function readConfigFile(crewHome: string): CrewConfig {
       );
     }
   }
+  if ('cleanup' in record) {
+    if (
+      record.cleanup
+      && typeof record.cleanup === 'object'
+      && !Array.isArray(record.cleanup)
+    ) {
+      const cleanup = record.cleanup as Record<string, unknown>;
+      out.cleanup.worktreeTtlDays = readTtlDays(
+        cleanup.worktreeTtlDays,
+        'cleanup.worktreeTtlDays',
+        DEFAULT_CONFIG.cleanup.worktreeTtlDays,
+        path,
+      );
+      out.cleanup.runDirTtlDays = readTtlDays(
+        cleanup.runDirTtlDays,
+        'cleanup.runDirTtlDays',
+        DEFAULT_CONFIG.cleanup.runDirTtlDays,
+        path,
+      );
+    } else {
+      logger.warn(`[config] ${path}: "cleanup" must be an object; using defaults`);
+    }
+  }
   return cloneConfig(out);
 }
 
@@ -170,10 +219,37 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
     error: config.notifications.error,
   };
   merged.confirmBeforeMerge = config.confirmBeforeMerge;
+  // Tolerate a config missing `cleanup` (partial literals from callers /
+  // tests) by falling back to defaults rather than throwing.
+  const cleanup = config.cleanup ?? DEFAULT_CONFIG.cleanup;
+  merged.cleanup = {
+    worktreeTtlDays: cleanup.worktreeTtlDays,
+    runDirTtlDays: cleanup.runDirTtlDays,
+  };
   const serialized = JSON.stringify(merged, null, 2) + '\n';
   const tmp = `${path}.tmp.${process.pid}`;
   writeFileSync(tmp, serialized, 'utf-8');
   renameSync(tmp, path);
+}
+
+/**
+ * Parse a TTL-in-days field. Accepts any finite number >= -1 (where -1
+ * means "disabled / never"). Anything else drops to the default with a
+ * warning, matching the forgiving read contract for the rest of config.
+ */
+function readTtlDays(
+  value: unknown,
+  field: string,
+  fallback: number,
+  path: string,
+): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= -1) {
+    return Math.floor(value);
+  }
+  logger.warn(
+    `[config] ${path}: "${field}" must be a number >= -1 (-1 = off); using default (${fallback})`,
+  );
+  return fallback;
 }
 
 function readRawObject(path: string): Record<string, unknown> | undefined {
@@ -198,6 +274,11 @@ const DEFAULT_README: readonly string[] = [
   '    Env var CREW_OS_NOTIFICATIONS=off always overrides to off.',
   '  - confirmBeforeMerge (boolean): require explicit merge confirmation.',
   '    Env var CREW_CONFIRM_BEFORE_MERGE=off disables the gate.',
+  '  - cleanup.worktreeTtlDays (number): days before a terminal run\'s',
+  '    worktree is reclaimed by the GC (-1 = off). Env var',
+  '    CREW_WORKTREE_TTL_DAYS overrides.',
+  '  - cleanup.runDirTtlDays (number): days before a terminal run\'s dir',
+  '    is deleted by the GC (-1 = off). Env var CREW_RUNDIR_TTL_DAYS overrides.',
   'Delete this file to reset to defaults.',
 ];
 
@@ -208,12 +289,17 @@ function cloneConfig(config: CrewConfig): CrewConfig {
       error: config.notifications.error,
     },
     confirmBeforeMerge: config.confirmBeforeMerge,
+    cleanup: {
+      worktreeTtlDays: config.cleanup.worktreeTtlDays,
+      runDirTtlDays: config.cleanup.runDirTtlDays,
+    },
   };
 }
 
 function mutableConfig(config: CrewConfig): {
   notifications: { success: boolean; error: boolean };
   confirmBeforeMerge: boolean;
+  cleanup: { worktreeTtlDays: number; runDirTtlDays: number };
 } {
   return {
     notifications: {
@@ -221,5 +307,9 @@ function mutableConfig(config: CrewConfig): {
       error: config.notifications.error,
     },
     confirmBeforeMerge: config.confirmBeforeMerge,
+    cleanup: {
+      worktreeTtlDays: config.cleanup.worktreeTtlDays,
+      runDirTtlDays: config.cleanup.runDirTtlDays,
+    },
   };
 }

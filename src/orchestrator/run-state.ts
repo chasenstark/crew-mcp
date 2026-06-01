@@ -33,6 +33,7 @@ import {
   fstatSync,
   readSync,
   closeSync,
+  rmSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -775,6 +776,17 @@ export class RunStateStore {
    */
   runDir(runId: string): string {
     return join(this.runsBasePath, runId);
+  }
+
+  /**
+   * Permanently delete a run's directory (state.json, events.log, and any
+   * residual worktree dir). Used by the run GC once a terminal run ages
+   * past the run-dir retention window. Idempotent: a missing dir is a
+   * no-op. Does NOT touch the run's `crew-run/*` branch — that lives in
+   * the host repo's git, not under the run dir, so history survives.
+   */
+  deleteRunDir(runId: string): void {
+    rmSync(this.runDir(runId), { recursive: true, force: true });
   }
 
   /**

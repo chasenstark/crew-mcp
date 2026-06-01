@@ -626,11 +626,22 @@ export class WorktreeManager {
     }
   }
 
-  async cleanupByRunId(runId: string): Promise<void> {
+  /**
+   * Remove a run's worktree and metadata record. By default the run's
+   * branch is deleted too (the `discard_run` / merged-cleanup contract).
+   * Pass `{ keepBranch: true }` to remove only the working tree + record
+   * while preserving the branch ref — used by the run GC so reclaiming a
+   * stale worktree never drops unmerged commits (they survive as a
+   * recoverable `crew-run/*` branch).
+   */
+  async cleanupByRunId(
+    runId: string,
+    options: { keepBranch?: boolean } = {},
+  ): Promise<void> {
     await this.withRunLock(runId, async () => {
       const record = this.readRunWorktreeRecord(runId);
       if (!record) return;
-      const cleanup = await this.cleanupRunRecordedWorktree(record);
+      const cleanup = await this.cleanupRunRecordedWorktree(record, options);
       if (cleanup.success) {
         this.deleteRunWorktreeRecord(runId);
         // Remove the run directory ONLY if it's empty after the worktree
@@ -982,6 +993,7 @@ export class WorktreeManager {
 
   private async cleanupRunRecordedWorktree(
     record: RunWorktreeRecord,
+    options: { keepBranch?: boolean } = {},
   ): Promise<{ success: boolean; errors: string[] }> {
     const errors: string[] = [];
 
@@ -994,13 +1006,15 @@ export class WorktreeManager {
         errors.push(`remove worktree: ${msg}`);
       }
     }
-    try {
-      await this.git.deleteLocalBranch(record.branchName, true);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!this.isMissingBranchError(msg)) {
-        logger.warn(`Failed to delete branch ${record.branchName}: ${msg}`);
-        errors.push(`delete branch: ${msg}`);
+    if (!options.keepBranch) {
+      try {
+        await this.git.deleteLocalBranch(record.branchName, true);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!this.isMissingBranchError(msg)) {
+          logger.warn(`Failed to delete branch ${record.branchName}: ${msg}`);
+          errors.push(`delete branch: ${msg}`);
+        }
       }
     }
 

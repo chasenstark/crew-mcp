@@ -50,6 +50,38 @@ export function buildProgram(): Command {
       await statusCommand();
     });
 
+  program
+    .command('cleanup')
+    .description('Garbage-collect terminal crew runs (worktrees + run-dirs) on demand')
+    .option('--dry-run', 'Report what would be reclaimed without deleting anything')
+    .option('--all-repos', 'Sweep every repo represented in ~/.crew/runs (not just the current one)')
+    .option('--worktree-ttl-days <n>', 'Override the worktree retention window for this run (-1 = off)')
+    .option('--rundir-ttl-days <n>', 'Override the run-dir retention window for this run (-1 = off)')
+    .action(async (opts: {
+      dryRun?: boolean;
+      allRepos?: boolean;
+      worktreeTtlDays?: string;
+      rundirTtlDays?: string;
+    }) => {
+      applyDebugFlag(program);
+      const { cleanupCommand } = await import('./cli/commands/cleanup.js');
+      const parseDays = (raw: string | undefined, flag: string): number | undefined => {
+        if (raw === undefined) return undefined;
+        const n = Number(raw);
+        if (!Number.isFinite(n)) {
+          throw new Error(`${flag} must be a number (got "${raw}")`);
+        }
+        return Math.floor(n);
+      };
+      const code = await cleanupCommand({
+        dryRun: opts.dryRun,
+        allRepos: opts.allRepos,
+        worktreeTtlDays: parseDays(opts.worktreeTtlDays, '--worktree-ttl-days'),
+        runDirTtlDays: parseDays(opts.rundirTtlDays, '--rundir-ttl-days'),
+      });
+      if (code !== 0) process.exitCode = code;
+    });
+
   const config = program
     .command('config')
     .description('Interactively toggle per-machine crew settings (notifications, …)')

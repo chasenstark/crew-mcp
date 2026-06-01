@@ -28,10 +28,12 @@ import {
   AgentDefaultsState,
   applyAgentDefaultsState,
 } from './config-tui/agent-defaults-state.js';
+import { CleanupScreen } from './config-tui/cleanup-screen.js';
 import {
   isPushResult,
   type Screen,
 } from './config-tui/screen.js';
+import { cleanupCommand } from './cleanup.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import {
   BUILTIN_ADAPTER_NAMES,
@@ -61,6 +63,10 @@ export type MutableCrewConfig = {
     error: boolean;
   };
   confirmBeforeMerge: boolean;
+  cleanup: {
+    worktreeTtlDays: number;
+    runDirTtlDays: number;
+  };
 };
 
 interface ConfigEntry {
@@ -129,6 +135,8 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       const value = entry.get(current);
       stdout.write(`  ${entry.label}: ${value ? 'on' : 'off'}\n`);
     }
+    stdout.write(`  cleanup.worktreeTtlDays: ${fmtTtlDays(current.cleanup.worktreeTtlDays)}\n`);
+    stdout.write(`  cleanup.runDirTtlDays: ${fmtTtlDays(current.cleanup.runDirTtlDays)}\n`);
     writeAgentDefaultsSummary(stdout, showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults);
     stdout.write(
       `\nInteractive editing requires a TTY. Edit ${configPath} directly,\n`
@@ -143,6 +151,10 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       error: current.notifications.error,
     },
     confirmBeforeMerge: current.confirmBeforeMerge,
+    cleanup: {
+      worktreeTtlDays: current.cleanup.worktreeTtlDays,
+      runDirTtlDays: current.cleanup.runDirTtlDays,
+    },
   };
   const agentInventory = await loadAgentInventory({
     crewHome,
@@ -152,6 +164,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults,
   );
   const agentDefaultsScreen = new AgentDefaultsScreen(agentDefaultsState, agentInventory);
+  const cleanupScreen = new CleanupScreen(state.cleanup);
   const rootScreen = createRootScreen({
     entries,
     state,
@@ -163,18 +176,31 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
         description: 'Configure default agents for iterate and panel workflows',
         onActivate: () => ({ push: agentDefaultsScreen }),
       },
+      {
+        kind: 'action',
+        label: 'Cleanup & retention...',
+        description: 'Set GC retention windows and reclaim stale worktrees/run-dirs now',
+        onActivate: () => ({ push: cleanupScreen }),
+      },
     ],
   });
   const result = await driveTui({ stdin, stdout, screens: [rootScreen] });
 
-  if (result === 'cancelled') {
+  // A "Run cleanup now" / "Preview" pick in the submenu exits the TUI via
+  // `save` (cleanup is async and can't run inside the key handler). Treat
+  // that as a save so any TTL edits persist, then run the GC after teardown.
+  const cleanupRequested = cleanupScreen.requested;
+
+  if (result === 'cancelled' && cleanupRequested === undefined) {
     stdout.write('\ncrew-mcp config: cancelled (no changes written).\n');
     return 0;
   }
 
   // Only write if something actually changed — avoids touching the
   // file mtime on a no-op save.
-  const crewChanged = !sameConfig(current, state, entries);
+  const crewChanged = !sameConfig(current, state, entries)
+    || current.cleanup.worktreeTtlDays !== state.cleanup.worktreeTtlDays
+    || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
   if (crewChanged) {
     writeConfigFile(crewHome, state);
@@ -186,10 +212,24 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     stdout.write(`\ncrew-mcp config: saved to ${configPath}\n`);
   } else if (crewChanged || agentDefaultsChanged) {
     stdout.write('\ncrew-mcp config: saved.\n');
-  } else {
+  } else if (cleanupRequested === undefined) {
     stdout.write('\ncrew-mcp config: no changes.\n');
   }
+
+  if (cleanupRequested !== undefined) {
+    stdout.write('\n');
+    await cleanupCommand({
+      cwd,
+      crewHome,
+      dryRun: cleanupRequested === 'dry',
+      stdout,
+    });
+  }
   return 0;
+}
+
+function fmtTtlDays(days: number): string {
+  return days < 0 ? 'off' : `${days}d`;
 }
 
 export interface ConfigSubcommandOptions {
@@ -257,6 +297,7 @@ function buildShowPayload(opts: ConfigSubcommandOptions): Record<string, unknown
   return {
     notifications: crewConfig.notifications,
     confirmBeforeMerge: crewConfig.confirmBeforeMerge,
+    cleanup: crewConfig.cleanup,
     ...workflow.effectiveConfig,
   };
 }
@@ -324,6 +365,10 @@ function mutableConfig(config: CrewConfig): MutableCrewConfig {
       error: config.notifications.error,
     },
     confirmBeforeMerge: config.confirmBeforeMerge,
+    cleanup: {
+      worktreeTtlDays: config.cleanup.worktreeTtlDays,
+      runDirTtlDays: config.cleanup.runDirTtlDays,
+    },
   };
 }
 

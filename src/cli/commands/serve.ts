@@ -46,6 +46,7 @@ import {
 } from '../../orchestrator/progress.js';
 import { dispatchRunAgentInternal } from '../../orchestrator/dispatch-run-agent-internal.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
+import { gcTerminalRuns, type RunGcArgs } from '../../orchestrator/run-gc.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
 import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.js';
 import {
@@ -231,6 +232,12 @@ export interface ServeOptions {
   staleRunSweeper?: (args: StaleRunSweepArgs) => void | Promise<void>;
 
   /**
+   * Test seam: override the terminal-run garbage collector while preserving
+   * the same deferred scheduling path used in production.
+   */
+  runGc?: (args: RunGcArgs) => void | Promise<unknown>;
+
+  /**
    * When set, every logger call also appends to this absolute path. Useful
    * for diagnosing host MCP-lifecycle problems (e.g. Conductor) that don't
    * surface the server's stderr. If unset, callers also honor the
@@ -365,6 +372,42 @@ export function scheduleStaleRunSweep(
   return staleRunSweepPromise;
 }
 
+let runGcPromise: Promise<void> | null = null;
+
+export function getRunGc(): Promise<void> | null {
+  return runGcPromise;
+}
+
+/**
+ * Schedule the terminal-run garbage collector to run once, deferred to the
+ * next tick so server boot isn't blocked on filesystem + git work. Mirrors
+ * `scheduleStaleRunSweep`: at most one in flight per process, failures are
+ * logged not thrown, and `getRunGc()` lets tests await completion.
+ */
+export function scheduleRunGc(
+  args: RunGcArgs,
+  gc: (args: RunGcArgs) => void | Promise<unknown> = gcTerminalRuns,
+): Promise<void> {
+  if (runGcPromise !== null) return runGcPromise;
+
+  runGcPromise = new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  })
+    .then(async () => {
+      await gc(args);
+    })
+    .catch((err) => {
+      logger.warn(
+        `run GC: failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    })
+    .finally(() => {
+      runGcPromise = null;
+    });
+
+  return runGcPromise;
+}
+
 /**
  * Build a fully-configured `McpServer` for crew without binding it to any
  * transport. The caller is responsible for `server.connect(transport)`.
@@ -399,6 +442,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   void scheduleStaleRunSweep(
     { crewHome, projectRoot, runStateStore },
     options.staleRunSweeper,
+  );
+  void scheduleRunGc(
+    { crewHome, projectRoot, runStateStore, worktreeManager },
+    options.runGc,
   );
   // Per-server one-shot loud-log state for progressToken presence/absence.
   // Crew's stdio MCP server is normally 1:1 with a single host client, so

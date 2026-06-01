@@ -26,8 +26,10 @@ import {
   classifyClient,
   fileUrlHref,
   formatProgressLines,
+  getRunGc,
   getStaleRunSweep,
   nextStepSentence,
+  scheduleRunGc,
   scheduleStaleRunSweep,
   type FullRunEnvelope,
   type RunEnvelope,
@@ -943,6 +945,103 @@ describe('crew serve — stale-run sweeper', () => {
       );
     } finally {
       warn.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('schedules the run GC on server startup and passes it the worktree manager', async () => {
+    await getRunGc();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-home-'));
+    let received: { crewHome?: string; hasWorktreeManager?: boolean } = {};
+
+    try {
+      const built = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+        runGc: (args) => {
+          received = {
+            crewHome: args.crewHome,
+            hasWorktreeManager: args.worktreeManager !== undefined,
+          };
+        },
+      });
+      await getRunGc();
+      await built.server.close();
+
+      expect(received.crewHome).toBe(crewHome);
+      expect(received.hasWorktreeManager).toBe(true);
+    } finally {
+      await getRunGc();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('logs deferred run GC errors without failing server startup', async () => {
+    await getRunGc();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-error-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-error-home-'));
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const built = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+        runGc: () => {
+          throw new Error('mock gc failure');
+        },
+      });
+
+      expect(built.server).toBeDefined();
+      await getRunGc();
+      await built.server.close();
+      expect(warn).toHaveBeenCalledWith('run GC: failed: mock gc failure');
+    } finally {
+      warn.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('single-flights concurrent run GC triggers', async () => {
+    await getRunGc();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-flight-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-flight-home-'));
+    const runStateStore = new RunStateStore({ crewHome, repoRoot: root });
+    const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
+    const gcStarted = createDeferred<void>();
+    const releaseGc = createDeferred<void>();
+    let calls = 0;
+
+    try {
+      const args = { crewHome, projectRoot: root, runStateStore, worktreeManager };
+      const first = scheduleRunGc(args, async () => {
+        calls += 1;
+        gcStarted.resolve();
+        await releaseGc.promise;
+      });
+      const second = scheduleRunGc(args, async () => {
+        calls += 1;
+      });
+
+      expect(second).toBe(first);
+      await gcStarted.promise;
+      expect(calls).toBe(1);
+
+      releaseGc.resolve();
+      await first;
+      expect(calls).toBe(1);
+      expect(getRunGc()).toBeNull();
+    } finally {
+      releaseGc.resolve();
+      await getRunGc();
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
     }

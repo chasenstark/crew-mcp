@@ -32,6 +32,7 @@ describe('config-store', () => {
     const config = {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
+      cleanup: { worktreeTtlDays: 3, runDirTtlDays: 60 },
     };
     writeConfigFile(home, config);
     expect(readConfigFile(home)).toEqual(config);
@@ -46,7 +47,29 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: false, error: false },
       confirmBeforeMerge: true,
+      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30 },
     });
+  });
+
+  it('parses cleanup TTLs, accepts -1 (off), and drops bad values', () => {
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({
+        cleanup: { worktreeTtlDays: 14, runDirTtlDays: -1 },
+      }),
+      'utf-8',
+    );
+    expect(readConfigFile(home).cleanup).toEqual({ worktreeTtlDays: 14, runDirTtlDays: -1 });
+
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ cleanup: { worktreeTtlDays: 'soon', runDirTtlDays: -5 } }),
+      'utf-8',
+    );
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    // 'soon' (NaN) and -5 (< -1) both drop to defaults.
+    expect(readConfigFile(home).cleanup).toEqual({ worktreeTtlDays: 7, runDirTtlDays: 30 });
+    expect(warn).toHaveBeenCalled();
   });
 
   it('first write migrates legacy notification shape in place', () => {
@@ -59,6 +82,7 @@ describe('config-store', () => {
     writeConfigFile(home, {
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
+      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30 },
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('legacy');
@@ -80,6 +104,7 @@ describe('config-store', () => {
     writeConfigFile(home, {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
+      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30 },
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('hand-edited');
@@ -115,6 +140,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
+      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30 },
     });
     expect(warn).toHaveBeenCalled();
   });
@@ -129,6 +155,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: true, error: true },
       confirmBeforeMerge: false,
+      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30 },
     });
     expect(warn).toHaveBeenCalled();
   });
