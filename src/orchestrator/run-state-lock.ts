@@ -57,8 +57,7 @@ export async function withStateLock<T>(
       if (!isLockAlreadyHeldError(err)) {
         throw err;
       }
-      if (canReclaimStateLock(lockDir)) {
-        rmSync(lockDir, { recursive: true, force: true });
+      if (tryReclaimStateLock(lockDir)) {
         continue;
       }
       if (Date.now() >= timeoutAt) {
@@ -79,7 +78,7 @@ export async function withStateLock<T>(
 
 function writeStateLockRecord(lockDir: string, record: StateLockRecord): void {
   const targetPath = join(lockDir, 'owner.json');
-  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
   renameSync(tempPath, targetPath);
 }
@@ -97,7 +96,7 @@ function readStateLockRecord(lockDir: string): StateLockRecord | undefined {
   }
 }
 
-function canReclaimStateLock(lockDir: string): boolean {
+function tryReclaimStateLock(lockDir: string): boolean {
   const record = readStateLockRecord(lockDir);
   if (!record?.pid) {
     return false;
@@ -106,7 +105,34 @@ function canReclaimStateLock(lockDir: string): boolean {
   if (status !== 'dead') {
     return false;
   }
-  return isStaleLock(lockDir);
+  if (!isStaleLock(lockDir)) {
+    return false;
+  }
+
+  const staleDir = `${lockDir}.${randomUUID()}.stale`;
+  try {
+    renameSync(lockDir, staleDir);
+  } catch (err) {
+    if (isEnoent(err)) return false;
+    throw err;
+  }
+
+  const renamedRecord = readStateLockRecord(staleDir);
+  if (
+    renamedRecord?.ownerId === record.ownerId
+    && renamedRecord.pid === record.pid
+    && isStaleLock(staleDir)
+  ) {
+    rmSync(staleDir, { recursive: true, force: true });
+    return true;
+  }
+
+  try {
+    renameSync(staleDir, lockDir);
+  } catch {
+    // Best effort: never delete a lock that failed post-rename validation.
+  }
+  return false;
 }
 
 function releaseStateLock(lockDir: string, ownerId: string): void {
@@ -154,6 +180,15 @@ function isLockAlreadyHeldError(error: unknown): boolean {
 }
 
 function isMissingLockRootError(error: unknown): boolean {
+  return (
+    typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: string }).code === 'ENOENT'
+  );
+}
+
+function isEnoent(error: unknown): boolean {
   return (
     typeof error === 'object'
     && error !== null

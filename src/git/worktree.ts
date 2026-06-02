@@ -580,7 +580,7 @@ export class WorktreeManager {
 
   private writeRunLockRecord(lockDir: string, record: RunLockRecord): void {
     const targetPath = join(lockDir, 'owner.json');
-    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${tempRandomUUID()}.tmp`;
     writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
     renameSync(tempPath, targetPath);
   }
@@ -598,12 +598,42 @@ export class WorktreeManager {
     }
   }
 
-  private canReclaimRunLock(lockDir: string): boolean {
+  private tryReclaimRunLock(lockDir: string): boolean {
     const record = this.readRunLockRecord(lockDir);
     if (record?.pid && this.isProcessAlive(record.pid)) {
       return false;
     }
-    return this.isStaleLock(lockDir);
+    if (!this.isStaleLock(lockDir)) {
+      return false;
+    }
+
+    const staleDir = `${lockDir}.${tempRandomUUID()}.stale`;
+    try {
+      renameSync(lockDir, staleDir);
+    } catch (err) {
+      if (this.isEnoent(err)) return false;
+      throw err;
+    }
+
+    const renamedRecord = this.readRunLockRecord(staleDir);
+    if (
+      this.isStaleLock(staleDir)
+      && (
+        record
+          ? renamedRecord?.ownerId === record.ownerId && renamedRecord.pid === record.pid
+          : renamedRecord === undefined
+      )
+    ) {
+      rmSync(staleDir, { recursive: true, force: true });
+      return true;
+    }
+
+    try {
+      renameSync(staleDir, lockDir);
+    } catch {
+      // Best effort: never delete a lock that failed post-rename validation.
+    }
+    return false;
   }
 
   private releaseRunLock(lockDir: string, ownerId: string): void {
@@ -635,6 +665,15 @@ export class WorktreeManager {
         && (err as { code?: string }).code === 'EPERM'
       );
     }
+  }
+
+  private isEnoent(error: unknown): boolean {
+    return (
+      typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && (error as { code?: string }).code === 'ENOENT'
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -721,7 +760,7 @@ export class WorktreeManager {
 
   private writeRunWorktreeRecord(record: RunWorktreeRecord): void {
     const targetPath = this.runMetadataFilePath(record.runId);
-    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${tempRandomUUID()}.tmp`;
     writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
     renameSync(tempPath, targetPath);
   }
@@ -775,8 +814,7 @@ export class WorktreeManager {
         if (!this.isLockAlreadyHeldError(err)) {
           throw err;
         }
-        if (this.canReclaimRunLock(lockDir)) {
-          rmSync(lockDir, { recursive: true, force: true });
+        if (this.tryReclaimRunLock(lockDir)) {
           continue;
         }
         if (Date.now() >= timeoutAt) {
@@ -792,6 +830,10 @@ export class WorktreeManager {
       this.releaseRunLock(lockDir, ownerId);
     }
   }
+}
+
+function tempRandomUUID(): string {
+  return globalThis.crypto?.randomUUID?.() ?? randomUUID();
 }
 
 /**
