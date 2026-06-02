@@ -41,6 +41,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { logger } from '../utils/logger.js';
 import { filterEventsTailNoise } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
+import { writeRunReceipt } from './receipts.js';
 import {
   resolvePeerMessageCaps,
   type ResolvedCaps,
@@ -477,6 +478,12 @@ export class RunStateStore {
         ...s,
         status: 'running',
         completedAt: undefined,
+        // A new turn starts fresh: clear any prior-turn terminal error so a
+        // recovered run (error -> continue_run -> success) doesn't carry a
+        // stale `lastError` into its success state. `lastError` leaks into the
+        // get_run_status payload, list_runs summary, and run.json receipt, so
+        // clearing it here is the single source-of-truth fix.
+        lastError: undefined,
         serverPid: process.pid,
         prompts: [
           ...s.prompts,
@@ -569,37 +576,47 @@ export class RunStateStore {
         status: args.status,
       });
     }
+    writeRunReceipt(this.runDir(runId), next);
     return next;
   }
 
   markMerged(runId: string, args: { target: string; commitSha: string }): RunStateV1 {
-    return this.update(runId, (s) => ({
+    const next = this.update(runId, (s) => ({
       ...s,
       status: 'merged',
       completedAt: new Date().toISOString(),
       mergeStatus: { target: args.target, commitSha: args.commitSha },
     }));
+    writeRunReceipt(this.runDir(runId), next);
+    return next;
   }
 
   markMergeConflict(
     runId: string,
     args: { target: string; conflicts: readonly string[] },
   ): RunStateV1 {
-    return this.update(runId, (s) => ({
+    const next = this.update(runId, (s) => ({
       ...s,
       status: 'merge_conflict',
+      // Stamp the disposition time like markMerged/markDiscarded so conflict
+      // receipts don't carry the prior agent-completion time (or null).
+      completedAt: new Date().toISOString(),
       mergeStatus: { target: args.target, conflicts: args.conflicts },
     }));
+    writeRunReceipt(this.runDir(runId), next);
+    return next;
   }
 
   markDiscarded(runId: string): RunStateV1 | undefined {
     const current = this.read(runId);
     if (!current) return undefined;
-    return this.update(runId, (s) => ({
+    const next = this.update(runId, (s) => ({
       ...s,
       status: 'discarded',
       completedAt: new Date().toISOString(),
     }));
+    writeRunReceipt(this.runDir(runId), next);
+    return next;
   }
 
   /**

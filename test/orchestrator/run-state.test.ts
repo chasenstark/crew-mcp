@@ -279,6 +279,33 @@ describe('RunStateStore', () => {
     expect(store.read('r-serial')?.prompts.map((p) => p.turn)).toEqual([1, 2, 3]);
   });
 
+  it('appendPrompt() clears a prior-turn lastError so a recovered run reports success cleanly', async () => {
+    await createRun({ runId: 'r-recover', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
+    store.markTerminal('r-recover', {
+      status: 'error',
+      summary: 'boom',
+      filesChanged: [],
+      lastError: 'turn-1 failure',
+    });
+    expect(store.read('r-recover')?.lastError).toBe('turn-1 failure');
+
+    // Recover: continue the run, which succeeds with no new error.
+    await store.appendPrompt('r-recover', { userPrompt: 'try again' });
+    expect(store.read('r-recover')?.lastError).toBeUndefined();
+    store.markTerminal('r-recover', { status: 'success', summary: 'fixed', filesChanged: ['a.ts'] });
+
+    const final = store.read('r-recover');
+    expect(final?.status).toBe('success');
+    expect(final?.lastError).toBeUndefined();
+
+    // The receipt must not carry the stale error either.
+    const receipt = JSON.parse(
+      readFileSync(join(store.runDir('r-recover'), 'run.json'), 'utf-8'),
+    ) as { status: string; error: string | null };
+    expect(receipt.status).toBe('success');
+    expect(receipt.error).toBeNull();
+  });
+
   it('create() omits peer_messages_input when no initial peer messages are provided', async () => {
     const result = await store.create({
       runId: 'r-no-peer',

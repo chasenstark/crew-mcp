@@ -48,15 +48,42 @@ export interface Disposable {
   dispose(): void;
 }
 
+export interface ToolDispatcherOptions {
+  /**
+   * Idle-stall watchdog. If a run emits no stream activity for this many
+   * milliseconds it is aborted via its AbortSignal — surfacing as a
+   * cancelled run whose reason names the stall, so a wedged subprocess
+   * doesn't linger forever. `0` (the default) disables the watchdog.
+   * Tuned at the serve layer via `CREW_DISPATCH_STALL_TIMEOUT_MS`.
+   *
+   * Caveat: the activity signal is `onStream` output. Adapters that emit
+   * output only at completion (no incremental streaming) look idle for
+   * their entire run, so enabling this can kill in-progress work on such
+   * adapters — which is why it ships off by default.
+   */
+  readonly stallTimeoutMs?: number;
+}
+
 type InFlight = {
   controller: AbortController;
   toolName: string;
   runId?: string;
 };
 
+/** Watchdog sampling cadence is the timeout quartered, clamped to [1s, 10s]. */
+function watchdogIntervalMs(stallTimeoutMs: number): number {
+  return Math.min(10_000, Math.max(1_000, Math.floor(stallTimeoutMs / 4)));
+}
+
 export class ToolDispatcher {
   private readonly emitter = new EventEmitter<DispatcherEvents>();
   private readonly inFlight = new Map<string, InFlight>();
+  private readonly stallTimeoutMs: number;
+
+  constructor(options: ToolDispatcherOptions = {}) {
+    const raw = options.stallTimeoutMs ?? 0;
+    this.stallTimeoutMs = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+  }
 
   start(task: DispatchTask): void {
     if (this.inFlight.has(task.toolCallId)) {
@@ -74,7 +101,34 @@ export class ToolDispatcher {
       runId: task.runId,
     });
 
+    // Idle-stall watchdog: arm only when enabled. `lastActivity` advances on
+    // every stream chunk; if the gap since the last chunk crosses the
+    // threshold we abort, which routes through the existing cancellation path.
+    let lastActivity = Date.now();
+    let watchdog: ReturnType<typeof setInterval> | undefined;
+    const clearWatchdog = () => {
+      if (watchdog !== undefined) {
+        clearInterval(watchdog);
+        watchdog = undefined;
+      }
+    };
+    if (this.stallTimeoutMs > 0) {
+      watchdog = setInterval(() => {
+        if (controller.signal.aborted) {
+          clearWatchdog();
+          return;
+        }
+        if (Date.now() - lastActivity >= this.stallTimeoutMs) {
+          clearWatchdog();
+          controller.abort(new StallTimeoutError(this.stallTimeoutMs));
+        }
+      }, watchdogIntervalMs(this.stallTimeoutMs));
+      // Don't let the watchdog alone keep the process alive.
+      watchdog.unref?.();
+    }
+
     const streamEmitter = (chunk: string) => {
+      lastActivity = Date.now();
       this.emitter.emit('run:stream', {
         toolCallId: task.toolCallId,
         chunk,
@@ -85,8 +139,14 @@ export class ToolDispatcher {
     task
       .run({ signal: controller.signal, onStream: streamEmitter })
       .then(
-        (result) => this.handleCompleted(task, result),
-        (err) => this.handleFailedOrCancelled(task, err),
+        (result) => {
+          clearWatchdog();
+          this.handleCompleted(task, result);
+        },
+        (err) => {
+          clearWatchdog();
+          this.handleFailedOrCancelled(task, err);
+        },
       );
   }
 
@@ -193,6 +253,13 @@ class DispatcherCancelError extends Error {
   readonly name = 'DispatcherCancelError';
   constructor(reason: string) {
     super(reason);
+  }
+}
+
+export class StallTimeoutError extends Error {
+  readonly name = 'StallTimeoutError';
+  constructor(stallTimeoutMs: number) {
+    super(`stalled: no agent output for ${Math.round(stallTimeoutMs / 1000)}s`);
   }
 }
 

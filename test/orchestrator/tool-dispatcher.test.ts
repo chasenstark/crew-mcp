@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ToolDispatcher, type DispatchTask } from '../../src/orchestrator/tool-dispatcher.js';
 
 function makeTask(
@@ -252,5 +252,114 @@ describe('ToolDispatcher', () => {
     expect(list.length).toBe(1);
     expect(list[0]).toEqual({ toolCallId: 'c1', toolName: 'run_agent', runId: 'run-1' });
     d.cancelAll('cleanup');
+  });
+
+  describe('idle-stall watchdog', () => {
+    it('aborts a run that emits no output past the stall timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const d = new ToolDispatcher({ stallTimeoutMs: 4000 });
+        let abortReason: unknown;
+        d.start(makeTask('c-stall', (signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => {
+              abortReason = signal.reason;
+              reject(signal.reason);
+            });
+          }),
+        ));
+
+        const cancelledP = waitForEvent(d, 'run:cancelled');
+        // No stream activity ever arrives; advance past the threshold.
+        await vi.advanceTimersByTimeAsync(5000);
+
+        const info = (await cancelledP) as { reason: string };
+        expect(info.reason).toContain('stalled');
+        expect((abortReason as Error).name).toBe('StallTimeoutError');
+        expect(d.inFlightCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not abort while stream activity keeps arriving', async () => {
+      vi.useFakeTimers();
+      try {
+        const d = new ToolDispatcher({ stallTimeoutMs: 4000 });
+        let cancelled = false;
+        d.onEvent('run:cancelled', () => {
+          cancelled = true;
+        });
+
+        d.start(makeTask('c-live', (signal, onStream) =>
+          new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason));
+            let n = 0;
+            const iv = setInterval(() => {
+              n += 1;
+              onStream(`tick ${n}`);
+              if (n >= 6) {
+                clearInterval(iv);
+                resolve({ ok: true });
+              }
+            }, 1000);
+          }),
+        ));
+
+        const completeP = waitForEvent(d, 'run:complete');
+        // Activity every 1s < 4s threshold, so the run completes uncancelled.
+        await vi.advanceTimersByTimeAsync(7000);
+        await completeP;
+        expect(cancelled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('clears the watchdog after the run completes (no fire-after-terminal)', async () => {
+      vi.useFakeTimers();
+      try {
+        const d = new ToolDispatcher({ stallTimeoutMs: 4000 });
+        let cancelled = false;
+        d.onEvent('run:cancelled', () => {
+          cancelled = true;
+        });
+        // Completes quickly (well under the threshold), then we keep the fake
+        // clock running far past another stall window. If the watchdog leaked,
+        // a stray tick would abort an already-terminal run.
+        d.start(makeTask('c-clear', async () => ({ ok: true })));
+        await waitForEvent(d, 'run:complete');
+
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(cancelled).toBe(false);
+        expect(d.inFlightCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('default constructor leaves the watchdog disabled', async () => {
+      vi.useFakeTimers();
+      try {
+        const d = new ToolDispatcher();
+        let cancelled = false;
+        d.onEvent('run:cancelled', () => {
+          cancelled = true;
+        });
+        d.start(makeTask('c-off', (signal) =>
+          new Promise((resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason));
+            setTimeout(() => resolve({ ok: true }), 60_000);
+          }),
+        ));
+
+        const completeP = waitForEvent(d, 'run:complete');
+        await vi.advanceTimersByTimeAsync(60_000);
+        await completeP;
+        expect(cancelled).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -437,7 +437,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   }
   const worktreeManager = options.worktreeManager
     ?? new WorktreeManager({ projectRoot, crewHome });
-  const dispatcher = new ToolDispatcher();
+  const dispatcher = new ToolDispatcher({ stallTimeoutMs: resolveDispatchStallTimeoutMs() });
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
   void scheduleStaleRunSweep(
     { crewHome, projectRoot, runStateStore },
@@ -1697,6 +1697,27 @@ function resolveStaleRunGraceMs(): number {
 }
 
 const STALE_RUN_GRACE_MS = resolveStaleRunGraceMs();
+
+/**
+ * Cross-adapter idle-stall watchdog threshold for dispatched runs, in ms. A
+ * run whose stream emits nothing for this long is aborted (surfacing as
+ * cancelled with a stall reason), so a wedged subprocess can't linger forever.
+ *
+ * Distinct from the adapter-level `CREW_STREAM_IDLE_TIMEOUT_MS` (claude-code
+ * only today, default-on at 120s), which keys off the CLI's own stream-json
+ * events and throws → run:failed. This one is the dispatcher-level net that
+ * covers every adapter and stalls outside an adapter's stream loop. It is OFF
+ * by default — only adapters that stream incrementally are safe to auto-kill
+ * on idle. Opt in via `CREW_DISPATCH_STALL_TIMEOUT_MS`. Values below ~1s
+ * round up to the watchdog's 1s minimum sampling cadence.
+ */
+function resolveDispatchStallTimeoutMs(): number {
+  const raw = process.env.CREW_DISPATCH_STALL_TIMEOUT_MS;
+  if (raw === undefined) return 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+}
 
 /**
  * Most recent timestamp at which `serverPid` was stamped onto a run —

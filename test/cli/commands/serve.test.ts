@@ -488,6 +488,123 @@ describe('crew serve — listTools surface', () => {
   });
 });
 
+/**
+ * Cross-host MCP schema compatibility guard.
+ *
+ * The JSON Schemas we publish via `listTools` must be accepted by all three
+ * host MCP runtimes (Claude Code, Codex, Gemini), not just Anthropic's. The
+ * empirically-confirmed failure mode (2026-05-16, see
+ * `docs/plans/active/host-mcp-schema-compatibility.md`) is **tuple-style
+ * arrays**: a `z.tuple([...])` emits `items: [schemaA, schemaB]`, but Gemini's
+ * OpenAPI-flavored validator and Codex's Rust `JsonSchemaType` deserializer
+ * both require `items` to be a single schema object (or boolean), never an
+ * array. The 2020-12 spelling `prefixItems` is rejected for the same reason.
+ *
+ * That bug shipped once (the `peer_messages` excerpt `range` field, fixed in
+ * 3b9c27e by switching to a fixed-length uniform array) without a regression
+ * guard. This test walks every emitted tool schema and fails if any tuple
+ * construct reappears — on any tool, at any depth.
+ */
+describe('crew serve — cross-host schema compatibility', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+  });
+  afterEach(async () => {
+    await h.close();
+  });
+
+  // Keys whose values are maps of named sub-schemas. Their keys are author
+  // chosen names (tool argument names), NOT schema keywords — so we must
+  // recurse into the values as schemas without treating the map object itself
+  // as a schema node. Otherwise a tool with an argument literally named
+  // `items`/`prefixItems` would false-positive.
+  const PROPERTY_MAP_KEYS = new Set([
+    'properties',
+    'patternProperties',
+    '$defs',
+    'definitions',
+    'dependentSchemas',
+  ]);
+
+  /**
+   * Walk a JSON Schema (treating `node` as a schema object) and collect
+   * JSON-path locations of any tuple-style array construct (array-valued
+   * `items`, or any `prefixItems`). Keyword detection applies only at schema
+   * positions, never to the key names inside a properties/$defs map. Returns
+   * an empty array when the schema is host-portable.
+   */
+  function findTupleConstructs(node: unknown, path = '$'): string[] {
+    if (Array.isArray(node)) {
+      return node.flatMap((child, i) => findTupleConstructs(child, `${path}[${i}]`));
+    }
+    if (node === null || typeof node !== 'object') {
+      return [];
+    }
+    const obj = node as Record<string, unknown>;
+    const violations: string[] = [];
+    if (Array.isArray(obj.items)) {
+      violations.push(`${path}.items (array-form / tuple)`);
+    }
+    if ('prefixItems' in obj) {
+      violations.push(`${path}.prefixItems (2020-12 tuple)`);
+    }
+    for (const [key, value] of Object.entries(obj)) {
+      if (PROPERTY_MAP_KEYS.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
+        // Recurse into each named sub-schema value; the map's own keys are
+        // argument names, not schema keywords.
+        for (const [name, schema] of Object.entries(value as Record<string, unknown>)) {
+          violations.push(...findTupleConstructs(schema, `${path}.${key}.${name}`));
+        }
+      } else {
+        violations.push(...findTupleConstructs(value, `${path}.${key}`));
+      }
+    }
+    return violations;
+  }
+
+  it('no published tool schema uses a tuple-style array (Gemini/Codex reject these)', async () => {
+    const result = await h.client.listTools();
+    expect(result.tools.length).toBeGreaterThan(0);
+
+    const offenders = result.tools.flatMap((tool) =>
+      findTupleConstructs(tool.inputSchema, `${tool.name}.inputSchema`),
+    );
+
+    expect(
+      offenders,
+      `Tuple-style array schemas are rejected by Gemini and Codex. Replace `
+        + `z.tuple([...]) with a fixed-length uniform array `
+        + `(z.array(...).length(n)). Offending locations:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('flags a tuple nested inside a property value', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        range: { type: 'array', items: [{ type: 'integer' }, { type: 'integer' }] },
+      },
+    };
+    expect(findTupleConstructs(schema, 'tool.inputSchema')).toEqual([
+      'tool.inputSchema.properties.range.items (array-form / tuple)',
+    ]);
+  });
+
+  it('does not false-positive on an argument literally named prefixItems/items', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        // Author named their arguments after schema keywords — these are
+        // property names, not keywords, so the walker must ignore them.
+        prefixItems: { type: 'string' },
+        items: { type: 'number' },
+      },
+    };
+    expect(findTupleConstructs(schema, 'tool.inputSchema')).toEqual([]);
+  });
+});
+
 describe('crew serve — list_agents tool', () => {
   let h: Harness;
   beforeEach(async () => {
