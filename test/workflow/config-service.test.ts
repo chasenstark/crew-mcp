@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'os';
 import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { getDefaultConfig, resolveCaptainModel } from '../../src/workflow/config-codec.js';
 import { ModelId } from '../../src/workflow/models.js';
-import { loadConfigByScope, readActiveProfilePreference } from '../../src/workflow/config-repository.js';
+import { loadConfigByScope, readActiveProfilePreference, saveConfigByScope } from '../../src/workflow/config-repository.js';
 import {
   addAgent,
   applyConfigPatch,
@@ -25,6 +25,7 @@ import {
   setConfigValue,
   showConfig,
 } from '../../src/workflow/config-service.js';
+import type { FullConfig } from '../../src/workflow/types.js';
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -33,6 +34,45 @@ vi.mock('os', async (importOriginal) => {
     homedir: vi.fn(actual.homedir),
   };
 });
+
+function legacyConfig(): FullConfig {
+  const config = getDefaultConfig();
+  config.workflow.steps = [
+    { role: 'coder', agents: ['codex', 'claude-code'], action: 'implement' },
+    { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review', maxPasses: 3 },
+    { role: 'judge', agents: ['captain'], action: 'evaluate_review' },
+    { role: 'coder', agents: ['codex', 'claude-code'], action: 'fix_review_issues' },
+  ];
+  config.agents = {
+    'claude-code': {
+      adapter: 'claude-code',
+      auth: 'subscription',
+      model: ModelId.CLAUDE_OPUS,
+      strengths: ['implementation'],
+    },
+    codex: {
+      adapter: 'codex',
+      auth: 'subscription',
+      model: ModelId.GPT_CODEX,
+      strengths: ['review'],
+    },
+  };
+  config.captain = {
+    ...config.captain,
+    model: {
+      'claude-code': ModelId.CLAUDE_SONNET,
+      codex: ModelId.GPT,
+      'gemini-cli': ModelId.QWEN,
+    },
+    preset: 'default',
+  };
+  config.presets = {
+    default: { hint: 'default' },
+    'thorough-review': { hint: 'review' },
+    'read-only': { hint: 'read only' },
+  };
+  return config;
+}
 
 describe('config-service', () => {
   const mockedHomedir = vi.mocked(homedir);
@@ -50,6 +90,10 @@ describe('config-service', () => {
     mockedHomedir.mockRestore();
     rmSync(tmpRoot, { recursive: true, force: true });
   });
+
+  function seedLegacyConfig(): void {
+    saveConfigByScope('project', cwd, legacyConfig());
+  }
 
   it('defaults active scope to project', () => {
     expect(getConfigScope(cwd)).toBe('project');
@@ -116,7 +160,7 @@ describe('config-service', () => {
   });
 
   it('applies patch for workflow reviewer max passes', () => {
-    const next = applyConfigPatch(getDefaultConfig(), {
+    const next = applyConfigPatch(legacyConfig(), {
       path: 'workflow.reviewer.maxPasses',
       value: '5',
     });
@@ -132,7 +176,7 @@ describe('config-service', () => {
   });
 
   it('applies reviewer max passes to review action step when role name is custom', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     const reviewer = config.workflow.steps.find((step) => step.role === 'reviewer');
     if (reviewer) reviewer.role = 'qa';
 
@@ -166,6 +210,7 @@ describe('config-service', () => {
   });
 
   it('can set agent model', () => {
+    seedLegacyConfig();
     const result = setConfigValue(cwd, 'agents.codex.model', ModelId.GPT);
     expect(result.nextValue).toBe(ModelId.GPT);
     const projectConfig = loadConfigByScope('project', cwd);
@@ -173,6 +218,7 @@ describe('config-service', () => {
   });
 
   it('resolves model aliases when setting model paths', () => {
+    seedLegacyConfig();
     const captainResult = setConfigValue(cwd, 'captain.model', 'CLAUDE_OPUS');
     expect(captainResult.nextValue).toBe(ModelId.CLAUDE_OPUS);
 
@@ -268,10 +314,11 @@ describe('config-service', () => {
   it('supports cycling with "next" for model fields', () => {
     const result = setConfigValue(cwd, 'captain.model', 'next');
     expect(typeof result.nextValue).toBe('string');
-    expect(result.nextValue).toBe(ModelId.CLAUDE_OPUS);
+    expect(result.nextValue).toBe(ModelId.CLAUDE_SONNET);
   });
 
   it('supports cycling with "next" for role model fields', () => {
+    seedLegacyConfig();
     const result = setConfigValue(cwd, 'workflow.roleModels.reviewer', 'next');
     expect(result.nextValue).toBe(ModelId.CLAUDE_SONNET);
     const projectConfig = loadConfigByScope('project', cwd);
@@ -284,7 +331,7 @@ describe('config-service', () => {
   });
 
   it('returns preset options for supported fields', () => {
-    const options = getConfigValueOptions(getDefaultConfig(), 'workflow.reviewer.maxPasses');
+    const options = getConfigValueOptions(legacyConfig(), 'workflow.reviewer.maxPasses');
     expect(options).toEqual(['1', '2', '3', '4', '5']);
   });
 
@@ -294,7 +341,7 @@ describe('config-service', () => {
   });
 
   it('returns adapter options for agent adapter path', () => {
-    const options = getConfigValueOptions(getDefaultConfig(), 'agents.codex.adapter');
+    const options = getConfigValueOptions(legacyConfig(), 'agents.codex.adapter');
     expect(options).toContain('generic');
     expect(options).toContain('codex');
   });
@@ -309,6 +356,7 @@ describe('config-service', () => {
 
   describe('captain.preset (M5-5a)', () => {
     it('sets the preset via /config set captain.preset', () => {
+      seedLegacyConfig();
       const result = setConfigValue(cwd, 'captain.preset', 'thorough-review');
       expect(result.nextValue).toBe('thorough-review');
       const projectConfig = loadConfigByScope('project', cwd);
@@ -322,13 +370,14 @@ describe('config-service', () => {
     });
 
     it('rejects unknown preset names at parse time', () => {
+      seedLegacyConfig();
       expect(() =>
         setConfigValue(cwd, 'captain.preset', 'bogus-preset-name'),
       ).toThrow(/declared preset/);
     });
 
     it('options enumerate declared presets from defaults', () => {
-      const options = getConfigValueOptions(getDefaultConfig(), 'captain.preset');
+      const options = getConfigValueOptions(legacyConfig(), 'captain.preset');
       expect(options).toContain('default');
       expect(options).toContain('thorough-review');
       expect(options).toContain('read-only');
@@ -354,19 +403,19 @@ describe('config-service', () => {
     // so the user can pick a CODEX-flavored model for a step that accepts
     // both CLAUDE_CODE and CODEX. Tests that asserted single-adapter scoping
     // pre-M5 were tracking the old singular `agent:` shape.
-    const reviewerOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.reviewer');
+    const reviewerOptions = getConfigValueOptions(legacyConfig(), 'workflow.roleModels.reviewer');
     expect(reviewerOptions).toContain(ModelId.CLAUDE_SONNET);
     expect(reviewerOptions).toContain(ModelId.CLAUDE_OPUS);
     expect(reviewerOptions).toContain(ModelId.GPT_CODEX); // candidate CODEX surfaces its presets
 
-    const judgeOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.judge');
+    const judgeOptions = getConfigValueOptions(legacyConfig(), 'workflow.roleModels.judge');
     expect(judgeOptions).toContain(ModelId.CLAUDE_SONNET);
     expect(judgeOptions).toContain(ModelId.CLAUDE_OPUS);
     // Judge step has agents: [CAPTAIN] only, so its options stay scoped to
     // the captain's adapter type — no GPT presets here.
     expect(judgeOptions).not.toContain(ModelId.GPT_CODEX);
 
-    const fixOptions = getConfigValueOptions(getDefaultConfig(), 'workflow.roleModels.fix_review_issues');
+    const fixOptions = getConfigValueOptions(legacyConfig(), 'workflow.roleModels.fix_review_issues');
     expect(fixOptions).toContain(ModelId.GPT);
     expect(fixOptions).toContain(ModelId.GPT_CODEX);
   });
@@ -381,6 +430,7 @@ describe('config-service', () => {
   });
 
   it('rejects invalid integer values', () => {
+    seedLegacyConfig();
     expect(() =>
       setConfigValue(cwd, 'workflow.reviewer.maxPasses', '0'),
     ).toThrow(/expected integer >= 1/);
@@ -403,6 +453,7 @@ describe('config-service', () => {
   });
 
   it('rejects unknown role-model keys', () => {
+    seedLegacyConfig();
     expect(() =>
       setConfigValue(cwd, 'workflow.roleModels.unknownRole', ModelId.GPT),
     ).toThrow(/workflow\.roleModels\.unknownRole/);
@@ -423,6 +474,7 @@ describe('config-service', () => {
   });
 
   it('prevents removing agent referenced by captain.cli', () => {
+    seedLegacyConfig();
     expect(() => removeAgent(cwd, 'claude-code')).toThrow(/captain\.cli/i);
   });
 
@@ -443,6 +495,46 @@ describe('config-service', () => {
     expect(result.config.errorHandling.default.retry).toBe(1);
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.errorHandling.default.retry).toBe(1);
+  });
+
+  it('reset project config clears global legacy workflow surfaces from effective config', () => {
+    saveConfigByScope('global', cwd, legacyConfig());
+
+    resetConfig(cwd);
+
+    const shown = showConfig(cwd);
+    expect(shown.effectiveConfig.workflow.steps).toEqual([]);
+    expect(shown.effectiveConfig.workflow.roleModels).toBeUndefined();
+    expect(shown.effectiveConfig.agents).toEqual({});
+    expect(shown.effectiveConfig.captain.preset).toBeUndefined();
+    expect(shown.effectiveConfig.presets).toBeUndefined();
+  });
+
+  it('first project config set does not copy global legacy workflow surfaces', () => {
+    const global = legacyConfig();
+    global.workflow.agentDefaults = { panel: { reviewers: ['claude-code'] } };
+    saveConfigByScope('global', cwd, global);
+
+    setConfigValue(cwd, 'workflow.agentDefaults.iterate.implementer', 'codex');
+
+    const projectConfig = loadConfigByScope('project', cwd);
+    expect(projectConfig?.workflow.steps).toEqual([]);
+    expect(projectConfig?.workflow.roleModels).toBeUndefined();
+    expect(projectConfig?.agents).toEqual({});
+    expect(projectConfig?.captain.preset).toBeUndefined();
+    expect(projectConfig?.presets).toBeUndefined();
+    expect(projectConfig?.workflow.agentDefaults).toEqual({
+      iterate: { implementer: 'codex' },
+    });
+
+    const shown = showConfig(cwd);
+    expect(shown.effectiveConfig.workflow.steps).toEqual([]);
+    expect(shown.effectiveConfig.agents).toEqual({});
+    expect(shown.effectiveConfig.captain.preset).toBeUndefined();
+    expect(shown.effectiveConfig.workflow.agentDefaults).toEqual({
+      iterate: { implementer: 'codex' },
+      panel: { reviewers: ['claude-code'] },
+    });
   });
 
   it('shows effective config and paths', () => {

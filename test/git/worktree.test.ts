@@ -135,207 +135,6 @@ describe('WorktreeManager', () => {
     }
   });
 
-  it('serializes concurrent creates for the same task and reuses the recorded path', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    const defaultRaw = rootGit.raw.getMockImplementation();
-    rootGit.raw.mockImplementation(async (args: string[]) => {
-      if (args[0] === 'worktree' && args[1] === 'add') {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      return defaultRaw?.(args);
-    });
-
-    const [firstPath, secondPath] = await Promise.all([
-      manager.createWorktree('Task 1'),
-      manager.createWorktree('Task 1'),
-    ]);
-
-    expect(firstPath).toBe(join(root, '.crew', 'worktrees', 'task-1-aaaaaaaa'));
-    expect(secondPath).toBe(firstPath);
-    expect(
-      rootGit.raw.mock.calls.filter(([args]) => args[0] === 'worktree' && args[1] === 'add'),
-    ).toHaveLength(1);
-
-    const metadata = JSON.parse(
-      readFileSync(join(root, '.crew', 'worktrees', '.meta', 'Task%201.json'), 'utf-8'),
-    );
-    expect(metadata).toMatchObject({
-      taskId: 'Task 1',
-      branchName: 'crew/task-1-aaaaaaaa',
-      worktreePath: firstPath,
-    });
-  });
-
-  it('retries with a fresh random suffix when git reports a collision', async () => {
-    mockRandomUUID
-      .mockReturnValueOnce('lock-owner-1')
-      .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
-      .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
-
-    const { root, manager, rootGit } = createManager();
-    const defaultRaw = rootGit.raw.getMockImplementation();
-    rootGit.raw.mockImplementation(async (args: string[]) => {
-      if (
-        args[0] === 'worktree'
-        && args[1] === 'add'
-        && args[3] === 'crew/task-1-aaaaaaaa'
-      ) {
-        throw new Error("fatal: a branch named 'crew/task-1-aaaaaaaa' already exists");
-      }
-      return defaultRaw?.(args);
-    });
-
-    const worktreePath = await manager.createWorktree('task-1');
-
-    expect(worktreePath).toBe(join(root, '.crew', 'worktrees', 'task-1-bbbbbbbb'));
-    expect(
-      rootGit.raw.mock.calls.filter(([args]) => args[0] === 'worktree' && args[1] === 'add'),
-    ).toHaveLength(2);
-  });
-
-  it('reclaims stale per-task locks left behind by crashed processes', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    const lockDir = join(root, '.crew', 'worktrees', '.locks', 'task-1');
-    mkdirSync(lockDir, { recursive: true });
-    utimesSync(lockDir, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-
-    const worktreePath = await manager.createWorktree('task-1');
-
-    expect(worktreePath).toBe(join(root, '.crew', 'worktrees', 'task-1-aaaaaaaa'));
-    expect(
-      rootGit.raw.mock.calls.filter(([args]) => args[0] === 'worktree' && args[1] === 'add'),
-    ).toHaveLength(1);
-  });
-
-  it('does not reclaim an old lock that still belongs to a live process', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    const lockDir = join(root, '.crew', 'worktrees', '.locks', 'task-1');
-    mkdirSync(lockDir, { recursive: true });
-    writeFileSync(
-      join(lockDir, 'owner.json'),
-      JSON.stringify({
-        ownerId: 'existing-owner',
-        pid: process.pid,
-        acquiredAt: new Date(Date.now() - 60_000).toISOString(),
-      }),
-      'utf-8',
-    );
-    utimesSync(lockDir, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
-
-    const worktreeManagerClass = WorktreeManager as unknown as {
-      LOCK_TIMEOUT_MS: number;
-    };
-    const originalTimeout = worktreeManagerClass.LOCK_TIMEOUT_MS;
-    worktreeManagerClass.LOCK_TIMEOUT_MS = 100;
-
-    try {
-      await expect(manager.createWorktree('task-1')).rejects.toThrow(
-        'Timed out waiting for worktree lock on task-1.',
-      );
-    } finally {
-      worktreeManagerClass.LOCK_TIMEOUT_MS = originalTimeout;
-    }
-
-    expect(
-      rootGit.raw.mock.calls.filter(([args]) => args[0] === 'worktree' && args[1] === 'add'),
-    ).toHaveLength(0);
-  });
-
-  it('releases the lock directory when recording lock ownership fails', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    const writeTaskLockRecord = vi
-      .spyOn(manager as any, 'writeTaskLockRecord')
-      .mockImplementationOnce(() => {
-        throw new Error('lock write failed');
-      });
-
-    await expect(manager.createWorktree('task-1')).rejects.toThrow('lock write failed');
-    writeTaskLockRecord.mockRestore();
-
-    const worktreePath = await manager.createWorktree('task-1');
-
-    expect(worktreePath).toBe(join(root, '.crew', 'worktrees', 'task-1-aaaaaaaa'));
-    expect(
-      rootGit.raw.mock.calls.filter(([args]) => args[0] === 'worktree' && args[1] === 'add'),
-    ).toHaveLength(1);
-  });
-
-  it('merges using the randomized branch recorded in metadata', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { manager, rootGit } = createManager();
-    await manager.createWorktree('task-1');
-
-    await manager.mergeWorktree('task-1');
-
-    expect(rootGit.merge).toHaveBeenCalledWith([
-      'crew/task-1-aaaaaaaa',
-      '--no-ff',
-      '-m',
-      'Merge crew/task-1',
-    ]);
-  });
-
-  it('cleans up the randomized worktree and removes its metadata', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    const worktreePath = await manager.createWorktree('task-1');
-
-    await manager.cleanupWorktree('task-1');
-
-    expect(rootGit.raw).toHaveBeenCalledWith(['worktree', 'remove', worktreePath, '--force']);
-    expect(rootGit.deleteLocalBranch).toHaveBeenCalledWith('crew/task-1-aaaaaaaa', true);
-    expect(existsSync(join(root, '.crew', 'worktrees', '.meta', 'task-1.json'))).toBe(false);
-  });
-
-  it('preserves metadata when cleanup cannot fully remove the recorded worktree', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    await manager.createWorktree('task-1');
-
-    const defaultRaw = rootGit.raw.getMockImplementation();
-    rootGit.raw.mockImplementation(async (args: string[]) => {
-      if (args[0] === 'worktree' && args[1] === 'remove') {
-        throw new Error('permission denied');
-      }
-      return defaultRaw?.(args);
-    });
-
-    await manager.cleanupWorktree('task-1');
-
-    expect(existsSync(join(root, '.crew', 'worktrees', '.meta', 'task-1.json'))).toBe(true);
-  });
-
-  it('rolls back the created worktree when metadata persistence fails', async () => {
-    mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-
-    const { root, manager, rootGit } = createManager();
-    vi.spyOn(manager as never, 'writeWorktreeRecord').mockImplementation(() => {
-      throw new Error('disk full');
-    });
-
-    await expect(manager.createWorktree('task-1')).rejects.toThrow('disk full');
-
-    expect(rootGit.raw).toHaveBeenCalledWith([
-      'worktree',
-      'remove',
-      join(root, '.crew', 'worktrees', 'task-1-aaaaaaaa'),
-      '--force',
-    ]);
-    expect(rootGit.deleteLocalBranch).toHaveBeenCalledWith('crew/task-1-aaaaaaaa', true);
-    expect(existsSync(join(root, '.crew', 'worktrees', '.meta', 'task-1.json'))).toBe(false);
-  });
-
   describe('Run-scoped API (M1.5-14)', () => {
     it('prunes run worktrees once per project root instead of on every createRunWorktree call', async () => {
       mockRandomUUID
@@ -468,6 +267,62 @@ describe('WorktreeManager', () => {
       expect(b).toBe(join(crewHome, 'runs', 'run-2', 'worktree'));
     });
 
+    it('reclaims a stale run lock whose owner process is gone', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-reclaimed')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+      const { crewHome, manager } = createManager();
+      const lockDir = join(crewHome, 'runs', '.locks', 'run-1');
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(
+        join(lockDir, 'owner.json'),
+        JSON.stringify({
+          ownerId: 'old-owner',
+          pid: 999_999_999,
+          acquiredAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+        'utf-8',
+      );
+      const stale = new Date(Date.now() - 60_000);
+      utimesSync(lockDir, stale, stale);
+
+      await expect(manager.createRunWorktree('run-1')).resolves.toBe(
+        join(crewHome, 'runs', 'run-1', 'worktree'),
+      );
+      expect(existsSync(lockDir)).toBe(false);
+    });
+
+    it('times out instead of reclaiming a run lock held by a live process', async () => {
+      mockRandomUUID.mockReturnValueOnce('owner-waiting');
+
+      const { crewHome, manager } = createManager();
+      const lockDir = join(crewHome, 'runs', '.locks', 'run-1');
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(
+        join(lockDir, 'owner.json'),
+        JSON.stringify({
+          ownerId: 'live-owner',
+          pid: process.pid,
+          acquiredAt: new Date().toISOString(),
+        }),
+        'utf-8',
+      );
+
+      const now = vi.spyOn(Date, 'now');
+      now
+        .mockReturnValueOnce(1_000)
+        .mockReturnValueOnce(21_001);
+      try {
+        await expect(manager.createRunWorktree('run-1')).rejects.toThrow(
+          /Timed out waiting for run worktree lock on run-1/,
+        );
+      } finally {
+        now.mockRestore();
+      }
+      expect(existsSync(lockDir)).toBe(true);
+    });
+
     it('cleanupByRunId removes the worktree + run dir without touching siblings', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-1')
@@ -507,31 +362,6 @@ describe('WorktreeManager', () => {
 
       await manager.cleanupByRunId('run-1');
       expect(existsSync(metaPath)).toBe(false);
-    });
-
-    it('withRunLock does not block withTaskLock operations on the same id', async () => {
-      mockRandomUUID
-        .mockReturnValueOnce('run-owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
-        .mockReturnValueOnce('task-owner-1')
-        .mockReturnValueOnce('bbbbbbbb-cccc-dddd-eeee-ffffffffffff');
-
-      const { manager } = createManager();
-      // Both operate concurrently on the same id but different lock spaces.
-      const [runPath, taskPath] = await Promise.all([
-        manager.createRunWorktree('shared'),
-        manager.createWorktree('shared'),
-      ]);
-      expect(runPath).not.toBe(taskPath);
-    });
-
-    it('existing task-keyed tests are unaffected: task-keyed API path lives at .crew/worktrees/', async () => {
-      mockRandomUUID
-        .mockReturnValueOnce('owner-task')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-      const { root, manager } = createManager();
-      const path = await manager.createWorktree('task-1');
-      expect(path).toBe(join(root, '.crew', 'worktrees', 'task-1-aaaaaaaa'));
     });
 
     it('getRunWorktreePath returns the recorded path', async () => {

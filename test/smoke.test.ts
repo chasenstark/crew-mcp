@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { getDefaultConfig } from '../src/workflow/loader.js';
 
 describe('smoke test', () => {
-  it('loads a default workflow with at least one step and agent', () => {
+  it('loads minimal code-defined defaults without the retired workflow DSL', () => {
     const config = getDefaultConfig();
-    expect(config.workflow.steps.length).toBeGreaterThan(0);
-    expect(Object.keys(config.agents).length).toBeGreaterThan(0);
+    expect(config.workflow.name).toBe('default');
+    expect(config.workflow.steps).toEqual([]);
+    expect(config.agents).toEqual({});
   });
 });

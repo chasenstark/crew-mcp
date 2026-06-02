@@ -1,6 +1,3 @@
-import { existsSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 import YAML from 'yaml';
 import {
   AgentId,
@@ -25,6 +22,29 @@ const CAPTAIN_CLI_KEYS: readonly ('claude-code' | 'codex' | 'gemini-cli')[] = [
   'codex',
   'gemini-cli',
 ];
+
+const DEFAULT_CONFIG: FullConfig = {
+  workflow: {
+    name: 'default',
+    execution: { mode: 'judgment' },
+    steps: [],
+    completion: {
+      strategy: 'manual',
+      fallback: 'manual',
+    },
+  },
+  agents: {},
+  captain: {
+    cli: AgentId.CLAUDE_CODE,
+  },
+  errorHandling: {
+    default: {
+      retry: 1,
+      fallback: null,
+      onExhausted: 'ask_user',
+    },
+  },
+};
 
 /**
  * Resolves the captain model spec to the single model string that should be
@@ -210,56 +230,26 @@ function serializeAgentDefaults(
 }
 
 export function mergeConfigs(base: FullConfig, override: FullConfig): FullConfig {
-  const mergedAgents: Record<string, AgentConfig> = { ...base.agents };
-  for (const [name, agentOverride] of Object.entries(override.agents)) {
-    mergedAgents[name] = {
-      ...(base.agents[name] ?? {}),
-      ...agentOverride,
-    };
-  }
-
-  const mergedRoleModels = {
-    ...(base.workflow.roleModels ?? {}),
-    ...(override.workflow.roleModels ?? {}),
-  };
-
-  const mergedPresets: Record<string, PresetConfig> = {
-    ...(base.presets ?? {}),
-  };
-  for (const [name, overridePreset] of Object.entries(override.presets ?? {})) {
-    mergedPresets[name] = {
-      ...(base.presets?.[name] ?? {}),
-      ...overridePreset,
-    };
-  }
-
   return {
     workflow: {
       name: override.workflow.name ?? base.workflow.name,
       execution: override.workflow.execution ?? base.workflow.execution,
-      steps: override.workflow.steps.length > 0
-        ? override.workflow.steps
-        : base.workflow.steps,
-      roleModels: Object.keys(mergedRoleModels).length > 0 ? mergedRoleModels : undefined,
+      steps: override.workflow.steps,
+      roleModels: override.workflow.roleModels,
       agentDefaults: mergeAgentDefaults(
         base.workflow.agentDefaults,
         override.workflow.agentDefaults,
       ),
-      completion: override.workflow.completion ?? base.workflow.completion,
+      completion: override.workflow.completion,
     },
-    agents: mergedAgents,
+    agents: override.agents,
     captain: {
       cli: override.captain?.cli ?? base.captain.cli,
       model: override.captain?.model ?? base.captain.model,
-      preset: override.captain?.preset ?? base.captain.preset,
+      preset: override.captain?.preset,
     },
-    presets: Object.keys(mergedPresets).length > 0 ? mergedPresets : undefined,
-    errorHandling: {
-      default: {
-        ...base.errorHandling.default,
-        ...override.errorHandling.default,
-      },
-    },
+    presets: override.presets,
+    errorHandling: override.errorHandling,
   };
 }
 
@@ -525,24 +515,10 @@ export function serializeWorkflowYaml(config: FullConfig): string {
   });
 }
 
-function resolveDefaultWorkflowTemplatePath(): string {
-  const baseDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(baseDir, '../../defaults/workflow.yaml'),
-    join(baseDir, '../defaults/workflow.yaml'),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  throw new Error('Could not locate defaults/workflow.yaml');
-}
-
 export function getDefaultWorkflowYamlTemplate(): string {
-  return readFileSync(resolveDefaultWorkflowTemplatePath(), 'utf-8');
+  return serializeWorkflowYaml(getDefaultConfig());
 }
 
 export function getDefaultConfig(): FullConfig {
-  return parseWorkflowYaml(getDefaultWorkflowYamlTemplate());
+  return structuredClone(DEFAULT_CONFIG);
 }

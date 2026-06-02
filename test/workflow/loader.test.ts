@@ -3,16 +3,17 @@ import {
   parseWorkflowYaml,
   serializeWorkflowYaml,
   getDefaultConfig,
+  getDefaultWorkflowYamlTemplate,
   mergeConfigs,
   loadWorkflowConfig,
   getGlobalConfigPath,
 } from '../../src/workflow/loader.js';
 import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { ModelId } from '../../src/workflow/models.js';
-import { readFileSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
 import { tmpdir, homedir } from 'os';
+import type { FullConfig } from '../../src/workflow/types.js';
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -22,21 +23,38 @@ vi.mock('os', async (importOriginal) => {
   };
 });
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+function legacyConfig(): FullConfig {
+  const config = getDefaultConfig();
+  config.workflow.steps = [
+    { role: 'coder', agents: ['codex', 'claude-code'], action: 'implement' },
+    { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review', maxPasses: 3 },
+  ];
+  config.agents = {
+    'claude-code': {
+      adapter: 'claude-code',
+      auth: 'subscription',
+      model: ModelId.CLAUDE_OPUS,
+      strengths: ['implementation'],
+    },
+    codex: {
+      adapter: 'codex',
+      auth: 'subscription',
+      model: ModelId.GPT_CODEX,
+      strengths: ['review'],
+    },
+  };
+  return config;
+}
 
 describe('Workflow Loader', () => {
-  it('parses default workflow YAML', () => {
-    const yaml = readFileSync(join(__dirname, '../../defaults/workflow.yaml'), 'utf-8');
+  it('serializes and parses code-defined defaults', () => {
+    const yaml = getDefaultWorkflowYamlTemplate();
     const config = parseWorkflowYaml(yaml);
 
     expect(config.workflow.name).toBe('default');
     expect(config.workflow.execution?.mode).toBe('judgment');
-    expect(config.workflow.steps).toHaveLength(4);
-    expect(config.workflow.steps[0].role).toBe('coder');
-    expect(config.workflow.steps[1].role).toBe('reviewer');
-    expect(config.workflow.steps[1].maxPasses).toBe(3);
-    expect(config.agents['claude-code']).toBeDefined();
-    expect(config.agents['codex']).toBeDefined();
+    expect(config.workflow.steps).toEqual([]);
+    expect(config.agents).toEqual({});
     expect(config.captain.cli).toBe('claude-code');
   });
 
@@ -218,7 +236,8 @@ captain:
     const config = getDefaultConfig();
     expect(config.workflow.name).toBe('default');
     expect(config.workflow.execution?.mode).toBe('judgment');
-    expect(config.workflow.steps.length).toBeGreaterThan(0);
+    expect(config.workflow.steps).toEqual([]);
+    expect(config.agents).toEqual({});
   });
 
   it('handles minimal YAML', () => {
@@ -230,9 +249,9 @@ captain:
 });
 
 describe('mergeConfigs', () => {
-  const baseConfig = getDefaultConfig();
+  const baseConfig = legacyConfig();
 
-  it('override agents merge with base agents', () => {
+  it('override agents replace base agents', () => {
     const override = {
       ...getDefaultConfig(),
       agents: {
@@ -242,10 +261,8 @@ describe('mergeConfigs', () => {
 
     const merged = mergeConfigs(baseConfig, override);
 
-    // Base agents are preserved
-    expect(merged.agents['claude-code']).toBeDefined();
-    expect(merged.agents['codex']).toBeDefined();
-    // Override agent is added
+    expect(merged.agents['claude-code']).toBeUndefined();
+    expect(merged.agents['codex']).toBeUndefined();
     expect(merged.agents['custom-agent']).toEqual({
       adapter: 'custom',
       auth: 'api-key',
@@ -264,11 +281,10 @@ describe('mergeConfigs', () => {
     const merged = mergeConfigs(baseConfig, override);
 
     expect(merged.agents['claude-code'].strengths).toEqual(['security']);
-    // codex from base is preserved
-    expect(merged.agents['codex']).toBeDefined();
+    expect(merged.agents['codex']).toBeUndefined();
   });
 
-  it('override agent can set only model without clobbering base agent fields', () => {
+  it('override agent does not inherit base agent fields', () => {
     const override = {
       ...getDefaultConfig(),
       agents: {
@@ -278,10 +294,7 @@ describe('mergeConfigs', () => {
 
     const merged = mergeConfigs(baseConfig, override);
 
-    expect(merged.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
-    expect(merged.agents['claude-code'].adapter).toBe(baseConfig.agents['claude-code'].adapter);
-    expect(merged.agents['claude-code'].auth).toBe(baseConfig.agents['claude-code'].auth);
-    expect(merged.agents['claude-code'].strengths).toEqual(baseConfig.agents['claude-code'].strengths);
+    expect(merged.agents['claude-code']).toEqual({ model: ModelId.CLAUDE_SONNET });
   });
 
   it('override captain can set model while preserving cli', () => {
@@ -298,7 +311,7 @@ captain:
     expect(merged.captain.cli).toBe(baseConfig.captain.cli);
   });
 
-  it('merges workflow role models with override priority', () => {
+  it('override workflow role models replace base role models', () => {
     const base = getDefaultConfig();
     base.workflow.roleModels = {
       reviewer: ModelId.GPT_CODEX,
@@ -314,7 +327,6 @@ captain:
     const merged = mergeConfigs(base, override);
     expect(merged.workflow.roleModels).toEqual({
       reviewer: ModelId.GPT,
-      coder: ModelId.CLAUDE_OPUS,
       judge: ModelId.CLAUDE_SONNET,
     });
   });
@@ -348,7 +360,7 @@ captain:
     expect(merged.workflow.steps[0].role).toBe('coder');
   });
 
-  it('empty override steps fall back to base steps', () => {
+  it('empty override steps clear base steps', () => {
     const override = {
       ...getDefaultConfig(),
       workflow: {
@@ -360,8 +372,7 @@ captain:
 
     const merged = mergeConfigs(baseConfig, override);
 
-    // Base steps are used since override has empty array
-    expect(merged.workflow.steps).toEqual(baseConfig.workflow.steps);
+    expect(merged.workflow.steps).toEqual([]);
   });
 
   it('errorHandling fields merge at field level', () => {
@@ -465,7 +476,7 @@ agents:
       - review
 `, 'utf-8');
 
-    // Set up project config that overrides workflow but not agents
+    // Set up project config that replaces the legacy workflow/agent surface.
     const projectDir = join(tmpDir, 'merge-project');
     const projectOrchDir = join(projectDir, '.crew');
     mkdirSync(projectOrchDir, { recursive: true });
@@ -483,9 +494,7 @@ workflow:
     expect(config.workflow.name).toBe('project-override');
     expect(config.workflow.steps).toHaveLength(1);
     expect(config.workflow.steps[0].role).toBe('reviewer');
-    // Global agents are preserved via merge
-    expect(config.agents['claude-code']).toBeDefined();
-    expect(config.agents['codex']).toBeDefined();
+    expect(config.agents).toEqual({});
   });
 
   it('returns default config when no configs exist', () => {
@@ -494,7 +503,8 @@ workflow:
 
     const config = loadWorkflowConfig(emptyDir);
     expect(config.workflow.name).toBe('default');
-    expect(config.workflow.steps.length).toBeGreaterThan(0);
+    expect(config.workflow.steps).toEqual([]);
+    expect(config.agents).toEqual({});
   });
 
   it('throws with path context on YAML parse error', () => {

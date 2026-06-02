@@ -117,10 +117,12 @@ describe('adapter cancellation plumbing (CI, mock subprocess)', () => {
   });
 
   describe('executeWithTools interrupt semantics', () => {
-    it('Codex returns status=interrupted when signal is already aborted and resume session fails', async () => {
+    it('Codex returns status=interrupted when signal is already aborted', async () => {
       const adapter = new CodexAdapter();
-      vi.spyOn(adapter as unknown as { executeWithResumeSession: () => Promise<unknown> }, 'executeWithResumeSession')
-        .mockRejectedValueOnce(new Error('resume session failed'));
+      const decisionSpy = vi.spyOn(
+        adapter as unknown as { executeDecisionTurn: () => Promise<unknown> },
+        'executeDecisionTurn',
+      );
 
       const result = await adapter.executeWithTools(
         [],
@@ -134,6 +136,7 @@ describe('adapter cancellation plumbing (CI, mock subprocess)', () => {
       );
 
       expect(result.status).toBe('interrupted');
+      expect(decisionSpy).not.toHaveBeenCalled();
     });
 
     it('Gemini returns status=interrupted when signal is already aborted and resume session fails', async () => {

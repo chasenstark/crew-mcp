@@ -31,16 +31,11 @@ import type {
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
-import { toCodexConfigOverrides, type ToolCatalog } from '../orchestrator/mcp-registration.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
-import { resolveTerminalOutput } from './tool-loop/result.js';
 import {
-  parseToolInput,
   ToolLoopDecisionSchema,
   type ToolLoopDecision,
 } from './tool-loop/decision.js';
-import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
-import { buildDecisionPrompt } from './tool-loop/transcript.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -142,19 +137,6 @@ function codexEventFallback(event: unknown): string {
     return codexStreamLine('event', `${type}/${itemType}`);
   }
   return codexStreamLine('event', type || 'unknown');
-}
-
-function numberField(
-  value: Record<string, unknown>,
-  keys: string[],
-): number | undefined {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
-      return candidate;
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -320,33 +302,6 @@ export function findError(events: CodexEvent[]): string | undefined {
     }
   }
   return undefined;
-}
-
-/**
- * Locked argv ordering for `codex exec` invocations under the resume path.
- *
- * Shape:
- *   codex exec [resume <sid>] --json --skip-git-repo-check <prompt> [-c k=v ...]
- *
- * `--skip-git-repo-check` is always present — Codex 0.121 refuses to run in
- * untrusted cwds (including /tmp worktrees) without it. Additional
- * `-c k=v` overrides, if any, are appended after the prompt so argv order
- * stays predictable when M0.5-3's MCP-server override builder feeds in.
- */
-export function buildCodexResumeArgs(
-  session: { sessionId?: string; threadId?: string },
-  prompt: string,
-  overrideFlags: readonly string[] = [],
-): string[] {
-  const sessionId = session.sessionId ?? session.threadId;
-  const base = sessionId ? ['exec', 'resume', sessionId] : ['exec'];
-  return [
-    ...base,
-    '--json',
-    '--skip-git-repo-check',
-    prompt,
-    ...overrideFlags,
-  ];
 }
 
 export class CodexAdapter implements AgentAdapter {
@@ -797,26 +752,6 @@ export class CodexAdapter implements AgentAdapter {
       return this.executeWithPromptLoop(tools, messages, onToolCall);
     }
 
-    // M5 post-launch (option A, see
-    // docs/plans/active/codex-captain-performance.md): skip the
-    // JSON-envelope-in-assistant-text path that `executeWithResumeSession`
-    // implements. Codex reliably fails to emit valid JSON in plain
-    // assistant text (e.g., "Yes." instead of
-    // `{"type":"finish","output":"Yes."}`), which forced the adapter
-    // to round-trip through executeWithSchema as a fallback on nearly
-    // every turn — doubling latency.
-    //
-    // executeWithPromptLoop uses executeWithSchema under the hood,
-    // which sends the zod schema to OpenAI as a `response_format`
-    // guaranteeing a structured response. One subprocess per inner
-    // turn either way, but we save the ~6s envelope→fallback round-trip.
-    //
-    // Trade-off: we lose thread continuity via `codex exec resume <id>`.
-    // Codex's per-call system preamble (~80k tokens) dominates latency,
-    // and its prompt cache matches on identical prefixes regardless of
-    // thread state, so the practical hit is smaller than the envelope
-    // tax was. The full fix is option C (a real crew-mcp stdio server)
-    // tracked in that same design doc.
     context.onProviderSession?.({
       provider: 'codex',
       transport: 'adapter',
@@ -974,255 +909,6 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
-  private async executeWithResumeSession(
-    tools: ToolDefinition[],
-    messages: ToolLoopMessage[],
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-    context: ToolLoopContext,
-  ): Promise<ToolLoopResult> {
-    const transcript: ToolLoopMessage[] = [...messages];
-    const publishTranscript = () => {
-      context.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
-    };
-    const cliVersion = await this.getCliVersionTag();
-    // M3-8: if the session-loop supplied a `codex`-kind mcpRegistration, its
-    // `configOverrideArgv` is the already-serialized `-c mcp_servers.*=...`
-    // list that `toCodexConfigOverrides(catalog)` emits. Threading it
-    // through here replaces M0.5's empty stub.
-    const configFlags =
-      context.mcpRegistration?.kind === 'codex'
-        ? [...context.mcpRegistration.configOverrideArgv]
-        : this.buildPerRunConfigFlags();
-
-    let providerSession = {
-      provider: 'codex' as const,
-      transport: 'stateful-resume' as const,
-      sessionId: context.providerSession?.sessionId,
-      threadId: context.providerSession?.threadId,
-      cliVersion,
-      toolNamespace: context.toolNamespace ?? 'mcp__crew__',
-      toolSchemaHash: context.toolSchemaHash ?? '',
-      startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
-      lastTurnAt: new Date().toISOString(),
-    };
-    context.onProviderSession?.(providerSession);
-    let pendingPrompt = buildDecisionPrompt(tools, transcript);
-
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
-    let totalCachedInputTokens = 0;
-    let turnCount = 0;
-
-    for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
-      const args = this.buildResumeArgs(providerSession, pendingPrompt, configFlags);
-      // Log parity with the claude-code stream path so users can see the
-      // captain is actually making progress — codex `exec` buffers output
-      // until the API responds, so without this signal the terminal +
-      // log file both look hung for the whole first-turn API latency.
-      logger.info('[adapter:codex] resume turn start', {
-        turn,
-        resumedSessionId: providerSession.sessionId,
-        promptPreview: preview(pendingPrompt, 200),
-      });
-      const turnStartedAt = Date.now();
-      const result = await execa(AgentId.CODEX, args, {
-        cwd: context.workingDirectory,
-        cancelSignal: context.signal,
-        reject: false,
-        // Explicitly close stdin — execa defaults to 'pipe', which gives
-        // codex a connected-but-idle stdin pipe it blocks on waiting for
-        // EOF. Reproduced as a full hang on `crew run` with codex captain;
-        // the direct-TTY invocation `codex exec "..."` works because TTY
-        // stdin isn't a pipe. Same reason we pass `stdin: 'ignore'` on
-        // every other codex call in this file.
-        stdin: 'ignore',
-      });
-
-      if (result.exitCode !== 0 && !result.stdout) {
-        logger.warn('[adapter:codex] resume turn failed with no stdout', {
-          turn,
-          exitCode: result.exitCode,
-          stderrPreview: preview(result.stderr),
-        });
-        throw new Error(result.stderr || `codex exited with code ${result.exitCode}`);
-      }
-
-      const { events, droppedLines } = parseJsonl(result.stdout ?? '');
-      const errorMessage = findError(events);
-      if (errorMessage) {
-        throw new Error(errorMessage);
-      }
-      if (events.length === 0) {
-        throw new Error('Codex returned no JSONL events.');
-      }
-
-      turnCount = turn;
-      const usage = this.extractResumeUsage(events);
-      totalInputTokens += usage.inputTokens ?? 0;
-      totalOutputTokens += usage.outputTokens ?? 0;
-      totalCachedInputTokens += usage.cachedInputTokens ?? 0;
-
-      const threadId = this.extractThreadId(events);
-      if (threadId && threadId !== providerSession.threadId) {
-        providerSession = {
-          ...providerSession,
-          sessionId: threadId,
-          threadId,
-          lastTurnAt: new Date().toISOString(),
-        };
-        context.onProviderSession?.(providerSession);
-      }
-
-      const assistantMessage = getLastAgentMessage(events);
-      if (!assistantMessage) {
-        throw new Error('Codex did not emit an agent message for controller decision.');
-      }
-      logger.info('[adapter:codex] resume turn end', {
-        turn,
-        elapsedMs: Date.now() - turnStartedAt,
-        threadId,
-        assistantPreview: preview(assistantMessage, 200),
-      });
-
-      const parsedDecision = this.parseToolDecisionFromAssistant(assistantMessage);
-      if (parsedDecision.reasoning) {
-        transcript.push({
-          role: 'assistant',
-          content: parsedDecision.reasoning,
-        });
-        publishTranscript();
-      }
-
-      if (parsedDecision.type === 'finish') {
-        return {
-          status: 'completed',
-          transcript,
-          output: parsedDecision.output ?? parsedDecision.reasoning ?? '',
-          pathTaken: 'stateful-resume',
-          providerSession,
-          telemetry: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-            cachedInputTokens: totalCachedInputTokens,
-            totalTurns: turnCount,
-          },
-        };
-      }
-
-      if (parsedDecision.type === 'fail') {
-        return {
-          status: 'failed',
-          transcript,
-          error: parsedDecision.error ?? parsedDecision.reasoning ?? 'Controller requested fail',
-          pathTaken: 'stateful-resume',
-          providerSession,
-          telemetry: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-            cachedInputTokens: totalCachedInputTokens,
-            totalTurns: turnCount,
-          },
-        };
-      }
-
-      const toolName = parsedDecision.tool?.trim();
-      if (!toolName) {
-        throw new Error('Tool call missing tool name.');
-      }
-
-      const knownTool = tools.find((tool) => tool.name === toolName);
-      if (!knownTool) {
-        throw new Error(`Unknown tool "${toolName}".`);
-      }
-
-      const toolInput = parseToolInput(parsedDecision.input);
-      transcript.push({
-        role: 'assistant',
-        content: JSON.stringify({
-          type: 'tool_call',
-          tool: toolName,
-          input: toolInput,
-        }),
-      });
-      publishTranscript();
-
-      const toolResult = await onToolCall({ name: toolName, input: toolInput });
-      transcript.push({
-        role: 'tool',
-        name: toolName,
-        content: JSON.stringify(toolResult.output),
-      });
-      publishTranscript();
-
-      if (toolResult.terminal) {
-        return {
-          status: 'completed',
-          transcript,
-          output: resolveTerminalOutput(toolResult),
-          pathTaken: 'stateful-resume',
-          providerSession,
-          telemetry: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-            cachedInputTokens: totalCachedInputTokens,
-            totalTurns: turnCount,
-          },
-        };
-      }
-
-      pendingPrompt = [
-        `Tool ${toolName} returned:`,
-        JSON.stringify(toolResult.output),
-        'Choose the next action as a JSON object.',
-      ].join('\n');
-
-      if (droppedLines > 0) {
-        logger.warn('[adapter:codex] dropped malformed JSONL lines while parsing stateful turn', {
-          droppedLines,
-        });
-      }
-    }
-
-    return {
-      status: 'failed',
-      transcript,
-      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
-      pathTaken: 'stateful-resume',
-      providerSession,
-      telemetry: {
-        inputTokens: totalInputTokens,
-        outputTokens: totalOutputTokens,
-        cachedInputTokens: totalCachedInputTokens,
-        totalTurns: turnCount,
-      },
-    };
-  }
-
-  /**
-   * Returns the argv fragment for per-run Codex overrides.
-   *
-   * Historical behavior wrote `--config <path>` from the `CREW_CODEX_CONFIG`
-   * env var, but Codex's `-c/--config` flag takes `key=value` TOML overrides,
-   * not a file path — so that wiring always errored. The env var is kept
-   * readable here only so M0.5-8 preflight can surface a one-time deprecation
-   * notice when it is set; it no longer contributes to argv.
-   *
-   * Per-session MCP-server overrides (`-c mcp_servers.<name>.*`) are projected
-   * via `toCodexConfigOverrides`. For M0.5 the catalog seam returns `[]` for
-   * an empty catalog; M3 will populate it with the captain's real tool set.
-   */
-  private buildPerRunConfigFlags(catalog: ToolCatalog = {}): string[] {
-    return toCodexConfigOverrides(catalog);
-  }
-
-  private buildResumeArgs(
-    session: { sessionId?: string; threadId?: string },
-    prompt: string,
-    overrideFlags: string[],
-  ): string[] {
-    return buildCodexResumeArgs(session, prompt, overrideFlags);
-  }
-
   private extractThreadId(events: CodexEvent[]): string | undefined {
     for (const event of events) {
       if (typeof event.thread_id === 'string' && event.thread_id.length > 0) {
@@ -1286,40 +972,6 @@ export class CodexAdapter implements AgentAdapter {
     } catch {
       return undefined;
     }
-  }
-
-  private extractResumeUsage(events: CodexEvent[]): {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-  } {
-    const usage = this.findUsagePayload(events);
-    if (!usage) return {};
-    return {
-      inputTokens: numberField(usage, ['input_tokens']),
-      outputTokens: numberField(usage, ['output_tokens']),
-      cachedInputTokens: numberField(usage, ['cached_input_tokens', 'cache_read_input_tokens']),
-    };
-  }
-
-  private findUsagePayload(events: CodexEvent[]): Record<string, unknown> | undefined {
-    for (let index = events.length - 1; index >= 0; index--) {
-      const event = events[index] as Record<string, unknown>;
-      const usage = event.usage;
-      if (usage && typeof usage === 'object') {
-        return usage as Record<string, unknown>;
-      }
-
-      const eventPayload = event.event;
-      if (eventPayload && typeof eventPayload === 'object') {
-        const nestedUsage = (eventPayload as Record<string, unknown>).usage;
-        if (nestedUsage && typeof nestedUsage === 'object') {
-          return nestedUsage as Record<string, unknown>;
-        }
-      }
-    }
-
-    return undefined;
   }
 
   async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {

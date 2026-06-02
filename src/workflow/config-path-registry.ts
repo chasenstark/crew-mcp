@@ -10,7 +10,6 @@ import {
   CLAUDE_MODEL_PRESETS,
   CODEX_MODEL_PRESETS,
   ModelId,
-  OPENAI_COMPATIBLE_MODEL_PRESETS,
   modelPresetsForAdapter,
   resolveModelAliasOrThrow,
 } from './models.js';

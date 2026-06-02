@@ -18,6 +18,7 @@ import {
   saveConfigByScope,
 } from '../../src/workflow/config-repository.js';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
+import { ModelId } from '../../src/workflow/models.js';
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -94,6 +95,40 @@ describe('config-repository', () => {
     expect(effective.workflow.name).toBe('project');
     expect(effective.captain.model).toBe('global-model');
     expect(effective.errorHandling.default.retry).toBe(3);
+  });
+
+  it('project defaults clear global legacy workflow surfaces while inheriting agent defaults', () => {
+    const global = getDefaultConfig();
+    global.workflow.steps = [
+      { role: 'coder', agents: ['codex'], action: 'implement' },
+    ];
+    global.workflow.roleModels = { coder: ModelId.GPT_CODEX };
+    global.workflow.completion = { strategy: 'judge_approval', fallback: 'max_passes' };
+    global.workflow.agentDefaults = { panel: { reviewers: ['claude-code'] } };
+    global.agents = {
+      codex: { adapter: 'codex', model: ModelId.GPT_CODEX },
+    };
+    global.captain.model = ModelId.CLAUDE_SONNET;
+    global.captain.preset = 'default';
+    global.presets = { default: { hint: 'legacy hint' } };
+    global.errorHandling.default.retry = 7;
+    saveConfigByScope('global', cwd, global);
+
+    const project = getDefaultConfig();
+    project.workflow.name = 'project';
+    saveConfigByScope('project', cwd, project);
+
+    const effective = loadEffectiveConfig(cwd);
+    expect(effective.workflow.name).toBe('project');
+    expect(effective.workflow.steps).toEqual([]);
+    expect(effective.workflow.roleModels).toBeUndefined();
+    expect(effective.workflow.completion).toEqual({ strategy: 'manual', fallback: 'manual' });
+    expect(effective.workflow.agentDefaults).toEqual({ panel: { reviewers: ['claude-code'] } });
+    expect(effective.agents).toEqual({});
+    expect(effective.captain.model).toBe(ModelId.CLAUDE_SONNET);
+    expect(effective.captain.preset).toBeUndefined();
+    expect(effective.presets).toBeUndefined();
+    expect(effective.errorHandling.default.retry).toBe(1);
   });
 
   it('falls back to default profile config when named profile file is missing', () => {

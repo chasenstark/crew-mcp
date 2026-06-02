@@ -2016,9 +2016,5 @@ function errorContent(message: string): ToolCallReturn {
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // Re-export RunStateV1 for tests that want to inspect persisted state.
 export type { RunStateV1 };

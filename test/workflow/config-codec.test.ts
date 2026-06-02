@@ -190,14 +190,14 @@ describe('serializeWorkflowYaml captain.model round-trip', () => {
   });
 });
 
-describe('defaults/workflow.yaml ships the per-CLI map', () => {
-  it('produces a map with entries for every built-in captain', () => {
+describe('code-defined defaults', () => {
+  it('does not seed retired workflow DSL fields', () => {
     const config = getDefaultConfig();
-    expect(typeof config.captain.model).toBe('object');
-    const map = config.captain.model as Record<string, string>;
-    expect(map['claude-code']).toBeDefined();
-    expect(map['codex']).toBeDefined();
-    expect(map['gemini-cli']).toBeDefined();
+    expect(config.workflow.steps).toEqual([]);
+    expect(config.agents).toEqual({});
+    expect(config.captain.model).toBeUndefined();
+    expect(config.captain.preset).toBeUndefined();
+    expect(config.presets).toBeUndefined();
   });
 });
 
@@ -258,32 +258,6 @@ error_handling:
     expect(parsed.presets?.default?.hint).toContain('prefer running a review');
   });
 
-  it('defaults/workflow.yaml ships captain.preset: default with a hint', () => {
-    const config = getDefaultConfig();
-    expect(config.captain.preset).toBe('default');
-    expect(config.presets?.default).toBeDefined();
-    expect(config.presets?.default?.hint).toBeTruthy();
-  });
-
-  it('defaults/workflow.yaml ships thorough-review + read-only built-ins (M5-3)', () => {
-    const config = getDefaultConfig();
-    expect(config.presets?.['thorough-review']).toBeDefined();
-    expect(config.presets?.['thorough-review']?.hint).toBeTruthy();
-    expect(config.presets?.['thorough-review']?.suggestedAgentRoles).toEqual([
-      'reviewer',
-      'security',
-      'tests',
-    ]);
-    expect(config.presets?.['read-only']).toBeDefined();
-    expect(config.presets?.['read-only']?.hint).toBeTruthy();
-    expect(config.presets?.['read-only']?.suggestedAgentRoles).toEqual([
-      'analyst',
-      'reviewer',
-    ]);
-    // The active preset is still the `default` one; M5-3 ships the built-ins
-    // but doesn't flip the default.
-    expect(config.captain.preset).toBe('default');
-  });
 });
 
 describe('serializeWorkflowYaml preset roundtrip', () => {

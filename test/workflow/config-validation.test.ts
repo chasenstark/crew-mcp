@@ -2,6 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
 import { ModelId } from '../../src/workflow/models.js';
 import { validateConfig } from '../../src/workflow/config-validation.js';
+import type { FullConfig } from '../../src/workflow/types.js';
+
+function legacyConfig(): FullConfig {
+  const config = getDefaultConfig();
+  config.workflow.steps = [
+    { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review' },
+    { role: 'judge', agents: ['captain'], action: 'evaluate_review' },
+    { role: 'coder', agents: ['codex'], action: 'fix_review_issues' },
+  ];
+  config.agents = {
+    'claude-code': { adapter: 'claude-code', model: ModelId.CLAUDE_SONNET },
+    codex: { adapter: 'codex', model: ModelId.GPT_CODEX },
+  };
+  return config;
+}
 
 describe('config-validation', () => {
   it('accepts default config', () => {
@@ -10,7 +25,7 @@ describe('config-validation', () => {
   });
 
   it('rejects unsupported adapter values', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents.codex.adapter = 'unknown-adapter';
 
     const diagnostics = validateConfig(config);
@@ -18,7 +33,7 @@ describe('config-validation', () => {
   });
 
   it('requires command for generic adapter', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents.codex.adapter = 'generic';
     delete config.agents.codex.command;
 
@@ -30,7 +45,7 @@ describe('config-validation', () => {
     // Strengths are free-form soft routing hints — the validator should
     // accept any non-empty string, including ones that the captain has
     // never seen before. Used for user-defined hints like "k8s-ops".
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents.codex.strengths = ['code-review', 'made-up-strength'];
 
     const diagnostics = validateConfig(config);
@@ -38,7 +53,7 @@ describe('config-validation', () => {
   });
 
   it('rejects empty/whitespace-only strength entries', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents.codex.strengths = ['code-review', '   '];
 
     const diagnostics = validateConfig(config);
@@ -46,7 +61,7 @@ describe('config-validation', () => {
   });
 
   it('rejects built-in adapters under non-built-in keys', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents['custom-codex'] = { adapter: 'codex' };
 
     const diagnostics = validateConfig(config);
@@ -54,7 +69,7 @@ describe('config-validation', () => {
   });
 
   it('accepts openai-compatible adapters without a command field', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents.local = {
       adapter: 'openai-compatible',
       model: ModelId.QWEN,
@@ -66,7 +81,7 @@ describe('config-validation', () => {
   });
 
   it('accepts role model keys that exist in workflow roles/actions', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.workflow.roleModels = {
       reviewer: ModelId.GPT,
       fix_review_issues: ModelId.CLAUDE_OPUS,
@@ -77,7 +92,7 @@ describe('config-validation', () => {
   });
 
   it('rejects unknown role model keys', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.workflow.roleModels = { unknown: ModelId.GPT };
 
     const diagnostics = validateConfig(config);
@@ -85,7 +100,7 @@ describe('config-validation', () => {
   });
 
   it('rejects empty role model values', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.workflow.roleModels = { reviewer: '   ' };
 
     const diagnostics = validateConfig(config);
@@ -101,7 +116,7 @@ describe('config-validation', () => {
   });
 
   it('rejects agent models that are incompatible with the agent adapter', () => {
-    const config = getDefaultConfig();
+    const config = legacyConfig();
     config.agents['claude-code'].model = ModelId.GPT_CODEX;
 
     const diagnostics = validateConfig(config);

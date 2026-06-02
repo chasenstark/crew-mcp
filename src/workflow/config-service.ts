@@ -8,6 +8,7 @@ import {
   deleteConfigProfileByScope,
   getConfigPaths,
   listConfigProfileNames,
+  loadConfigByScope,
   loadEffectiveConfig,
   readActiveProfilePreference,
   readActiveScopePreference,
@@ -363,6 +364,10 @@ function profileSummary(cwd: string, profile: string, activeProfile: string): Co
   };
 }
 
+function loadScopedConfigForWrite(scope: ConfigScope, cwd: string, profile: string): FullConfig {
+  return loadConfigByScope(scope, cwd, { profile }) ?? getDefaultConfig();
+}
+
 export function listConfigProfiles(cwd: string): ConfigProfileSummary[] {
   const activeProfile = getConfigProfile(cwd);
   return listConfigProfileNames(cwd)
@@ -505,8 +510,9 @@ export function setConfigValue(
 ): ConfigSetResult {
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
   const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
-  const current = loadEffectiveConfig(cwd, { profile });
-  const previousValue = readConfigValue(current, path);
+  const effective = loadEffectiveConfig(cwd, { profile });
+  const current = loadScopedConfigForWrite(scope, cwd, profile);
+  const previousValue = readConfigValue(effective, path);
   const next = applyConfigPatch(current, { path, value: rawValue });
 
   validateConfigOrThrow(next);
@@ -530,8 +536,9 @@ export function unsetConfigValue(
 ): ConfigUnsetResult {
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
   const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
-  const current = loadEffectiveConfig(cwd, { profile });
-  const previousValue = readConfigValue(current, path);
+  const effective = loadEffectiveConfig(cwd, { profile });
+  const current = loadScopedConfigForWrite(scope, cwd, profile);
+  const previousValue = readConfigValue(effective, path);
   const next = structuredClone(current);
   deleteConfigValue(next, path.trim());
   normalizeIncompatibleModels(next);
@@ -566,7 +573,7 @@ export function addAgent(
   const name = parseAgentName(nameRaw);
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
   const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
-  const current = loadEffectiveConfig(cwd, { profile });
+  const current = loadScopedConfigForWrite(scope, cwd, profile);
 
   if (current.agents[name]) {
     throw new Error(`Agent "${name}" already exists.`);
@@ -617,7 +624,7 @@ export function removeAgent(
   const name = parseAgentName(nameRaw);
   const scope = options.scope ? parseScope(options.scope) : getConfigScope(cwd);
   const profile = options.profile ? parseProfile(options.profile) : getConfigProfile(cwd);
-  const current = loadEffectiveConfig(cwd, { profile });
+  const current = loadScopedConfigForWrite(scope, cwd, profile);
   const existing = current.agents[name];
   if (!existing) {
     throw new Error(`Agent "${name}" does not exist.`);

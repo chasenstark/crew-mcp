@@ -5,6 +5,28 @@ import {
   SUPPORTED_CONFIG_SET_PATHS,
 } from '../../src/workflow/config-path-registry.js';
 import { ModelId } from '../../src/workflow/models.js';
+import type { FullConfig } from '../../src/workflow/types.js';
+
+function legacyConfig(): FullConfig {
+  const config = getDefaultConfig();
+  config.workflow.steps = [
+    { role: 'coder', agents: ['codex', 'claude-code'], action: 'implement' },
+    { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review', maxPasses: 3 },
+    { role: 'judge', agents: ['captain'], action: 'evaluate_review' },
+    { role: 'coder', agents: ['codex', 'claude-code'], action: 'fix_review_issues' },
+  ];
+  config.agents = {
+    'claude-code': { adapter: 'claude-code', model: ModelId.CLAUDE_OPUS },
+    codex: { adapter: 'codex', model: ModelId.GPT_CODEX },
+  };
+  config.captain = { ...config.captain, preset: 'default' };
+  config.presets = {
+    default: { hint: 'default' },
+    'thorough-review': { hint: 'review' },
+    'read-only': { hint: 'read only' },
+  };
+  return config;
+}
 
 describe('config path registry', () => {
   it('exposes the supported set paths list', () => {
@@ -85,7 +107,7 @@ describe('config path registry', () => {
 
   describe('captain.preset (M5-5a)', () => {
     it('parses + writes via descriptor contract', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('captain.preset');
       expect(resolved).not.toBeNull();
       const descriptor = resolved!.descriptor;
@@ -102,7 +124,7 @@ describe('config path registry', () => {
     });
 
     it('rejects the empty string', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('captain.preset');
       expect(() =>
         resolved!.descriptor.parse('', config, resolved!.params, 'captain.preset'),
@@ -114,7 +136,7 @@ describe('config path registry', () => {
       // silently persist a broken reference that only surfaces as a
       // preflight warn on the next `crew run`. Matches the `/preset bogus`
       // slash-command contract.
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('captain.preset');
       expect(() =>
         resolved!.descriptor.parse('bogus-preset', config, resolved!.params, 'captain.preset'),
@@ -122,7 +144,7 @@ describe('config path registry', () => {
     });
 
     it('accepts any string when no presets are declared (no spec to validate against)', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       config.presets = undefined;
       const resolved = resolveConfigPath('captain.preset');
       // Without a presets map we can't validate — fall through to accepting
@@ -134,18 +156,18 @@ describe('config path registry', () => {
     });
 
     it('options() enumerates declared presets plus the current value', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('captain.preset');
       const descriptor = resolved!.descriptor;
       const options = descriptor.options(config, resolved!.params);
-      // All three built-ins declared in defaults/workflow.yaml.
+      // All three built-ins declared by this legacy fixture.
       expect(options).toContain('default');
       expect(options).toContain('thorough-review');
       expect(options).toContain('read-only');
     });
 
     it('options() includes the current value even when it names an unknown preset', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       config.captain.preset = 'user-custom';
       config.presets = { ...(config.presets ?? {}) };
       delete (config.presets as Record<string, unknown>)['user-custom'];
@@ -226,7 +248,7 @@ describe('config path registry', () => {
       // fix_review_issues). A single descriptor write should update both so
       // they don't drift; the wizard relies on this to ask one question per
       // role, not per step.
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('workflow.steps.coder.agents');
       expect(resolved).not.toBeNull();
       const descriptor = resolved!.descriptor;
@@ -248,7 +270,7 @@ describe('config path registry', () => {
     });
 
     it('matches by action as well as role (e.g. `review` resolves to the reviewer step)', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('workflow.steps.review.agents');
       expect(resolved).not.toBeNull();
       const reviewerStep = config.workflow.steps.find((s) => s.action === 'review');
@@ -257,7 +279,7 @@ describe('config path registry', () => {
     });
 
     it('rejects an empty list — every step must keep at least one candidate', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('workflow.steps.coder.agents');
       expect(() =>
         resolved!.descriptor.parse('[]', config, resolved!.params, 'workflow.steps.coder.agents'),
@@ -265,7 +287,7 @@ describe('config path registry', () => {
     });
 
     it('rejects unknown agent names so the wizard cannot persist a broken reference', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('workflow.steps.coder.agents');
       expect(() =>
         resolved!.descriptor.parse(
@@ -278,7 +300,7 @@ describe('config path registry', () => {
     });
 
     it('rejects roles that no step uses (parse-time error, not silent persist)', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('workflow.steps.gardener.agents');
       expect(() =>
         resolved!.descriptor.parse(
@@ -291,7 +313,7 @@ describe('config path registry', () => {
     });
 
     it('options() lists registered agents plus the captain pseudo-agent', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const resolved = resolveConfigPath('workflow.steps.coder.agents');
       const opts = resolved!.descriptor.options(config, resolved!.params);
       expect(opts).toContain('claude-code');
@@ -300,7 +322,7 @@ describe('config path registry', () => {
     });
 
     it('write does not mutate steps for other roles', () => {
-      const config = getDefaultConfig();
+      const config = legacyConfig();
       const reviewerBefore = config.workflow.steps
         .find((s) => s.role === 'reviewer')!.agents.slice();
       const resolved = resolveConfigPath('workflow.steps.coder.agents');

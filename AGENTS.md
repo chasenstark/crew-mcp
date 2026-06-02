@@ -64,17 +64,16 @@ There are no production users, so we do not have to worry about being backward c
   generic, openai-compatible) plus legacy tool-loop abstractions.
 - `src/agent-prefs/` stores per-machine agent preferences, and
   `src/provider-session.ts` contains provider session compatibility helpers.
-- `src/workflow/` handles workflow config types, loading, defaults, codecs,
-  and config path registry logic.
+- `src/workflow/` handles the remaining `.crew/workflow.yaml` compatibility
+  layer for agent defaults, loading, defaults, codecs, and config path
+  registry logic. Code-defined defaults replaced the deleted
+  `defaults/workflow.yaml` template.
 - `src/git/` manages worktrees for per-run isolation under
   `.crew/runs/<runId>/worktree/`.
 - `src/utils/` contains shared utilities such as logging and filesystem
   helpers.
 - `test/` mirrors runtime modules (`test/orchestrator`, `test/install`,
-  `test/cli`, `test/adapters`, `test/workflow`, etc.). The lingering
-  `test/fixtures/captain/fake-adapter.ts` fixture remains for legacy
-  tool-loop tests, not because `src/captain/` still exists.
-- `defaults/workflow.yaml` is the default workflow config template.
+  `test/cli`, `test/adapters`, `test/workflow`, etc.).
 - `skills/` holds the captain skill body (`crew-captain.body.md`) that
   `src/install/skill-renderer.ts` writes into each host. Captains read this
   verbatim — it shapes how they format dispatch confirmations, polling

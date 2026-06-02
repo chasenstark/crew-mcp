@@ -38,11 +38,10 @@ export interface GenericAdapterOptions {
 /**
  * GenericAdapter wraps an arbitrary CLI tool as an agent. It intentionally
  * does NOT implement executeWithSchema: generic CLI tools have no universal
- * mechanism for structured output enforcement (each tool's flags differ), so
- * we defer schema enforcement to the prompted-JSON fallback in
- * `utils/validate.ts#executeWithValidation`. That fallback appends the schema
- * to the prompt, parses JSON from stdout, validates with Zod, and retries
- * with validation errors on failure.
+ * mechanism for structured output enforcement because each tool's flags and
+ * output guarantees differ. Callers should treat generic agents as
+ * unstructured workers and avoid assigning them captain/tool-loop roles that
+ * require schema-constrained decisions.
  *
  * Reliability limitations:
  *   - Depends on the underlying tool being able to produce well-formed JSON
