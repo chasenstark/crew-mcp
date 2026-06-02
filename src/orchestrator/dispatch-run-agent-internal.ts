@@ -1,11 +1,11 @@
 import type { AdapterRegistry } from '../adapters/registry.js';
-import type { TaskResult } from '../adapters/types.js';
 import type { AgentPrefsMap } from '../agent-prefs/store.js';
 import type { WorktreeManager } from '../git/worktree.js';
 import { crewTailUrl } from '../cli/commands/tail-url.js';
 import { logger } from '../utils/logger.js';
 import { validatePeerMessagesPreflight } from './peer-messages/preflight.js';
-import { formatProgressLines, type ProgressNotifier } from './progress.js';
+import { type ProgressNotifier } from './progress.js';
+import { installRunLifecycleListeners } from './run-lifecycle-listeners.js';
 import type { RunStateStore } from './run-state.js';
 import type { ToolDispatcher } from './tool-dispatcher.js';
 import {
@@ -106,7 +106,7 @@ export async function dispatchRunAgentInternal(
   } catch (err) {
     const message = errorMessage(err);
     try {
-      ctx.runStateStore.markTerminal(plan.runId, {
+      await ctx.runStateStore.markTerminal(plan.runId, {
         status: 'error',
         summary: message,
         filesChanged: [],
@@ -131,86 +131,6 @@ export async function dispatchRunAgentInternal(
     toolCallId: plan.toolCallId,
     warnings,
   };
-}
-
-type DispatchTerminal =
-  | { kind: 'complete'; result: TaskResult }
-  | { kind: 'failed'; error: string }
-  | { kind: 'cancelled'; reason: string };
-
-function installRunLifecycleListeners(args: {
-  dispatcher: ToolDispatcher;
-  runStateStore: RunStateStore;
-  runId: string;
-  agentName: string;
-  toolCallId: string;
-  progress?: ProgressNotifier;
-}): Promise<DispatchTerminal> {
-  return new Promise<DispatchTerminal>((resolve) => {
-    const subs: Array<{ dispose(): void }> = [];
-    const onTerminal = (terminal: DispatchTerminal): void => {
-      try {
-        if (terminal.kind === 'complete') {
-          args.runStateStore.markTerminal(args.runId, {
-            status: terminal.result.status,
-            summary: terminal.result.output,
-            filesChanged: terminal.result.filesModified,
-            warnings: terminal.result.warnings,
-          });
-        } else if (terminal.kind === 'failed') {
-          args.runStateStore.markTerminal(args.runId, {
-            status: 'error',
-            summary: terminal.error,
-            filesChanged: [],
-            lastError: terminal.error,
-          });
-        } else {
-          args.runStateStore.markTerminal(args.runId, {
-            status: 'cancelled',
-            summary: terminal.reason,
-            filesChanged: [],
-          });
-        }
-      } catch (err) {
-        logger.warn(
-          `Failed to write run state for ${args.runId}: ${errorMessage(err)}`,
-        );
-      }
-      for (const s of subs) s.dispose();
-      resolve(terminal);
-    };
-
-    subs.push(
-      args.dispatcher.onEvent('run:complete', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'complete', result: info.result as TaskResult });
-      }),
-      args.dispatcher.onEvent('run:failed', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'failed', error: info.error });
-      }),
-      args.dispatcher.onEvent('run:cancelled', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'cancelled', reason: info.reason });
-      }),
-      args.dispatcher.onEvent('run:stream', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        const progressLines = formatProgressLines(args.agentName, info.chunk);
-        try {
-          for (const line of progressLines) {
-            args.runStateStore.appendEvent(args.runId, line);
-          }
-        } catch {
-          // Log writes are best-effort; never let a write failure break dispatch.
-        }
-        if (args.progress) {
-          for (const line of progressLines) {
-            args.progress.send(line);
-          }
-        }
-      }),
-    );
-  });
 }
 
 async function cleanupAllocatedWorktree(

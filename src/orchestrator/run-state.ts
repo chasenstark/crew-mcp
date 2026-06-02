@@ -21,6 +21,7 @@
  * were written without it (the field is informational, not load-bearing).
  */
 
+import { randomUUID } from 'node:crypto';
 import {
   mkdirSync,
   readFileSync,
@@ -380,9 +381,9 @@ export class RunStateStore {
   }
 
   /**
-   * Read the state.json for a run. Returns undefined if the run directory
-   * doesn't exist or state.json is missing. Throws on parse errors and
-   * unknown schema versions — better to fail loudly than silently corrupt.
+   * Synchronous read path for polling APIs. Writers use per-run locks plus
+   * rename-atomic state.json replacement; one-tick-stale reads are acceptable
+   * for get_run_status/get_panel_status style polling.
    */
   read(runId: string): RunStateV1 | undefined {
     const path = this.statePath(runId);
@@ -416,10 +417,15 @@ export class RunStateStore {
   }
 
   /**
-   * Atomic update: read, transform, write. Throws if the run doesn't
+   * Locked atomic update: read, transform, write. Throws if the run doesn't
    * exist (callers should `read` first when they want soft-handling).
    */
-  update(runId: string, updater: (state: RunStateV1) => RunStateV1): RunStateV1 {
+  async update(runId: string, updater: (state: RunStateV1) => RunStateV1): Promise<RunStateV1> {
+    return withStateLock({ crewHome: this.crewHome, runId }, async () =>
+      this.updateLocked(runId, updater));
+  }
+
+  private updateLocked(runId: string, updater: (state: RunStateV1) => RunStateV1): RunStateV1 {
     const current = this.read(runId);
     if (!current) {
       throw new Error(`No state.json for run ${runId}; cannot update.`);
@@ -474,7 +480,7 @@ export class RunStateStore {
         );
       }
 
-      const nextState = this.update(runId, (s) => ({
+      const nextState = this.updateLocked(runId, (s) => ({
         ...s,
         status: 'running',
         completedAt: undefined,
@@ -527,7 +533,7 @@ export class RunStateStore {
    * top-level summary uncapped but add a `summary_truncated_at`
    * marker when the adapter's output exceeds a configurable cap.
    */
-  markTerminal(
+  async markTerminal(
     runId: string,
     args: {
       status: 'success' | 'partial' | 'error' | 'cancelled';
@@ -542,15 +548,19 @@ export class RunStateStore {
        */
       warnings?: readonly string[];
     },
-  ): RunStateV1 {
+  ): Promise<RunStateV1> {
     const now = new Date().toISOString();
-    // Capture prior status BEFORE the update so we only notify on a
-    // genuine running → terminal transition. Re-calling markTerminal()
-    // on an already-terminal run (rare, but possible during retries
-    // or sweeper races) must not re-fire the OS notification.
-    const prior = this.read(runId);
-    const wasRunning = prior?.status === 'running';
-    const next = this.update(runId, (s) => {
+    let changed = false;
+    let shouldNotify = false;
+    const next = await this.update(runId, (s) => {
+      if (s.status !== 'running') {
+        return s;
+      }
+      changed = true;
+      // Capture prior status inside the same state-lock acquisition as the
+      // terminal write so notification and status-guard decisions observe the
+      // same state version.
+      shouldNotify = true;
       const prompts = s.prompts.map((p, i): PromptRecord =>
         i === s.prompts.length - 1
           ? { ...p, completedAt: now, summary: args.summary }
@@ -569,7 +579,8 @@ export class RunStateStore {
         ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     });
-    if (wasRunning) {
+    if (!changed) return next;
+    if (shouldNotify) {
       notifyTerminal({
         runId: next.runId,
         agentId: next.agentId,
@@ -580,8 +591,11 @@ export class RunStateStore {
     return next;
   }
 
-  markMerged(runId: string, args: { target: string; commitSha: string }): RunStateV1 {
-    const next = this.update(runId, (s) => ({
+  async markMerged(
+    runId: string,
+    args: { target: string; commitSha: string },
+  ): Promise<RunStateV1> {
+    const next = await this.update(runId, (s) => ({
       ...s,
       status: 'merged',
       completedAt: new Date().toISOString(),
@@ -591,11 +605,11 @@ export class RunStateStore {
     return next;
   }
 
-  markMergeConflict(
+  async markMergeConflict(
     runId: string,
     args: { target: string; conflicts: readonly string[] },
-  ): RunStateV1 {
-    const next = this.update(runId, (s) => ({
+  ): Promise<RunStateV1> {
+    const next = await this.update(runId, (s) => ({
       ...s,
       status: 'merge_conflict',
       // Stamp the disposition time like markMerged/markDiscarded so conflict
@@ -607,16 +621,18 @@ export class RunStateStore {
     return next;
   }
 
-  markDiscarded(runId: string): RunStateV1 | undefined {
-    const current = this.read(runId);
-    if (!current) return undefined;
-    const next = this.update(runId, (s) => ({
-      ...s,
-      status: 'discarded',
-      completedAt: new Date().toISOString(),
-    }));
-    writeRunReceipt(this.runDir(runId), next);
-    return next;
+  async markDiscarded(runId: string): Promise<RunStateV1 | undefined> {
+    return withStateLock({ crewHome: this.crewHome, runId }, async () => {
+      const current = this.read(runId);
+      if (!current) return undefined;
+      const next = this.updateLocked(runId, (s) => ({
+        ...s,
+        status: 'discarded',
+        completedAt: new Date().toISOString(),
+      }));
+      writeRunReceipt(this.runDir(runId), next);
+      return next;
+    });
   }
 
   /**
@@ -824,7 +840,7 @@ export class RunStateStore {
   private writeAtomic(runId: string, state: RunStateV1): void {
     const path = this.statePath(runId);
     mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.tmp`;
+    const tmp = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
     writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
     renameSync(tmp, path);
   }

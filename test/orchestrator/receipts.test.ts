@@ -130,7 +130,7 @@ describe('writeRunReceipt (integration through RunStateStore)', () => {
 
   it('markTerminal writes run.json + summary.md into the run dir', async () => {
     await store.create({ runId: 'r-t', agentId: 'codex', worktreePath: '/wt', initialPrompt: 'go' });
-    store.markTerminal('r-t', { status: 'success', summary: 'all good', filesChanged: ['a.ts'] });
+    await store.markTerminal('r-t', { status: 'success', summary: 'all good', filesChanged: ['a.ts'] });
 
     const dir = store.runDir('r-t');
     expect(existsSync(join(dir, RUN_RECEIPT_FILENAME))).toBe(true);
@@ -148,16 +148,16 @@ describe('writeRunReceipt (integration through RunStateStore)', () => {
 
   it('refreshes the receipt status on merge and discard', async () => {
     await store.create({ runId: 'r-m', agentId: 'codex', worktreePath: '/wt', initialPrompt: 'go' });
-    store.markTerminal('r-m', { status: 'success', summary: 'ok', filesChanged: [] });
-    store.markMerged('r-m', { target: 'main', commitSha: 'deadbeef' });
+    await store.markTerminal('r-m', { status: 'success', summary: 'ok', filesChanged: [] });
+    await store.markMerged('r-m', { target: 'main', commitSha: 'deadbeef' });
     expect(readReceipt('r-m')).toMatchObject({
       status: 'merged',
       merge: { target: 'main', commitSha: 'deadbeef' },
     });
 
     await store.create({ runId: 'r-d', agentId: 'codex', worktreePath: '/wt', initialPrompt: 'go' });
-    store.markTerminal('r-d', { status: 'success', summary: 'ok', filesChanged: [] });
-    store.markDiscarded('r-d');
+    await store.markTerminal('r-d', { status: 'success', summary: 'ok', filesChanged: [] });
+    await store.markDiscarded('r-d');
     expect(readReceipt('r-d').status).toBe('discarded');
   });
 });

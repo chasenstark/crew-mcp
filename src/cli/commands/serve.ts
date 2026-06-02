@@ -36,7 +36,6 @@ import {
   createBuiltinRegistry,
   mergeCustomAgents,
 } from '../../adapters/registry.js';
-import type { TaskResult } from '../../adapters/types.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
 import { filterEventsTailNoise } from '../../orchestrator/events-filter.js';
@@ -45,6 +44,7 @@ import {
   type ProgressNotifier,
 } from '../../orchestrator/progress.js';
 import { dispatchRunAgentInternal } from '../../orchestrator/dispatch-run-agent-internal.js';
+import { installRunLifecycleListeners } from '../../orchestrator/run-lifecycle-listeners.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRuns, type RunGcArgs } from '../../orchestrator/run-gc.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
@@ -827,7 +827,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         });
         const target = args.target_branch ?? '<host current branch>';
         if (result.status === 'merged') {
-          runStateStore.markMerged(args.run_id, {
+          await runStateStore.markMerged(args.run_id, {
             target,
             commitSha: result.commitSha,
           });
@@ -854,7 +854,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           return markdownContent(renderMergeMarkdown(env), env);
         }
         if (result.status === 'conflict') {
-          runStateStore.markMergeConflict(args.run_id, {
+          await runStateStore.markMergeConflict(args.run_id, {
             target,
             conflicts: result.conflicts,
           });
@@ -902,7 +902,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           if (!state.readOnly) {
             await worktreeManager.cleanupByRunId(args.run_id);
           }
-          runStateStore.markDiscarded(args.run_id);
+          await runStateStore.markDiscarded(args.run_id);
         }
       } catch (err) {
         return errorContent(
@@ -1105,11 +1105,6 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
 // Internal: dispatch lifecycle + envelope shaping
 // ---------------------------------------------------------------------------
 
-type DispatchTerminal =
-  | { kind: 'complete'; result: TaskResult }
-  | { kind: 'failed'; error: string }
-  | { kind: 'cancelled'; reason: string };
-
 type ToolCallReturn = {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -1299,114 +1294,6 @@ function mdInlineCode(value: string): string {
   );
   const fence = '`'.repeat(Math.max(2, longestBacktickRun + 1));
   return `${fence} ${normalized} ${fence}`;
-}
-
-/**
- * Subscribe to dispatcher events for a single tool-call lifecycle. Has two
- * jobs:
- *
- *   1. Persist run-state changes: every terminal event writes state.json
- *      (status + completedAt + summary + filesChanged). Stream chunks
- *      append to events.log for get_run_status to surface. These
- *      side-effect listeners self-dispose after the terminal event so the
- *      EventEmitter doesn't accumulate dead handlers.
- *
- *   2. Resolve the returned promise with the terminal kind so the caller
- *      can race it against the async-fallback timer.
- *
- * State-write errors are swallowed (warn-logged) — a bad write must NEVER
- * crash the server or fail the tool call.
- */
-function installRunLifecycleListeners(args: {
-  dispatcher: ToolDispatcher;
-  runStateStore: RunStateStore;
-  runId: string;
-  /**
-   * Adapter id, threaded through purely so progress-notification
-   * messages can be prefixed `[<agent>]`. Hosts that render
-   * `notifications/progress` inline (Claude Code) get a labeled
-   * stream so multi-agent dispatches don't blur together.
-   */
-  agentName: string;
-  toolCallId: string;
-  progress?: ProgressNotifier;
-}): Promise<DispatchTerminal> {
-  return new Promise<DispatchTerminal>((resolve) => {
-    const subs: Array<{ dispose(): void }> = [];
-    const onTerminal = (terminal: DispatchTerminal): void => {
-      try {
-        if (terminal.kind === 'complete') {
-          args.runStateStore.markTerminal(args.runId, {
-            status: terminal.result.status,
-            summary: terminal.result.output,
-            filesChanged: terminal.result.filesModified,
-            // Persist advisory warnings (read-only dirty-tree probe is
-            // the only producer today). With async-first dispatch the
-            // captain reads them via get_run_status — there's no
-            // synchronous envelope path to surface them through.
-            warnings: terminal.result.warnings,
-          });
-        } else if (terminal.kind === 'failed') {
-          args.runStateStore.markTerminal(args.runId, {
-            status: 'error',
-            summary: terminal.error,
-            filesChanged: [],
-            lastError: terminal.error,
-          });
-        } else {
-          args.runStateStore.markTerminal(args.runId, {
-            status: 'cancelled',
-            summary: terminal.reason,
-            filesChanged: [],
-          });
-        }
-      } catch (err) {
-        logger.warn(
-          `Failed to write run state for ${args.runId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      for (const s of subs) s.dispose();
-      resolve(terminal);
-    };
-
-    subs.push(
-      args.dispatcher.onEvent('run:complete', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'complete', result: info.result as TaskResult });
-      }),
-      args.dispatcher.onEvent('run:failed', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'failed', error: info.error });
-      }),
-      args.dispatcher.onEvent('run:cancelled', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'cancelled', reason: info.reason });
-      }),
-      args.dispatcher.onEvent('run:stream', (info) => {
-        if (info.toolCallId !== args.toolCallId) return;
-        const progressLines = formatProgressLines(args.agentName, info.chunk);
-        try {
-          for (const line of progressLines) {
-            args.runStateStore.appendEvent(args.runId, line);
-          }
-        } catch {
-          // Log writes are best-effort; never let a write failure break dispatch.
-        }
-        // Bridge to MCP progress notifications when the client supplied
-        // a progressToken. Adapters typically emit line-buffered chunks
-        // (codex/claude-code/gemini-cli all do); we split multi-line
-        // chunks so each rendered line is a discrete progress message
-        // rather than a wall of text the host has to layout itself.
-        // events.log and host UI share the same canonical server-side
-        // agent prefix so event tails and progress notifications match.
-        if (args.progress) {
-          for (const line of progressLines) {
-            args.progress.send(line);
-          }
-        }
-      }),
-    );
-  });
 }
 
 /**
@@ -1734,7 +1621,7 @@ function latestStampedAt(state: RunStateV1): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
-function markAbandonedRunningRuns(args: StaleRunSweepArgs): void {
+async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> {
   const runsDir = join(args.crewHome, 'runs');
   const currentRepoRoot = resolveComparableRepoRoot(args.projectRoot);
   let entries: Dirent[];
@@ -1802,7 +1689,7 @@ function markAbandonedRunningRuns(args: StaleRunSweepArgs): void {
     }
 
     try {
-      args.runStateStore.markTerminal(runId, {
+      await args.runStateStore.markTerminal(runId, {
         status: 'error',
         summary: 'abandoned (server restart)',
         filesChanged: [],

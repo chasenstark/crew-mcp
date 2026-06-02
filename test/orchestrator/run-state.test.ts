@@ -97,6 +97,32 @@ describe('RunStateStore', () => {
     return (await targetStore.appendPrompt(runId, { userPrompt })).state;
   }
 
+  function createDeferred<T>(): {
+    readonly promise: Promise<T>;
+    readonly resolve: (value: T | PromiseLike<T>) => void;
+    readonly reject: (reason?: unknown) => void;
+  } {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function waitFor(
+    predicate: () => boolean | Promise<boolean>,
+    timeoutMs = 1000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error('waitFor: timeout');
+  }
+
   function writeStateLockOwner(
     targetCrewHome: string,
     runId: string,
@@ -165,6 +191,38 @@ describe('RunStateStore', () => {
     expect(existsSync(lockDir)).toBe(false);
   });
 
+  it('withStateLock() lets only one stale-lock reclaimer own the fresh lock', async () => {
+    const restore = withEnv({ CREW_STATE_LOCK_TIMEOUT_MS: '120' });
+    const runId = 'r-reclaim-race';
+    const stale = new Date(Date.now() - 61_000);
+    const lockDir = writeStateLockOwner(crewHome, runId, createDeadPid(), stale);
+    const releaseWinner = createDeferred<void>();
+    let winnerOwnerJson: string | undefined;
+
+    try {
+      const winner = withStateLock({ crewHome, runId }, async () => {
+        winnerOwnerJson = readFileSync(join(lockDir, 'owner.json'), 'utf-8');
+        await releaseWinner.promise;
+        return 'winner';
+      });
+
+      await waitFor(() => winnerOwnerJson !== undefined);
+
+      const loser = withStateLock({ crewHome, runId }, async () => 'loser');
+      await expect(loser).rejects.toThrow('peer_messages.state_lock_timeout:');
+
+      expect(existsSync(lockDir)).toBe(true);
+      expect(readFileSync(join(lockDir, 'owner.json'), 'utf-8')).toBe(winnerOwnerJson);
+
+      releaseWinner.resolve();
+      await expect(winner).resolves.toBe('winner');
+      expect(existsSync(lockDir)).toBe(false);
+    } finally {
+      releaseWinner.resolve();
+      restore();
+    }
+  });
+
   it('withStateLock() refuses to reclaim an alive-PID lock even when stale', async () => {
     const restore = withEnv({ CREW_STATE_LOCK_TIMEOUT_MS: '100' });
     try {
@@ -226,7 +284,7 @@ describe('RunStateStore', () => {
     for (const status of ['discarded', 'merged', 'merge_conflict'] as const) {
       const runId = `r-${status}`;
       await createRun({ runId, agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-      const before = store.update(runId, (s) => ({ ...s, status }));
+      const before = await store.update(runId, (s) => ({ ...s, status }));
 
       await expect(store.appendPrompt(runId, { userPrompt: 'next' }))
         .rejects.toThrow(`peer_messages.run_terminal: ${runId} status=${status}`);
@@ -248,7 +306,7 @@ describe('RunStateStore', () => {
         worktreePath: '/x',
         initialPrompt: 'first',
       }, capped);
-      capped.markTerminal('r-too-large', {
+      await capped.markTerminal('r-too-large', {
         status: 'success',
         summary: 'ok',
         filesChanged: [],
@@ -266,12 +324,12 @@ describe('RunStateStore', () => {
 
   it('appendPrompt() serializes concurrent continuations and allocates increasing turns', async () => {
     await createRun({ runId: 'r-serial', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
-    store.markTerminal('r-serial', { status: 'success', summary: 'first', filesChanged: [] });
+    await store.markTerminal('r-serial', { status: 'success', summary: 'first', filesChanged: [] });
 
     const first = store.appendPrompt('r-serial', { userPrompt: 'second' });
     const second = store.appendPrompt('r-serial', { userPrompt: 'third' });
     const firstResult = await first;
-    store.markTerminal('r-serial', { status: 'success', summary: 'second', filesChanged: [] });
+    await store.markTerminal('r-serial', { status: 'success', summary: 'second', filesChanged: [] });
     const secondResult = await second;
 
     expect(firstResult.turnNumber).toBe(2);
@@ -281,7 +339,7 @@ describe('RunStateStore', () => {
 
   it('appendPrompt() clears a prior-turn lastError so a recovered run reports success cleanly', async () => {
     await createRun({ runId: 'r-recover', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
-    store.markTerminal('r-recover', {
+    await store.markTerminal('r-recover', {
       status: 'error',
       summary: 'boom',
       filesChanged: [],
@@ -292,7 +350,7 @@ describe('RunStateStore', () => {
     // Recover: continue the run, which succeeds with no new error.
     await store.appendPrompt('r-recover', { userPrompt: 'try again' });
     expect(store.read('r-recover')?.lastError).toBeUndefined();
-    store.markTerminal('r-recover', { status: 'success', summary: 'fixed', filesChanged: ['a.ts'] });
+    await store.markTerminal('r-recover', { status: 'success', summary: 'fixed', filesChanged: ['a.ts'] });
 
     const final = store.read('r-recover');
     expect(final?.status).toBe('success');
@@ -565,7 +623,7 @@ describe('RunStateStore', () => {
 
   it('appendPrompt() resets status to running and grows prompts', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
-    store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
+    await store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
     const next = await appendRun('r-1', 'second');
     expect(next.status).toBe('running');
     expect(next.completedAt).toBeUndefined();
@@ -590,7 +648,7 @@ describe('RunStateStore', () => {
 
   it('appendPrompt() truncates oversized continuation prompts with a marker (Tier 3 #14)', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'first' });
-    store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
+    await store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
     const oversized = 'y'.repeat(20_480);
     const next = await appendRun('r-1', oversized);
     const stored = next.prompts[1].prompt;
@@ -626,10 +684,10 @@ describe('RunStateStore', () => {
     // Manually overwrite serverPid to simulate a dead PID inherited
     // from a prior server that completed the run before crashing.
     const DEAD_PID = 2_000_000_000;
-    const promotedToDead = store.update('r-1', (s) => ({ ...s, serverPid: DEAD_PID }));
+    const promotedToDead = await store.update('r-1', (s) => ({ ...s, serverPid: DEAD_PID }));
     expect(promotedToDead.serverPid).toBe(DEAD_PID);
 
-    store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
+    await store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
     const next = await appendRun('r-1', 'second');
 
     expect(next.status).toBe('running');
@@ -640,21 +698,22 @@ describe('RunStateStore', () => {
     // Sweeper races and explicit retries must not double-notify the
     // user. Notification fires on running → terminal transition only.
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-    store.markTerminal('r-1', { status: 'success', summary: 'first', filesChanged: [] });
+    await store.markTerminal('r-1', { status: 'success', summary: 'first', filesChanged: [] });
     const firstCallCount = mockNotifyTerminal.mock.calls.length;
     expect(firstCallCount).toBe(1);
 
     // Re-call markTerminal on an already-terminal run (e.g., sweeper
     // sees status:'success' but tries to mark again — should be a
     // no-op for notification purposes).
-    store.markTerminal('r-1', { status: 'success', summary: 'duplicate', filesChanged: [] });
+    await store.markTerminal('r-1', { status: 'success', summary: 'duplicate', filesChanged: [] });
 
     expect(mockNotifyTerminal.mock.calls.length).toBe(firstCallCount);
+    expect(store.read('r-1')?.prompts[0].summary).toBe('first');
   });
 
   it('markTerminal() sets status + completedAt + summary on the last prompt', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-    const next = store.markTerminal('r-1', {
+    const next = await store.markTerminal('r-1', {
       status: 'success',
       summary: 'all done',
       filesChanged: ['src/a.ts', 'src/b.ts'],
@@ -668,7 +727,7 @@ describe('RunStateStore', () => {
 
   it('markTerminal() fires a terminal OS notification hook after state write', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-    const next = store.markTerminal('r-1', {
+    const next = await store.markTerminal('r-1', {
       status: 'error',
       summary: 'failed',
       filesChanged: [],
@@ -685,13 +744,13 @@ describe('RunStateStore', () => {
 
   it('markTerminal() unions filesChanged across turns', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-    store.markTerminal('r-1', {
+    await store.markTerminal('r-1', {
       status: 'success',
       summary: 'first',
       filesChanged: ['a.ts', 'b.ts'],
     });
     await appendRun('r-1', 'second turn');
-    const next = store.markTerminal('r-1', {
+    const next = await store.markTerminal('r-1', {
       status: 'success',
       summary: 'second',
       filesChanged: ['b.ts', 'c.ts'],
@@ -701,26 +760,97 @@ describe('RunStateStore', () => {
 
   it('markMerged() / markMergeConflict() / markDiscarded() transition status', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-    store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
+    await store.markTerminal('r-1', { status: 'success', summary: 'ok', filesChanged: [] });
 
-    const merged = store.markMerged('r-1', { target: 'main', commitSha: 'abc123' });
+    const merged = await store.markMerged('r-1', { target: 'main', commitSha: 'abc123' });
     expect(merged.status).toBe('merged');
     expect(merged.mergeStatus).toEqual({ target: 'main', commitSha: 'abc123' });
 
     await createRun({ runId: 'r-2', agentId: 'a', worktreePath: '/y', initialPrompt: 'q' });
-    const conflict = store.markMergeConflict('r-2', {
+    const conflict = await store.markMergeConflict('r-2', {
       target: 'main',
       conflicts: ['src/a.ts'],
     });
     expect(conflict.status).toBe('merge_conflict');
     expect(conflict.mergeStatus?.conflicts).toEqual(['src/a.ts']);
 
-    const discarded = store.markDiscarded('r-2');
+    const discarded = await store.markDiscarded('r-2');
     expect(discarded?.status).toBe('discarded');
   });
 
+  it('locked updates preserve terminal and continuation fields across merge races', async () => {
+    await createRun({ runId: 'r-terminal-merge', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    await Promise.all([
+      store.markTerminal('r-terminal-merge', {
+        status: 'success',
+        summary: 'terminal summary',
+        filesChanged: ['src/a.ts'],
+      }),
+      store.markMerged('r-terminal-merge', { target: 'main', commitSha: 'abc123' }),
+    ]);
+
+    const terminalMerged = store.read('r-terminal-merge');
+    expect(terminalMerged?.status).toBe('merged');
+    expect(terminalMerged?.filesChanged).toEqual(['src/a.ts']);
+    expect(terminalMerged?.prompts[0].summary).toBe('terminal summary');
+    expect(terminalMerged?.mergeStatus).toEqual({ target: 'main', commitSha: 'abc123' });
+
+    await createRun({ runId: 'r-append-merge', agentId: 'a', worktreePath: '/y', initialPrompt: 'first' });
+    await store.markTerminal('r-append-merge', {
+      status: 'success',
+      summary: 'first summary',
+      filesChanged: ['src/first.ts'],
+    });
+    await Promise.all([
+      store.appendPrompt('r-append-merge', { userPrompt: 'second' }),
+      store.markMerged('r-append-merge', { target: 'main', commitSha: 'def456' }),
+    ]);
+
+    const appendMerged = store.read('r-append-merge');
+    expect(appendMerged?.status).toBe('merged');
+    expect(appendMerged?.prompts.map((p) => p.turn)).toEqual([1, 2]);
+    expect(appendMerged?.filesChanged).toEqual(['src/first.ts']);
+    expect(appendMerged?.mergeStatus).toEqual({ target: 'main', commitSha: 'def456' });
+  });
+
+  it('late markTerminal() after markMerged() is a no-op', async () => {
+    await createRun({ runId: 'r-late-terminal', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    await store.markTerminal('r-late-terminal', {
+      status: 'success',
+      summary: 'original summary',
+      filesChanged: ['src/a.ts'],
+    });
+    await store.markMerged('r-late-terminal', { target: 'main', commitSha: 'abc123' });
+
+    const late = await store.markTerminal('r-late-terminal', {
+      status: 'success',
+      summary: 'late summary',
+      filesChanged: ['src/late.ts'],
+    });
+
+    expect(late.status).toBe('merged');
+    expect(late.filesChanged).toEqual(['src/a.ts']);
+    expect(late.prompts[0].summary).toBe('original summary');
+    expect(late.mergeStatus).toEqual({ target: 'main', commitSha: 'abc123' });
+    expect(store.read('r-late-terminal')).toEqual(late);
+  });
+
+  it('markDiscarded() still applies after a terminal adapter status', async () => {
+    await createRun({ runId: 'r-discard-terminal', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    await store.markTerminal('r-discard-terminal', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: ['src/a.ts'],
+    });
+
+    const discarded = await store.markDiscarded('r-discard-terminal');
+
+    expect(discarded?.status).toBe('discarded');
+    expect(discarded?.filesChanged).toEqual(['src/a.ts']);
+  });
+
   it('markDiscarded() returns undefined for unknown runs (idempotent)', async () => {
-    expect(store.markDiscarded('nope')).toBeUndefined();
+    await expect(store.markDiscarded('nope')).resolves.toBeUndefined();
   });
 
   it('appendEvent() / tailEvents() roundtrip', async () => {

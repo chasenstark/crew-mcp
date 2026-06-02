@@ -130,14 +130,14 @@ export async function createRunState(
     || status === 'error'
     || status === 'cancelled'
   ) {
-    h.runStateStore.markTerminal(runId, {
+    await h.runStateStore.markTerminal(runId, {
       status,
       summary: overrides.summary ?? `${status} summary`,
       filesChanged: overrides.filesChanged ?? [],
       ...(status === 'error' ? { lastError: overrides.summary ?? 'error summary' } : {}),
     });
   } else {
-    h.runStateStore.update(runId, (state) => ({
+    await h.runStateStore.update(runId, (state) => ({
       ...state,
       status,
       completedAt: new Date().toISOString(),
@@ -178,11 +178,11 @@ export async function waitFor(
   throw new Error('waitFor: timeout');
 }
 
-function applyRepoRootOverride(
+async function applyRepoRootOverride(
   h: PanelHarness,
   runId: string,
   repoRoot: string | null | undefined,
-): RunStateV1 {
+): Promise<RunStateV1> {
   if (repoRoot === undefined) return h.runStateStore.read(runId)!;
   return h.runStateStore.update(runId, (state) => {
     if (repoRoot === null) {
