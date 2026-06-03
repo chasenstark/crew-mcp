@@ -13,6 +13,10 @@ import {
 } from './tool-loop/decision.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
 import { buildDecisionPrompt } from './tool-loop/transcript.js';
+import {
+  processGroupSpawnOptions,
+  terminateProcessGroupOnAbort,
+} from './process-group.js';
 import type {
   AgentAdapter,
   AgentStrength,
@@ -296,12 +300,22 @@ export class GeminiCliAdapter implements AgentAdapter {
 
     let result;
     try {
-      result = await execa('gemini', args, {
+      const subprocess = execa('gemini', args, {
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout } : {}),
+        ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
         reject: false,
       });
+      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+        subprocess,
+        task.constraints?.signal,
+      );
+      try {
+        result = await subprocess;
+      } finally {
+        disposeProcessGroupAbort();
+      }
     } catch (error: unknown) {
       const stdoutText = typeof error === 'object' && error && 'stdout' in error
         ? String((error as { stdout?: string }).stdout ?? '')
@@ -519,11 +533,22 @@ export class GeminiCliAdapter implements AgentAdapter {
         allowedServerNames,
       });
 
-      const result = await execa('gemini', args, {
+      const subprocess = execa('gemini', args, {
         cwd: context.workingDirectory,
+        ...processGroupSpawnOptions(),
         cancelSignal: context.signal,
         reject: false,
       });
+      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+        subprocess,
+        context.signal,
+      );
+      let result;
+      try {
+        result = await subprocess;
+      } finally {
+        disposeProcessGroupAbort();
+      }
 
       const stderrText = result.stderr ?? '';
       if (isInvalidSessionStderr(stderrText)) {

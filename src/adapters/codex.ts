@@ -36,6 +36,10 @@ import {
   ToolLoopDecisionSchema,
   type ToolLoopDecision,
 } from './tool-loop/decision.js';
+import {
+  processGroupSpawnOptions,
+  terminateProcessGroupOnAbort,
+} from './process-group.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -444,10 +448,15 @@ export class CodexAdapter implements AgentAdapter {
         const subprocess = execa(AgentId.CODEX, args, {
           cwd: task.context.workingDirectory,
           ...(timeout ? { timeout } : {}),
+          ...processGroupSpawnOptions(),
           cancelSignal: task.constraints?.signal,
           reject: false,
           stdin: 'ignore',
         });
+        const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+          subprocess,
+          task.constraints?.signal,
+        );
 
         if (task.onOutput && subprocess.stdout) {
           let buffer = '';
@@ -484,7 +493,11 @@ export class CodexAdapter implements AgentAdapter {
           subprocess.stdout.on('end', flushBufferedLine);
         }
 
-        result = await subprocess;
+        try {
+          result = await subprocess;
+        } finally {
+          disposeProcessGroupAbort();
+        }
         flushBufferedLine?.();
       } catch (error: unknown) {
         const message =
@@ -845,8 +858,9 @@ export class CodexAdapter implements AgentAdapter {
         promptChars: prompt.length,
         promptPreview: preview(prompt, 200),
       });
-      const result = await execa(AgentId.CODEX, args, {
+      const subprocess = execa(AgentId.CODEX, args, {
         cwd: options.workingDirectory,
+        ...processGroupSpawnOptions(),
         cancelSignal: options.signal,
         reject: false,
         stdin: 'ignore',
@@ -855,6 +869,16 @@ export class CodexAdapter implements AgentAdapter {
         // mid-edit by the prior 5m cap. Cancellation comes via the
         // captain's cancelSignal.
       });
+      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+        subprocess,
+        options.signal,
+      );
+      let result;
+      try {
+        result = await subprocess;
+      } finally {
+        disposeProcessGroupAbort();
+      }
 
       if (result.exitCode !== 0 && !result.stdout) {
         throw new Error(

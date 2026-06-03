@@ -24,6 +24,10 @@ import { AgentId } from '../workflow/agents.js';
 import { executePromptToolLoop } from './tool-loop/controller.js';
 import { resolveTerminalOutput } from './tool-loop/result.js';
 import {
+  processGroupSpawnOptions,
+  terminateProcessGroupOnAbort,
+} from './process-group.js';
+import {
   parseToolInput,
   ToolLoopDecisionSchema,
   type ToolLoopDecision,
@@ -487,10 +491,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       const subprocess = execa('claude', args, {
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout } : {}),
+        ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
         reject: false,
         stdin: 'ignore',
       });
+      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+        subprocess,
+        task.constraints?.signal,
+      );
 
       if (streaming && subprocess.stdout) {
         let buffer = '';
@@ -508,7 +517,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         });
       }
 
-      result = await subprocess;
+      try {
+        result = await subprocess;
+      } finally {
+        disposeProcessGroupAbort();
+      }
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';
@@ -854,12 +867,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     });
     const subprocess = execa('claude', args, {
       cwd: context.workingDirectory,
+      ...processGroupSpawnOptions(),
       cancelSignal: context.signal,
       reject: false,
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',
     });
+    const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+      subprocess,
+      context.signal,
+    );
 
     if (!subprocess.stdout || !subprocess.stdin) {
       throw new Error('Claude stream session missing stdio pipes.');
@@ -1035,6 +1053,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         await subprocess;
       } catch {
         // execa reject is disabled, but keep this as a final safety net.
+      } finally {
+        disposeProcessGroupAbort();
       }
     }
 

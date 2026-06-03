@@ -1,9 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installRunLifecycleListeners } from '../../src/orchestrator/run-lifecycle-listeners.js';
+import {
+  drainPendingTerminalPersists,
+  installRunLifecycleListeners,
+  pendingTerminalPersistCount,
+} from '../../src/orchestrator/run-lifecycle-listeners.js';
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
 import { ToolDispatcher } from '../../src/orchestrator/tool-dispatcher.js';
 
@@ -72,6 +76,87 @@ describe('installRunLifecycleListeners', () => {
     expect(state?.prompts[0].summary).toBe('first terminal');
     expect(state?.filesChanged).toEqual(['a.ts']);
     expect(state?.lastError).toBeUndefined();
+  });
+
+  it('tracks detached terminal persist promises until they settle', async () => {
+    let resolvePersist!: () => void;
+    const persistPromise = new Promise<void>((resolve) => {
+      resolvePersist = resolve;
+    });
+    const slowStore = {
+      markTerminal: vi.fn(() => persistPromise),
+    } as unknown as RunStateStore;
+
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore: slowStore,
+      runId: 'r-slow',
+      agentName: 'mock',
+      toolCallId: 'tc-slow',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+
+    emitter.emitter.emit('run:cancelled', {
+      toolCallId: 'tc-slow',
+      toolName: 'run_agent',
+      reason: 'shutdown',
+      runId: 'r-slow',
+    });
+
+    await expect(terminal).resolves.toMatchObject({ kind: 'cancelled' });
+    expect(pendingTerminalPersistCount()).toBe(1);
+
+    const drain = drainPendingTerminalPersists({ maxWaitMs: 200 });
+    await Promise.resolve();
+    expect(pendingTerminalPersistCount()).toBe(1);
+
+    resolvePersist();
+    await expect(drain).resolves.toBe(true);
+    expect(pendingTerminalPersistCount()).toBe(0);
+    expect(slowStore.markTerminal).toHaveBeenCalledWith('r-slow', {
+      status: 'cancelled',
+      summary: 'shutdown',
+      filesChanged: [],
+    });
+  });
+
+  it('bounds terminal persist draining when a write does not settle', async () => {
+    let resolvePersist!: () => void;
+    const persistPromise = new Promise<void>((resolve) => {
+      resolvePersist = resolve;
+    });
+    const slowStore = {
+      markTerminal: vi.fn(() => persistPromise),
+    } as unknown as RunStateStore;
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore: slowStore,
+      runId: 'r-stuck',
+      agentName: 'mock',
+      toolCallId: 'tc-stuck',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+
+    emitter.emitter.emit('run:failed', {
+      toolCallId: 'tc-stuck',
+      toolName: 'run_agent',
+      error: 'boom',
+      runId: 'r-stuck',
+    });
+    await expect(terminal).resolves.toMatchObject({ kind: 'failed' });
+    expect(pendingTerminalPersistCount()).toBe(1);
+
+    await expect(drainPendingTerminalPersists({ maxWaitMs: 10 })).resolves.toBe(false);
+    resolvePersist();
+    await expect(drainPendingTerminalPersists()).resolves.toBe(true);
   });
 });
 

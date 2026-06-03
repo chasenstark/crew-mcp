@@ -9,6 +9,38 @@ export type DispatchTerminal =
   | { kind: 'failed'; error: string }
   | { kind: 'cancelled'; reason: string };
 
+const pendingTerminalPersists = new Set<Promise<void>>();
+
+export async function drainPendingTerminalPersists(
+  options: {
+    readonly maxWaitMs?: number;
+  } = {},
+): Promise<boolean> {
+  if (options.maxWaitMs === undefined) {
+    while (pendingTerminalPersists.size > 0) {
+      await Promise.allSettled(Array.from(pendingTerminalPersists));
+    }
+    return true;
+  }
+
+  const maxWaitMs = Math.max(0, options.maxWaitMs);
+  const deadline = Date.now() + maxWaitMs;
+
+  while (pendingTerminalPersists.size > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const snapshot = Array.from(pendingTerminalPersists);
+    const result = await waitForPersistsOrTimeout(snapshot, remaining);
+    if (result === 'timeout') return pendingTerminalPersists.size === 0;
+  }
+
+  return true;
+}
+
+export function pendingTerminalPersistCount(): number {
+  return pendingTerminalPersists.size;
+}
+
 export function installRunLifecycleListeners(args: {
   dispatcher: ToolDispatcher;
   runStateStore: RunStateStore;
@@ -35,11 +67,7 @@ export function installRunLifecycleListeners(args: {
       settled = true;
       disposeAll();
       resolve(terminal);
-      void persistTerminal(args, terminal).catch((err) => {
-        logger.warn(
-          `Failed to write run state for ${args.runId}: ${errorMessage(err)}`,
-        );
-      });
+      trackTerminalPersist(args, terminal);
     };
 
     subs.push(
@@ -73,6 +101,42 @@ export function installRunLifecycleListeners(args: {
       }),
     );
   });
+}
+
+function trackTerminalPersist(
+  args: {
+    runStateStore: RunStateStore;
+    runId: string;
+  },
+  terminal: DispatchTerminal,
+): void {
+  const persist = persistTerminal(args, terminal)
+    .catch((err) => {
+      logger.warn(
+        `Failed to write run state for ${args.runId}: ${errorMessage(err)}`,
+      );
+    })
+    .finally(() => {
+      pendingTerminalPersists.delete(persist);
+    });
+  pendingTerminalPersists.add(persist);
+}
+
+async function waitForPersistsOrTimeout(
+  persists: Array<Promise<void>>,
+  timeoutMs: number,
+): Promise<'settled' | 'timeout'> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      timeout = setTimeout(() => resolve('timeout'), timeoutMs);
+      timeout.unref?.();
+    });
+    const settled = Promise.allSettled(persists).then(() => 'settled' as const);
+    return await Promise.race([settled, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 async function persistTerminal(

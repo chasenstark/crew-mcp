@@ -468,8 +468,11 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   files are removed. The agent sees the same in-progress state the
   user does — no need to manually `cp` files into the worktree.
   `continue_run` re-syncs each turn so user edits between turns
-  flow through. (read-only runs don't allocate a worktree, so this
-  doesn't apply — they already operate on the host repo directly.)
+  flow through. If that resync or dispatch start fails, `continue_run`
+  returns a clear error and marks the run terminal `error`; report it
+  and wait for user direction instead of retrying blindly. (read-only
+  runs don't allocate a worktree, so this doesn't apply — they already
+  operate on the host repo directly.)
 - **Read-only dispatches.** Pass `read_only: true` for review/triage/Q&A
   work. Skips worktree allocation (~100ms–1s saved); the
   reviewer-on-implementer pattern is `read_only: true` +

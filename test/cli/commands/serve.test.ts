@@ -31,6 +31,8 @@ import {
   nextStepSentence,
   scheduleRunGc,
   scheduleStaleRunSweep,
+  waitForInFlightDrain,
+  waitForShutdownDrain,
   type FullRunEnvelope,
   type RunEnvelope,
 } from '../../../src/cli/commands/serve.js';
@@ -39,6 +41,7 @@ import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
 import { RunStateStore, type RunStateV1 } from '../../../src/orchestrator/run-state.js';
+import { installRunLifecycleListeners } from '../../../src/orchestrator/run-lifecycle-listeners.js';
 import { DEFAULT_PEER_MESSAGE_CAPS } from '../../../src/orchestrator/peer-messages/caps.js';
 import { buildPrependBlock } from '../../../src/orchestrator/peer-messages/prepend.js';
 import type { PeerMessageRendered } from '../../../src/orchestrator/peer-messages/schema.js';
@@ -1756,6 +1759,95 @@ describe('crew serve — continue_run tool', () => {
     }
   });
 
+  it('refuses to continue when a terminal run still has in-flight cleanup', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const initial = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = initial.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+      const append = vi.spyOn(h.runStateStore, 'appendPrompt');
+      vi.spyOn(h.dispatcher, 'listInFlight').mockReturnValue([
+        { toolCallId: 'still-finishing', toolName: 'run_agent', runId: env.run_id },
+      ]);
+
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'next' },
+      });
+
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toContain('still has in-flight work');
+      expect(append).not.toHaveBeenCalled();
+      expect(readPersistedState(h, env.run_id).status).toBe('success');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks continue_run error when worktree sync throws after appendPrompt', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const initial = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = initial.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+      vi.spyOn(h.worktreeManager, 'syncUncommittedToRunWorktree')
+        .mockRejectedValue(new Error('mock sync failure'));
+
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'next' },
+      });
+
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toContain('continue_run dispatch failed');
+      expect(toolText(res)).toContain('mock sync failure');
+      const state = readPersistedState(h, env.run_id);
+      expect(state.status).toBe('error');
+      expect(state.lastError).toContain('mock sync failure');
+      expect(state.prompts).toHaveLength(2);
+      expect(state.prompts[1]?.completedAt).toBeDefined();
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks continue_run error when dispatcher.start throws after appendPrompt', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const initial = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = initial.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+      vi.spyOn(h.dispatcher, 'start').mockImplementationOnce(() => {
+        throw new Error('mock start failure');
+      });
+
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'next' },
+      });
+
+      expect(res.isError).toBe(true);
+      expect(toolText(res)).toContain('continue_run dispatch failed');
+      expect(toolText(res)).toContain('mock start failure');
+      const state = readPersistedState(h, env.run_id);
+      expect(state.status).toBe('error');
+      expect(state.lastError).toContain('mock start failure');
+      expect(state.prompts).toHaveLength(2);
+      expect(state.prompts[1]?.completedAt).toBeDefined();
+    } finally {
+      await h.close();
+    }
+  });
+
   it('refuses to continue a discarded run', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
     try {
@@ -3136,6 +3228,43 @@ describe('crew serve — discard_run tool', () => {
       expect(cleanup).toHaveBeenCalledTimes(2);
       expect(cleanup).toHaveBeenNthCalledWith(1, runEnv.run_id);
       expect(cleanup).toHaveBeenNthCalledWith(2, runEnv.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks metadata discarded but skips worktree cleanup while the run is still in-flight', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'do' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId');
+      vi.spyOn(h.dispatcher, 'listInFlight').mockReturnValue([
+        { toolCallId: 'still-finishing', toolName: 'run_agent', runId: runEnv.run_id },
+      ]);
+
+      const discard = await h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+
+      expect(discard.isError).toBeFalsy();
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(existsSync(runEnv.worktree_path)).toBe(true);
+      expect(readPersistedState(h, runEnv.run_id).status).toBe('discarded');
+      expect(discard.structuredContent).toEqual({
+        run_id: runEnv.run_id,
+        ok: true,
+        cleanup_failed: true,
+        cleanup_errors: [
+          `worktree cleanup skipped: run "${runEnv.run_id}" still has in-flight work (run_agent)`,
+        ],
+      });
+      expect(toolText(discard)).toContain('Cleanup warning: worktree cleanup skipped');
     } finally {
       await h.close();
     }
@@ -4935,6 +5064,92 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
 });
 
 describe('crew serve — lifecycle', () => {
+  it('waits for in-flight dispatches to drain during shutdown grace', async () => {
+    let busy = true;
+    setTimeout(() => {
+      busy = false;
+    }, 25);
+    const startedAt = Date.now();
+
+    const drained = await waitForInFlightDrain({
+      listInFlight: () => busy
+        ? [{ toolCallId: 'tool-call', toolName: 'run_agent', runId: 'run-1' }]
+        : [],
+    }, { maxWaitMs: 200, pollIntervalMs: 5 });
+
+    expect(drained).toBe(true);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(20);
+  });
+
+  it('stops waiting for shutdown drain at the grace bound', async () => {
+    const startedAt = Date.now();
+
+    const drained = await waitForInFlightDrain({
+      listInFlight: () => [
+        { toolCallId: 'tool-call', toolName: 'run_agent', runId: 'run-1' },
+      ],
+    }, { maxWaitMs: 30, pollIntervalMs: 5 });
+
+    expect(drained).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(150);
+  });
+
+  it('waits for terminal state writes after in-flight dispatches drain', async () => {
+    const dispatcher = new ToolDispatcher();
+    let busy = true;
+    let resolvePersist!: () => void;
+    const persistPromise = new Promise<void>((resolve) => {
+      resolvePersist = resolve;
+    });
+    const runStateStore = {
+      markTerminal: vi.fn(() => persistPromise),
+    } as unknown as RunStateStore;
+
+    vi.spyOn(dispatcher, 'listInFlight').mockImplementation(() => busy
+      ? [{ toolCallId: 'tool-call', toolName: 'run_agent', runId: 'run-1' }]
+      : []);
+
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore,
+      runId: 'run-1',
+      agentName: 'mock',
+      toolCallId: 'tool-call',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+
+    emitter.emitter.emit('run:cancelled', {
+      toolCallId: 'tool-call',
+      toolName: 'run_agent',
+      reason: 'shutdown',
+      runId: 'run-1',
+    });
+    await expect(terminal).resolves.toMatchObject({ kind: 'cancelled' });
+
+    setTimeout(() => {
+      busy = false;
+    }, 10);
+    setTimeout(() => {
+      resolvePersist();
+    }, 30);
+
+    const startedAt = Date.now();
+    const drained = await waitForShutdownDrain(dispatcher, {
+      maxWaitMs: 200,
+      pollIntervalMs: 5,
+    });
+
+    expect(drained).toEqual({
+      inFlightDrained: true,
+      terminalPersistsDrained: true,
+    });
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(25);
+  });
+
   it('cancels in-flight dispatches when the dispatcher is stopped', async () => {
     let abortObserved = false;
     const adapter = makeMockAdapter({

@@ -43,8 +43,14 @@ import {
   formatProgressLines,
   type ProgressNotifier,
 } from '../../orchestrator/progress.js';
-import { dispatchRunAgentInternal } from '../../orchestrator/dispatch-run-agent-internal.js';
-import { installRunLifecycleListeners } from '../../orchestrator/run-lifecycle-listeners.js';
+import {
+  DispatchError,
+  dispatchRunAgentInternal,
+} from '../../orchestrator/dispatch-run-agent-internal.js';
+import {
+  drainPendingTerminalPersists,
+  installRunLifecycleListeners,
+} from '../../orchestrator/run-lifecycle-listeners.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRuns, type RunGcArgs } from '../../orchestrator/run-gc.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
@@ -331,6 +337,8 @@ export interface DiscardEnvelope {
   readonly cleanup_failed?: true;
   readonly cleanup_errors?: readonly string[];
 }
+
+export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 
 /**
  * The pieces a test or alternative entry point needs to drive the server
@@ -686,6 +694,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       if (preState.status === 'running') {
         return errorContent('continue_run: run is currently running; call cancel_run first.');
       }
+      const existingInFlight = inFlightForRun(dispatcher, args.run_id);
+      if (existingInFlight) {
+        return errorContent(
+          `continue_run: run "${args.run_id}" still has in-flight work ` +
+          `(${existingInFlight.toolName}); retry after it finishes or call cancel_run first.`,
+        );
+      }
       if (
         preState.status === 'discarded'
         || preState.status === 'merged'
@@ -732,17 +747,21 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       }
       const { state, composedPrompt, warnings } = appendResult;
 
+      const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
+        const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
+        await markContinueDispatchFailed(runStateStore, args.run_id, message);
+        return new DispatchError(message, { warnings });
+      };
+
       // Re-mirror uncommitted host state into the worktree so changes
       // the user made between turns are visible to this turn's agent.
       // Skip for read-only runs — they don't have a worktree we own.
-      // Best-effort: failures are logged inside the manager.
       if (state.readOnly !== true) {
         try {
           await worktreeManager.syncUncommittedToRunWorktree(args.run_id);
         } catch (err) {
-          logger.warn(
-            `continue_run: uncommitted-state sync failed for ${args.run_id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const dispatchErr = await rollbackContinuation(err);
+          return errorContent(dispatchErr.message);
         }
       }
 
@@ -764,18 +783,23 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         input: { ...args },
       });
 
-      return runDispatchAndRespond({
-        runId: args.run_id,
-        agentName: state.agentId,
-        worktreePath: state.worktreePath,
-        toolCallId,
-        task,
-        warnings,
-        dispatcher,
-        runStateStore,
-        progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
-        clientKind: getClientKind(),
-      });
+      try {
+        return await runDispatchAndRespond({
+          runId: args.run_id,
+          agentName: state.agentId,
+          worktreePath: state.worktreePath,
+          toolCallId,
+          task,
+          warnings,
+          dispatcher,
+          runStateStore,
+          progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
+          clientKind: getClientKind(),
+          onStartFailure: rollbackContinuation,
+        });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
     },
   );
 
@@ -911,6 +935,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       if (state?.status === 'running') {
         return errorContent('discard_run: run is currently running; call cancel_run first.');
       }
+      const existingInFlight = inFlightForRun(dispatcher, args.run_id);
       const cleanupErrors: string[] = [];
       try {
         if (state) {
@@ -919,13 +944,20 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           // it explicitly makes the contract clearer and avoids the
           // run-lock acquisition the cleanup helper takes.
           if (!state.readOnly) {
-            try {
-              const cleanup = await worktreeManager.cleanupByRunId(args.run_id);
-              if (!cleanup.success) {
-                cleanupErrors.push(...cleanup.errors);
+            if (existingInFlight) {
+              cleanupErrors.push(
+                `worktree cleanup skipped: run "${args.run_id}" still has in-flight work ` +
+                `(${existingInFlight.toolName})`,
+              );
+            } else {
+              try {
+                const cleanup = await worktreeManager.cleanupByRunId(args.run_id);
+                if (!cleanup.success) {
+                  cleanupErrors.push(...cleanup.errors);
+                }
+              } catch (err) {
+                cleanupErrors.push(err instanceof Error ? err.message : String(err));
               }
-            } catch (err) {
-              cleanupErrors.push(err instanceof Error ? err.message : String(err));
             }
           }
           if (state.status !== 'discarded') {
@@ -1113,14 +1145,23 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     const inFlight = dispatcher.inFlightCount();
+    const graceMs = resolveShutdownGraceMs();
     if (inFlight > 0) {
       logger.info(
         `crew serve received ${signal}; cancelling ${inFlight} in-flight task(s)`,
       );
       dispatcher.cancelAll(`Server received ${signal}`);
-      // Brief grace window so the cancel propagates and dispatcher emits
-      // its terminal events before the process tears down.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    const drained = await waitForShutdownDrain(dispatcher, { maxWaitMs: graceMs });
+    if (!drained.inFlightDrained) {
+      logger.warn(
+        `crew serve shutdown grace expired with ${dispatcher.inFlightCount()} task(s) still in-flight`,
+      );
+    }
+    if (!drained.terminalPersistsDrained) {
+      logger.warn(
+        'crew serve shutdown grace expired before all terminal run state writes finished',
+      );
     }
     process.exit(0);
   };
@@ -1177,6 +1218,12 @@ interface DispatchAndRespondArgs {
    */
   progress?: ProgressNotifier;
   /**
+   * Called only when `dispatcher.start()` throws synchronously before the
+   * task becomes in-flight. `continue_run` uses this to roll back the
+   * appendPrompt() state flip; run_agent has its own transaction path.
+   */
+  onStartFailure?: (err: unknown) => Promise<Error>;
+  /**
    * Host-CLI classification (claude-code / codex / gemini / unknown),
    * resolved once per server lifetime from the MCP initialize handshake.
    * Drives the "next step" copy in the dispatch envelope: Claude Code
@@ -1217,7 +1264,14 @@ async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<Tool
     toolCallId: args.toolCallId,
     progress: args.progress,
   });
-  args.dispatcher.start(args.task);
+  try {
+    args.dispatcher.start(args.task);
+  } catch (err) {
+    if (args.onStartFailure) {
+      throw await args.onStartFailure(err);
+    }
+    throw err;
+  }
 
   const summary = `Dispatched as "${args.runId}". ${nextStepSentence(args.clientKind)}`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
@@ -1619,6 +1673,53 @@ function resolveStaleRunGraceMs(): number {
 
 const STALE_RUN_GRACE_MS = resolveStaleRunGraceMs();
 
+function resolveShutdownGraceMs(): number {
+  const raw = process.env.CREW_SHUTDOWN_GRACE_MS;
+  if (raw === undefined) return DEFAULT_SHUTDOWN_GRACE_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_SHUTDOWN_GRACE_MS;
+  return Math.floor(parsed);
+}
+
+export async function waitForInFlightDrain(
+  dispatcher: Pick<ToolDispatcher, 'listInFlight'>,
+  options: {
+    readonly maxWaitMs?: number;
+    readonly pollIntervalMs?: number;
+  } = {},
+): Promise<boolean> {
+  const maxWaitMs = options.maxWaitMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? 50;
+  const deadline = Date.now() + maxWaitMs;
+  while (dispatcher.listInFlight().length > 0) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, remaining)));
+  }
+  return true;
+}
+
+export async function waitForShutdownDrain(
+  dispatcher: Pick<ToolDispatcher, 'listInFlight'>,
+  options: {
+    readonly maxWaitMs?: number;
+    readonly pollIntervalMs?: number;
+  } = {},
+): Promise<{
+  readonly inFlightDrained: boolean;
+  readonly terminalPersistsDrained: boolean;
+}> {
+  const maxWaitMs = options.maxWaitMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+  const startedAt = Date.now();
+  const inFlightDrained = await waitForInFlightDrain(dispatcher, options);
+  const elapsed = Date.now() - startedAt;
+  const remaining = Math.max(0, maxWaitMs - elapsed);
+  const terminalPersistsDrained = await drainPendingTerminalPersists({
+    maxWaitMs: remaining,
+  });
+  return { inFlightDrained, terminalPersistsDrained };
+}
+
 /**
  * Cross-adapter idle-stall watchdog threshold for dispatched runs, in ms. A
  * run whose stream emits nothing for this long is aborted (surfacing as
@@ -1669,6 +1770,32 @@ function dispatcherInFlightRunIds(dispatcher: ToolDispatcher): Set<string> {
       .map((entry) => entry.runId)
       .filter((runId): runId is string => typeof runId === 'string'),
   );
+}
+
+function inFlightForRun(
+  dispatcher: ToolDispatcher,
+  runId: string,
+): { toolCallId: string; toolName: string; runId?: string } | undefined {
+  return dispatcher.listInFlight().find((entry) => entry.runId === runId);
+}
+
+async function markContinueDispatchFailed(
+  runStateStore: RunStateStore,
+  runId: string,
+  message: string,
+): Promise<void> {
+  try {
+    await runStateStore.markTerminal(runId, {
+      status: 'error',
+      summary: message,
+      filesChanged: [],
+      lastError: message,
+    });
+  } catch (err) {
+    logger.warn(
+      `continue_run terminal rollback failed for ${runId}: ${errorMessage(err)}`,
+    );
+  }
 }
 
 async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> {
@@ -2012,6 +2139,10 @@ function errorContent(message: string): ToolCallReturn {
     content: [{ type: 'text' as const, text: message }],
     isError: true,
   };
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // Re-export RunStateV1 for tests that want to inspect persisted state.

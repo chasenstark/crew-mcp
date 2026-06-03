@@ -7,6 +7,10 @@ import type {
   TaskResult,
 } from './types.js';
 import { logger } from '../utils/logger.js';
+import {
+  processGroupSpawnOptions,
+  terminateProcessGroupOnAbort,
+} from './process-group.js';
 
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
@@ -112,15 +116,24 @@ export class GenericAdapter implements AgentAdapter {
       const subprocess = execa(this.command, args, {
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout } : {}),
+        ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
         reject: false,
       });
+      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+        subprocess,
+        task.constraints?.signal,
+      );
       if (task.onOutput && subprocess.stdout) {
         subprocess.stdout.on('data', (buf: Buffer) => {
           task.onOutput!(buf.toString('utf-8'));
         });
       }
-      result = await subprocess;
+      try {
+        result = await subprocess;
+      } finally {
+        disposeProcessGroupAbort();
+      }
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';
