@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, existsSync } from 'node:fs';
+import { readdirSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { logger } from '../utils/logger.js';
@@ -192,18 +192,16 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     if (runId === '.meta' || runId === '.locks') continue;
-    const statePath = join(runsDir, runId, 'state.json');
-    if (!existsSync(statePath)) continue;
-
-    let state: RunStateV1;
+    let state: RunStateV1 | undefined;
     try {
-      state = JSON.parse(readFileSync(statePath, 'utf-8')) as RunStateV1;
+      state = args.runStateStore.read(runId);
     } catch (err) {
       logger.warn(
         `run GC: failed to read state for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
     }
+    if (!state) continue;
     scanned += 1;
 
     // Only terminal runs of THIS repo are eligible. Legacy records with no
@@ -221,35 +219,58 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     const deleteRunDir = ageMs >= runDirTtlMs;
     if (!pastWorktreeTtl && !deleteRunDir) continue;
 
-    // A worktree is reclaimable only if its checkout is actually on disk —
-    // otherwise this run is past the window but has nothing to do (e.g.
-    // already merged + cleaned). We also git-remove a residual worktree
-    // whenever we're about to delete the run-dir, so an `rmSync` can never
-    // leave an orphaned git worktree registration behind.
-    const hasWorktree = existsSync(join(runsDir, runId, 'worktree'));
-    const worktreeReclaimed = hasWorktree && (pastWorktreeTtl || deleteRunDir);
-    if (!worktreeReclaimed && !deleteRunDir) continue;
+    // Reclaim is driven by the owned metadata record, not just the physical
+    // checkout path. cleanupByRunId can remove the checkout and then fail
+    // branch deletion; in that state the next pass must still retry from the
+    // .meta record instead of deleting the run-dir and stranding the branch.
+    const worktreePath = join(runsDir, runId, 'worktree');
+    let hasOwnedRecord: boolean;
+    try {
+      hasOwnedRecord = args.worktreeManager.hasOwnedRunWorktreeRecord(runId);
+    } catch (err) {
+      logger.warn(
+        `run GC: failed to read worktree metadata for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+    const hasWorktree = existsSync(worktreePath);
+    const shouldReclaimWorktree = (hasOwnedRecord || hasWorktree) && (pastWorktreeTtl || deleteRunDir);
+    if (!shouldReclaimWorktree && !deleteRunDir) continue;
 
-    const branchDeleted = worktreeReclaimed && state.status === 'merged';
+    if (args.dryRun) {
+      const worktreeReclaimed = shouldReclaimWorktree;
+      outcomes.push({
+        runId,
+        status: state.status,
+        ageDays: Math.floor(ageMs / (24 * 60 * 60 * 1000)),
+        worktreeReclaimed,
+        branchDeleted: worktreeReclaimed && state.status === 'merged',
+        runDirDeleted: deleteRunDir,
+      });
+      continue;
+    }
 
-    outcomes.push({
-      runId,
-      status: state.status,
-      ageDays: Math.floor(ageMs / (24 * 60 * 60 * 1000)),
-      worktreeReclaimed,
-      branchDeleted,
-      runDirDeleted: deleteRunDir,
-    });
-
-    if (args.dryRun) continue;
-
-    if (worktreeReclaimed) {
+    let worktreeReclaimed = false;
+    let branchDeleted = false;
+    if (shouldReclaimWorktree) {
       // Keep the branch for everything except merged runs, whose commits
       // are already in the merge target.
       try {
-        await args.worktreeManager.cleanupByRunId(runId, {
+        const cleanup = await args.worktreeManager.cleanupByRunId(runId, {
           keepBranch: state.status !== 'merged',
         });
+        worktreeReclaimed = cleanup.worktreeRemoved;
+        branchDeleted = state.status === 'merged' && cleanup.branchDeleted;
+        if (!cleanup.success) {
+          logger.warn(
+            `run GC: worktree reclaim incomplete for ${runId}: ${cleanup.errors.join('; ')}`,
+          );
+        }
+        if (cleanup.hadRecord && !cleanup.recordDeleted) {
+          logger.warn(
+            `run GC: owned worktree metadata retained for ${runId}; retrying on a later pass`,
+          );
+        }
       } catch (err) {
         logger.warn(
           `run GC: worktree reclaim failed for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -257,15 +278,48 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
       }
     }
 
-    if (deleteRunDir) {
+    let ownedRecordRemaining = hasOwnedRecord;
+    try {
+      ownedRecordRemaining = args.worktreeManager.hasOwnedRunWorktreeRecord(runId);
+    } catch (err) {
+      logger.warn(
+        `run GC: failed to re-read worktree metadata for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      ownedRecordRemaining = true;
+    }
+    const worktreeRemaining = existsSync(worktreePath);
+
+    let runDirDeleted = false;
+    if (deleteRunDir && !ownedRecordRemaining && !worktreeRemaining) {
       try {
         args.runStateStore.deleteRunDir(runId);
+        runDirDeleted = true;
       } catch (err) {
         logger.warn(
           `run GC: failed to delete run-dir for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    } else if (deleteRunDir && (ownedRecordRemaining || worktreeRemaining)) {
+      if (ownedRecordRemaining) {
+        logger.warn(
+          `run GC: keeping run-dir for ${runId}; owned worktree metadata still requires cleanup`,
+        );
+      }
+      if (worktreeRemaining) {
+        logger.warn(
+          `run GC: keeping run-dir for ${runId}; worktree directory still exists`,
+        );
+      }
     }
+
+    outcomes.push({
+      runId,
+      status: state.status,
+      ageDays: Math.floor(ageMs / (24 * 60 * 60 * 1000)),
+      worktreeReclaimed,
+      branchDeleted,
+      runDirDeleted,
+    });
   }
 
   return {

@@ -11,6 +11,15 @@ interface RunWorktreeRecord {
   createdAt: string;
 }
 
+export interface WorktreeCleanupResult {
+  readonly success: boolean;
+  readonly errors: string[];
+  readonly hadRecord: boolean;
+  readonly worktreeRemoved: boolean;
+  readonly branchDeleted: boolean;
+  readonly recordDeleted: boolean;
+}
+
 export type MergeRunResult =
   | ({ status: 'merged'; commitSha: string } & MergeRunCheckoutInfo)
   | ({ status: 'conflict'; conflicts: string[] } & MergeRunCheckoutInfo)
@@ -100,6 +109,10 @@ export class WorktreeManager {
 
   getProjectRoot(): string {
     return this.projectRoot;
+  }
+
+  hasOwnedRunWorktreeRecord(runId: string): boolean {
+    return this.readRunWorktreeRecord(runId) !== undefined;
   }
 
   getRunGitCommitWritablePaths(runId: string): RunGitCommitWritablePaths {
@@ -933,17 +946,30 @@ export class WorktreeManager {
    * while preserving the branch ref — used by the run GC so reclaiming a
    * stale worktree never drops unmerged commits (they survive as a
    * recoverable `crew-run/*` branch).
+   *
+   * Returns a best-effort cleanup outcome. `success: false` means the caller
+   * must assume the git worktree registration and/or branch still exists.
    */
   async cleanupByRunId(
     runId: string,
     options: { keepBranch?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<WorktreeCleanupResult> {
+    let result: WorktreeCleanupResult = {
+      success: true,
+      errors: [],
+      hadRecord: false,
+      worktreeRemoved: false,
+      branchDeleted: false,
+      recordDeleted: false,
+    };
     await this.withRunLock(runId, async () => {
       const record = this.readRunWorktreeRecord(runId);
       if (!record) return;
       const cleanup = await this.cleanupRunRecordedWorktree(record, options);
+      result = { ...cleanup, hadRecord: true };
       if (cleanup.success) {
         this.deleteRunWorktreeRecord(runId);
+        result = { ...result, recordDeleted: !existsSync(this.runMetadataFilePath(runId)) };
         // Remove the run directory ONLY if it's empty after the worktree
         // is gone. v2 keeps state.json + events.log alongside the worktree
         // (so get_run_status can still report on a discarded run); we
@@ -960,6 +986,7 @@ export class WorktreeManager {
         }
       }
     });
+    return result;
   }
 
   private pruneRunWorktreesOnce(projectRoot: string): void {
@@ -1168,14 +1195,19 @@ export class WorktreeManager {
   private async cleanupRunRecordedWorktree(
     record: RunWorktreeRecord,
     options: { keepBranch?: boolean } = {},
-  ): Promise<{ success: boolean; errors: string[] }> {
+  ): Promise<WorktreeCleanupResult> {
     const errors: string[] = [];
+    let worktreeRemoved = false;
+    let branchDeleted = false;
 
     try {
       await this.git.raw(['worktree', 'remove', record.worktreePath, '--force']);
+      worktreeRemoved = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (!this.isMissingWorktreeError(msg)) {
+      if (this.isMissingWorktreeError(msg)) {
+        worktreeRemoved = true;
+      } else {
         logger.warn(`Failed to remove run worktree ${record.worktreePath}: ${msg}`);
         errors.push(`remove worktree: ${msg}`);
       }
@@ -1183,18 +1215,26 @@ export class WorktreeManager {
     if (!options.keepBranch) {
       try {
         await this.git.deleteLocalBranch(record.branchName, true);
+        branchDeleted = true;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!this.isMissingBranchError(msg)) {
+        if (this.isMissingBranchError(msg)) {
+          branchDeleted = true;
+        } else {
           logger.warn(`Failed to delete branch ${record.branchName}: ${msg}`);
           errors.push(`delete branch: ${msg}`);
         }
       }
     }
 
+    const branchHandled = options.keepBranch === true || branchDeleted;
     return {
-      success: errors.length === 0,
+      success: errors.length === 0 && worktreeRemoved && branchHandled,
       errors,
+      hadRecord: true,
+      worktreeRemoved,
+      branchDeleted,
+      recordDeleted: false,
     };
   }
 

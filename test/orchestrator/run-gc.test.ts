@@ -5,7 +5,7 @@
  * assertions are about the actual on-disk + git-ref state.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -149,6 +149,7 @@ describe('gcTerminalRuns', () => {
 
   const wtPath = (runId: string): string => join(crewHome, 'runs', runId, 'worktree');
   const statePath = (runId: string): string => join(crewHome, 'runs', runId, 'state.json');
+  const metaPath = (runId: string): string => join(crewHome, 'runs', '.meta', `${runId}.json`);
 
   it('reclaims worktree past the worktree TTL, keeps the branch and run-dir', async () => {
     const branch = await seedRun('aaaaaaaa-0000-0000-0000-000000000001', {
@@ -190,6 +191,133 @@ describe('gcTerminalRuns', () => {
     });
 
     expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+  });
+
+  it('keeps the run-dir and counts no reclaim when worktree cleanup reports failure', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000012';
+    await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });
+    vi.spyOn(manager, 'cleanupByRunId').mockResolvedValue({
+      success: false,
+      errors: ['remove worktree: mocked failure'],
+      hadRecord: true,
+      worktreeRemoved: false,
+      branchDeleted: false,
+      recordDeleted: false,
+    });
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
+    expect(existsSync(statePath(runId))).toBe(true);
+    expect(result.worktreesReclaimed).toBe(0);
+    expect(result.runDirsDeleted).toBe(0);
+    expect(result.outcomes).toMatchObject([
+      {
+        runId,
+        worktreeReclaimed: false,
+        branchDeleted: false,
+        runDirDeleted: false,
+      },
+    ]);
+  });
+
+  it('retries partial owned cleanup across passes before deleting the run-dir', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000015';
+    const branch = await seedRun(runId, {
+      status: 'merged',
+      repoRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const originalCleanup = manager.cleanupByRunId.bind(manager);
+    const cleanup = vi.spyOn(manager, 'cleanupByRunId');
+    cleanup
+      .mockImplementationOnce(async () => {
+        execSync(`git worktree remove --force ${JSON.stringify(wtPath(runId))}`, { cwd: repoRoot });
+        return {
+          success: false,
+          errors: ['delete branch: mocked failure'],
+          hadRecord: true,
+          worktreeRemoved: true,
+          branchDeleted: false,
+          recordDeleted: false,
+        };
+      })
+      .mockImplementation((id, options) => originalCleanup(id, options));
+
+    const first = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(existsSync(wtPath(runId))).toBe(false);
+    expect(existsSync(metaPath(runId))).toBe(true);
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
+    expect(branchExists(branch)).toBe(true);
+    expect(first.outcomes).toMatchObject([
+      {
+        runId,
+        worktreeReclaimed: true,
+        branchDeleted: false,
+        runDirDeleted: false,
+      },
+    ]);
+
+    const second = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 32 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(existsSync(metaPath(runId))).toBe(false);
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+    expect(branchExists(branch)).toBe(false);
+    expect(second.outcomes).toMatchObject([
+      {
+        runId,
+        worktreeReclaimed: true,
+        branchDeleted: true,
+        runDirDeleted: true,
+      },
+    ]);
+  });
+
+  it('keeps the run-dir when worktree cleanup throws', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000013';
+    await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });
+    vi.spyOn(manager, 'cleanupByRunId').mockRejectedValue(new Error('mocked throw'));
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
+    expect(result.worktreesReclaimed).toBe(0);
+    expect(result.runDirsDeleted).toBe(0);
   });
 
   it('deletes the branch when GC reclaims a merged run', async () => {
@@ -249,5 +377,42 @@ describe('gcTerminalRuns', () => {
 
     expect(existsSync(wtPath(runId))).toBe(true);
     expect(existsSync(statePath(runId))).toBe(true);
+  });
+
+  it('skips records rejected by the run-state schema guard', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000014';
+    await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });
+    writeFileSync(
+      statePath(runId),
+      JSON.stringify({
+        schemaVersion: 2,
+        runId,
+        agentId: 'mock',
+        status: 'success',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        completedAt: '2026-01-01T00:00:00.000Z',
+        worktreePath: wtPath(runId),
+        repoRoot,
+        prompts: [],
+        filesChanged: [],
+      }, null, 2),
+      'utf-8',
+    );
+    const cleanup = vi.spyOn(manager, 'cleanupByRunId');
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
+    expect(result.scanned).toBe(0);
+    expect(result.outcomes).toEqual([]);
   });
 });

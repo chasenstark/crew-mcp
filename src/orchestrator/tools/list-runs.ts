@@ -111,7 +111,12 @@ export function listRuns(
   const limit = input.limit ?? DEFAULT_LIST_RUNS_LIMIT;
 
   const states: RunStateV1[] = [];
-  const entries = listRunsFs.readdirSync(runsBasePath, { withFileTypes: true });
+  let entries: fs.Dirent[];
+  try {
+    entries = listRunsFs.readdirSync(runsBasePath, { withFileTypes: true });
+  } catch {
+    return { runs: [] };
+  }
   const seenRunIds = new Set<string>();
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;

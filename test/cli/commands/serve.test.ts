@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -42,7 +42,7 @@ import { RunStateStore, type RunStateV1 } from '../../../src/orchestrator/run-st
 import { DEFAULT_PEER_MESSAGE_CAPS } from '../../../src/orchestrator/peer-messages/caps.js';
 import { buildPrependBlock } from '../../../src/orchestrator/peer-messages/prepend.js';
 import type { PeerMessageRendered } from '../../../src/orchestrator/peer-messages/schema.js';
-import type { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
+import { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import {
   getRunStatusInputSchema,
   MAX_EVENTS_TAIL_CAP,
@@ -859,15 +859,182 @@ describe('crew serve — stale-run sweeper', () => {
     }
   });
 
-  it('skips runs whose recorded serverPid is still alive (multi-server safety)', async () => {
+  it('marks same-server running records abandoned only when no in-flight task matches', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-same-server-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-same-server-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const now = '2026-05-09T00:00:00.000Z';
+
+    const writeState = (runId: string): void => {
+      const dir = join(runsDir, runId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          runId,
+          agentId: 'mock-coder',
+          status: 'running',
+          startedAt: now,
+          worktreePath: join(dir, 'worktree'),
+          repoRoot: root,
+          serverPid: process.pid,
+          prompts: [{ turn: 1, prompt: 'go', startedAt: now }],
+          filesChanged: [],
+        }, null, 2),
+        'utf-8',
+      );
+    };
+
+    writeState('orphan-running');
+    writeState('in-flight-running');
+
+    const runStateStore = new RunStateStore({ crewHome, repoRoot: root });
+    const dispatcher = new ToolDispatcher();
+    const releaseInFlight = createDeferred<unknown>();
+    dispatcher.start({
+      toolCallId: 'tool-call-1',
+      toolName: 'run_agent',
+      runId: 'in-flight-running',
+      run: () => releaseInFlight.promise,
+    });
+
+    try {
+      await scheduleStaleRunSweep({ crewHome, projectRoot: root, runStateStore, dispatcher });
+
+      const orphan = JSON.parse(
+        readFileSync(join(runsDir, 'orphan-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+      const inFlight = JSON.parse(
+        readFileSync(join(runsDir, 'in-flight-running', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+
+      expect(orphan.status).toBe('error');
+      expect(orphan.lastError).toBe('abandoned (not in-flight)');
+      expect(inFlight.status).toBe('running');
+      expect(inFlight.lastError).toBeUndefined();
+    } finally {
+      releaseInFlight.resolve({});
+      await new Promise((resolve) => setImmediate(resolve));
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does not abandon a same-server run that appears in the fresh in-flight check', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-fresh-inflight-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-fresh-inflight-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const runId = 'late-in-flight-running';
+    const dir = join(runsDir, runId);
+    const ancient = '2026-05-09T00:00:00.000Z';
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        runId,
+        agentId: 'mock-coder',
+        status: 'running',
+        startedAt: ancient,
+        worktreePath: join(dir, 'worktree'),
+        repoRoot: root,
+        serverPid: process.pid,
+        prompts: [{ turn: 1, prompt: 'go', startedAt: ancient }],
+        filesChanged: [],
+      }, null, 2),
+      'utf-8',
+    );
+
+    const runStateStore = new RunStateStore({ crewHome, repoRoot: root });
+    const dispatcher = new ToolDispatcher();
+    vi.spyOn(dispatcher, 'listInFlight')
+      .mockReturnValueOnce([])
+      .mockReturnValue([
+        { toolCallId: 'tool-call-late', toolName: 'run_agent', runId },
+      ]);
+
+    try {
+      await scheduleStaleRunSweep({ crewHome, projectRoot: root, runStateStore, dispatcher });
+
+      const state = JSON.parse(
+        readFileSync(join(dir, 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+      expect(state.status).toBe('running');
+      expect(state.lastError).toBeUndefined();
+      expect(dispatcher.listInFlight).toHaveBeenCalledTimes(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the stale-run grace to same-server no-inflight records', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-same-grace-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-same-grace-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const fresh = new Date().toISOString();
+    const ancient = '2026-05-09T00:00:00.000Z';
+
+    const writeState = (runId: string, startedAt: string): void => {
+      const dir = join(runsDir, runId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'state.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          runId,
+          agentId: 'mock-coder',
+          status: 'running',
+          startedAt,
+          worktreePath: join(dir, 'worktree'),
+          repoRoot: root,
+          serverPid: process.pid,
+          prompts: [{ turn: 1, prompt: 'go', startedAt }],
+          filesChanged: [],
+        }, null, 2),
+        'utf-8',
+      );
+    };
+
+    writeState('fresh-same-server', fresh);
+    writeState('stale-same-server', ancient);
+
+    const runStateStore = new RunStateStore({ crewHome, repoRoot: root });
+    const dispatcher = new ToolDispatcher();
+
+    try {
+      await scheduleStaleRunSweep({ crewHome, projectRoot: root, runStateStore, dispatcher });
+
+      const freshState = JSON.parse(
+        readFileSync(join(runsDir, 'fresh-same-server', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+      const staleState = JSON.parse(
+        readFileSync(join(runsDir, 'stale-same-server', 'state.json'), 'utf-8'),
+      ) as { status: string; lastError?: string };
+
+      expect(freshState.status).toBe('running');
+      expect(freshState.lastError).toBeUndefined();
+      expect(staleState.status).toBe('error');
+      expect(staleState.lastError).toBe('abandoned (not in-flight)');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('skips runs whose recorded serverPid belongs to a different live server', async () => {
     // Regression: every dispatched agent's MCP connection spawns its own
     // crew-mcp server, which would otherwise mark its sibling agents'
     // in-flight runs as abandoned. Records that include a serverPid the
-    // OS reports as alive must be left untouched.
+    // OS reports as alive must be left untouched when owned by another PID.
     const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-pid-'));
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-pid-home-'));
     const runsDir = join(crewHome, 'runs');
     const now = '2026-05-09T00:00:00.000Z';
+    const otherServer = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000);'], {
+      stdio: 'ignore',
+    });
 
     const writeState = (
       runId: string,
@@ -893,13 +1060,14 @@ describe('crew serve — stale-run sweeper', () => {
       );
     };
 
-    // Use the test process's own PID as a guaranteed-alive PID. Use a
-    // PID that is virtually certain to be unused (Linux/macOS PIDs are
-    // bounded; 2_000_000_000 is past every modern kernel's pid_max).
-    const ALIVE_PID = process.pid;
+    // Use a spawned child as a guaranteed different live PID. Use a PID that
+    // is virtually certain to be unused (Linux/macOS PIDs are bounded;
+    // 2_000_000_000 is past every modern kernel's pid_max).
+    const ALIVE_PID = otherServer.pid;
     const DEAD_PID = 2_000_000_000;
+    expect(ALIVE_PID).toBeDefined();
 
-    writeState('alive-pid-running', ALIVE_PID);
+    writeState('alive-pid-running', ALIVE_PID!);
     writeState('dead-pid-running', DEAD_PID);
 
     try {
@@ -922,6 +1090,52 @@ describe('crew serve — stale-run sweeper', () => {
       expect(alive.lastError).toBeUndefined();
       expect(dead.status).toBe('error');
       expect(dead.lastError).toBe('abandoned (server restart)');
+    } finally {
+      otherServer.kill();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does not act on running records rejected by the run-state schema guard', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-schema-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-schema-home-'));
+    const runsDir = join(crewHome, 'runs');
+    const runId = 'future-schema-running';
+    const dir = join(runsDir, runId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'state.json'),
+      JSON.stringify({
+        schemaVersion: 2,
+        runId,
+        agentId: 'mock-coder',
+        status: 'running',
+        startedAt: '2026-05-09T00:00:00.000Z',
+        worktreePath: join(dir, 'worktree'),
+        repoRoot: root,
+        serverPid: process.pid,
+        prompts: [{ turn: 1, prompt: 'go', startedAt: '2026-05-09T00:00:00.000Z' }],
+        filesChanged: [],
+      }, null, 2),
+      'utf-8',
+    );
+
+    try {
+      const server = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+      });
+      await getStaleRunSweep();
+      await server.server.close();
+
+      const state = JSON.parse(
+        readFileSync(join(dir, 'state.json'), 'utf-8'),
+      ) as { schemaVersion: number; status: string; lastError?: string };
+      expect(state.schemaVersion).toBe(2);
+      expect(state.status).toBe('running');
+      expect(state.lastError).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
@@ -1006,12 +1220,13 @@ describe('crew serve — stale-run sweeper', () => {
     const root = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-flight-'));
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-flight-home-'));
     const runStateStore = new RunStateStore({ crewHome, repoRoot: root });
+    const dispatcher = new ToolDispatcher();
     const sweepStarted = createDeferred<void>();
     const releaseSweep = createDeferred<void>();
     let calls = 0;
 
     try {
-      const args = { crewHome, projectRoot: root, runStateStore };
+      const args = { crewHome, projectRoot: root, runStateStore, dispatcher };
       const first = scheduleStaleRunSweep(args, async () => {
         calls += 1;
         sweepStarted.resolve();
@@ -2328,7 +2543,14 @@ describe('crew serve — merge_run tool', () => {
       });
       const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
-      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId').mockResolvedValue(undefined);
+      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId').mockResolvedValue({
+        success: true,
+        errors: [],
+        hadRecord: true,
+        worktreeRemoved: true,
+        branchDeleted: true,
+        recordDeleted: true,
+      });
       vi.spyOn(h.worktreeManager, 'mergeRunWorktree').mockResolvedValue({
         status: 'merged',
         commitSha: 'abc123',
@@ -2846,6 +3068,74 @@ describe('crew serve — discard_run tool', () => {
       });
       const s = status.structuredContent as { status: string };
       expect(s.status).toBe('discarded');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks discarded when cleanup fails and retries cleanup on repeat discard', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'partial-cleanup.txt'), 'cleanup warning', 'utf-8');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'do' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId')
+        .mockResolvedValueOnce({
+          success: false,
+          errors: ['delete branch: mocked failure'],
+          hadRecord: true,
+          worktreeRemoved: true,
+          branchDeleted: false,
+          recordDeleted: false,
+        })
+        .mockResolvedValueOnce({
+          success: true,
+          errors: [],
+          hadRecord: true,
+          worktreeRemoved: true,
+          branchDeleted: true,
+          recordDeleted: true,
+        });
+
+      const first = await h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect(first.isError).toBeFalsy();
+      expect(toolText(first)).toBe(
+        `**Discarded** \`${runEnv.run_id}\`\n\nCleanup warning: delete branch: mocked failure`,
+      );
+      expect(first.structuredContent).toEqual({
+        run_id: runEnv.run_id,
+        ok: true,
+        cleanup_failed: true,
+        cleanup_errors: ['delete branch: mocked failure'],
+      });
+      expect(readPersistedState(h, runEnv.run_id).status).toBe('discarded');
+
+      const second = await h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect(second.isError).toBeFalsy();
+      expect(second.structuredContent).toEqual({
+        run_id: runEnv.run_id,
+        ok: true,
+      });
+      expect(cleanup).toHaveBeenCalledTimes(2);
+      expect(cleanup).toHaveBeenNthCalledWith(1, runEnv.run_id);
+      expect(cleanup).toHaveBeenNthCalledWith(2, runEnv.run_id);
     } finally {
       await h.close();
     }

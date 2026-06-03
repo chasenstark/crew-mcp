@@ -140,7 +140,12 @@ async function cleanupAllocatedWorktree(
 ): Promise<void> {
   if (plan.readOnly) return;
   try {
-    await ctx.worktreeManager.cleanupByRunId(plan.runId);
+    const cleanup = await ctx.worktreeManager.cleanupByRunId(plan.runId);
+    if (!cleanup.success) {
+      logger.warn(
+        `run_agent cleanup after ${reason} failed: ${cleanup.errors.join('; ')}`,
+      );
+    }
   } catch (err) {
     logger.warn(
       `run_agent cleanup after ${reason} failed: ${errorMessage(err)}`,

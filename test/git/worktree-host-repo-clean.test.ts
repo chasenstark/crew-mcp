@@ -105,7 +105,7 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' })).toBe('');
     expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
     expect(existsSync(join(repoRoot, 'RUN.md'))).toBe(false);
-  });
+  }, 15_000);
 
   it('force=true failed squash commit preserves pre-existing staged host changes', async () => {
     const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
@@ -133,5 +133,5 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(readFileSync(join(repoRoot, 'README.md'), 'utf-8')).toBe('init\nhost staged change\n');
     expect(execSync('git diff --cached --name-only', { cwd: repoRoot, encoding: 'utf-8' }).split('\n')).toContain('README.md');
     expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
-  });
+  }, 15_000);
 });

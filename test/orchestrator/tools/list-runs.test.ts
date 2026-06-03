@@ -92,6 +92,17 @@ describe('listRuns', () => {
     expect(out.runs.map((run) => run.run_id)).toEqual(['run-3', 'run-2']);
   });
 
+  it('returns an empty list when the top-level runs dir read fails mid-scan', () => {
+    writeState({ runId: 'run-1', status: 'running', repoRoot });
+    resetListRunsFs = setListRunsFsForTest({
+      readdirSync() {
+        throw new Error('runs dir vanished');
+      },
+    });
+
+    expect(listRuns({}, { crewHome, repoRoot })).toEqual({ runs: [] });
+  });
+
   it('sorts by completedAt, falls back to startedAt, and breaks ties by run_id descending', () => {
     writeState({ runId: 'run-a', status: 'success', repoRoot, completedAt: iso(3) });
     writeState({ runId: 'run-b', status: 'error', repoRoot, completedAt: iso(3) });

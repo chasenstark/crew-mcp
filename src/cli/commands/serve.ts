@@ -24,7 +24,7 @@
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, realpathSync, type Dirent } from 'node:fs';
+import { readdirSync, realpathSync, type Dirent } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -328,6 +328,8 @@ export interface MergeEnvelope {
 export interface DiscardEnvelope {
   readonly run_id: string;
   readonly ok: true;
+  readonly cleanup_failed?: true;
+  readonly cleanup_errors?: readonly string[];
 }
 
 /**
@@ -348,6 +350,7 @@ export type StaleRunSweepArgs = {
   crewHome: string;
   projectRoot: string;
   runStateStore: RunStateStore;
+  dispatcher: ToolDispatcher;
 };
 
 let staleRunSweepPromise: Promise<void> | null = null;
@@ -446,7 +449,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const dispatcher = new ToolDispatcher({ stallTimeoutMs: resolveDispatchStallTimeoutMs() });
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
   void scheduleStaleRunSweep(
-    { crewHome, projectRoot, runStateStore },
+    { crewHome, projectRoot, runStateStore, dispatcher },
     options.staleRunSweeper,
   );
   void scheduleRunGc(
@@ -843,7 +846,14 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           // semantics. If cleanup fails, the merge still succeeded
           // and the captain can retry via discard_run.
           try {
-            await worktreeManager.cleanupByRunId(args.run_id);
+            const cleanup = await worktreeManager.cleanupByRunId(args.run_id);
+            if (!cleanup.success) {
+              logger.warn(
+                `merge_run ${args.run_id}: worktree cleanup failed after `
+                + `successful merge — call discard_run to retry. Error: `
+                + cleanup.errors.join('; '),
+              );
+            }
           } catch (err) {
             logger.warn(
               `merge_run ${args.run_id}: worktree cleanup failed after `
@@ -894,29 +904,46 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: discardRunInputSchema.shape,
     },
     async (args) => {
-      // Idempotent: if state.json doesn't exist or run is already discarded,
-      // succeed quietly.
+      // Idempotent: if state.json doesn't exist, succeed quietly. Already
+      // discarded non-read-only runs still retry residual cleanup while an
+      // owned worktree metadata record exists.
       const state = runStateStore.read(args.run_id);
       if (state?.status === 'running') {
         return errorContent('discard_run: run is currently running; call cancel_run first.');
       }
+      const cleanupErrors: string[] = [];
       try {
-        if (state && state.status !== 'discarded') {
+        if (state) {
           // Read-only runs never allocated a worktree, so the
           // worktree-cleanup branch would no-op anyway — but skipping
           // it explicitly makes the contract clearer and avoids the
           // run-lock acquisition the cleanup helper takes.
           if (!state.readOnly) {
-            await worktreeManager.cleanupByRunId(args.run_id);
+            try {
+              const cleanup = await worktreeManager.cleanupByRunId(args.run_id);
+              if (!cleanup.success) {
+                cleanupErrors.push(...cleanup.errors);
+              }
+            } catch (err) {
+              cleanupErrors.push(err instanceof Error ? err.message : String(err));
+            }
           }
-          await runStateStore.markDiscarded(args.run_id);
+          if (state.status !== 'discarded') {
+            await runStateStore.markDiscarded(args.run_id);
+          }
         }
       } catch (err) {
         return errorContent(
           err instanceof Error ? err.message : `discard_run failed: ${String(err)}`,
         );
       }
-      const env: DiscardEnvelope = { run_id: args.run_id, ok: true };
+      const env: DiscardEnvelope = {
+        run_id: args.run_id,
+        ok: true,
+        ...(cleanupErrors.length > 0
+          ? { cleanup_failed: true as const, cleanup_errors: cleanupErrors }
+          : {}),
+      };
       return markdownContent(renderDiscardMarkdown(env), env);
     },
   );
@@ -1628,9 +1655,26 @@ function latestStampedAt(state: RunStateV1): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+function isWithinStaleRunGrace(state: RunStateV1): boolean {
+  const lastStampedAt = latestStampedAt(state);
+  if (lastStampedAt === undefined) return false;
+  const ageMs = Date.now() - lastStampedAt;
+  return Number.isFinite(ageMs) && ageMs >= 0 && ageMs < STALE_RUN_GRACE_MS;
+}
+
+function dispatcherInFlightRunIds(dispatcher: ToolDispatcher): Set<string> {
+  return new Set(
+    dispatcher
+      .listInFlight()
+      .map((entry) => entry.runId)
+      .filter((runId): runId is string => typeof runId === 'string'),
+  );
+}
+
 async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> {
   const runsDir = join(args.crewHome, 'runs');
   const currentRepoRoot = resolveComparableRepoRoot(args.projectRoot);
+  const initiallyInFlightRunIds = dispatcherInFlightRunIds(args.dispatcher);
   let entries: Dirent[];
   try {
     entries = readdirSync(runsDir, { withFileTypes: true });
@@ -1645,34 +1689,49 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     if (runId === '.meta' || runId === '.locks') continue;
-    const statePath = join(runsDir, runId, 'state.json');
-    if (!existsSync(statePath)) continue;
-    let state: RunStateV1;
+    let state: RunStateV1 | undefined;
     try {
-      state = JSON.parse(readFileSync(statePath, 'utf-8')) as RunStateV1;
+      state = args.runStateStore.read(runId);
     } catch (err) {
       logger.warn(
         `stale-run sweeper: failed to read state for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
     }
+    if (!state) continue;
 
     if (state.status !== 'running') continue;
     if (state.repoRoot === undefined) continue;
     if (resolveComparableRepoRoot(state.repoRoot) !== currentRepoRoot) continue;
-    // Multi-server safety: every dispatched agent's MCP connection
-    // spawns its own crew-mcp server. Without this gate, each
-    // sub-server's startup sweep would mark its sibling agents'
-    // in-flight runs as abandoned within seconds of dispatch.
-    //
-    // Skip if serverPid is missing (legacy records pre-dating the
-    // field — we don't know if they're still owned, so don't kill
-    // them; user can `discard_run` manually if truly stale) OR if
-    // serverPid resolves to a live process. Only sweep records we
-    // can prove are abandoned (PID set, ESRCH on lookup).
-    if (state.serverPid === undefined || isProcessAlive(state.serverPid)) {
+    // Skip if serverPid is missing (legacy records pre-dating the field —
+    // we don't know if they're still owned, so don't kill them; user can
+    // `discard_run` manually if truly stale).
+    if (state.serverPid === undefined) {
       continue;
     }
+
+    // Same-server orphan recovery: if this live process stamped the record
+    // but the dispatcher no longer has a matching in-flight task, the agent
+    // lifecycle listener was lost and no other server can finish it for us.
+    // Match by runId, the stable id exposed by listInFlight(). A pre-scan
+    // snapshot is only an early skip: before marking, apply the same grace
+    // used for dead-PID recovery and re-query in-flight state to avoid
+    // racing a just-created or just-completing task.
+    if (state.serverPid === process.pid) {
+      if (initiallyInFlightRunIds.has(runId)) continue;
+      if (isWithinStaleRunGrace(state)) continue;
+      if (dispatcherInFlightRunIds(args.dispatcher).has(runId)) continue;
+      await markRunAbandoned(args.runStateStore, runId, 'abandoned (not in-flight)');
+      continue;
+    }
+
+    // Multi-server safety: every dispatched agent's MCP connection spawns
+    // its own crew-mcp server. A different live PID may legitimately own
+    // this run, so leave it alone.
+    if (isProcessAlive(state.serverPid)) {
+      continue;
+    }
+
     // Same-second restart race: if the host is recycling crew-mcp
     // within ~seconds of dispatch (observed under Conductor — see
     // ABANDONED_SERVER_RESTART_DIAGNOSIS) the new server can boot
@@ -1687,26 +1746,28 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
     // `prompts[].startedAt` because `serverPid` is re-stamped on
     // `appendPrompt` (continue_run), so a long-lived run that just
     // received a new prompt should be protected too.
-    const lastStampedAt = latestStampedAt(state);
-    if (lastStampedAt !== undefined) {
-      const ageMs = Date.now() - lastStampedAt;
-      if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < STALE_RUN_GRACE_MS) {
-        continue;
-      }
-    }
+    if (isWithinStaleRunGrace(state)) continue;
 
-    try {
-      await args.runStateStore.markTerminal(runId, {
-        status: 'error',
-        summary: 'abandoned (server restart)',
-        filesChanged: [],
-        lastError: 'abandoned (server restart)',
-      });
-    } catch (err) {
-      logger.warn(
-        `stale-run sweeper: failed to mark ${runId} abandoned: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    await markRunAbandoned(args.runStateStore, runId, 'abandoned (server restart)');
+  }
+}
+
+async function markRunAbandoned(
+  runStateStore: RunStateStore,
+  runId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await runStateStore.markTerminal(runId, {
+      status: 'error',
+      summary: reason,
+      filesChanged: [],
+      lastError: reason,
+    });
+  } catch (err) {
+    logger.warn(
+      `stale-run sweeper: failed to mark ${runId} abandoned: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -1866,7 +1927,11 @@ function checkoutEnvelope(result: {
 }
 
 function renderDiscardMarkdown(env: DiscardEnvelope): string {
-  return `**Discarded** ${mdInlineCode(env.run_id)}`;
+  const base = `**Discarded** ${mdInlineCode(env.run_id)}`;
+  if (!env.cleanup_failed || !env.cleanup_errors || env.cleanup_errors.length === 0) {
+    return base;
+  }
+  return `${base}\n\nCleanup warning: ${env.cleanup_errors.join('; ')}`;
 }
 
 function renderCancelMarkdown(env: {
