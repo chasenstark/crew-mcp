@@ -30,14 +30,12 @@
 
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import type { EffortLevel } from '../adapters/types.js';
+import { atomicWrite } from '../utils/atomic-write.js';
 import { logger } from '../utils/logger.js';
 
 export type { EffortLevel };
@@ -232,11 +230,8 @@ function coerceEntry(agentName: string, value: unknown): AgentPreferences | unde
  */
 export function writeAgentPrefsFile(crewHome: string, data: AgentPrefsMap): void {
   const path = resolveAgentPrefsPath(crewHome);
-  mkdirSync(dirname(path), { recursive: true });
   const serialized = JSON.stringify(data, null, 2) + '\n';
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, serialized, 'utf-8');
-  renameSync(tmp, path);
+  atomicWrite(path, serialized);
 }
 
 /**

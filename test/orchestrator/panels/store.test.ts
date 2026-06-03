@@ -10,6 +10,7 @@ import {
 import {
   panelDir,
   readPanelState,
+  snapshotPanelReviewerTerminal,
   writePanelStateAtomic,
 } from '../../../src/orchestrator/panels/store.js';
 
@@ -72,5 +73,17 @@ describe('panel store', () => {
     mkdirSync(dir);
     writeFileSync(join(dir, 'panel.json'), JSON.stringify({ ...state(), schemaVersion: 2 }), 'utf-8');
     expect(() => readPanelState(dir)).toThrow(/^run_panel\.unknown_schema_version:/);
+  });
+
+  it('snapshotPanelReviewerTerminal throws instead of silently dropping a missing reviewer', () => {
+    const dir = join(root, 'panel');
+    mkdirSync(dir);
+    writePanelStateAtomic(dir, state());
+
+    expect(() => snapshotPanelReviewerTerminal(dir, 'missing-run', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: [],
+    })).toThrow(/^run_panel\.snapshot_missing_reviewer:/);
   });
 });

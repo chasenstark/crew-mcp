@@ -35,6 +35,19 @@ describe('panelStateSchemaV1', () => {
           dispatched: true,
           dispatchedAt: '2026-05-14T00:01:00.000Z',
           dispatchWarnings: ['peer_messages.body_truncated: item[0]'],
+          terminalSnapshot: {
+            status: 'success',
+            summary: 'reviewed',
+            filesChanged: ['src/a.ts'],
+            completedAt: '2026-05-14T00:02:00.000Z',
+          },
+        },
+        {
+          runId: null,
+          agentId: 'gemini',
+          dispatched: false,
+          pending: true,
+          dispatchWarnings: [],
         },
         {
           runId: null,

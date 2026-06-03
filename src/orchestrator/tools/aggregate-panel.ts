@@ -47,6 +47,10 @@ export function aggregatePanelHandler(
     try {
       state = ctx.runStateStore.read(reviewer.runId);
     } catch (err) {
+      if (reviewer.terminalSnapshot) {
+        reviewerStates.set(reviewer.runId, reviewer.terminalSnapshot);
+        continue;
+      }
       reviewerStates.set(reviewer.runId, {
         state_unavailable: true,
         reason: errorMessage(err),
@@ -54,6 +58,10 @@ export function aggregatePanelHandler(
       continue;
     }
     if (!state) {
+      if (reviewer.terminalSnapshot) {
+        reviewerStates.set(reviewer.runId, reviewer.terminalSnapshot);
+        continue;
+      }
       reviewerStates.set(reviewer.runId, {
         state_unavailable: true,
         reason: `missing state for run ${reviewer.runId}`,

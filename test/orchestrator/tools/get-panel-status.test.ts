@@ -137,6 +137,42 @@ describe('getPanelStatusHandler', () => {
     });
   });
 
+  it('falls back to panel terminalSnapshot when reviewer state is missing', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    await createRunState(h, { runId: 'r-snap', status: 'success' });
+    rmSync(join(h.crewHome, 'runs', 'r-snap', 'state.json'));
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: 'r-snap',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:01.000Z',
+          dispatchWarnings: [],
+          terminalSnapshot: {
+            status: 'success',
+            summary: 'durable summary',
+            filesChanged: ['review.md'],
+            completedAt: '2026-05-14T00:00:02.000Z',
+          },
+        },
+      ],
+    }));
+
+    const out = getPanelStatusHandler({ panel_id: 'panel-1' }, h.ctx);
+    expect(out.terminal_count).toBe(1);
+    expect(out.reviewers[0]).toMatchObject({
+      run_id: 'r-snap',
+      state_unavailable: false,
+      status: 'success',
+      summary: 'durable summary',
+      files_changed: ['review.md'],
+      completedAt: '2026-05-14T00:00:02.000Z',
+    });
+  });
+
   it('preserves dispatch_warnings from panel.json per reviewer', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);

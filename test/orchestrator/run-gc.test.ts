@@ -15,9 +15,12 @@ import { WorktreeManager } from '../../src/git/worktree.js';
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
 import {
   gcTerminalRuns,
+  resolveRunDirTtlMs,
   resolveTtlMs,
+  resolveWorktreeTtlMs,
   terminalAtMs,
 } from '../../src/orchestrator/run-gc.js';
+import { logger } from '../../src/utils/logger.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const T0 = Date.parse('2026-01-01T00:00:00.000Z');
@@ -37,6 +40,29 @@ describe('resolveTtlMs', () => {
     expect(resolveTtlMs(undefined, 14, 30)).toBe(14 * DAY_MS);
     expect(resolveTtlMs('banana', 14, 30)).toBe(14 * DAY_MS);
     expect(resolveTtlMs(undefined, -1, 30)).toBe(Number.POSITIVE_INFINITY);
+  });
+  it('warns once per invalid env override name', () => {
+    const priorWorktree = process.env.CREW_WORKTREE_TTL_DAYS;
+    const priorRunDir = process.env.CREW_RUNDIR_TTL_DAYS;
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      process.env.CREW_WORKTREE_TTL_DAYS = 'banana';
+      process.env.CREW_RUNDIR_TTL_DAYS = 'banana';
+      resolveWorktreeTtlMs();
+      resolveWorktreeTtlMs();
+      resolveRunDirTtlMs();
+
+      expect(warn.mock.calls.filter(([message]) =>
+        typeof message === 'string' && message.includes('CREW_WORKTREE_TTL_DAYS'))).toHaveLength(1);
+      expect(warn.mock.calls.filter(([message]) =>
+        typeof message === 'string' && message.includes('CREW_RUNDIR_TTL_DAYS'))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      if (priorWorktree === undefined) delete process.env.CREW_WORKTREE_TTL_DAYS;
+      else process.env.CREW_WORKTREE_TTL_DAYS = priorWorktree;
+      if (priorRunDir === undefined) delete process.env.CREW_RUNDIR_TTL_DAYS;
+      else process.env.CREW_RUNDIR_TTL_DAYS = priorRunDir;
+    }
   });
   it('falls back to the default when neither env nor config is set', () => {
     expect(resolveTtlMs(undefined, undefined, 30)).toBe(30 * DAY_MS);

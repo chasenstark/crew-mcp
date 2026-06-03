@@ -363,19 +363,21 @@ export type StaleRunSweepArgs = {
   dispatcher: ToolDispatcher;
 };
 
-let staleRunSweepPromise: Promise<void> | null = null;
+const staleRunSweepPromises = new Map<string, Promise<void>>();
 
 export function getStaleRunSweep(): Promise<void> | null {
-  return staleRunSweepPromise;
+  return joinInFlightPromises(staleRunSweepPromises);
 }
 
 export function scheduleStaleRunSweep(
   args: StaleRunSweepArgs,
   sweep: (args: StaleRunSweepArgs) => void | Promise<void> = markAbandonedRunningRuns,
 ): Promise<void> {
-  if (staleRunSweepPromise !== null) return staleRunSweepPromise;
+  const key = singleFlightKey(args.crewHome, args.projectRoot);
+  const existing = staleRunSweepPromises.get(key);
+  if (existing) return existing;
 
-  staleRunSweepPromise = new Promise<void>((resolve) => {
+  const promise = new Promise<void>((resolve) => {
     setImmediate(resolve);
   })
     .then(() => sweep(args))
@@ -385,16 +387,17 @@ export function scheduleStaleRunSweep(
       );
     })
     .finally(() => {
-      staleRunSweepPromise = null;
+      staleRunSweepPromises.delete(key);
     });
 
-  return staleRunSweepPromise;
+  staleRunSweepPromises.set(key, promise);
+  return promise;
 }
 
-let runGcPromise: Promise<void> | null = null;
+const runGcPromises = new Map<string, Promise<void>>();
 
 export function getRunGc(): Promise<void> | null {
-  return runGcPromise;
+  return joinInFlightPromises(runGcPromises);
 }
 
 /**
@@ -407,9 +410,11 @@ export function scheduleRunGc(
   args: RunGcArgs,
   gc: (args: RunGcArgs) => void | Promise<unknown> = gcTerminalRuns,
 ): Promise<void> {
-  if (runGcPromise !== null) return runGcPromise;
+  const key = singleFlightKey(args.crewHome, args.projectRoot);
+  const existing = runGcPromises.get(key);
+  if (existing) return existing;
 
-  runGcPromise = new Promise<void>((resolve) => {
+  const promise = new Promise<void>((resolve) => {
     setImmediate(resolve);
   })
     .then(async () => {
@@ -421,10 +426,21 @@ export function scheduleRunGc(
       );
     })
     .finally(() => {
-      runGcPromise = null;
+      runGcPromises.delete(key);
     });
 
-  return runGcPromise;
+  runGcPromises.set(key, promise);
+  return promise;
+}
+
+function singleFlightKey(crewHome: string, projectRoot: string): string {
+  return `${crewHome}\0${projectRoot}`;
+}
+
+function joinInFlightPromises(promises: Map<string, Promise<void>>): Promise<void> | null {
+  const current = Array.from(promises.values());
+  if (current.length === 0) return null;
+  return Promise.allSettled(current).then(() => undefined);
 }
 
 /**

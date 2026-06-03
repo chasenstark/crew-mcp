@@ -3,7 +3,11 @@ import {
   peerMessageInputSchema,
   type PeerMessageInput,
 } from '../peer-messages/schema.js';
-import type { PanelReviewerRecord, PanelStateV1 } from './schema.js';
+import type {
+  PanelReviewerRecord,
+  PanelReviewerTerminalSnapshot,
+  PanelStateV1,
+} from './schema.js';
 import { safePeerMessageFiles } from './implementer-message.js';
 import { sanitizeFromLabel } from './sanitize.js';
 
@@ -12,7 +16,10 @@ export interface UnavailableReviewerState {
   readonly reason: string;
 }
 
-export type ReviewerStateForAggregation = RunStateV1 | UnavailableReviewerState;
+export type ReviewerStateForAggregation =
+  | RunStateV1
+  | PanelReviewerTerminalSnapshot
+  | UnavailableReviewerState;
 
 export interface AggregatePanelArgs {
   readonly panelState: PanelStateV1;
@@ -33,20 +40,24 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
           from_label: sanitizeFromLabel(reviewer.agentId, 'state lost'),
         });
       }
-      const summary = state.prompts.at(-1)?.summary?.trim();
+      const summary = isPanelReviewerTerminalSnapshot(state)
+        ? state.summary?.trim()
+        : state.prompts.at(-1)?.summary?.trim();
       const safeFiles = safePeerMessageFiles({
-        runId: state.runId,
-        filesChanged: state.filesChanged,
+        runId: reviewer.runId,
+        filesChanged: isPanelReviewerTerminalSnapshot(state) ? state.filesChanged : state.filesChanged,
         logMessage: 'aggregate_panel files truncated for schema fit',
       });
+      const status = state.status;
+      const agentId = isPanelReviewerTerminalSnapshot(state) ? reviewer.agentId : state.agentId;
       return peerMessageInputSchema.parse({
         body: summary && summary.length > 0
           ? summary
-          : `(no summary; status=${state.status})`,
+          : `(no summary; status=${status})`,
         kind: 'review',
         from_label: sanitizeFromLabel(
-          state.agentId,
-          state.status === 'success' ? 'review' : `review, status=${state.status}`,
+          agentId,
+          status === 'success' ? 'review' : `review, status=${status}`,
         ),
         ...(safeFiles.length > 0 ? { files: safeFiles } : {}),
       });
@@ -57,6 +68,12 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
       from_label: sanitizeFromLabel(reviewer.agentId, 'dispatch failed'),
     })),
   ];
+}
+
+function isPanelReviewerTerminalSnapshot(
+  state: ReviewerStateForAggregation,
+): state is PanelReviewerTerminalSnapshot {
+  return !isUnavailableReviewerState(state) && !('prompts' in state);
 }
 
 export function isUnavailableReviewerState(
@@ -73,6 +90,6 @@ function isDispatched(
 
 function isFailed(
   reviewer: PanelReviewerRecord,
-): reviewer is Extract<PanelReviewerRecord, { dispatched: false }> {
-  return !reviewer.dispatched;
+): reviewer is Extract<PanelReviewerRecord, { dispatched: false; error: string }> {
+  return !reviewer.dispatched && !('pending' in reviewer && reviewer.pending);
 }

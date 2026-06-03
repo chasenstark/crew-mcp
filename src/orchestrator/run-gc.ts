@@ -2,6 +2,7 @@ import { readdirSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { logger } from '../utils/logger.js';
+import { warnOnce } from '../utils/warn-once.js';
 import {
   DEFAULT_WORKTREE_TTL_DAYS,
   DEFAULT_RUNDIR_TTL_DAYS,
@@ -58,12 +59,16 @@ export function resolveTtlMs(
   envRaw: string | undefined,
   configDays: number | undefined,
   defaultDays: number,
+  envName = 'GC TTL env override',
 ): number {
   if (envRaw !== undefined) {
     const trimmed = envRaw.trim().toLowerCase();
     if (trimmed === 'off' || trimmed === 'never') return Number.POSITIVE_INFINITY;
     const parsed = Number(trimmed);
     if (Number.isFinite(parsed)) return daysToMs(parsed);
+    warnOnce(`env-ttl:${envName}:${envRaw}`, () => {
+      logger.warn(`${envName} is present but unparseable: ${envRaw}`);
+    });
     // Garbage env value → fall through to config / default.
   }
   if (configDays !== undefined) return daysToMs(configDays);
@@ -74,14 +79,24 @@ export function resolveWorktreeTtlMs(crewHome?: string): number {
   const configDays = crewHome !== undefined
     ? readConfigFile(crewHome).cleanup.worktreeTtlDays
     : undefined;
-  return resolveTtlMs(process.env.CREW_WORKTREE_TTL_DAYS, configDays, DEFAULT_WORKTREE_TTL_DAYS);
+  return resolveTtlMs(
+    process.env.CREW_WORKTREE_TTL_DAYS,
+    configDays,
+    DEFAULT_WORKTREE_TTL_DAYS,
+    'CREW_WORKTREE_TTL_DAYS',
+  );
 }
 
 export function resolveRunDirTtlMs(crewHome?: string): number {
   const configDays = crewHome !== undefined
     ? readConfigFile(crewHome).cleanup.runDirTtlDays
     : undefined;
-  return resolveTtlMs(process.env.CREW_RUNDIR_TTL_DAYS, configDays, DEFAULT_RUNDIR_TTL_DAYS);
+  return resolveTtlMs(
+    process.env.CREW_RUNDIR_TTL_DAYS,
+    configDays,
+    DEFAULT_RUNDIR_TTL_DAYS,
+    'CREW_RUNDIR_TTL_DAYS',
+  );
 }
 
 function resolveComparablePath(path: string): string {

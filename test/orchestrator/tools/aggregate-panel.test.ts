@@ -150,6 +150,33 @@ describe('aggregatePanelHandler', () => {
     ]);
   });
 
+  it('uses panel terminalSnapshot when reviewer state has been pruned', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    await createRunState(h, { runId: 'r-snap', status: 'success' });
+    rmSync(join(h.crewHome, 'runs', 'r-snap', 'state.json'));
+    const state = panel(h, [{
+      ...dispatched('r-snap', 'reviewer#snap'),
+      terminalSnapshot: {
+        status: 'partial',
+        summary: 'snapshot review',
+        filesChanged: ['snapshot.md'],
+        completedAt: '2026-05-14T00:00:02.000Z',
+      },
+    }]);
+    writePanel(h, state);
+
+    const out = aggregatePanelHandler({ panel_id: state.panelId }, h.ctx);
+    expect(out.peer_messages).toEqual([
+      {
+        body: 'snapshot review',
+        kind: 'review',
+        from_label: 'reviewer_snap (review, status=partial)',
+        files: ['snapshot.md'],
+      },
+    ]);
+  });
+
   it('emits all identical messages without de-duplication', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);

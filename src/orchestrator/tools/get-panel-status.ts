@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { DispatchContext } from '../dispatch-run-agent-internal.js';
 import type { RunStateV1 } from '../run-state.js';
-import type { PanelReviewerRecord } from '../panels/schema.js';
+import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
 
 export const getPanelStatusInputSchema = z.object({
@@ -71,10 +71,10 @@ export function getPanelStatusHandler(
       try {
         state = ctx.runStateStore.read(reviewer.runId);
       } catch (err) {
-        return unavailableStatus(reviewer, errorMessage(err));
+        return snapshotStatus(reviewer, errorMessage(err));
       }
       if (!state) {
-        return unavailableStatus(reviewer, `missing state for run ${reviewer.runId}`);
+        return snapshotStatus(reviewer, `missing state for run ${reviewer.runId}`);
       }
       if (!isTerminalRunStatus(state.status)) {
         return {
@@ -111,8 +111,7 @@ export function getPanelStatusHandler(
       !reviewer.state_unavailable && reviewer.status === 'running').length,
     reviewers,
     failed_reviewers: panelState.reviewers
-      .filter((reviewer): reviewer is Extract<PanelReviewerRecord, { dispatched: false }> =>
-        !reviewer.dispatched)
+      .filter(isFailedReviewerRecord)
       .map((reviewer) => ({
         agent_id: reviewer.agentId,
         error: reviewer.error,
@@ -134,6 +133,32 @@ function unavailableStatus(
   };
 }
 
+function snapshotStatus(
+  reviewer: Extract<PanelReviewerRecord, { dispatched: true }>,
+  reason: string,
+): PanelReviewerStatus {
+  if (reviewer.terminalSnapshot) {
+    return statusFromSnapshot(reviewer, reviewer.terminalSnapshot);
+  }
+  return unavailableStatus(reviewer, reason);
+}
+
+function statusFromSnapshot(
+  reviewer: Extract<PanelReviewerRecord, { dispatched: true }>,
+  snapshot: PanelReviewerTerminalSnapshot,
+): PanelReviewerStatus {
+  return {
+    run_id: reviewer.runId,
+    agent_id: reviewer.agentId,
+    state_unavailable: false,
+    status: snapshot.status,
+    ...(snapshot.summary !== undefined ? { summary: snapshot.summary } : {}),
+    files_changed: snapshot.filesChanged,
+    ...(snapshot.completedAt !== undefined ? { completedAt: snapshot.completedAt } : {}),
+    dispatch_warnings: reviewer.dispatchWarnings,
+  };
+}
+
 export function isTerminalRunStatus(status: RunStateV1['status']): boolean {
   return (
     status === 'success'
@@ -144,6 +169,12 @@ export function isTerminalRunStatus(status: RunStateV1['status']): boolean {
     || status === 'merge_conflict'
     || status === 'discarded'
   );
+}
+
+function isFailedReviewerRecord(
+  reviewer: PanelReviewerRecord,
+): reviewer is Extract<PanelReviewerRecord, { dispatched: false; error: string }> {
+  return !reviewer.dispatched && !('pending' in reviewer && reviewer.pending);
 }
 
 function errorMessage(err: unknown): string {

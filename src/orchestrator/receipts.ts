@@ -23,9 +23,11 @@
  * `error` message and the semantic `status` only.
  */
 
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { atomicWrite } from '../utils/atomic-write.js';
+import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import type { RunStateV1, RunStatus } from './run-state.js';
 
@@ -165,15 +167,6 @@ export function renderRunSummaryMarkdown(state: RunStateV1): string {
   return lines.join('\n') + '\n';
 }
 
-/** Atomic write via tmp + rename so external readers never see a torn file. */
-function writeAtomic(path: string, contents: string): void {
-  // pid-scoped tmp name so two processes writing the same run's receipt can't
-  // clobber each other's temp file mid-write (matches config-store's pattern).
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, contents, 'utf-8');
-  renameSync(tmp, path);
-}
-
 /**
  * Write `run.json` + `summary.md` into a run's directory. Best-effort: any
  * failure is logged at warn level and swallowed so receipt I/O can never
@@ -183,9 +176,10 @@ export function writeRunReceipt(runDir: string, state: RunStateV1): void {
   try {
     mkdirSync(runDir, { recursive: true });
     const receipt = buildRunReceipt(state);
-    writeAtomic(join(runDir, RUN_RECEIPT_FILENAME), JSON.stringify(receipt, null, 2) + '\n');
-    writeAtomic(join(runDir, RUN_SUMMARY_FILENAME), renderRunSummaryMarkdown(state));
+    atomicWrite(join(runDir, RUN_RECEIPT_FILENAME), JSON.stringify(receipt, null, 2) + '\n');
+    atomicWrite(join(runDir, RUN_SUMMARY_FILENAME), renderRunSummaryMarkdown(state));
   } catch (err) {
+    logBestEffortFailure('run-receipt.write', err);
     logger.warn('Failed to write run receipt', { runId: state.runId, runDir, err });
   }
 }

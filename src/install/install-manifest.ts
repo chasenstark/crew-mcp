@@ -17,10 +17,11 @@
  * `skillPath` getter so older callers keep working.
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
-import { readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
+import { atomicWrite } from '../utils/atomic-write.js';
 import { ALL_HOST_IDS, type HostId } from './hosts/index.js';
 
 /**
@@ -182,8 +183,6 @@ export async function writeInstallManifest(
   manifest: InstallManifestV2,
 ): Promise<void> {
   const path = manifestPath(home);
-  mkdirSync(dirname(path), { recursive: true });
-  const tmpPath = `${path}.${process.pid}.tmp`;
   // Spread the user's top-level extras FIRST so our managed keys
   // (schemaVersion, targets) take precedence on key collision. This
   // preserves hand-edited annotations across read+write without
@@ -193,8 +192,7 @@ export async function writeInstallManifest(
     schemaVersion: SCHEMA_VERSION,
     targets: manifest.targets,
   };
-  await writeFile(tmpPath, JSON.stringify(onDisk, null, 2) + '\n', 'utf-8');
-  await rename(tmpPath, path);
+  atomicWrite(path, JSON.stringify(onDisk, null, 2) + '\n');
 }
 
 /**

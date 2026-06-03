@@ -29,12 +29,12 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
   unlinkSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+
+import { atomicWrite } from '../utils/atomic-write.js';
 
 /**
  * Write `content` to `path` atomically: write to a sibling tmp file,
@@ -46,30 +46,7 @@ import { dirname, join } from 'node:path';
  * usable for skill / config / permissions writes too.
  */
 export function writeFileAtomic(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  // Use process PID + a small counter so concurrent writes inside the
-  // same process can't collide on the tmp path. The counter is
-  // process-local; concurrent processes are serialized by the install
-  // lock above, but the PID alone is sufficient for that case.
-  const tmpPath = `${path}.${process.pid}.${nextTmpId()}.tmp`;
-  try {
-    writeFileSync(tmpPath, content, 'utf-8');
-    renameSync(tmpPath, path);
-  } catch (err) {
-    // Best-effort cleanup of the orphan tmp file if rename failed.
-    try {
-      unlinkSync(tmpPath);
-    } catch {
-      // Ignore — caller will see the original error.
-    }
-    throw err;
-  }
-}
-
-let tmpCounter = 0;
-function nextTmpId(): number {
-  tmpCounter = (tmpCounter + 1) % 0x7fffffff;
-  return tmpCounter;
+  atomicWrite(path, content);
 }
 
 /**

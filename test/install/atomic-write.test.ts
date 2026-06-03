@@ -136,9 +136,6 @@ describe('acquireInstallLock', () => {
         [
           '-e',
           `
-          const { acquireInstallLock } = require(${JSON.stringify(
-            join(process.cwd(), 'src/install/atomic-write.ts'),
-          )});
           // Subprocess can't use TS directly — inline a minimal lock.
           const fs = require('node:fs');
           const path = require('node:path');

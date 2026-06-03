@@ -2,12 +2,20 @@ import { z } from 'zod';
 
 export const PANEL_SCHEMA_VERSION = 1 as const;
 
+export interface PanelReviewerTerminalSnapshot {
+  readonly status: 'success' | 'partial' | 'error' | 'cancelled' | 'merged' | 'merge_conflict' | 'discarded';
+  readonly summary?: string;
+  readonly filesChanged: readonly string[];
+  readonly completedAt?: string;
+}
+
 export interface PanelReviewerDispatchedRecord {
   readonly runId: string;
   readonly agentId: string;
   readonly dispatched: true;
   readonly dispatchedAt: string;
   readonly dispatchWarnings: readonly string[];
+  readonly terminalSnapshot?: PanelReviewerTerminalSnapshot;
 }
 
 export interface PanelReviewerFailedRecord {
@@ -18,9 +26,18 @@ export interface PanelReviewerFailedRecord {
   readonly dispatchWarnings: readonly string[];
 }
 
+export interface PanelReviewerPendingRecord {
+  readonly runId: null;
+  readonly agentId: string;
+  readonly dispatched: false;
+  readonly pending: true;
+  readonly dispatchWarnings: readonly string[];
+}
+
 export type PanelReviewerRecord =
   | PanelReviewerDispatchedRecord
-  | PanelReviewerFailedRecord;
+  | PanelReviewerFailedRecord
+  | PanelReviewerPendingRecord;
 
 export interface PanelStateV1 {
   readonly schemaVersion: 1;
@@ -40,19 +57,35 @@ const dispatchedReviewerSchema = z.object({
   dispatched: z.literal(true),
   dispatchedAt: z.string().min(1),
   dispatchWarnings: z.array(z.string()),
+  terminalSnapshot: z.object({
+    status: z.enum(['success', 'partial', 'error', 'cancelled', 'merged', 'merge_conflict', 'discarded']),
+    summary: z.string().optional(),
+    filesChanged: z.array(z.string()),
+    completedAt: z.string().min(1).optional(),
+  }).strict().optional(),
 }).strict();
 
 const failedReviewerSchema = z.object({
   runId: z.null(),
   agentId: z.string().min(1),
   dispatched: z.literal(false),
+  pending: z.literal(false).optional(),
   error: z.string(),
   dispatchWarnings: z.array(z.string()),
 }).strict();
 
-export const panelReviewerRecordSchema = z.discriminatedUnion('dispatched', [
+const pendingReviewerSchema = z.object({
+  runId: z.null(),
+  agentId: z.string().min(1),
+  dispatched: z.literal(false),
+  pending: z.literal(true),
+  dispatchWarnings: z.array(z.string()),
+}).strict();
+
+export const panelReviewerRecordSchema = z.union([
   dispatchedReviewerSchema,
   failedReviewerSchema,
+  pendingReviewerSchema,
 ]);
 
 export const panelStateSchemaV1 = z.object({

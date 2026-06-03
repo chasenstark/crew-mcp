@@ -24,13 +24,11 @@
 
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
+import { atomicWrite } from './atomic-write.js';
 import { logger } from './logger.js';
 
 export const CONFIG_FILENAME = 'config.json';
@@ -200,7 +198,6 @@ export function readConfigFile(crewHome: string): CrewConfig {
  */
 export function writeConfigFile(crewHome: string, config: CrewConfig): void {
   const path = resolveConfigPath(crewHome);
-  mkdirSync(dirname(path), { recursive: true });
   const existing = readRawObject(path);
   const merged: Record<string, unknown> = {};
   // Preserve _readme / _comment keys (and any other underscore-prefixed
@@ -227,9 +224,7 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
     runDirTtlDays: cleanup.runDirTtlDays,
   };
   const serialized = JSON.stringify(merged, null, 2) + '\n';
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, serialized, 'utf-8');
-  renameSync(tmp, path);
+  atomicWrite(path, serialized);
 }
 
 /**

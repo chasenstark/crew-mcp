@@ -15,13 +15,20 @@ import type { RunStateV1 } from '../run-state.js';
 import {
   PANEL_SCHEMA_VERSION,
   type PanelReviewerRecord,
+  type PanelReviewerTerminalSnapshot,
   type PanelStateV1,
 } from '../panels/schema.js';
 import { buildImplementerPeerMessage } from '../panels/implementer-message.js';
 import { validateRunPanelPreflight } from '../panels/preflight.js';
-import { panelDir, writePanelStateAtomic } from '../panels/store.js';
+import {
+  panelDir,
+  readPanelState,
+  snapshotPanelReviewerTerminal,
+  writePanelStateAtomic,
+} from '../panels/store.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import type { FullConfig } from '../../workflow/types.js';
+import { logBestEffortFailure } from '../../utils/best-effort.js';
 
 const runPanelReviewerInputSchema = z.object({
   agent_id: z.string().min(1),
@@ -75,6 +82,7 @@ export const RUN_PANEL_DESCRIPTION =
 const PANEL_IMPLEMENTER_TERMINAL = new Set(['success', 'partial', 'error', 'cancelled']);
 const DEFAULT_PANEL_REVIEW_PROMPT =
   'Review the target changes for correctness, regressions, and missing tests. Return concrete findings with file/line references when possible.';
+const PANEL_REVIEWER_SETUP_CONCURRENCY = 2;
 
 export async function runPanelHandler(
   args: unknown,
@@ -98,11 +106,39 @@ export async function runPanelHandler(
 
   let panelState = buildStubPanelState(panelId, ctx.runStateStore.repoRoot, implementerState);
   await writeAndNotify(targetPanelDir, panelState, ctx);
+  panelState = {
+    ...panelState,
+    reviewers: reviewers.map((reviewer) => pendingReviewerRecord(reviewer.agent_id)),
+  };
+  await writeAndNotify(targetPanelDir, panelState, ctx);
 
-  const dispatchEnvelopes: ReviewerDispatchEnvelope[] = [];
+  const dispatchEnvelopes = new Array<ReviewerDispatchEnvelope | undefined>(reviewers.length);
   const dispatchImpl = ctx.dispatchRunAgentInternalImpl ?? dispatchRunAgentInternal;
+  let panelWriteQueue = Promise.resolve();
 
-  for (const reviewer of reviewers) {
+  const enqueuePanelWrite = async (operation: () => Promise<void>): Promise<void> => {
+    const nextWrite = panelWriteQueue.then(operation, operation);
+    panelWriteQueue = nextWrite.then(() => undefined, () => undefined);
+    await nextWrite;
+  };
+
+  const replaceReviewer = async (
+    index: number,
+    record: PanelReviewerRecord,
+  ): Promise<void> => {
+    await enqueuePanelWrite(async () => {
+      const latest = readPanelState(targetPanelDir) ?? panelState;
+      const nextReviewers = [...latest.reviewers];
+      nextReviewers[index] = mergeReviewerRecord(nextReviewers[index], record);
+      panelState = {
+        ...latest,
+        reviewers: nextReviewers,
+      };
+      await writeAndNotify(targetPanelDir, panelState, ctx);
+    });
+  };
+
+  await mapBounded(reviewers, PANEL_REVIEWER_SETUP_CONCURRENCY, async (reviewer, index) => {
     const composed = composePeerMessages(implementerMessage, reviewer.peer_messages);
     const reviewerHasExplicitReadOnly = reviewer.read_only !== undefined;
     const effectiveReadOnly = reviewer.read_only ?? (implementerState !== undefined);
@@ -116,30 +152,24 @@ export async function runPanelHandler(
     try {
       validatePeerMessagesPreflight(composed, ctx.runStateStore.caps);
     } catch (err) {
-      panelState = await recordReviewer(
-        targetPanelDir,
-        panelState,
-        failedReviewerRecord(reviewer.agent_id, errorMessage(err), []),
-        ctx,
-      );
-      continue;
+      await replaceReviewer(index, failedReviewerRecord(reviewer.agent_id, errorMessage(err), []));
+      return;
     }
 
     if (effectiveWorkingDirectory && !existsSync(effectiveWorkingDirectory)) {
-      panelState = await recordReviewer(
-        targetPanelDir,
-        panelState,
+      await replaceReviewer(
+        index,
         failedReviewerRecord(
           reviewer.agent_id,
           `working_directory does not exist: ${effectiveWorkingDirectory} (implementer worktree may have been removed)`,
           [],
         ),
-        ctx,
       );
-      continue;
+      return;
     }
 
     let record: PanelReviewerRecord;
+    let envelope: ReviewerDispatchEnvelope | undefined;
     try {
       const result = await dispatchImpl({
         input: {
@@ -155,34 +185,78 @@ export async function runPanelHandler(
         },
         ctx,
         progress: ctx.progress,
+        onStart: async (info) => {
+          await replaceReviewer(
+            index,
+            dispatchedReviewerPlaceholderRecord(reviewer.agent_id, info.runId),
+          );
+        },
+        onTerminalPersisted: async (state) => {
+          try {
+            await enqueuePanelWrite(async () => {
+              panelState = snapshotPanelReviewerTerminal(
+                targetPanelDir,
+                state.runId,
+                terminalSnapshotFromRunState(state),
+              );
+            });
+          } catch (err) {
+            logBestEffortFailure('panel.reviewer-terminal-snapshot', err);
+          }
+        },
       });
       record = dispatchedReviewerRecord(reviewer.agent_id, result);
-      dispatchEnvelopes.push({
+      envelope = {
         run_id: result.runId,
         agent_id: reviewer.agent_id,
         tail_url: result.tailUrl,
         worktree_path: result.worktreePath,
         warnings: result.warnings,
-      });
+      };
     } catch (err) {
       const warnings = err instanceof DispatchError ? err.warnings : [];
       record = failedReviewerRecord(reviewer.agent_id, errorMessage(err), warnings);
     }
 
-    panelState = await recordReviewer(targetPanelDir, panelState, record, ctx);
-  }
+    await replaceReviewer(index, record);
+    if (envelope) {
+      dispatchEnvelopes[index] = envelope;
+    }
+  });
+  await panelWriteQueue;
 
   return {
     panel_id: panelId,
-    partial: panelState.reviewers.some((reviewer) => !reviewer.dispatched),
-    reviewers: dispatchEnvelopes,
+    partial: panelState.reviewers.some(isFailedReviewerRecord),
+    reviewers: dispatchEnvelopes.filter((envelope): envelope is ReviewerDispatchEnvelope =>
+      envelope !== undefined),
     failed_reviewers: panelState.reviewers
-      .filter((reviewer): reviewer is Extract<PanelReviewerRecord, { dispatched: false }> =>
-        !reviewer.dispatched)
+      .filter(isFailedReviewerRecord)
       .map((reviewer) => ({
         agent_id: reviewer.agentId,
         error: reviewer.error,
       })),
+  };
+}
+
+async function mapBounded<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  for (let start = 0; start < items.length; start += concurrency) {
+    const batch = items.slice(start, start + concurrency);
+    await Promise.all(batch.map((item, offset) => worker(item, start + offset)));
+  }
+}
+
+function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalSnapshot {
+  const summary = state.prompts.at(-1)?.summary;
+  return {
+    status: state.status as PanelReviewerTerminalSnapshot['status'],
+    ...(summary !== undefined ? { summary } : {}),
+    filesChanged: state.filesChanged,
+    ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
   };
 }
 
@@ -293,6 +367,19 @@ function dispatchedReviewerRecord(
   };
 }
 
+function dispatchedReviewerPlaceholderRecord(
+  agentId: string,
+  runId: string,
+): PanelReviewerRecord {
+  return {
+    runId,
+    agentId,
+    dispatched: true,
+    dispatchedAt: new Date().toISOString(),
+    dispatchWarnings: [],
+  };
+}
+
 function failedReviewerRecord(
   agentId: string,
   error: string,
@@ -307,18 +394,38 @@ function failedReviewerRecord(
   };
 }
 
-async function recordReviewer(
-  targetPanelDir: string,
-  panelState: PanelStateV1,
-  record: PanelReviewerRecord,
-  ctx: RunPanelHandlerContext,
-): Promise<PanelStateV1> {
-  const next = {
-    ...panelState,
-    reviewers: [...panelState.reviewers, record],
+function pendingReviewerRecord(agentId: string): PanelReviewerRecord {
+  return {
+    runId: null,
+    agentId,
+    dispatched: false,
+    pending: true,
+    dispatchWarnings: [],
   };
-  await writeAndNotify(targetPanelDir, next, ctx);
-  return next;
+}
+
+function mergeReviewerRecord(
+  previous: PanelReviewerRecord | undefined,
+  record: PanelReviewerRecord,
+): PanelReviewerRecord {
+  if (
+    previous?.dispatched
+    && record.dispatched
+    && previous.runId === record.runId
+    && previous.terminalSnapshot !== undefined
+  ) {
+    return {
+      ...record,
+      terminalSnapshot: previous.terminalSnapshot,
+    };
+  }
+  return record;
+}
+
+function isFailedReviewerRecord(
+  reviewer: PanelReviewerRecord,
+): reviewer is Extract<PanelReviewerRecord, { dispatched: false; error: string }> {
+  return !reviewer.dispatched && !('pending' in reviewer && reviewer.pending);
 }
 
 async function writeAndNotify(

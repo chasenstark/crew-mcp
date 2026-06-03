@@ -1,9 +1,11 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { atomicWrite } from '../../utils/atomic-write.js';
 import {
   PANEL_SCHEMA_VERSION,
   panelStateSchemaV1,
+  type PanelReviewerTerminalSnapshot,
   type PanelStateV1,
 } from './schema.js';
 
@@ -12,13 +14,8 @@ export function panelDir(crewHome: string, panelId: string): string {
 }
 
 export function writePanelStateAtomic(targetPanelDir: string, state: PanelStateV1): void {
-  const tmpPath = join(
-    targetPanelDir,
-    `panel.json.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
-  );
   const finalPath = join(targetPanelDir, 'panel.json');
-  writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
-  renameSync(tmpPath, finalPath);
+  atomicWrite(finalPath, `${JSON.stringify(state, null, 2)}\n`, { makeDirs: false });
 }
 
 export function readPanelState(targetPanelDir: string): PanelStateV1 | undefined {
@@ -66,6 +63,34 @@ export function readPanelState(targetPanelDir: string): PanelStateV1 | undefined
 
 export function ensurePanelRoot(crewHome: string): void {
   mkdirSync(join(crewHome, 'panels'), { recursive: true });
+}
+
+export function snapshotPanelReviewerTerminal(
+  targetPanelDir: string,
+  runId: string,
+  snapshot: PanelReviewerTerminalSnapshot,
+): PanelStateV1 {
+  const current = readPanelState(targetPanelDir);
+  if (!current) {
+    throw new Error(`run_panel.snapshot_missing_panel: ${targetPanelDir}`);
+  }
+  let changed = false;
+  const next: PanelStateV1 = {
+    ...current,
+    reviewers: current.reviewers.map((reviewer) => {
+      if (!reviewer.dispatched || reviewer.runId !== runId) return reviewer;
+      changed = true;
+      return {
+        ...reviewer,
+        terminalSnapshot: snapshot,
+      };
+    }),
+  };
+  if (!changed) {
+    throw new Error(`run_panel.snapshot_missing_reviewer: ${runId}`);
+  }
+  writePanelStateAtomic(targetPanelDir, next);
+  return next;
 }
 
 function isEnoent(err: unknown): boolean {

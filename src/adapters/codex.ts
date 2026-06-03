@@ -12,6 +12,11 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { extractJson } from '../utils/json-parse.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
+import {
+  logBestEffortFailure,
+  registerTempDirForCleanup,
+  unregisterTempDirForCleanup,
+} from '../utils/best-effort.js';
 import type {
   AgentAdapter,
   AgentStrength,
@@ -362,6 +367,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async execute(task: Task): Promise<TaskResult> {
     const tmpDir = mkdtempSync(join(tmpdir(), 'codex-'));
+    registerTempDirForCleanup(tmpDir);
     try {
       const outputFile = join(tmpDir, 'output.json');
 
@@ -637,7 +643,12 @@ export class CodexAdapter implements AgentAdapter {
         },
       };
     } finally {
-      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore cleanup errors */ }
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+        unregisterTempDirForCleanup(tmpDir);
+      } catch (err) {
+        logBestEffortFailure('codex.tmp-cleanup', err);
+      }
     }
   }
 
@@ -647,6 +658,7 @@ export class CodexAdapter implements AgentAdapter {
     options?: ExecuteOptions,
   ): Promise<z.infer<T>> {
     const tmpDir = mkdtempSync(join(tmpdir(), 'codex-schema-'));
+    registerTempDirForCleanup(tmpDir);
     try {
       const schemaFile = join(tmpDir, 'schema.json');
       const outputFile = join(tmpDir, 'output.json');
@@ -750,7 +762,12 @@ export class CodexAdapter implements AgentAdapter {
 
       return schema.parse(raw) as z.infer<T>;
     } finally {
-      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore cleanup errors */ }
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+        unregisterTempDirForCleanup(tmpDir);
+      } catch (err) {
+        logBestEffortFailure('codex.schema-tmp-cleanup', err);
+      }
     }
   }
 
@@ -834,6 +851,7 @@ export class CodexAdapter implements AgentAdapter {
     },
   ): Promise<{ decision: ToolLoopDecision; threadId: string | undefined }> {
     const tmpDir = mkdtempSync(join(tmpdir(), 'codex-decision-'));
+    registerTempDirForCleanup(tmpDir);
     try {
       const outputFile = join(tmpDir, 'output.json');
       const args = options.threadId
@@ -928,7 +946,12 @@ export class CodexAdapter implements AgentAdapter {
 
       return { decision, threadId: nextThreadId };
     } finally {
-      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        rmSync(tmpDir, { recursive: true, force: true });
+        unregisterTempDirForCleanup(tmpDir);
+      } catch (err) {
+        logBestEffortFailure('codex.decision-tmp-cleanup', err);
+      }
     }
   }
 

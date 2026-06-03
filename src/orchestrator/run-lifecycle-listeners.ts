@@ -1,4 +1,5 @@
 import type { TaskResult } from '../adapters/types.js';
+import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import { formatProgressLines, type ProgressNotifier } from './progress.js';
 import type { RunStateStore } from './run-state.js';
@@ -53,6 +54,7 @@ export function installRunLifecycleListeners(args: {
   agentName: string;
   toolCallId: string;
   progress?: ProgressNotifier;
+  onTerminalPersisted?: (state: Awaited<ReturnType<RunStateStore['markTerminal']>>) => void | Promise<void>;
 }): Promise<DispatchTerminal> {
   return new Promise<DispatchTerminal>((resolve) => {
     const subs: Array<{ dispose(): void }> = [];
@@ -90,7 +92,8 @@ export function installRunLifecycleListeners(args: {
           for (const line of progressLines) {
             args.runStateStore.appendEvent(args.runId, line);
           }
-        } catch {
+        } catch (err) {
+          logBestEffortFailure('run-lifecycle.append-event', err);
           // Log writes are best-effort; never let a write failure break dispatch.
         }
         if (args.progress) {
@@ -107,6 +110,7 @@ function trackTerminalPersist(
   args: {
     runStateStore: RunStateStore;
     runId: string;
+    onTerminalPersisted?: (state: Awaited<ReturnType<RunStateStore['markTerminal']>>) => void | Promise<void>;
   },
   terminal: DispatchTerminal,
 ): void {
@@ -143,30 +147,33 @@ async function persistTerminal(
   args: {
     runStateStore: RunStateStore;
     runId: string;
+    onTerminalPersisted?: (state: Awaited<ReturnType<RunStateStore['markTerminal']>>) => void | Promise<void>;
   },
   terminal: DispatchTerminal,
 ): Promise<void> {
+  let state: Awaited<ReturnType<RunStateStore['markTerminal']>>;
   if (terminal.kind === 'complete') {
-    await args.runStateStore.markTerminal(args.runId, {
+    state = await args.runStateStore.markTerminal(args.runId, {
       status: terminal.result.status,
       summary: terminal.result.output,
       filesChanged: terminal.result.filesModified,
       warnings: terminal.result.warnings,
     });
   } else if (terminal.kind === 'failed') {
-    await args.runStateStore.markTerminal(args.runId, {
+    state = await args.runStateStore.markTerminal(args.runId, {
       status: 'error',
       summary: terminal.error,
       filesChanged: [],
       lastError: terminal.error,
     });
   } else {
-    await args.runStateStore.markTerminal(args.runId, {
+    state = await args.runStateStore.markTerminal(args.runId, {
       status: 'cancelled',
       summary: terminal.reason,
       filesChanged: [],
     });
   }
+  await args.onTerminalPersisted?.(state);
 }
 
 function errorMessage(err: unknown): string {

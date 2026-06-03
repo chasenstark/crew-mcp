@@ -6,7 +6,7 @@ import { logger } from '../utils/logger.js';
 import { validatePeerMessagesPreflight } from './peer-messages/preflight.js';
 import { type ProgressNotifier } from './progress.js';
 import { installRunLifecycleListeners } from './run-lifecycle-listeners.js';
-import type { RunStateStore } from './run-state.js';
+import type { RunStateStore, RunStateV1 } from './run-state.js';
 import type { ToolDispatcher } from './tool-dispatcher.js';
 import {
   planRunAgent,
@@ -30,6 +30,10 @@ export interface DispatchRunAgentInternalArgs {
   readonly input: RunAgentInput;
   readonly ctx: DispatchContext;
   readonly progress?: ProgressNotifier;
+  readonly onStart?: (
+    info: { agentName: string; runId: string; worktreePath: string },
+  ) => void | Promise<void>;
+  readonly onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
 }
 
 export interface DispatchRunAgentInternalResult {
@@ -66,7 +70,10 @@ export async function dispatchRunAgentInternal(
 
   let plan: Awaited<ReturnType<typeof planRunAgent>>;
   try {
-    plan = await planRunAgent(input, ctx);
+    plan = await planRunAgent(input, {
+      ...ctx,
+      ...(args.onStart !== undefined ? { onStart: args.onStart } : {}),
+    });
   } catch (err) {
     throw new DispatchError(errorMessage(err));
   }
@@ -98,6 +105,7 @@ export async function dispatchRunAgentInternal(
     agentName: input.agent_id,
     toolCallId: plan.toolCallId,
     progress: args.progress,
+    onTerminalPersisted: args.onTerminalPersisted,
   });
 
   try {

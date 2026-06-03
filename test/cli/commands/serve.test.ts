@@ -1257,6 +1257,51 @@ describe('crew serve — stale-run sweeper', () => {
     }
   });
 
+  it('does not single-flight stale-run sweeps across different crewHome/projectRoot keys', async () => {
+    await getStaleRunSweep();
+
+    const rootA = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-key-a-'));
+    const rootB = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-key-b-'));
+    const crewHomeA = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-key-home-a-'));
+    const crewHomeB = mkdtempSync(join(tmpdir(), 'crew-serve-sweep-key-home-b-'));
+    const dispatcher = new ToolDispatcher();
+    const release = createDeferred<void>();
+    let calls = 0;
+
+    try {
+      const first = scheduleStaleRunSweep({
+        crewHome: crewHomeA,
+        projectRoot: rootA,
+        runStateStore: new RunStateStore({ crewHome: crewHomeA, repoRoot: rootA }),
+        dispatcher,
+      }, async () => {
+        calls += 1;
+        await release.promise;
+      });
+      const second = scheduleStaleRunSweep({
+        crewHome: crewHomeB,
+        projectRoot: rootB,
+        runStateStore: new RunStateStore({ crewHome: crewHomeB, repoRoot: rootB }),
+        dispatcher,
+      }, async () => {
+        calls += 1;
+      });
+
+      expect(second).not.toBe(first);
+      await second;
+      expect(calls).toBe(2);
+      release.resolve();
+      await first;
+    } finally {
+      release.resolve();
+      await getStaleRunSweep();
+      rmSync(rootA, { recursive: true, force: true });
+      rmSync(rootB, { recursive: true, force: true });
+      rmSync(crewHomeA, { recursive: true, force: true });
+      rmSync(crewHomeB, { recursive: true, force: true });
+    }
+  });
+
   it('logs deferred stale-run sweep errors without failing server startup', async () => {
     await getStaleRunSweep();
 
@@ -1381,6 +1426,50 @@ describe('crew serve — stale-run sweeper', () => {
       await getRunGc();
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('does not single-flight run GC across different crewHome/projectRoot keys', async () => {
+    await getRunGc();
+
+    const rootA = mkdtempSync(join(tmpdir(), 'crew-serve-gc-key-a-'));
+    const rootB = mkdtempSync(join(tmpdir(), 'crew-serve-gc-key-b-'));
+    const crewHomeA = mkdtempSync(join(tmpdir(), 'crew-serve-gc-key-home-a-'));
+    const crewHomeB = mkdtempSync(join(tmpdir(), 'crew-serve-gc-key-home-b-'));
+    const release = createDeferred<void>();
+    let calls = 0;
+
+    try {
+      const first = scheduleRunGc({
+        crewHome: crewHomeA,
+        projectRoot: rootA,
+        runStateStore: new RunStateStore({ crewHome: crewHomeA, repoRoot: rootA }),
+        worktreeManager: new WorktreeManager({ projectRoot: rootA, crewHome: crewHomeA }),
+      }, async () => {
+        calls += 1;
+        await release.promise;
+      });
+      const second = scheduleRunGc({
+        crewHome: crewHomeB,
+        projectRoot: rootB,
+        runStateStore: new RunStateStore({ crewHome: crewHomeB, repoRoot: rootB }),
+        worktreeManager: new WorktreeManager({ projectRoot: rootB, crewHome: crewHomeB }),
+      }, async () => {
+        calls += 1;
+      });
+
+      expect(second).not.toBe(first);
+      await second;
+      expect(calls).toBe(2);
+      release.resolve();
+      await first;
+    } finally {
+      release.resolve();
+      await getRunGc();
+      rmSync(rootA, { recursive: true, force: true });
+      rmSync(rootB, { recursive: true, force: true });
+      rmSync(crewHomeA, { recursive: true, force: true });
+      rmSync(crewHomeB, { recursive: true, force: true });
     }
   });
 });

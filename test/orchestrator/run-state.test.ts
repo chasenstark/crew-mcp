@@ -25,7 +25,11 @@ vi.mock('../../src/orchestrator/notifications.js', () => ({
   notifyTerminal: mockNotifyTerminal,
 }));
 
-import { RunStateStore, type RunStateV1 } from '../../src/orchestrator/run-state.js';
+import {
+  RunStateStore,
+  truncatePromptForStorage,
+  type RunStateV1,
+} from '../../src/orchestrator/run-state.js';
 import { filterEventsTailNoise } from '../../src/orchestrator/events-filter.js';
 import { withStateLock } from '../../src/orchestrator/run-state-lock.js';
 import { logger } from '../../src/utils/logger.js';
@@ -189,6 +193,21 @@ describe('RunStateStore', () => {
     await expect(withStateLock({ crewHome, runId }, async () => 'reclaimed'))
       .resolves.toBe('reclaimed');
     expect(existsSync(lockDir)).toBe(false);
+  });
+
+  it('withStateLock() warns once for an invalid timeout override', async () => {
+    const restore = withEnv({ CREW_STATE_LOCK_TIMEOUT_MS: 'banana' });
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      await withStateLock({ crewHome, runId: 'r-bad-timeout-1' }, async () => 'ok');
+      await withStateLock({ crewHome, runId: 'r-bad-timeout-2' }, async () => 'ok');
+      const matching = warn.mock.calls.filter(([message]) =>
+        typeof message === 'string' && message.includes('CREW_STATE_LOCK_TIMEOUT_MS'));
+      expect(matching).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      restore();
+    }
   });
 
   it('withStateLock() lets only one stale-lock reclaimer own the fresh lock', async () => {
@@ -571,10 +590,10 @@ describe('RunStateStore', () => {
         .writeTailCommandHelper(runId);
     }).not.toThrow();
     expect(debug).toHaveBeenCalledWith(
-      'Failed to write tail.command helper',
+      'best-effort failure',
       expect.objectContaining({
-        runId,
-        tailPath: store.tailCommandPath(runId),
+        op: 'run-state.tail-command-helper',
+        err: expect.any(Error),
       }),
     );
   });
@@ -671,6 +690,21 @@ describe('RunStateStore', () => {
     } finally {
       if (original === undefined) delete process.env.CREW_PROMPT_STORAGE_CAP_CHARS;
       else process.env.CREW_PROMPT_STORAGE_CAP_CHARS = original;
+    }
+  });
+
+  it('warns once when CREW_PROMPT_STORAGE_CAP_CHARS is invalid', () => {
+    const restore = withEnv({ CREW_PROMPT_STORAGE_CAP_CHARS: 'nope' });
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(truncatePromptForStorage('x')).toBe('x');
+      expect(truncatePromptForStorage('y')).toBe('y');
+      const matching = warn.mock.calls.filter(([message]) =>
+        typeof message === 'string' && message.includes('CREW_PROMPT_STORAGE_CAP_CHARS'));
+      expect(matching).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      restore();
     }
   });
 

@@ -107,7 +107,9 @@ export interface RunAgentHandlerContext {
    * runId+worktree is allocated so callers can display "Agent X is running"
    * indicators before the first streaming token.
    */
-  readonly onStart?: (info: { agentName: string; runId: string; worktreePath: string }) => void;
+  readonly onStart?: (
+    info: { agentName: string; runId: string; worktreePath: string },
+  ) => void | Promise<void>;
 }
 
 export interface RunAgentDispatchPlan {
@@ -211,7 +213,7 @@ export async function planRunAgent(
   const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs);
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   const toolCallId = randomUUID();
-  ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
+  await ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
   const buildTask = (composedPrompt: string): DispatchTask =>
     buildAdapterDispatchTask({

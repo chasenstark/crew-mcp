@@ -1,5 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -348,6 +363,162 @@ describe('WorktreeManager', () => {
         join(crewHome, 'runs', 'run-1', 'worktree'),
       );
       expect(existsSync(lockDir)).toBe(false);
+    });
+
+    it('reclaims a stale repository merge lock whose owner process is gone', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+        .mockReturnValueOnce('repo-owner')
+        .mockReturnValueOnce('run-owner');
+
+      const { manager, root, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const commonDirRealpath = realpathSync(join(root, '.git'));
+      const lockName = createHash('sha256')
+        .update(commonDirRealpath)
+        .digest('hex')
+        .slice(0, 32);
+      const lockDir = join(commonDirRealpath, 'crew-merge-lock', lockName);
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(
+        join(lockDir, 'owner.json'),
+        JSON.stringify({
+          ownerId: 'old-repo-owner',
+          pid: 999_999_999,
+          acquiredAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+        'utf-8',
+      );
+      const stale = new Date(Date.now() - 60_000);
+      utimesSync(lockDir, stale, stale);
+
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('worktree-sha');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('target-sha')
+        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('pre-merge-sha')
+        .mockResolvedValueOnce('merged-sha');
+
+      await expect(manager.mergeRunWorktree('run-1')).resolves.toMatchObject({
+        status: 'merged',
+        commitSha: 'merged-sha',
+      });
+      expect(existsSync(lockDir)).toBe(false);
+    });
+
+    it('syncs uncommitted symlinks as symlinks and preserves regular file mode', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+      const { root, manager, rootGit } = createManager();
+      writeFileSync(join(root, 'script.sh'), '#!/bin/sh\necho hi\n', 'utf-8');
+      chmodSync(join(root, 'script.sh'), 0o755);
+      writeFileSync(join(root, 'target.txt'), 'target\n', 'utf-8');
+      symlinkSync('target.txt', join(root, 'link.txt'));
+      rootGit.status.mockResolvedValueOnce({
+        modified: [],
+        created: [],
+        not_added: ['script.sh', 'link.txt'],
+        deleted: [],
+        renamed: [],
+      });
+
+      const worktreePath = await manager.createRunWorktree('run-1');
+
+      const copiedScript = join(worktreePath, 'script.sh');
+      expect(statSync(copiedScript).mode & 0o777).toBe(0o755);
+      const copiedLink = join(worktreePath, 'link.txt');
+      expect(lstatSync(copiedLink).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(copiedLink)).toBe('target.txt');
+    });
+
+    it('skips uncommitted symlinks that point outside the project root', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const { root, manager, rootGit } = createManager();
+      const outsideAbsolute = join(tmpdir(), `crew-outside-${Date.now()}`);
+      const outsideRelative = '../crew-relative-outside';
+      writeFileSync(join(root, 'target.txt'), 'target\n', 'utf-8');
+      symlinkSync('target.txt', join(root, 'in-repo-link.txt'));
+      symlinkSync(outsideAbsolute, join(root, 'absolute-outside-link.txt'));
+      symlinkSync(outsideRelative, join(root, 'relative-outside-link.txt'));
+      rootGit.status.mockResolvedValueOnce({
+        modified: [],
+        created: [],
+        not_added: [
+          'in-repo-link.txt',
+          'absolute-outside-link.txt',
+          'relative-outside-link.txt',
+        ],
+        deleted: [],
+        renamed: [],
+      });
+
+      const worktreePath = await manager.createRunWorktree('run-1');
+
+      const copiedLink = join(worktreePath, 'in-repo-link.txt');
+      expect(lstatSync(copiedLink).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(copiedLink)).toBe('target.txt');
+      expect(existsSync(join(worktreePath, 'absolute-outside-link.txt'))).toBe(false);
+      expect(existsSync(join(worktreePath, 'relative-outside-link.txt'))).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('skipped unsafe symlink absolute-outside-link.txt'),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('skipped unsafe symlink relative-outside-link.txt'),
+      );
+    });
+
+    it('skips chained symlinks that resolve outside the project root and preserves in-repo chains', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const { root, manager, rootGit } = createManager();
+      const outsideDir = mkdtempSync(join(tmpdir(), 'crew-outside-chain-'));
+      tempDirs.push(outsideDir);
+      writeFileSync(join(outsideDir, 'outside.txt'), 'outside\n', 'utf-8');
+      writeFileSync(join(root, 'safe-target.txt'), 'safe\n', 'utf-8');
+      symlinkSync(join(outsideDir, 'outside.txt'), join(root, 'unsafe-intermediate.txt'));
+      symlinkSync('unsafe-intermediate.txt', join(root, 'unsafe-chain-link.txt'));
+      symlinkSync('safe-target.txt', join(root, 'safe-intermediate.txt'));
+      symlinkSync('safe-intermediate.txt', join(root, 'safe-chain-link.txt'));
+      rootGit.status.mockResolvedValueOnce({
+        modified: [],
+        created: [],
+        not_added: [
+          'safe-target.txt',
+          'unsafe-intermediate.txt',
+          'unsafe-chain-link.txt',
+          'safe-intermediate.txt',
+          'safe-chain-link.txt',
+        ],
+        deleted: [],
+        renamed: [],
+      });
+
+      const worktreePath = await manager.createRunWorktree('run-1');
+
+      expect(existsSync(join(worktreePath, 'unsafe-intermediate.txt'))).toBe(false);
+      expect(existsSync(join(worktreePath, 'unsafe-chain-link.txt'))).toBe(false);
+      const copiedSafeIntermediate = join(worktreePath, 'safe-intermediate.txt');
+      expect(lstatSync(copiedSafeIntermediate).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(copiedSafeIntermediate)).toBe('safe-target.txt');
+      const copiedSafeLink = join(worktreePath, 'safe-chain-link.txt');
+      expect(lstatSync(copiedSafeLink).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(copiedSafeLink)).toBe('safe-intermediate.txt');
+      expect(readFileSync(copiedSafeLink, 'utf-8')).toBe('safe\n');
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('skipped unsafe symlink unsafe-chain-link.txt'),
+      );
     });
 
     it('times out instead of reclaiming a run lock held by a live process', async () => {

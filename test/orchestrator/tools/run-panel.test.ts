@@ -200,7 +200,8 @@ describe('runPanelHandler', () => {
     expect(out.partial).toBe(false);
     expect(out.reviewers).toHaveLength(2);
     expect(out.failed_reviewers).toEqual([]);
-    expect(writeSizes).toEqual([0, 1, 2]);
+    expect(writeSizes.slice(0, 2)).toEqual([0, 2]);
+    expect(writeSizes.every((size) => size === 0 || size === 2)).toBe(true);
 
     const panelState = readPanelState(panelDir(h.crewHome, out.panel_id));
     expect(panelState?.panelRepoRoot).toBe(h.runStateStore.repoRoot);
@@ -339,6 +340,97 @@ describe('runPanelHandler', () => {
       .toHaveLength(3);
   });
 
+  it('writes ordered pending reviewer records before starting panel dispatches', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    let panelId = '';
+    const snapshots: string[][] = [];
+
+    const out = await runPanelHandler({
+      reviewers: [
+        { agent_id: 'reviewer', prompt: 'review 1' },
+        { agent_id: 'missing', prompt: 'review 2' },
+        { agent_id: 'reviewer', prompt: 'review 3' },
+      ],
+    }, {
+      ...h.ctx,
+      onPanelStateWritten: (state) => {
+        panelId = state.panelId;
+        snapshots.push(state.reviewers.map((reviewer) => {
+          if (reviewer.dispatched) return `run:${reviewer.runId}`;
+          if ('pending' in reviewer && reviewer.pending) return `pending:${reviewer.agentId}`;
+          return `failed:${reviewer.agentId}`;
+        }));
+      },
+    });
+
+    expect(out.reviewers).toHaveLength(2);
+    expect(out.failed_reviewers).toHaveLength(1);
+    expect(snapshots[1]).toEqual([
+      'pending:reviewer',
+      'pending:missing',
+      'pending:reviewer',
+    ]);
+    const state = readPanelState(panelDir(h.crewHome, panelId));
+    expect(state?.reviewers.map((reviewer) => reviewer.agentId)).toEqual([
+      'reviewer',
+      'missing',
+      'reviewer',
+    ]);
+    for (const reviewer of out.reviewers) {
+      expect(state?.reviewers.some((record) =>
+        record.dispatched && record.runId === reviewer.run_id)).toBe(true);
+    }
+  });
+
+  it('keeps started reviewer records durable when a later setup write crashes', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    let panelId = '';
+    const firstStarted = createDeferred<void>();
+
+    await expect(runPanelHandler({
+      reviewers: [
+        { agent_id: 'reviewer', prompt: 'review 1' },
+        { agent_id: 'reviewer', prompt: 'review 2' },
+      ],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: async (args) => {
+        if (args.input.prompt === 'review 1') {
+          await args.onStart?.({
+            agentName: args.input.agent_id,
+            runId: 'reviewer-run-1',
+            worktreePath: '/tmp/reviewer-run-1',
+          });
+          firstStarted.resolve();
+          return fakeDispatchResult(args.input.agent_id, 1);
+        }
+        await firstStarted.promise;
+        throw new DispatchError('simulated later setup failure');
+      },
+      onPanelStateWritten: (state) => {
+        panelId = state.panelId;
+        if (state.reviewers.some((reviewer) =>
+          !reviewer.dispatched && !('pending' in reviewer && reviewer.pending))) {
+          throw new Error('simulated crash after later setup failure');
+        }
+      },
+    })).rejects.toThrow('simulated crash after later setup failure');
+
+    const state = readPanelState(panelDir(h.crewHome, panelId));
+    expect(state?.reviewers).toHaveLength(2);
+    expect(state?.reviewers[0]).toMatchObject({
+      agentId: 'reviewer',
+      dispatched: true,
+    });
+    expect(state?.reviewers[1]).toMatchObject({
+      agentId: 'reviewer',
+      dispatched: false,
+      error: 'simulated later setup failure',
+    });
+  });
+
   it('rejects every implementer preflight path with namespaced errors', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);
@@ -398,7 +490,7 @@ describe('runPanelHandler', () => {
     }, {
       ...h.ctx,
       onPanelStateWritten: (state) => {
-        if (state.reviewers.length === 2) {
+        if (state.reviewers.filter((reviewer) => reviewer.dispatched).length === 2) {
           rmSync(implementer.worktreePath, { recursive: true, force: true });
         }
       },
@@ -491,11 +583,9 @@ describe('runPanelHandler', () => {
       const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
       cleanupHarness(h);
       const originalStart = h.dispatcher.start.bind(h.dispatcher);
-      let count = 0;
       let failedTask: DispatchTask | undefined;
       vi.spyOn(h.dispatcher, 'start').mockImplementation((task) => {
-        count += 1;
-        if (count === 2) {
+        if (task.input?.prompt === 'review 2') {
           failedTask = task;
           throw new Error('sync start failure');
         }
@@ -563,6 +653,7 @@ describe('runPanelHandler', () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);
     let panelId = '';
+    let twoDispatchedWrites = 0;
 
     await expect(runPanelHandler({
       reviewers: [
@@ -574,8 +665,11 @@ describe('runPanelHandler', () => {
       ...h.ctx,
       onPanelStateWritten: (state) => {
         panelId = state.panelId;
-        if (state.reviewers.length === 2) {
-          throw new Error('simulated crash after record write');
+        if (state.reviewers.filter((reviewer) => reviewer.dispatched).length === 2) {
+          twoDispatchedWrites += 1;
+          if (twoDispatchedWrites === 2) {
+            throw new Error('simulated crash after record write');
+          }
         }
       },
     })).rejects.toThrow('simulated crash after record write');
@@ -647,7 +741,7 @@ describe('runPanelHandler', () => {
     expect(observedPrompt).toBe(`${expectedBlock}review now`);
   });
 
-  it('panel-dispatched reviewer reaches terminal through lifecycle listeners', async () => {
+  it('panel-dispatched reviewer reaches terminal through lifecycle listeners without dropping its snapshot', async () => {
     const adapter = makeMockAdapter({
       name: 'reviewer',
       execute: async () => ({
@@ -668,5 +762,47 @@ describe('runPanelHandler', () => {
     const state = h.runStateStore.read(out.reviewers[0].run_id);
     expect(state?.prompts.at(-1)?.summary).toBe('terminal review');
     expect(state?.filesChanged).toEqual(['review.md']);
+    const panelState = readPanelState(panelDir(h.crewHome, out.panel_id));
+    expect(panelState?.reviewers[0]).toMatchObject({
+      dispatched: true,
+      terminalSnapshot: {
+        status: 'partial',
+        summary: 'terminal review',
+        filesChanged: ['review.md'],
+      },
+    });
+  });
+
+  it('sets up reviewer dispatches concurrently while preserving output order', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    const releaseFirst = createDeferred<void>();
+    const started: string[] = [];
+
+    const outPromise = runPanelHandler({
+      reviewers: [
+        { agent_id: 'reviewer', prompt: 'slow' },
+        { agent_id: 'reviewer', prompt: 'fast' },
+      ],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: async (args) => {
+        started.push(args.input.prompt);
+        if (args.input.prompt === 'slow') {
+          await releaseFirst.promise;
+          return fakeDispatchResult(args.input.agent_id, 1);
+        }
+        return fakeDispatchResult(args.input.agent_id, 2);
+      },
+    });
+
+    await waitFor(() => started.length === 2);
+    expect(started).toEqual(['slow', 'fast']);
+    releaseFirst.resolve();
+    const out = await outPromise;
+    expect(out.reviewers.map((reviewer) => reviewer.run_id)).toEqual([
+      'reviewer-run-1',
+      'reviewer-run-2',
+    ]);
   });
 });

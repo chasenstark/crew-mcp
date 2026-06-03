@@ -1,12 +1,9 @@
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
 
+import { atomicWrite } from '../../../utils/atomic-write.js';
 import {
   resolveAgentPrefsPath,
   type AgentPreferences,
@@ -27,10 +24,7 @@ export function readRawAgentPrefsFile(crewHome: string): RawAgentPrefs {
 
 export function writeRawAgentPrefsFile(crewHome: string, data: RawAgentPrefs): void {
   const path = resolveAgentPrefsPath(crewHome);
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-  renameSync(tmp, path);
+  atomicWrite(path, JSON.stringify(data, null, 2) + '\n');
 }
 
 export function mergeAgentEntries(

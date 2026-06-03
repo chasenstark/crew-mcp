@@ -1,7 +1,23 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { createHash, randomUUID } from 'crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from 'fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'path';
+import { atomicWrite } from '../utils/atomic-write.js';
+import { logBestEffortFailure } from '../utils/best-effort.js';
+import { withFileLock } from '../utils/file-lock.js';
 import { logger } from '../utils/logger.js';
 
 interface RunWorktreeRecord {
@@ -57,12 +73,6 @@ export interface RunGitCommitWritablePaths {
   readonly paths: readonly string[];
 }
 
-interface RunLockRecord {
-  ownerId: string;
-  pid: number;
-  acquiredAt: string;
-}
-
 interface HostCheckout {
   readonly branchName?: string;
   readonly headSha: string;
@@ -74,7 +84,7 @@ type MergeRecoveryState = PreLandingRecovery | 'post-landing';
 export class WorktreeManager {
   private static readonly LOCK_TIMEOUT_MS = 20_000;
   private static readonly LOCK_STALE_MS = 15_000;
-  private static readonly prunedProjectRoots = new Set<string>();
+  private static readonly prunedProjectRootRealpaths = new Set<string>();
 
   private git: SimpleGit;
   private runBasePath: string;
@@ -280,11 +290,33 @@ export class WorktreeManager {
       const src = join(this.projectRoot, relPath);
       const dst = join(worktreePath, relPath);
       try {
-        if (!existsSync(src)) continue;
-        const st = statSync(src);
-        if (!st.isFile()) continue;
+        let st: ReturnType<typeof lstatSync>;
+        try {
+          st = lstatSync(src);
+        } catch (err) {
+          if (isEnoent(err)) continue;
+          throw err;
+        }
         mkdirSync(dirname(dst), { recursive: true });
-        copyFileSync(src, dst);
+        if (st.isSymbolicLink()) {
+          const target = readlinkSync(src);
+          if (!this.isSafeProjectSymlinkTarget(src, target)) {
+            rmSync(dst, { recursive: true, force: true });
+            logger.warn(
+              `syncUncommitted: skipped unsafe symlink ${relPath} -> ${target}; target escapes project root`,
+            );
+            continue;
+          }
+          rmSync(dst, { recursive: true, force: true });
+          symlinkSync(target, dst);
+        } else if (st.isFile()) {
+          copyFileSync(src, dst);
+          chmodSync(dst, st.mode);
+        } else {
+          // Git submodules are directories with gitlink index entries; this
+          // best-effort file sync does not recurse or materialize them.
+          continue;
+        }
         copied++;
       } catch (err) {
         logger.warn(
@@ -307,6 +339,37 @@ export class WorktreeManager {
       }
     }
     return { copied, removed };
+  }
+
+  private isSafeProjectSymlinkTarget(linkPath: string, target: string): boolean {
+    const lexicalProjectRoot = resolve(this.projectRoot);
+    const lexicalRoots = [lexicalProjectRoot];
+    let resolvedProjectRoot = lexicalProjectRoot;
+    try {
+      resolvedProjectRoot = realpathSync(this.projectRoot);
+      lexicalRoots.push(resolvedProjectRoot);
+    } catch {
+      // If the root itself disappears, fall back to the normalized path
+      // used by the manager; the copy will fail separately if needed.
+    }
+
+    const targetPath = isAbsolute(target)
+      ? resolve(target)
+      : resolve(dirname(linkPath), target);
+    const targetIsLexicallyInsideRoot = lexicalRoots.some((root) => isPathInside(root, targetPath));
+    if (!targetIsLexicallyInsideRoot) {
+      return false;
+    }
+
+    try {
+      const resolvedTargetPath = realpathSync(targetPath);
+      return isPathInside(resolvedProjectRoot, resolvedTargetPath);
+    } catch (err) {
+      if (isEnoent(err)) {
+        return targetIsLexicallyInsideRoot;
+      }
+      return false;
+    }
   }
 
   async getModifiedFilesByRun(runId: string): Promise<string[]> {
@@ -1010,8 +1073,9 @@ export class WorktreeManager {
   }
 
   private pruneRunWorktreesOnce(projectRoot: string): void {
-    if (WorktreeManager.prunedProjectRoots.has(projectRoot)) return;
-    WorktreeManager.prunedProjectRoots.add(projectRoot);
+    const pruneKey = this.resolveProjectRootPruneKey(projectRoot);
+    if (WorktreeManager.prunedProjectRootRealpaths.has(pruneKey)) return;
+    WorktreeManager.prunedProjectRootRealpaths.add(pruneKey);
     void this.git.raw(['worktree', 'prune']).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       // Host CLIs (e.g. Conductor) launch crew-mcp from their own app bin
@@ -1028,6 +1092,14 @@ export class WorktreeManager {
         `Failed to prune stale git worktrees for ${projectRoot}: ${message}`,
       );
     });
+  }
+
+  private resolveProjectRootPruneKey(projectRoot: string): string {
+    try {
+      return realpathSync(projectRoot);
+    } catch {
+      return resolve(projectRoot);
+    }
   }
 
   private isRecoverableCreateCollision(message: string): boolean {
@@ -1072,15 +1144,6 @@ export class WorktreeManager {
     return resolve(worktreeGitDir, commonDir);
   }
 
-  private isLockAlreadyHeldError(error: unknown): boolean {
-    return (
-      typeof error === 'object'
-      && error !== null
-      && 'code' in error
-      && (error as { code?: string }).code === 'EEXIST'
-    );
-  }
-
   private statusChangedFiles(status: StatusResult): string[] {
     return [
       ...status.modified,
@@ -1089,104 +1152,6 @@ export class WorktreeManager {
       ...(status.deleted ?? []),
       ...(status.renamed ?? []).map((r) => r.to),
     ];
-  }
-
-  private writeRunLockRecord(lockDir: string, record: RunLockRecord): void {
-    const targetPath = join(lockDir, 'owner.json');
-    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${tempRandomUUID()}.tmp`;
-    writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tempPath, targetPath);
-  }
-
-  private readRunLockRecord(lockDir: string): RunLockRecord | undefined {
-    const ownerPath = join(lockDir, 'owner.json');
-    if (!existsSync(ownerPath)) {
-      return undefined;
-    }
-
-    try {
-      return JSON.parse(readFileSync(ownerPath, 'utf-8')) as RunLockRecord;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private tryReclaimRunLock(lockDir: string): boolean {
-    const record = this.readRunLockRecord(lockDir);
-    if (record?.pid && this.isProcessAlive(record.pid)) {
-      return false;
-    }
-    if (!this.isStaleLock(lockDir)) {
-      return false;
-    }
-
-    const staleDir = `${lockDir}.${tempRandomUUID()}.stale`;
-    try {
-      renameSync(lockDir, staleDir);
-    } catch (err) {
-      if (this.isEnoent(err)) return false;
-      throw err;
-    }
-
-    const renamedRecord = this.readRunLockRecord(staleDir);
-    if (
-      this.isStaleLock(staleDir)
-      && (
-        record
-          ? renamedRecord?.ownerId === record.ownerId && renamedRecord.pid === record.pid
-          : renamedRecord === undefined
-      )
-    ) {
-      rmSync(staleDir, { recursive: true, force: true });
-      return true;
-    }
-
-    try {
-      renameSync(staleDir, lockDir);
-    } catch {
-      // Best effort: never delete a lock that failed post-rename validation.
-    }
-    return false;
-  }
-
-  private releaseRunLock(lockDir: string, ownerId: string): void {
-    const record = this.readRunLockRecord(lockDir);
-    if (record?.ownerId !== ownerId) {
-      return;
-    }
-    rmSync(lockDir, { recursive: true, force: true });
-  }
-
-  private isStaleLock(lockDir: string): boolean {
-    try {
-      const stats = statSync(lockDir);
-      return (Date.now() - stats.mtimeMs) >= WorktreeManager.LOCK_STALE_MS;
-    } catch {
-      return false;
-    }
-  }
-
-  private isProcessAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (err) {
-      return (
-        typeof err === 'object'
-        && err !== null
-        && 'code' in err
-        && (err as { code?: string }).code === 'EPERM'
-      );
-    }
-  }
-
-  private isEnoent(error: unknown): boolean {
-    return (
-      typeof error === 'object'
-      && error !== null
-      && 'code' in error
-      && (error as { code?: string }).code === 'ENOENT'
-    );
   }
 
   // -------------------------------------------------------------------------
@@ -1286,16 +1251,14 @@ export class WorktreeManager {
 
   private writeRunWorktreeRecord(record: RunWorktreeRecord): void {
     const targetPath = this.runMetadataFilePath(record.runId);
-    const tempPath = `${targetPath}.${process.pid}.${Date.now()}.${tempRandomUUID()}.tmp`;
-    writeFileSync(tempPath, JSON.stringify(record, null, 2), 'utf-8');
-    renameSync(tempPath, targetPath);
+    atomicWrite(targetPath, JSON.stringify(record, null, 2));
   }
 
   private deleteRunWorktreeRecord(runId: string): void {
     try {
       rmSync(this.runMetadataFilePath(runId), { force: true });
-    } catch {
-      // ignore
+    } catch (err) {
+      logBestEffortFailure('worktree.delete-run-record', err);
     }
   }
 
@@ -1348,48 +1311,18 @@ export class WorktreeManager {
     timeoutMessage: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const ownerId = randomUUID();
-    const lockRecord: RunLockRecord = {
-      ownerId,
-      pid: process.pid,
-      acquiredAt: new Date().toISOString(),
-    };
-    const timeoutAt = Date.now() + WorktreeManager.LOCK_TIMEOUT_MS;
-
-    while (true) {
-      try {
-        mkdirSync(lockDir);
-        try {
-          this.writeRunLockRecord(lockDir, lockRecord);
-        } catch (err) {
-          rmSync(lockDir, { recursive: true, force: true });
-          throw err;
-        }
-        break;
-      } catch (err) {
-        if (!this.isLockAlreadyHeldError(err)) {
-          throw err;
-        }
-        if (this.tryReclaimRunLock(lockDir)) {
-          continue;
-        }
-        if (Date.now() >= timeoutAt) {
-          throw new Error(timeoutMessage);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-
-    try {
-      return await operation();
-    } finally {
-      this.releaseRunLock(lockDir, ownerId);
-    }
+    return withFileLock(
+      {
+        lockDir,
+        timeoutMs: WorktreeManager.LOCK_TIMEOUT_MS,
+        staleMs: WorktreeManager.LOCK_STALE_MS,
+        waitMs: 50,
+        timeoutMessage,
+        reclaimOwnerless: true,
+      },
+      operation,
+    );
   }
-}
-
-function tempRandomUUID(): string {
-  return globalThis.crypto?.randomUUID?.() ?? randomUUID();
 }
 
 /**
@@ -1418,4 +1351,13 @@ export function buildMergeCommitMessage(args: {
   const body = args.body?.trim();
   if (body) parts.push('', body);
   return parts.join('\n');
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
 }

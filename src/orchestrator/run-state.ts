@@ -21,14 +21,12 @@
  * were written without it (the field is informational, not load-bearing).
  */
 
-import { randomUUID } from 'node:crypto';
 import {
   mkdirSync,
   readFileSync,
   realpathSync,
   writeFileSync,
   appendFileSync,
-  renameSync,
   chmodSync,
   openSync,
   fstatSync,
@@ -39,7 +37,10 @@ import {
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
+import { atomicWrite } from '../utils/atomic-write.js';
+import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
+import { warnOnce } from '../utils/warn-once.js';
 import { filterEventsTailNoise } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
 import { writeRunReceipt } from './receipts.js';
@@ -152,7 +153,14 @@ function getPromptStorageCap(): number {
   const raw = process.env.CREW_PROMPT_STORAGE_CAP_CHARS;
   if (raw === undefined) return DEFAULT_PROMPT_STORAGE_CAP_CHARS;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_PROMPT_STORAGE_CAP_CHARS;
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    warnOnce('env:CREW_PROMPT_STORAGE_CAP_CHARS', () => {
+      logger.warn(
+        `CREW_PROMPT_STORAGE_CAP_CHARS is present but is not a non-negative integer; using ${DEFAULT_PROMPT_STORAGE_CAP_CHARS}`,
+      );
+    });
+    return DEFAULT_PROMPT_STORAGE_CAP_CHARS;
+  }
   return Math.floor(parsed);
 }
 
@@ -374,7 +382,7 @@ export class RunStateStore {
       writeFileSync(tailPath, script, 'utf-8');
       chmodSync(tailPath, 0o755);
     } catch (err) {
-      logger.debug('Failed to write tail.command helper', { runId, tailPath, err });
+      logBestEffortFailure('run-state.tail-command-helper', err);
       // Helper is non-essential; don't block dispatch on an unwritable
       // filesystem (e.g., read-only mount).
     }
@@ -839,10 +847,7 @@ export class RunStateStore {
    */
   private writeAtomic(runId: string, state: RunStateV1): void {
     const path = this.statePath(runId);
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
-    renameSync(tmp, path);
+    atomicWrite(path, JSON.stringify(state, null, 2));
   }
 }
 
