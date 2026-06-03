@@ -26,7 +26,14 @@
  *   - Returns { status: 'merged', commit_sha } on success, or
  *     { status: 'conflict', conflicts: [...] } on conflict (worktree
  *     stays alive for resolution), or { status: 'no-changes' } when the
- *     run adds nothing the target doesn't already have.
+ *     run adds nothing the target doesn't already have. If the run lands
+ *     on a branch other than the user's original checkout, the success
+ *     envelope includes target_branch, original_branch/original_head, and
+ *     landed_off_current_branch:true so captains can warn that the commit
+ *     landed elsewhere and the original checkout was restored. If the
+ *     commit/no-changes result is durable but restoring the original
+ *     checkout fails, the envelope still returns the result with
+ *     restore_failed:true and restore_warning.
  *   - On `merged`, the worktree directory is auto-cleaned best-effort
  *     (the merged commit is permanently in the host's HEAD, so the
  *     worktree has no remaining value). state.json + events.log
@@ -78,4 +85,4 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run's worktree into the host HEAD after the user chooses to keep it. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true is required and must follow explicit user approval. Lands linearly (never an empty merge-commit): merge_strategy 'squash' (default) collapses the run into one commit titled by commit_title/body; 'preserve' keeps its individual commits. Returns { status: 'merged', commit_sha }, { status: 'conflict', conflicts }, or { status: 'no-changes' }; merged worktrees are cleaned up.";
+  "Merge a completed run worktree into a target branch after user approval. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true must follow explicit approval. Lands linearly: 'squash' creates one commit; 'preserve' keeps individual commits. Returns merged+commit_sha, conflict+conflicts, or no-changes. Off-checkout success adds landed_off_current_branch plus target/original fields; restore failure adds restore_failed+restore_warning but still reports the landed result.";

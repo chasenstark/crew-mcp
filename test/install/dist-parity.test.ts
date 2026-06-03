@@ -41,7 +41,7 @@ describe('dist JS parity with current src descriptions', () => {
   it.each([
     ['run_agent', 'Start a new subagent run for a bounded task'],
     ['continue_run', 'Resume an existing run with a new prompt'],
-    ['merge_run', "Merge a completed run's worktree into the host HEAD"],
+    ['merge_run', 'Merge a completed run worktree into a target branch'],
     ['get_run_status', "Read a run's current status by run_id"],
     ['list_agents', 'List configured agents before dispatching'],
     ['cancel_run', 'Abort an in-flight run by run_id'],

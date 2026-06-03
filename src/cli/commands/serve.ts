@@ -317,6 +317,12 @@ export interface MergeEnvelope {
   readonly status: 'merged' | 'conflict' | 'no-changes';
   readonly commit_sha?: string;
   readonly conflicts?: readonly string[];
+  readonly target_branch?: string;
+  readonly original_branch?: string;
+  readonly original_head?: string;
+  readonly landed_off_current_branch?: boolean;
+  readonly restore_failed?: boolean;
+  readonly restore_warning?: string;
 }
 
 export interface DiscardEnvelope {
@@ -825,10 +831,9 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           commitTitle: args.commit_title,
           commitBody: args.commit_body,
         });
-        const target = args.target_branch ?? '<host current branch>';
         if (result.status === 'merged') {
           await runStateStore.markMerged(args.run_id, {
-            target,
+            target: result.targetBranch,
             commitSha: result.commitSha,
           });
           // Best-effort worktree cleanup: once the run is merged into
@@ -850,12 +855,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
             run_id: args.run_id,
             status: 'merged',
             commit_sha: result.commitSha,
+            ...checkoutEnvelope(result),
           };
           return markdownContent(renderMergeMarkdown(env), env);
         }
         if (result.status === 'conflict') {
           await runStateStore.markMergeConflict(args.run_id, {
-            target,
+            target: result.targetBranch,
             conflicts: result.conflicts,
           });
           const env: MergeEnvelope = {
@@ -869,6 +875,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         const env: MergeEnvelope = {
           run_id: args.run_id,
           status: 'no-changes',
+          ...checkoutEnvelope(result),
         };
         return markdownContent(renderMergeMarkdown(env), env);
       } catch (err) {
@@ -1810,13 +1817,52 @@ function jsonContent<T extends object>(value: T, isError = false): ToolCallRetur
 
 function renderMergeMarkdown(env: MergeEnvelope): string {
   if (env.status === 'merged') {
-    return `**Merged** ${mdInlineCode(env.run_id)} → ${mdInlineCode(env.commit_sha ?? '')}`;
+    const base = `**Merged** ${mdInlineCode(env.run_id)} → ${mdInlineCode(env.commit_sha ?? '')}`;
+    if (env.restore_failed) {
+      return `${base}\n\n${env.restore_warning ?? 'Merge landed, but checkout restore failed.'}`;
+    }
+    if (!env.landed_off_current_branch) return base;
+    const original = env.original_branch
+      ? mdInlineCode(env.original_branch)
+      : `detached HEAD ${mdInlineCode(env.original_head ?? '')}`;
+    return `${base}\n\nLanded on ${mdInlineCode(env.target_branch ?? '')}; restored ${original}.`;
   }
   if (env.status === 'conflict') {
     const conflicts = env.conflicts ?? [];
     return `**Conflict** on ${mdInlineCode(env.run_id)} (${conflicts.length} files): ${conflicts.join(', ')}`;
   }
-  return `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
+  const base = `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
+  if (env.restore_failed) {
+    return `${base}\n\n${env.restore_warning ?? 'No changes were merged, but checkout restore failed.'}`;
+  }
+  return base;
+}
+
+function checkoutEnvelope(result: {
+  readonly targetBranch: string;
+  readonly originalBranch?: string;
+  readonly originalHead: string;
+  readonly landedOffCurrentBranch: boolean;
+  readonly restoreFailed?: boolean;
+  readonly restoreWarning?: string;
+}): Pick<
+  MergeEnvelope,
+  | 'target_branch'
+  | 'original_branch'
+  | 'original_head'
+  | 'landed_off_current_branch'
+  | 'restore_failed'
+  | 'restore_warning'
+> {
+  if (!result.landedOffCurrentBranch && !result.restoreFailed) return {};
+  return {
+    target_branch: result.targetBranch,
+    ...(result.originalBranch ? { original_branch: result.originalBranch } : {}),
+    original_head: result.originalHead,
+    ...(result.landedOffCurrentBranch ? { landed_off_current_branch: true } : {}),
+    ...(result.restoreFailed ? { restore_failed: true } : {}),
+    ...(result.restoreWarning ? { restore_warning: result.restoreWarning } : {}),
+  };
 }
 
 function renderDiscardMarkdown(env: DiscardEnvelope): string {

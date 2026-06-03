@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execSync } from 'child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -80,5 +80,58 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(wPath.startsWith(repoRoot)).toBe(false);
     expect(existsSync(join(crewHome, 'runs', 'run-1', 'worktree'))).toBe(true);
     expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
+  });
+
+  it('failed squash commit discards staged run changes before restoring the original branch', async () => {
+    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
+    const targetBranch = execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+    execSync('git checkout -q -b feature', { cwd: repoRoot });
+    const targetHead = execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim();
+    const worktreePath = await manager.createRunWorktree('run-1');
+
+    writeFileSync(join(worktreePath, 'RUN.md'), 'run change\n', 'utf-8');
+    execSync('git add RUN.md', { cwd: worktreePath });
+    execSync('git commit -q -m "run change"', { cwd: worktreePath });
+
+    const hookPath = join(repoRoot, '.git', 'hooks', 'pre-commit');
+    writeFileSync(hookPath, '#!/bin/sh\necho blocked by test hook >&2\nexit 1\n', 'utf-8');
+    chmodSync(hookPath, 0o755);
+
+    await expect(
+      manager.mergeRunWorktree('run-1', { targetBranch }),
+    ).rejects.toThrow(/blocked by test hook/);
+
+    expect(execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe('feature');
+    expect(execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' })).toBe('');
+    expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
+    expect(existsSync(join(repoRoot, 'RUN.md'))).toBe(false);
+  });
+
+  it('force=true failed squash commit preserves pre-existing staged host changes', async () => {
+    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
+    const targetBranch = execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+    execSync('git checkout -q -b feature', { cwd: repoRoot });
+    const targetHead = execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim();
+    const worktreePath = await manager.createRunWorktree('run-1');
+
+    writeFileSync(join(worktreePath, 'RUN.md'), 'run change\n', 'utf-8');
+    execSync('git add RUN.md', { cwd: worktreePath });
+    execSync('git commit -q -m "run change"', { cwd: worktreePath });
+
+    writeFileSync(join(repoRoot, 'README.md'), 'init\nhost staged change\n', 'utf-8');
+    execSync('git add README.md', { cwd: repoRoot });
+
+    const hookPath = join(repoRoot, '.git', 'hooks', 'pre-commit');
+    writeFileSync(hookPath, '#!/bin/sh\necho blocked by test hook >&2\nexit 1\n', 'utf-8');
+    chmodSync(hookPath, 0o755);
+
+    await expect(
+      manager.mergeRunWorktree('run-1', { targetBranch, force: true }),
+    ).rejects.toThrow(/did not run git reset --hard/);
+
+    expect(execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetBranch);
+    expect(readFileSync(join(repoRoot, 'README.md'), 'utf-8')).toBe('init\nhost staged change\n');
+    expect(execSync('git diff --cached --name-only', { cwd: repoRoot, encoding: 'utf-8' }).split('\n')).toContain('README.md');
+    expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
   });
 });

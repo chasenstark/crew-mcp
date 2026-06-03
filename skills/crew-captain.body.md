@@ -142,6 +142,19 @@ If `merge_run` rejects with
 merge prompt, wait for an affirmative answer, then retry
 `merge_run` with `confirmed: true`. Do not retry automatically.
 
+After a successful `merge_run`, check the structured output. If it
+includes `landed_off_current_branch: true`, explicitly tell the user
+the commit landed on `target_branch` and that their original checkout
+was restored (`original_branch`, or detached `original_head` when no
+branch was checked out). Example: "Landed on `main`; you're back on
+`feature`." This warning matters because the host repo is restored
+after non-conflict merges, while the commit belongs to the target.
+If the output includes `restore_failed: true`, the merge/no-changes
+result still landed and the run is still terminal; tell the user the
+`restore_warning` verbatim enough to make the current checkout clear
+(for example, "merge landed but I couldn't return you to `feature`;
+you're on `main`"). Do not retry merge_run just to fix checkout state.
+
 ### Pick the merge strategy
 
 `merge_run` lands the run linearly — never an empty merge commit — in

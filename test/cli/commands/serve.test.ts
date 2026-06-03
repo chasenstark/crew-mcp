@@ -2238,6 +2238,139 @@ describe('crew serve — merge_run tool', () => {
     }
   });
 
+  it('surfaces and restores when merge_run lands on a branch other than the original checkout', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'TARGET.md'), 'target branch landing\n', 'utf-8');
+        return {
+          output: 'wrote TARGET.md',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        } satisfies TaskResult;
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const target = execSync('git branch --show-current', { cwd: h.root }).toString().trim();
+      execSync('git checkout -q -b feature', { cwd: h.root });
+      const originalHead = execSync('git rev-parse HEAD', { cwd: h.root }).toString().trim();
+
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'add target file' },
+      });
+      const runEnv = res.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const mergeRes = await h.client.callTool({
+        name: 'merge_run',
+        arguments: {
+          run_id: runEnv.run_id,
+          target_branch: target,
+          confirmed: true,
+        },
+      });
+      const mergeEnv = mergeRes.structuredContent as {
+        run_id: string;
+        status: string;
+        commit_sha?: string;
+        target_branch?: string;
+        original_branch?: string;
+        original_head?: string;
+        landed_off_current_branch?: boolean;
+      };
+
+      expect(mergeEnv).toMatchObject({
+        run_id: runEnv.run_id,
+        status: 'merged',
+        target_branch: target,
+        original_branch: 'feature',
+        original_head: originalHead,
+        landed_off_current_branch: true,
+      });
+      expect(mergeEnv.commit_sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(toolText(mergeRes)).toBe(
+        `**Merged** \`${runEnv.run_id}\` → \`${mergeEnv.commit_sha}\`\n\n`
+        + `Landed on \`${target}\`; restored \`feature\`.`,
+      );
+      expect(execSync('git branch --show-current', { cwd: h.root }).toString().trim()).toBe('feature');
+      expect(execSync(`git show ${target}:TARGET.md`, { cwd: h.root }).toString()).toBe(
+        'target branch landing\n',
+      );
+      expect(existsSync(join(h.root, 'TARGET.md'))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('marks the run merged when merge_run returns merged with restore_failed', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'RESTORE.md'), 'restore failure\n', 'utf-8');
+        return {
+          output: 'wrote RESTORE.md',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        } satisfies TaskResult;
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'add restore file' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId').mockResolvedValue(undefined);
+      vi.spyOn(h.worktreeManager, 'mergeRunWorktree').mockResolvedValue({
+        status: 'merged',
+        commitSha: 'abc123',
+        targetBranch: 'main',
+        originalBranch: 'feature',
+        originalHead: 'feature-head',
+        landedOffCurrentBranch: true,
+        restoreFailed: true,
+        restoreWarning: "Merge landed but I couldn't return you to feature; you're on main. Restore failed: checkout failed",
+      });
+
+      const mergeRes = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id, confirmed: true },
+      });
+      const mergeEnv = mergeRes.structuredContent as {
+        status: string;
+        restore_failed?: boolean;
+        restore_warning?: string;
+      };
+
+      expect(mergeEnv.status).toBe('merged');
+      expect(mergeEnv.restore_failed).toBe(true);
+      expect(mergeEnv.restore_warning).toContain("couldn't return you to feature");
+      expect(toolText(mergeRes)).toContain("couldn't return you to feature");
+      expect(cleanup).toHaveBeenCalledWith(runEnv.run_id);
+
+      const statusRes = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: runEnv.run_id },
+      });
+      const status = statusRes.structuredContent as {
+        status: string;
+        mergeStatus?: { commitSha?: string };
+      };
+      expect(status.status).toBe('merged');
+      expect(status.mergeStatus?.commitSha).toBe('abc123');
+    } finally {
+      await h.close();
+    }
+  });
+
   it('merge_strategy preserve keeps the run\'s individual commits linearly', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
@@ -2577,6 +2710,59 @@ describe('crew serve — merge_run tool', () => {
     } finally {
       // Clean up any staged squash conflict on the host so afterEach's
       // rmSync works.
+      try {
+        execSync('git reset --hard HEAD', { cwd: h.root, stdio: 'ignore' });
+      } catch {
+        /* nothing to reset */
+      }
+      await h.close();
+    }
+  });
+
+  it('refuses when the host repo already has unmerged index paths even with force=true', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'AGENT.md'), 'agent work\n', 'utf-8');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const target = execSync('git branch --show-current', { cwd: h.root }).toString().trim();
+      writeFileSync(join(h.root, 'blocked.txt'), 'base\n', 'utf-8');
+      execSync('git add blocked.txt && git commit -q -m blocked-base', { cwd: h.root });
+
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'add agent file' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      execSync('git checkout -q -b conflict-side', { cwd: h.root });
+      writeFileSync(join(h.root, 'blocked.txt'), 'side\n', 'utf-8');
+      execSync('git add blocked.txt && git commit -q -m side-change', { cwd: h.root });
+      execSync(`git checkout -q ${target}`, { cwd: h.root });
+      writeFileSync(join(h.root, 'blocked.txt'), 'target\n', 'utf-8');
+      execSync('git add blocked.txt && git commit -q -m target-change', { cwd: h.root });
+      expect(() => execSync('git merge conflict-side', { cwd: h.root, stdio: 'ignore' })).toThrow();
+
+      const merge = await h.client.callTool({
+        name: 'merge_run',
+        arguments: {
+          run_id: runEnv.run_id,
+          target_branch: target,
+          confirmed: true,
+          force: true,
+        },
+      });
+
+      expect(merge.isError).toBe(true);
+      expect(toolText(merge)).toContain('unmerged index paths: blocked.txt');
+      expect(existsSync(join(h.root, 'AGENT.md'))).toBe(false);
+    } finally {
       try {
         execSync('git reset --hard HEAD', { cwd: h.root, stdio: 'ignore' });
       } catch {
