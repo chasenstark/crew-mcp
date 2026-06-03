@@ -427,6 +427,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     'documentation',
   ];
   readonly supportsJsonSchema = true;
+  readonly enforcesReadOnly = false;
   // Current implementation extracts paths from final prose only. Claude tool
   // events do not cover shell edits, git mv, or every write path we allow.
   readonly filesModifiedReliable = false;
@@ -459,7 +460,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const streaming = Boolean(task.onOutput);
     const args = [
       '-p',
-      task.prompt,
+      '-',
       '--output-format',
       streaming ? 'stream-json' : 'json',
       ...(streaming ? ['--verbose'] : []),
@@ -494,7 +495,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
         reject: false,
-        stdin: 'ignore',
+        input: task.prompt,
       });
       const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
         subprocess,
@@ -651,7 +652,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     const args = [
       '-p',
-      fullPrompt,
+      '-',
       '--output-format',
       'json',
       '--dangerously-skip-permissions',
@@ -690,7 +691,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         ...(timeout ? { timeout } : {}),
         cancelSignal: options?.signal,
         reject: false,
-        stdin: 'ignore',
+        input: fullPrompt,
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown execution error';
@@ -882,6 +883,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     if (!subprocess.stdout || !subprocess.stdin) {
       throw new Error('Claude stream session missing stdio pipes.');
     }
+    subprocess.stdin.on('error', (err: Error) => {
+      logger.warn('[adapter:claude-code] stdin error', err);
+    });
 
     if (subprocess.stderr) {
       subprocess.stderr.setEncoding('utf-8');

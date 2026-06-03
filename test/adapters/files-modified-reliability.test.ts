@@ -19,3 +19,18 @@ describe('adapter filesModified reliability', () => {
     }).filesModifiedReliable).toBe(false);
   });
 });
+
+describe('adapter read-only enforcement capability', () => {
+  it('documents which adapters can enforce read_only at the filesystem layer', () => {
+    expect(new CodexAdapter().enforcesReadOnly).toBe(true);
+    expect(new ClaudeCodeAdapter().enforcesReadOnly).toBe(false);
+    expect(new GeminiCliAdapter().enforcesReadOnly).toBe(false);
+    expect(new OpenAiCompatibleAdapter({ name: 'openai-test' }).enforcesReadOnly).toBe(false);
+    expect(new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic',
+      argsTemplate: [],
+      strengths: [],
+    }).enforcesReadOnly).toBe(false);
+  });
+});

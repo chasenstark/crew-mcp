@@ -29,6 +29,7 @@ interface LazyAdapterMetadata {
   readonly strengths: readonly AgentStrength[];
   readonly defaultEffort?: EffortLevel;
   readonly supportsJsonSchema: boolean;
+  readonly enforcesReadOnly: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   readonly recognizesModel?: (modelId: string) => boolean;
   readonly hasExecuteWithSchema?: boolean;
@@ -65,6 +66,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     aliases: ['claude'],
     strengths: ['careful-reasoning', 'code-review', 'documentation'],
     supportsJsonSchema: true,
+    enforcesReadOnly: false,
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
     recognizesModel: (modelId) =>
       typeof modelId === 'string'
@@ -78,6 +80,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     strengths: ['fast-iteration', 'autonomous-loops', 'code-implementation'],
     defaultEffort: 'medium',
     supportsJsonSchema: true,
+    enforcesReadOnly: true,
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
@@ -89,6 +92,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     name: AdapterId.GEMINI_CLI,
     strengths: ['long-context', 'broad-codebase-triage', 'multimodal-input'],
     supportsJsonSchema: false,
+    enforcesReadOnly: false,
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId),
@@ -257,6 +261,7 @@ function createLazyAdapterProxy(
     strengths: [...metadata.strengths],
     defaultEffort: metadata.defaultEffort,
     supportsJsonSchema: metadata.supportsJsonSchema,
+    enforcesReadOnly: metadata.enforcesReadOnly,
     captainCapabilities: metadata.captainCapabilities,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),
@@ -325,6 +330,7 @@ function registerGenericAdapter(
       name,
       strengths,
       supportsJsonSchema: false,
+      enforcesReadOnly: false,
       captainCapabilities: GENERIC_CAPABILITIES,
     },
     async () => {
@@ -350,6 +356,7 @@ function registerOpenAiCompatibleAdapter(
       name,
       strengths,
       supportsJsonSchema: false,
+      enforcesReadOnly: false,
       captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
       hasExecuteWithSchema: true,
       hasExecuteWithTools: true,

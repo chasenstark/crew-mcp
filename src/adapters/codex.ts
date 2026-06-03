@@ -331,6 +331,7 @@ export class CodexAdapter implements AgentAdapter {
   // scale; we don't surface them upward.)
   readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
   readonly supportsJsonSchema = true;
+  readonly enforcesReadOnly = true;
   // Codex emits structured `file_change` events for in-band file edits; treat
   // that terminal list as authoritative so an empty array means no file_change
   // events were observed.
@@ -366,7 +367,6 @@ export class CodexAdapter implements AgentAdapter {
 
       const args = [
         'exec',
-        task.prompt,
         '--json',
         '--skip-git-repo-check',
         '-o',
@@ -451,7 +451,7 @@ export class CodexAdapter implements AgentAdapter {
           ...processGroupSpawnOptions(),
           cancelSignal: task.constraints?.signal,
           reject: false,
-          stdin: 'ignore',
+          input: task.prompt,
         });
         const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
           subprocess,
@@ -656,7 +656,6 @@ export class CodexAdapter implements AgentAdapter {
 
       const args = [
         'exec',
-        prompt,
         '--json',
         '--skip-git-repo-check',
         '--output-schema',
@@ -687,7 +686,7 @@ export class CodexAdapter implements AgentAdapter {
           ...(timeout ? { timeout } : {}),
           cancelSignal: options?.signal,
           reject: false,
-          stdin: 'ignore',
+          input: prompt,
         });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : 'Unknown execution error';
@@ -847,7 +846,7 @@ export class CodexAdapter implements AgentAdapter {
             '--output-last-message',
             outputFile,
             options.threadId,
-            prompt,
+            '-',
           ]
         : this.buildStructuredDecisionArgs(prompt, tmpDir, outputFile);
 
@@ -863,7 +862,7 @@ export class CodexAdapter implements AgentAdapter {
         ...processGroupSpawnOptions(),
         cancelSignal: options.signal,
         reject: false,
-        stdin: 'ignore',
+        input: prompt,
         // No wall-clock timeout. Inner turns vary widely with reasoning
         // effort; field testing showed long xhigh runs were cliff-killed
         // mid-edit by the prior 5m cap. Cancellation comes via the
@@ -966,7 +965,6 @@ export class CodexAdapter implements AgentAdapter {
       schemaFile,
       '--output-last-message',
       outputFile,
-      prompt,
     ];
   }
 

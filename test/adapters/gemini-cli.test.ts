@@ -22,6 +22,10 @@ describe('GeminiCliAdapter', () => {
     expect(adapter.captainCapabilities.supportsToolLoop).toBe(true);
   });
 
+  it('declares read-only as advisory because Gemini CLI does not enforce crew sandboxes', () => {
+    expect(adapter.enforcesReadOnly).toBe(false);
+  });
+
   it('extracts semantic version tag', async () => {
     mockExeca.mockResolvedValueOnce({
       stdout: 'gemini-cli 1.2.3',
@@ -63,6 +67,41 @@ describe('GeminiCliAdapter', () => {
 
     const args = mockExeca.mock.calls[0]?.[1] as string[];
     expect(args.at(-1)).toBe(composedPrompt);
+    expect(args.at(-2)).toBe('--');
+  });
+
+  it('separates a leading-dash prompt from gemini options', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    await adapter.execute({
+      prompt: '-not-a-gemini-flag',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'gemini',
+      ['--output-format', 'json', '--', '-not-a-gemini-flag'],
+      expect.objectContaining({
+        cwd: '/tmp/project',
+        reject: false,
+      }),
+    );
+  });
+
+  it('fails fast before spawn when an argv prompt exceeds the byte budget', async () => {
+    const result = await adapter.execute({
+      prompt: 'x'.repeat(129 * 1024),
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(mockExeca).not.toHaveBeenCalled();
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('Adapter "gemini-cli" cannot receive this prompt via argv');
+    expect(result.output).toContain('argv safety limit');
   });
 
   it('passes --model when specified in execute constraints', async () => {
@@ -80,7 +119,7 @@ describe('GeminiCliAdapter', () => {
 
     expect(mockExeca).toHaveBeenCalledWith(
       'gemini',
-      ['--output-format', 'json', '--model', 'gemini-2.5-pro', 'test'],
+      ['--output-format', 'json', '--model', 'gemini-2.5-pro', '--', 'test'],
       expect.objectContaining({
         cwd: '/tmp/project',
         reject: false,
@@ -111,6 +150,7 @@ describe('GeminiCliAdapter', () => {
       'json',
       '--model',
       'gemini-2.5-flash',
+      '--',
       expect.stringContaining('return json'),
     ]);
   });

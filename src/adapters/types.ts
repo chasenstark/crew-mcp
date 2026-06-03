@@ -148,6 +148,12 @@ export interface AgentAdapter {
   readonly supportedEfforts?: readonly EffortLevel[];
   readonly supportsJsonSchema: boolean;
   /**
+   * True only when this adapter's execution environment can enforce a
+   * read-only filesystem policy itself. False means `read_only` is an
+   * advisory prompt contract plus the dispatch layer's dirty-tree probe.
+   */
+  readonly enforcesReadOnly?: boolean;
+  /**
    * True when `TaskResult.filesModified` is authoritative for this adapter,
    * so the dispatch layer can skip its post-run git status fallback. A
    * reliable adapter returning `[]` means "no files changed", not "unknown".

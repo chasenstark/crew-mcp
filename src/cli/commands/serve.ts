@@ -72,6 +72,8 @@ import {
 } from '../../orchestrator/tools/list-runs.js';
 import {
   buildAdapterDispatchTask,
+  captureRunBranchPointSnapshot,
+  readOnlyAdvisoryWarning,
   resolveEffectiveEffort,
   resolveEffectiveModel,
   runAgentInputSchema,
@@ -746,11 +748,14 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         return errorContent(err instanceof Error ? err.message : String(err));
       }
       const { state, composedPrompt, warnings } = appendResult;
+      const dispatchWarnings = state.readOnly === true && adapter.enforcesReadOnly !== true
+        ? [readOnlyAdvisoryWarning(adapter.name)]
+        : [];
 
       const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
         const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
         await markContinueDispatchFailed(runStateStore, args.run_id, message);
-        return new DispatchError(message, { warnings });
+        return new DispatchError(message, { warnings: [...dispatchWarnings, ...warnings] });
       };
 
       // Re-mirror uncommitted host state into the worktree so changes
@@ -764,6 +769,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           return errorContent(dispatchErr.message);
         }
       }
+      const branchPointBefore =
+        state.readOnly !== true
+          ? await captureRunBranchPointSnapshot(worktreeManager, args.run_id, state.worktreePath)
+          : undefined;
 
       const task = buildAdapterDispatchTask({
         toolCallId,
@@ -777,6 +786,8 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         // post-dispatch probe (warning vs. worktree enrichment)
         // matches the original run's contract.
         readOnly: state.readOnly === true,
+        dispatchWarnings,
+        branchPointBefore,
         effectiveModel,
         effectiveEffort,
         worktreeManager,
@@ -790,9 +801,9 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           worktreePath: state.worktreePath,
           toolCallId,
           task,
-          warnings,
           dispatcher,
           runStateStore,
+          warnings: [...dispatchWarnings, ...warnings],
           progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
           clientKind: getClientKind(),
           onStartFailure: rollbackContinuation,

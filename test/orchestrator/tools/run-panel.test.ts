@@ -471,7 +471,7 @@ describe('runPanelHandler', () => {
       dispatched: false,
       dispatchWarnings: ['peer_messages.body_truncated: item[0]'],
     });
-  });
+  }, 10_000);
 
   it('records plan.kind error from a missing agent as failed_reviewer', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);

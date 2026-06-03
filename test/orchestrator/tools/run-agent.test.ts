@@ -18,6 +18,7 @@ function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
     name: overrides?.name ?? 'mock',
     strengths: overrides?.strengths ?? [],
     supportsJsonSchema: false,
+    enforcesReadOnly: overrides?.enforcesReadOnly ?? true,
     execute: overrides?.execute ?? (async () => ({
       output: 'ok',
       filesModified: [],
@@ -195,7 +196,7 @@ describe('planRunAgent', () => {
     expect(() => readFileSync(join(root, 'src', 'generated.ts'), 'utf-8')).toThrow();
   });
 
-  it('skips post-run worktree status when adapter filesModified is reliable', async () => {
+  it('unions branch-point file reporting even when adapter filesModified is reliable', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
       const typedTask = task as { context: { workingDirectory: string } };
       writeFileSync(join(typedTask.context.workingDirectory, 'reliable-empty.txt'), 'changed\n', 'utf-8');
@@ -224,13 +225,71 @@ describe('planRunAgent', () => {
 
     const result = await plan.buildTask('create a file').run({ signal: makeAbortSignal() });
 
-    expect(getModifiedFilesByRun).not.toHaveBeenCalled();
+    expect(getModifiedFilesByRun).toHaveBeenCalled();
     expect(result).toMatchObject({
       output: 'done',
-      filesModified: [],
+      filesModified: ['reliable-empty.txt'],
       status: 'success',
     });
     expect(readFileSync(join(plan.worktreePath, 'reliable-empty.txt'), 'utf-8')).toBe('changed\n');
+  });
+
+  it('does not over-report synced host dirt that the agent did not change', async () => {
+    writeFileSync(join(root, 'README.md'), 'host edit before dispatch\n', 'utf-8');
+    writeFileSync(join(root, 'scratch.md'), 'host untracked before dispatch\n', 'utf-8');
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
+      const typedTask = task as { context: { workingDirectory: string } };
+      writeFileSync(join(typedTask.context.workingDirectory, 'agent.txt'), 'agent edit\n', 'utf-8');
+      return {
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      };
+    });
+    const adapter = makeMockAdapter({ name: 'claude-code', execute: executeMock });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'claude-code', prompt: 'create a file' },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('create a file').run({ signal: makeAbortSignal() });
+
+    expect(result.filesModified).toEqual(['agent.txt']);
+  });
+
+  it('does not over-report synced host dirt for reliable adapters that report no changes', async () => {
+    writeFileSync(join(root, 'README.md'), 'host edit before dispatch\n', 'utf-8');
+    writeFileSync(join(root, 'scratch.md'), 'host untracked before dispatch\n', 'utf-8');
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
+      output: 'done',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      execute: executeMock,
+      filesModifiedReliable: true,
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'inspect only' },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('inspect only').run({ signal: makeAbortSignal() });
+
+    expect(result.filesModified).toEqual([]);
   });
 
   it('per-call model wins over agents.json prefs', async () => {
@@ -429,6 +488,70 @@ describe('planRunAgent — read_only path', () => {
     expect(observedWorkingDir).toBe(root);
   });
 
+  it('runs read_only on non-enforcing adapters with a loud advisory warning', async () => {
+    const adapter = makeMockAdapter({
+      name: 'claude-code',
+      enforcesReadOnly: false,
+      execute: async () => ({
+        output: 'reviewed',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'claude-code', prompt: 'just review', read_only: true },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.dispatchWarnings).toEqual([
+      expect.stringContaining('read_only advisory: adapter "claude-code" does not enforce'),
+    ]);
+
+    const result = await plan.buildTask('just review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
+    expect(result.status).toBe('success');
+    expect(result.warnings).toEqual([
+      expect.stringContaining('read_only advisory: adapter "claude-code" does not enforce'),
+    ]);
+  });
+
+  it('runs read_only on enforcing adapters without an advisory warning', async () => {
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      enforcesReadOnly: true,
+      execute: async (task) => ({
+        output: task.constraints?.sandbox ?? '',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'just review', read_only: true },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.dispatchWarnings).toEqual([]);
+
+    const result = await plan.buildTask('just review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
+    expect(result.output).toBe('read-only');
+    expect(result.warnings).toBeUndefined();
+  });
+
   it('forwards explicit working_directory when read_only=true', async () => {
     let observed: string | undefined;
     const adapter = makeMockAdapter({
@@ -587,6 +710,35 @@ describe('planRunAgent — read_only path', () => {
     expect(result.warnings?.[0]).not.toMatch(/scratch\.md/);
     // Cleanup so afterEach is well-behaved.
     rmSync(join(root, 'leaked.md'), { force: true });
+  });
+
+  it('detects when a read-only agent edits a file that was already dirty before dispatch', async () => {
+    writeFileSync(join(root, 'README.md'), 'user-in-flight\n', 'utf-8');
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'README.md'), 'agent changed preexisting dirt\n', 'utf-8');
+        return { output: 'broke contract', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'reviewer', prompt: 'review', read_only: true },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    const result = await plan.buildTask('review').run({
+      signal: makeAbortSignal(),
+      onStream: () => undefined,
+    }) as TaskResult;
+
+    expect(result.warnings).toEqual([
+      expect.stringContaining('README.md'),
+    ]);
   });
 });
 

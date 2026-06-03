@@ -312,8 +312,28 @@ export class WorktreeManager {
   async getModifiedFilesByRun(runId: string): Promise<string[]> {
     const path = this.getRunWorktreePath(runId);
     const wGit = simpleGit(path);
+    const base = await this.resolveRunBranchPoint(wGit);
+    const diffOutput = await wGit.raw(['diff', '--name-only', base, '--']);
     const status = await wGit.status();
-    return this.statusChangedFiles(status);
+    return Array.from(new Set([
+      ...diffOutput.split('\n').map((line) => line.trim()).filter(Boolean),
+      ...status.not_added,
+    ]));
+  }
+
+  private async resolveRunBranchPoint(wGit: SimpleGit): Promise<string> {
+    const [runHeadRaw, hostHeadRaw] = await Promise.all([
+      wGit.revparse(['HEAD']),
+      this.git.revparse(['HEAD']),
+    ]);
+    const runHead = runHeadRaw.trim();
+    const hostHead = hostHeadRaw.trim();
+    try {
+      const base = (await wGit.raw(['merge-base', runHead, hostHead])).trim();
+      return base || runHead;
+    } catch {
+      return runHead;
+    }
   }
 
   async mergeRunWorktree(

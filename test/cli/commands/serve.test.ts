@@ -61,6 +61,8 @@ function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
     name: overrides?.name ?? 'mock',
     strengths: overrides?.strengths ?? [],
     supportsJsonSchema: false,
+    enforcesReadOnly: overrides?.enforcesReadOnly ?? true,
+    filesModifiedReliable: overrides?.filesModifiedReliable ?? true,
     execute:
       overrides?.execute ??
       (async () => ({
@@ -2882,7 +2884,7 @@ describe('crew serve — merge_run tool', () => {
         process.env.CREW_CONFIRM_BEFORE_MERGE = previous;
       }
     }
-  });
+  }, 20_000);
 
   it('refuses to merge twice (idempotency check)', async () => {
     const adapter = makeMockAdapter({

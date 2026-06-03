@@ -11,6 +11,9 @@ import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
 } from './process-group.js';
+import { argvPromptTooLargeResult } from './prompt-transport.js';
+
+const PROMPT_VALUE_FLAGS = new Set(['--prompt']);
 
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
@@ -60,6 +63,7 @@ export class GenericAdapter implements AgentAdapter {
   readonly name: string;
   readonly strengths: AgentStrength[];
   readonly supportsJsonSchema = false;
+  readonly enforcesReadOnly = false;
   // Arbitrary CLI commands have no uniform terminal file-change reporting.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
@@ -79,25 +83,56 @@ export class GenericAdapter implements AgentAdapter {
   }
 
   /**
-   * Builds the argument list by replacing `{{prompt}}` placeholders in the
-   * template. If no placeholder is found, the prompt is appended as the
-   * last argument.
+   * Builds the argument list by replacing `{{prompt}}` placeholders.
+   *
+   * Leading-dash prompts are only neutralized when the prompt occupies its
+   * own argv element. For positional prompt templates (`{{prompt}}`, or no
+   * placeholder so Crew appends it), Crew inserts `--` before the prompt.
+   * For long-option value templates (`--prompt {{prompt}}`), Crew rewrites to
+   * `--prompt=<prompt>`. Templates that embed `{{prompt}}` inside a larger
+   * argument are left intact; authors should use `--flag={{prompt}}` or a
+   * standalone `{{prompt}}` if leading-dash prompt safety matters.
    */
   private buildArgs(prompt: string): string[] {
+    const promptStartsWithDash = prompt.startsWith('-');
     const hasPlaceholder = this.argsTemplate.some((arg) =>
       arg.includes('{{prompt}}'),
     );
 
     if (hasPlaceholder) {
-      return this.argsTemplate.map((arg) =>
-        arg.replace('{{prompt}}', prompt),
-      );
+      const args: string[] = [];
+      for (let i = 0; i < this.argsTemplate.length; i++) {
+        const arg = this.argsTemplate[i];
+        if (arg === '{{prompt}}') {
+          const previous = args.at(-1);
+          if (
+            promptStartsWithDash
+            && previous
+            && PROMPT_VALUE_FLAGS.has(previous)
+          ) {
+            args[args.length - 1] = `${previous}=${prompt}`;
+          } else {
+            if (promptStartsWithDash && previous !== '--') args.push('--');
+            args.push(prompt);
+          }
+          continue;
+        }
+        args.push(arg.replace('{{prompt}}', prompt));
+      }
+      return args;
     }
 
-    return [...this.argsTemplate, prompt];
+    return [
+      ...this.argsTemplate,
+      ...(promptStartsWithDash && this.argsTemplate.at(-1) !== '--' ? ['--'] : []),
+      prompt,
+    ];
   }
 
   async execute(task: Task): Promise<TaskResult> {
+    const promptTooLarge = argvPromptTooLargeResult(this.name, task.prompt);
+    if (promptTooLarge) return promptTooLarge;
+
     const args = this.buildArgs(task.prompt);
     // No wall-clock timeout. Generic adapters target arbitrary CLIs
     // whose runtime varies wildly; a hardcoded 5m cap killed long runs

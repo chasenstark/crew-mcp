@@ -44,6 +44,102 @@ describe('GenericAdapter', () => {
     );
   });
 
+  it('inserts -- before an appended leading-dash prompt', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: 'ok',
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['run'],
+      strengths: [],
+    });
+
+    await adapter.execute({
+      prompt: '-not-a-flag',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'generic-tool',
+      ['run', '--', '-not-a-flag'],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
+  it('rewrites long-option prompt value templates for leading-dash prompts', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: 'ok',
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    await adapter.execute({
+      prompt: '-review-this',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'generic-tool',
+      ['--prompt=-review-this'],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
+  it('keeps unrelated boolean flags separate from leading-dash positional prompts', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: 'ok',
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--verbose', '{{prompt}}'],
+      strengths: [],
+    });
+
+    await adapter.execute({
+      prompt: '-not-a-flag',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      'generic-tool',
+      ['--verbose', '--', '-not-a-flag'],
+      expect.objectContaining({ cwd: '/tmp/project' }),
+    );
+  });
+
+  it('fails fast before spawn when an argv prompt exceeds the byte budget', async () => {
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['{{prompt}}'],
+      strengths: [],
+    });
+
+    const result = await adapter.execute({
+      prompt: 'x'.repeat(129 * 1024),
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(mockExeca).not.toHaveBeenCalled();
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('Adapter "generic-test" cannot receive this prompt via argv');
+  });
+
   it('treats nonzero exits with stdout as errors instead of partial success', async () => {
     mockExeca.mockResolvedValueOnce({
       stdout: 'partial stdout',

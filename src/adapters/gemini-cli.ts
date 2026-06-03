@@ -17,6 +17,10 @@ import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
 } from './process-group.js';
+import {
+  argvPromptTooLargeResult,
+  assertArgvPromptWithinLimit,
+} from './prompt-transport.js';
 import type {
   AgentAdapter,
   AgentStrength,
@@ -262,6 +266,7 @@ export class GeminiCliAdapter implements AgentAdapter {
   // post-validates with Zod. Reporting false makes downstream code pick the
   // right branch (prompt-based structured output instead of native schema).
   readonly supportsJsonSchema = false;
+  readonly enforcesReadOnly = false;
   // Gemini terminal execution does not currently parse a file-change stream.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
@@ -287,11 +292,14 @@ export class GeminiCliAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
+    const promptTooLarge = argvPromptTooLargeResult(this.name, task.prompt);
+    if (promptTooLarge) return promptTooLarge;
+
     const args = ['--output-format', 'json'];
     if (task.constraints?.model) {
       args.push('--model', task.constraints.model);
     }
-    args.push(task.prompt);
+    args.push('--', task.prompt);
 
     // No wall-clock timeout (was 300_000). Cancellation flows through
     // the captain-supplied cancelSignal; the agent's own budget caps
@@ -532,6 +540,7 @@ export class GeminiCliAdapter implements AgentAdapter {
       const args = buildGeminiResumeArgs(providerSession.sessionId, prompt, {
         allowedServerNames,
       });
+      assertArgvPromptWithinLimit(this.name, prompt);
 
       const subprocess = execa('gemini', args, {
         cwd: context.workingDirectory,

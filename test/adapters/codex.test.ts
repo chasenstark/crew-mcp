@@ -345,7 +345,7 @@ describe('CodexAdapter', () => {
       expect(executeWithSchemaSpy).not.toHaveBeenCalled();
     });
 
-    it('omits --output-schema on resumed decision turns', async () => {
+    it('omits --output-schema on resumed decision turns and sends prompt via stdin', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: [
           '{"type":"thread.started","thread_id":"thread-1"}',
@@ -372,8 +372,11 @@ describe('CodexAdapter', () => {
         '--output-last-message',
         '/tmp/codex-mock/output.json',
         'thread-1',
-        'Choose next step.',
+        '-',
       ]);
+      expect(mockExeca.mock.calls[0][2]).toEqual(expect.objectContaining({
+        input: 'Choose next step.',
+      }));
       expect(cliArgs).not.toContain('--output-schema');
       expect(result.decision).toMatchObject({
         type: 'finish',
@@ -429,7 +432,7 @@ describe('CodexAdapter', () => {
   });
 
   describe('execute', () => {
-    it('passes the composed prompt through the codex exec argv', async () => {
+    it('passes the composed prompt through codex exec stdin', async () => {
       const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
       mockExeca.mockResolvedValueOnce({
         stdout: `${JSON.stringify({ type: 'agent_message', text: 'ok' })}\n`,
@@ -444,7 +447,10 @@ describe('CodexAdapter', () => {
 
       const args = mockExeca.mock.calls[0]?.[1] as string[];
       expect(args[0]).toBe('exec');
-      expect(args[1]).toBe(composedPrompt);
+      expect(args).not.toContain(composedPrompt);
+      expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+        input: composedPrompt,
+      }));
     });
 
     it('parses JSONL output successfully', async () => {

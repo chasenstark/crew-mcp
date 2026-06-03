@@ -477,10 +477,16 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   work. Skips worktree allocation (~100ms–1s saved); the
   reviewer-on-implementer pattern is `read_only: true` +
   `working_directory: <implementer-worktree>`. Caveats:
-  - **No FS isolation.** If the agent ignores the prompt and
-    writes, edits land in `working_directory`. The dispatch
-    surfaces a `warnings` field if it detects post-run uncommitted
-    changes — relay those.
+  - **Adapter-dependent enforcement.** Codex enforces read-only with
+    its sandbox. Claude Code, Gemini, generic, and OpenAI-compatible
+    adapters treat read-only as an advisory prompt contract plus
+    Crew's best-effort dirty-tree probe. Crew still runs them for the
+    reviewer-on-implementer workflow, but the dispatch surfaces a loud
+    `warnings` entry saying enforcement is advisory — relay it.
+  - If the agent ignores the prompt and writes, edits land in
+    `working_directory`. The post-run probe hashes pre-existing dirty
+    files too, so it can warn even when an agent edits a file that was
+    already dirty before the review.
   - `merge_run` refuses on read-only with a clear reason;
     `discard_run` works (metadata-only).
   - **Discard reviewer runs once you've consumed their findings.**
@@ -572,6 +578,10 @@ KB; composed prompt total: 256 KB.
 
 Errors all use `peer_messages.<code>:` prefix. See plan for full
 list. Truncation and drops emit `warnings` on the envelope (non-fatal).
+Some adapters still pass prompts through argv; they may fail fast with
+an adapter-named byte-limit error even when the composed-prompt char cap
+passed. Treat that as actionable: reduce `peer_messages` / excerpts or
+choose a stdin-backed adapter.
 
 ## Review panels
 

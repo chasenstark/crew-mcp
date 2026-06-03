@@ -27,7 +27,9 @@
  * end-of-life through merge_run / discard_run.
  */
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { resolve, sep } from 'path';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
@@ -128,6 +130,8 @@ export interface RunAgentDispatchPlan {
    * a read-only run can also point at someone else's worktree.
    */
   readonly readOnly: boolean;
+  readonly dispatchWarnings: readonly string[];
+  readonly branchPointBefore?: ReadonlyMap<string, string>;
   readonly adapter: AgentAdapter;
   readonly toolCallId: string;
   readonly buildTask: (composedPrompt: string) => DispatchTask;
@@ -175,6 +179,9 @@ export async function planRunAgent(
 
   const runId = randomUUID();
   const readOnly = input.read_only === true;
+  const dispatchWarnings = readOnly && adapter.enforcesReadOnly !== true
+    ? [readOnlyAdvisoryWarning(adapter.name)]
+    : [];
   let worktreePath: string;
   if (readOnly) {
     // No FS isolation: working_directory is either what the caller
@@ -195,6 +202,12 @@ export async function planRunAgent(
   }
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
+  const branchPointBefore =
+    !readOnly
+    && effectiveWorkingDirectory === worktreePath
+      ? await captureRunBranchPointSnapshot(ctx.worktreeManager, runId, worktreePath)
+      : undefined;
+
   const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs);
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   const toolCallId = randomUUID();
@@ -209,6 +222,8 @@ export async function planRunAgent(
       effectiveWorkingDirectory,
       worktreePath,
       readOnly,
+      dispatchWarnings,
+      branchPointBefore,
       effectiveModel,
       effectiveEffort,
       worktreeManager: ctx.worktreeManager,
@@ -220,6 +235,8 @@ export async function planRunAgent(
     runId,
     worktreePath,
     readOnly,
+    dispatchWarnings,
+    branchPointBefore,
     adapter,
     toolCallId,
     buildTask,
@@ -324,6 +341,8 @@ export function buildAdapterDispatchTask(args: {
    * agent dirtied the tree against the prompt's contract.
    */
   readonly readOnly?: boolean;
+  readonly dispatchWarnings?: readonly string[];
+  readonly branchPointBefore?: ReadonlyMap<string, string>;
   readonly effectiveModel: string | undefined;
   /**
    * Effort already resolved upstream via `resolveEffectiveEffort`.
@@ -366,9 +385,11 @@ export function buildAdapterDispatchTask(args: {
       // case during development) returns a false-positive warning
       // listing files the agent never touched.
       const dirtyBefore = args.readOnly
-        ? new Set(await detectDirtyTree(args.effectiveWorkingDirectory).catch(() => []))
+        ? await capturePathSignatureSnapshot(
+            args.effectiveWorkingDirectory,
+            await detectDirtyTree(args.effectiveWorkingDirectory).catch(() => []),
+          )
         : undefined;
-
       const result = await args.adapter.execute({
         prompt: args.prompt,
         context: {
@@ -394,6 +415,10 @@ export function buildAdapterDispatchTask(args: {
       });
 
       if (result.status === 'error') return result;
+      const resultWithDispatchWarnings =
+        args.dispatchWarnings && args.dispatchWarnings.length > 0
+          ? { ...result, warnings: [...(result.warnings ?? []), ...args.dispatchWarnings] }
+          : result;
 
       if (args.readOnly) {
         // Best-effort: detect contract violations (the agent edited
@@ -401,25 +426,24 @@ export function buildAdapterDispatchTask(args: {
         // fail the dispatch on probe errors — the run completed; the
         // probe is purely advisory.
         //
-        // Diffs against the pre-dispatch snapshot so pre-existing
-        // host-repo dirt does not get reported as an agent edit.
-        // Known limitation: an agent that modifies a file already in
-        // the pre-snapshot dirty set is invisible to the probe. The
-        // alternative (snapshotting file hashes) costs more and is
-        // out of scope for this fix; the much-louder false-positive
-        // flood is what mattered.
+        // Compares bounded content signatures against the pre-dispatch
+        // snapshot, so pre-existing host-repo dirt is ignored unless
+        // the agent changes that already-dirty file during the run.
         try {
           const dirtyAfter = await detectDirtyTree(args.effectiveWorkingDirectory);
-          const before = dirtyBefore ?? new Set<string>();
-          const newlyDirty = dirtyAfter.filter((path) => !before.has(path));
-          if (newlyDirty.length === 0) return result;
+          const before = dirtyBefore ?? new Map<string, string>();
+          const after = await capturePathSignatureSnapshot(args.effectiveWorkingDirectory, dirtyAfter);
+          const changed = dirtyAfter.filter((path) => before.get(path) !== after.get(path));
+          if (changed.length === 0) return resultWithDispatchWarnings;
           const warning =
             `Read-only run produced uncommitted changes in ${args.effectiveWorkingDirectory}: ` +
-            `${newlyDirty.join(', ')}. Review with \`git status\` in that directory.`;
-          const existing = Array.isArray(result.warnings) ? result.warnings : [];
-          return { ...result, warnings: [...existing, warning] };
+            `${changed.join(', ')}. Review with \`git status\` in that directory.`;
+          const existing = Array.isArray(resultWithDispatchWarnings.warnings)
+            ? resultWithDispatchWarnings.warnings
+            : [];
+          return { ...resultWithDispatchWarnings, warnings: [warning, ...existing] };
         } catch {
-          return result;
+          return resultWithDispatchWarnings;
         }
       }
 
@@ -428,24 +452,41 @@ export function buildAdapterDispatchTask(args: {
       // adapter declares its terminal `filesModified` list authoritative. We
       // do NOT merge — host CLI does that explicitly via merge_run.
       if (args.effectiveWorkingDirectory !== args.worktreePath) {
-        return result;
-      }
-      if (args.adapter.filesModifiedReliable === true) {
-        return result;
+        return resultWithDispatchWarnings;
       }
       try {
         const fromWorktree = await args.worktreeManager.getModifiedFilesByRun(args.runId);
-        if (fromWorktree.length === 0) return result;
+        const before = args.branchPointBefore ?? new Map<string, string>();
+        const after = await capturePathSignatureSnapshot(args.worktreePath, fromWorktree);
+        const changedSinceDispatch = fromWorktree.filter((path) => before.get(path) !== after.get(path));
+        if (changedSinceDispatch.length === 0) return resultWithDispatchWarnings;
         const merged = Array.from(
-          new Set([...result.filesModified, ...fromWorktree].filter((f) => f.trim().length > 0)),
+          new Set([...resultWithDispatchWarnings.filesModified, ...changedSinceDispatch].filter((f) => f.trim().length > 0)),
         );
-        return { ...result, filesModified: merged };
+        return { ...resultWithDispatchWarnings, filesModified: merged };
       } catch {
         // Probing the worktree shouldn't fail the dispatch.
-        return result;
+        return resultWithDispatchWarnings;
       }
     },
   };
+}
+
+export function readOnlyAdvisoryWarning(adapterName: string): string {
+  return `read_only advisory: adapter "${adapterName}" does not enforce a read-only filesystem sandbox. `
+    + 'Crew will run it anyway for review/triage workflows, but the no-write contract relies on the prompt '
+    + 'and the best-effort dirty-tree probe after the run.';
+}
+
+export async function captureRunBranchPointSnapshot(
+  worktreeManager: WorktreeManager,
+  runId: string,
+  worktreePath: string,
+): Promise<ReadonlyMap<string, string>> {
+  return capturePathSignatureSnapshot(
+    worktreePath,
+    await worktreeManager.getModifiedFilesByRun(runId).catch(() => []),
+  );
 }
 
 /**
@@ -472,5 +513,42 @@ async function detectDirtyTree(workingDirectory: string): Promise<string[]> {
     return Array.from(new Set(all.filter((f) => f.length > 0)));
   } catch {
     return [];
+  }
+}
+
+const SNAPSHOT_PATH_LIMIT = 1000;
+const HASH_FILE_MAX_BYTES = 1024 * 1024;
+
+async function capturePathSignatureSnapshot(
+  workingDirectory: string,
+  paths: readonly string[],
+): Promise<Map<string, string>> {
+  const snapshot = new Map<string, string>();
+  const unique = Array.from(new Set(paths.filter((p) => p.trim().length > 0)))
+    .sort()
+    .slice(0, SNAPSHOT_PATH_LIMIT);
+  for (const path of unique) {
+    snapshot.set(path, pathSignature(workingDirectory, path));
+  }
+  return snapshot;
+}
+
+function pathSignature(workingDirectory: string, relativePath: string): string {
+  const root = resolve(workingDirectory);
+  const abs = resolve(root, relativePath);
+  if (abs !== root && !abs.startsWith(`${root}${sep}`)) {
+    return 'outside-worktree';
+  }
+  try {
+    if (!existsSync(abs)) return 'missing';
+    const st = statSync(abs);
+    if (!st.isFile()) return `non-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
+    if (st.size > HASH_FILE_MAX_BYTES) {
+      return `large-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
+    }
+    const digest = createHash('sha256').update(readFileSync(abs)).digest('hex');
+    return `sha256:${digest}`;
+  } catch (err) {
+    return `error:${err instanceof Error ? err.message : String(err)}`;
   }
 }

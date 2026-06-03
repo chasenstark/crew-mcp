@@ -85,7 +85,7 @@ export async function dispatchRunAgentInternal(
       initialPeerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
       readOnly: plan.readOnly,
     });
-    warnings = createResult.warnings;
+    warnings = [...plan.dispatchWarnings, ...createResult.warnings];
   } catch (err) {
     await cleanupAllocatedWorktree(ctx, plan, 'rejection');
     throw new DispatchError(errorMessage(err));

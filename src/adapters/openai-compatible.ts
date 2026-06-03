@@ -47,6 +47,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly name: string;
   readonly strengths: AgentStrength[];
   readonly supportsJsonSchema = false;
+  readonly enforcesReadOnly = false;
   // Chat completions do not provide an adapter-level filesystem change list.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {

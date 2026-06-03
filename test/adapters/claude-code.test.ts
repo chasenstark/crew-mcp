@@ -1,6 +1,7 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { PassThrough, Readable, Writable } from 'stream';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
 import { ModelId } from '../../src/workflow/models.js';
@@ -17,6 +18,7 @@ const { execa } = await import('execa');
 const mockExeca = vi.mocked(execa);
 
 const { ClaudeCodeAdapter } = await import('../../src/adapters/claude-code.js');
+const { logger } = await import('../../src/utils/logger.js');
 
 // Load fixtures
 const successFixture = readFileSync(
@@ -31,6 +33,17 @@ const structuredFixture = readFileSync(
   join(__dirname, 'fixtures/claude-structured.json'),
   'utf-8',
 );
+
+class ErroringWritable extends Writable {
+  override _write(
+    _chunk: Buffer,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    this.emit('error', new Error('EPIPE'));
+    callback();
+  }
+}
 
 describe('ClaudeCodeAdapter', () => {
   let adapter: InstanceType<typeof ClaudeCodeAdapter>;
@@ -93,7 +106,7 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   describe('execute', () => {
-    it('passes the composed prompt through the claude -p argv', async () => {
+    it('passes the composed prompt through claude stdin', async () => {
       const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,
@@ -108,7 +121,32 @@ describe('ClaudeCodeAdapter', () => {
 
       const args = mockExeca.mock.calls[0]?.[1] as string[];
       expect(args[0]).toBe('-p');
-      expect(args[1]).toBe(composedPrompt);
+      expect(args[1]).toBe('-');
+      expect(args).not.toContain(composedPrompt);
+      expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+        input: composedPrompt,
+      }));
+    });
+
+    it('handles a large prompt over stdin without argv byte-guard failure', async () => {
+      const largePrompt = 'x'.repeat(150 * 1024);
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: largePrompt,
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      expect(result.status).toBe('success');
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args).not.toContain(largePrompt);
+      expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+        input: largePrompt,
+      }));
     });
 
     it('parses successful JSON output', async () => {
@@ -260,7 +298,7 @@ describe('ClaudeCodeAdapter', () => {
         'claude',
         [
           '-p',
-          'Test prompt',
+          '-',
           '--output-format',
           'json',
           '--dangerously-skip-permissions',
@@ -271,6 +309,7 @@ describe('ClaudeCodeAdapter', () => {
           cwd: '/tmp/project',
           timeout: 60000,
           reject: false,
+          input: 'Test prompt',
         }),
       );
     });
@@ -566,6 +605,60 @@ describe('ClaudeCodeAdapter', () => {
 
       expect(result.status).toBe('interrupted');
       expect(executeWithSchemaSpy).not.toHaveBeenCalled();
+    });
+
+    it('handles stream-session stdin errors during prompt writes', async () => {
+      vi.spyOn(adapter, 'getCliVersionTag').mockResolvedValueOnce('claude-code@2.1.108');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const stdin = new ErroringWritable();
+      const subprocess = Object.assign(
+        Promise.resolve({ stdout: '', stderr: '', exitCode: 0 }),
+        {
+          stdin,
+          stdout: Readable.from([
+            `${JSON.stringify({
+              type: 'assistant',
+              message: {
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      type: 'finish',
+                      output: 'done',
+                      reasoning: 'workflow complete',
+                    }),
+                  },
+                ],
+              },
+            })}\n`,
+            `${JSON.stringify({ type: 'result' })}\n`,
+          ]),
+          stderr: new PassThrough(),
+          on: vi.fn(),
+          once: vi.fn(),
+          off: vi.fn(),
+        },
+      );
+      mockExeca.mockReturnValueOnce(subprocess as any);
+
+      const result = await (adapter as any).executeWithStreamSession(
+        [],
+        [{ role: 'system', content: 'start' }],
+        vi.fn(async () => ({ output: { ok: true } })),
+        {
+          workingDirectory: '/tmp/project',
+          toolNamespace: 'mcp__crew__',
+          toolSchemaHash: 'abc',
+        },
+      );
+
+      expect(result.status).toBe('completed');
+      expect(result.output).toBe('done');
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[adapter:claude-code] stdin error',
+        expect.objectContaining({ message: 'EPIPE' }),
+      );
+      warnSpy.mockRestore();
     });
   });
 
