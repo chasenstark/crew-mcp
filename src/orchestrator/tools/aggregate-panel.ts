@@ -6,6 +6,8 @@ import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { aggregatePanel, type ReviewerStateForAggregation } from '../panels/aggregate.js';
 import type { PanelReviewerRecord } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import { errorContent, jsonContent } from './shared.js';
 
 export const aggregatePanelInputSchema = z.object({
   panel_id: z.string().min(1),
@@ -22,6 +24,21 @@ export interface AggregatePanelHandlerContext extends Pick<DispatchContext, 'cre
 
 export const AGGREGATE_PANEL_DESCRIPTION =
   'Build peer_messages from a completed review panel so they can be passed to continue_run. Rejects if any dispatched reviewer is still running; includes terminal, failed-dispatch, and state-unavailable reviewers.';
+
+export function aggregatePanelToolHandler(
+  args: AggregatePanelInput,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore'>,
+): ToolCallReturn {
+  try {
+    const out = aggregatePanelHandler(args, {
+      crewHome: deps.crewHome,
+      runStateStore: deps.runStateStore,
+    });
+    return jsonContent(out);
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
+}
 
 export function aggregatePanelHandler(
   args: unknown,

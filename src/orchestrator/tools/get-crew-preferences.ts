@@ -12,6 +12,8 @@ import {
   type AgentListSource,
   type ListAgentsContext,
 } from './list-agents.js';
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import { errorContent, jsonContent } from './shared.js';
 
 export const getCrewPreferencesInputSchema = z.object({
   scope: z.enum(['iterate', 'panel', 'all']).optional(),
@@ -34,6 +36,23 @@ export interface GetCrewPreferencesContext {
   readonly agentPrefs?: AgentPrefsMap;
   readonly refresh?: boolean;
   readonly loadConfig?: (projectRoot: string) => { workflow: { agentDefaults?: WorkflowAgentDefaultsConfig } };
+}
+
+export async function getCrewPreferencesToolHandler(
+  args: GetCrewPreferencesInput,
+  deps: Pick<ToolHandlerDeps, 'projectRoot' | 'registry' | 'readAgentPrefs'>,
+): Promise<ToolCallReturn> {
+  const agentPrefs = deps.readAgentPrefs();
+  try {
+    const out = await getCrewPreferencesHandler(args, {
+      projectRoot: deps.projectRoot,
+      registry: deps.registry,
+      agentPrefs,
+    });
+    return jsonContent(out);
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
 }
 
 export async function getCrewPreferencesHandler(

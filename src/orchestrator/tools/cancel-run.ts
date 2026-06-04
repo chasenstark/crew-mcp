@@ -21,6 +21,9 @@
 
 import { z } from 'zod';
 
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import { markdownContent, renderCancelMarkdown } from './shared.js';
+
 export const cancelRunInputSchema = z.object({
   run_id: z.string().min(1),
 });
@@ -29,3 +32,23 @@ export type CancelRunInput = z.infer<typeof cancelRunInputSchema>;
 
 export const CANCEL_RUN_DESCRIPTION =
   'Abort an in-flight run by run_id when the user wants active work stopped. Successful cancellation marks the run status "cancelled" and preserves the worktree for inspection or later discard. Returns { run_id, ok, reason? }, with ok:false for unknown or already-terminal runs.';
+
+export function cancelRunToolHandler(
+  args: CancelRunInput,
+  deps: Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>,
+): ToolCallReturn {
+  const inFlight = deps.dispatcher
+    .listInFlight()
+    .find((t) => t.runId === args.run_id);
+  if (!inFlight) {
+    const state = deps.runStateStore.read(args.run_id);
+    const reason = state
+      ? `Run "${args.run_id}" is not in-flight (status="${state.status}").`
+      : `Unknown run_id "${args.run_id}".`;
+    const env = { run_id: args.run_id, ok: false, reason };
+    return markdownContent(renderCancelMarkdown(env), env);
+  }
+  deps.dispatcher.cancel(inFlight.toolCallId, 'cancel_run requested');
+  const env = { run_id: args.run_id, ok: true };
+  return markdownContent(renderCancelMarkdown(env), env);
+}

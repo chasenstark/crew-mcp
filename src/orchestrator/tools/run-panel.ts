@@ -29,6 +29,13 @@ import {
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import type { FullConfig } from '../../workflow/types.js';
 import { logBestEffortFailure } from '../../utils/best-effort.js';
+import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra } from './shared.js';
+import {
+  agentIdForClientKind,
+  errorContent,
+  jsonContent,
+  progressNotifierFrom,
+} from './shared.js';
 
 const runPanelReviewerInputSchema = z.object({
   agent_id: z.string().min(1),
@@ -78,6 +85,31 @@ export interface RunPanelHandlerContext extends DispatchContext {
 
 export const RUN_PANEL_DESCRIPTION =
   'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Returns panel_id, successful reviewer run_ids, and failed_reviewers.';
+
+export async function runPanelToolHandler(
+  args: RunPanelInput,
+  extra: ToolRequestExtra,
+  deps: ToolHandlerDeps,
+): Promise<ToolCallReturn> {
+  const agentPrefs = deps.readAgentPrefs();
+  try {
+    const out = await runPanelHandler(args, {
+      registry: deps.registry,
+      worktreeManager: deps.worktreeManager,
+      runStateStore: deps.runStateStore,
+      agentPrefs,
+      dispatcher: deps.dispatcher,
+      crewHome: deps.crewHome,
+      repoRoot: deps.runStateStore.repoRoot,
+      projectRoot: deps.projectRoot,
+      sameHostAgentId: agentIdForClientKind(deps.getClientKind()),
+      progress: progressNotifierFrom(extra, 'run_panel', deps.progressTokenSeen),
+    });
+    return jsonContent(out);
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
+}
 
 const PANEL_IMPLEMENTER_TERMINAL = new Set(['success', 'partial', 'error', 'cancelled']);
 const DEFAULT_PANEL_REVIEW_PROMPT =

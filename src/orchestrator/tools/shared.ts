@@ -1,0 +1,501 @@
+import { pathToFileURL } from 'node:url';
+
+import type { AdapterRegistry } from '../../adapters/registry.js';
+import type { AgentPrefsMap } from '../../agent-prefs/store.js';
+import type { WorktreeManager } from '../../git/worktree.js';
+import { crewTailUrl } from '../../cli/commands/tail-url.js';
+import { logger } from '../../utils/logger.js';
+import {
+  installRunLifecycleListeners,
+} from '../run-lifecycle-listeners.js';
+import type { RunStateStore } from '../run-state.js';
+import type { DispatchTask, ToolDispatcher } from '../tool-dispatcher.js';
+import type { ProgressNotifier } from '../progress.js';
+
+/**
+ * Server-side cap on the long-poll wait that `get_run_status` honors
+ * via `wait_for_change_ms`. Kept under the smallest known host MCP
+ * tool-call timeout so a long-poll never trips the host's own deadline.
+ * Captains usually pass 30000; we clamp anything larger to this value.
+ */
+export const MAX_LONG_POLL_MS = 60_000;
+
+/**
+ * Classification of the MCP host CLI that initialized this server, derived
+ * from the `clientInfo.name` carried in the MCP `initialize` request. Used
+ * to tailor the dispatch envelope's "next step" copy: Claude Code captains
+ * need to spawn a watcher overlay before ending the turn, while Codex /
+ * Gemini captains just end the turn after the dispatch tool returns.
+ */
+export type ClientKind = 'claude-code' | 'codex' | 'gemini' | 'unknown';
+
+/**
+ * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
+ * (not equality) so future renames of host clients still classify
+ * correctly without re-shipping crew-mcp. Normalizes separators
+ * (whitespace, underscores -> hyphens) and case before matching so
+ * `"Claude Code"`, `"claude_code"`, and `"claude-code-cli"` all fold
+ * to the same kind.
+ */
+export function classifyClient(name: string | undefined): ClientKind {
+  if (!name) return 'unknown';
+  const n = name.toLowerCase().replace(/[\s_]+/g, '-');
+  if (n.includes('claude-code') || n === 'claude') return 'claude-code';
+  if (n.includes('codex')) return 'codex';
+  if (n.includes('gemini')) return 'gemini';
+  return 'unknown';
+}
+
+/**
+ * Host-specific "next step" sentence appended to the dispatch envelope
+ * summary and the markdown `- Next:` bullet.
+ */
+export function nextStepSentence(kind: ClientKind): string {
+  switch (kind) {
+    case 'claude-code':
+      return 'End your turn after spawning the watcher; user is free to chat.';
+    case 'codex':
+    case 'gemini':
+      return 'End your turn after this dispatch returns; user is free to chat.';
+    case 'unknown':
+      return 'End your turn after dispatch; user is free to chat.';
+  }
+}
+
+export function agentIdForClientKind(kind: ClientKind): string | undefined {
+  switch (kind) {
+    case 'claude-code':
+      return 'claude-code';
+    case 'codex':
+      return 'codex';
+    case 'gemini':
+      return 'gemini-cli';
+    case 'unknown':
+      return undefined;
+  }
+}
+
+export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled';
+
+export interface RunEnvelope {
+  readonly run_id: string;
+  readonly tail_url: string;
+  readonly summary: string;
+  readonly files_changed: readonly string[];
+  readonly warnings?: readonly string[];
+  readonly status?: RunStatus;
+  readonly agent_id?: string;
+  readonly worktree_path?: string;
+  readonly events_log_path?: string;
+  readonly tail_command_path?: string;
+  readonly tail_command_url?: string;
+}
+
+export interface FullRunEnvelope extends RunEnvelope {
+  readonly status: RunStatus;
+  readonly agent_id?: string;
+  readonly worktree_path: string;
+  readonly events_log_path: string;
+  readonly tail_command_path: string;
+  readonly tail_command_url: string;
+}
+
+export interface MergeEnvelope {
+  readonly run_id: string;
+  readonly status: 'merged' | 'conflict' | 'no-changes';
+  readonly commit_sha?: string;
+  readonly conflicts?: readonly string[];
+  readonly target_branch?: string;
+  readonly original_branch?: string;
+  readonly original_head?: string;
+  readonly landed_off_current_branch?: boolean;
+  readonly restore_failed?: boolean;
+  readonly restore_warning?: string;
+}
+
+export interface DiscardEnvelope {
+  readonly run_id: string;
+  readonly ok: true;
+  readonly cleanup_failed?: true;
+  readonly cleanup_errors?: readonly string[];
+}
+
+export type ToolCallReturn = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
+
+export interface ProgressTokenSeen {
+  presentLogged: boolean;
+  absentLogged: boolean;
+  lastObserved?: 'present' | 'absent';
+}
+
+export type ToolRequestExtra = {
+  _meta?: { progressToken?: string | number };
+  sendNotification: (n: {
+    method: 'notifications/progress';
+    params: { progressToken: string | number; progress: number; message?: string };
+  }) => Promise<void>;
+};
+
+export interface ToolHandlerDeps {
+  readonly registry: AdapterRegistry;
+  readonly worktreeManager: WorktreeManager;
+  readonly runStateStore: RunStateStore;
+  readonly dispatcher: ToolDispatcher;
+  readonly crewHome: string;
+  readonly projectRoot: string;
+  readonly getClientKind: () => ClientKind;
+  readonly progressTokenSeen: ProgressTokenSeen;
+  readonly readAgentPrefs: () => AgentPrefsMap;
+}
+
+interface DispatchAndRespondArgs {
+  runId: string;
+  agentName: string;
+  worktreePath: string;
+  toolCallId: string;
+  task: DispatchTask;
+  dispatcher: ToolDispatcher;
+  runStateStore: RunStateStore;
+  warnings?: readonly string[];
+  progress?: ProgressNotifier;
+  onStartFailure?: (err: unknown) => Promise<Error>;
+  clientKind: ClientKind;
+}
+
+export async function runDispatchAndRespond(
+  args: DispatchAndRespondArgs,
+): Promise<ToolCallReturn> {
+  void installRunLifecycleListeners({
+    dispatcher: args.dispatcher,
+    runStateStore: args.runStateStore,
+    runId: args.runId,
+    agentName: args.agentName,
+    toolCallId: args.toolCallId,
+    progress: args.progress,
+  });
+  try {
+    args.dispatcher.start(args.task);
+  } catch (err) {
+    if (args.onStartFailure) {
+      throw await args.onStartFailure(err);
+    }
+    throw err;
+  }
+
+  const summary = `Dispatched as "${args.runId}". ${nextStepSentence(args.clientKind)}`;
+  const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
+  const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
+  const env: FullRunEnvelope = {
+    run_id: args.runId,
+    agent_id: args.agentName,
+    worktree_path: args.worktreePath,
+    events_log_path: eventsLogPath,
+    tail_command_path: tailCommandPath,
+    tail_command_url: fileUrlHref(tailCommandPath),
+    tail_url: crewTailUrl(eventsLogPath),
+    status: 'running',
+    summary,
+    files_changed: [],
+    ...mergeEnvelopeWarnings(
+      args.runStateStore.read(args.runId)?.warnings,
+      args.warnings,
+    ),
+  };
+  return {
+    content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, args.clientKind) }],
+    structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
+  };
+}
+
+export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
+  if (process.env.CREW_FULL_ENVELOPE === '1') {
+    return env;
+  }
+  return {
+    run_id: env.run_id,
+    tail_url: env.tail_url,
+    summary: env.summary,
+    files_changed: env.files_changed,
+    ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
+  };
+}
+
+export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientKind): string {
+  const lines = [
+    `**Dispatched** ${mdInlineCode(env.agent_id ?? 'agent')} as run \`${env.run_id}\`.`,
+    '',
+    `- Status: \`${env.status}\``,
+    `- Worktree: ${mdInlineCode(env.worktree_path)}`,
+  ];
+  if (process.platform === 'darwin') {
+    lines.push(
+      `- **Tail in Terminal**: [open in a side window](${env.tail_url})`,
+    );
+  }
+  lines.push(
+    `- Tail manually: \`tail -F ${env.events_log_path}\``,
+    `- Next: ${nextStepSentence(clientKind)}`,
+    `- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``,
+  );
+  if (env.warnings && env.warnings.length > 0) {
+    lines.push(
+      '',
+      '## Warnings',
+      '',
+      ...env.warnings.map((warning) => `- ${warning}`),
+    );
+  }
+  return lines.join('\n');
+}
+
+export function mergeEnvelopeWarnings(
+  ...warnings: Array<readonly string[] | undefined>
+): { warnings?: readonly string[] } {
+  const merged = warnings.flatMap((entry) => entry ?? []);
+  return merged.length > 0 ? { warnings: merged } : {};
+}
+
+export function fileUrlHref(absPath: string): string {
+  return pathToFileURL(absPath).href;
+}
+
+export function mdInlineCode(value: string): string {
+  const normalized = value.replace(/[\r\n]+/g, ' ');
+  if (!normalized.includes('`')) return `\`${normalized}\``;
+  const longestBacktickRun = Math.max(
+    ...Array.from(normalized.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = '`'.repeat(Math.max(2, longestBacktickRun + 1));
+  return `${fence} ${normalized} ${fence}`;
+}
+
+export function progressNotifierFrom(
+  extra: ToolRequestExtra,
+  agentId: string,
+  seen: ProgressTokenSeen,
+): ProgressNotifier | undefined {
+  const token = extra._meta?.progressToken;
+  const observed = token === undefined ? 'absent' : 'present';
+  logger.info(
+    `progress token (agent=${agentId}): ${
+      token === undefined ? 'absent (no streaming chunks to captain)' : String(token)
+    }`,
+  );
+  if (seen.lastObserved !== undefined && seen.lastObserved !== observed) {
+    logger.info(
+      `progressToken state changed from ${seen.lastObserved} to ${observed} this server session (agent=${agentId}).`,
+    );
+  }
+  seen.lastObserved = observed;
+  if (token === undefined && !seen.absentLogged) {
+    seen.absentLogged = true;
+    logger.warn(
+      'progressToken absent on first dispatch without a token this server session ' +
+      `(agent=${agentId}). Inline notifications/progress will not fire for this call. ` +
+      'The dispatch markdown\'s tail.command / events.log side-channel and any ' +
+      'later get_run_status / list_runs reads are the live progress paths. ' +
+      'Known: codex CLI 0.128.0 omits the token; Claude Code supplies it.',
+    );
+  } else if (token !== undefined && !seen.presentLogged) {
+    seen.presentLogged = true;
+    logger.info(
+      `progressToken present on first dispatch with a token this server session (agent=${agentId}); inline progress streaming active for this call.`,
+    );
+  }
+  if (token === undefined) return undefined;
+  let counter = 0;
+  return {
+    send(message: string): void {
+      counter += 1;
+      void extra
+        .sendNotification({
+          method: 'notifications/progress',
+          params: { progressToken: token, progress: counter, message },
+        })
+        .catch(() => {
+          // Swallow: progress notification failures must not fail dispatch.
+        });
+    },
+  };
+}
+
+export function markdownContent<T extends object>(
+  text: string,
+  value: T,
+  isError = false,
+): ToolCallReturn {
+  return {
+    content: [{ type: 'text' as const, text }],
+    structuredContent: value as unknown as Record<string, unknown>,
+    isError,
+  };
+}
+
+export function jsonContent<T extends object>(value: T, isError = false): ToolCallReturn {
+  return markdownContent(JSON.stringify(value), value, isError);
+}
+
+export function renderMergeMarkdown(env: MergeEnvelope): string {
+  if (env.status === 'merged') {
+    const base = `**Merged** ${mdInlineCode(env.run_id)} → ${mdInlineCode(env.commit_sha ?? '')}`;
+    if (env.restore_failed) {
+      return `${base}\n\n${env.restore_warning ?? 'Merge landed, but checkout restore failed.'}`;
+    }
+    if (!env.landed_off_current_branch) return base;
+    const original = env.original_branch
+      ? mdInlineCode(env.original_branch)
+      : `detached HEAD ${mdInlineCode(env.original_head ?? '')}`;
+    return `${base}\n\nLanded on ${mdInlineCode(env.target_branch ?? '')}; restored ${original}.`;
+  }
+  if (env.status === 'conflict') {
+    const conflicts = env.conflicts ?? [];
+    return `**Conflict** on ${mdInlineCode(env.run_id)} (${conflicts.length} files): ${conflicts.join(', ')}`;
+  }
+  const base = `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
+  if (env.restore_failed) {
+    return `${base}\n\n${env.restore_warning ?? 'No changes were merged, but checkout restore failed.'}`;
+  }
+  return base;
+}
+
+export function checkoutEnvelope(result: {
+  readonly targetBranch: string;
+  readonly originalBranch?: string;
+  readonly originalHead: string;
+  readonly landedOffCurrentBranch: boolean;
+  readonly restoreFailed?: boolean;
+  readonly restoreWarning?: string;
+}): Pick<
+  MergeEnvelope,
+  | 'target_branch'
+  | 'original_branch'
+  | 'original_head'
+  | 'landed_off_current_branch'
+  | 'restore_failed'
+  | 'restore_warning'
+> {
+  if (!result.landedOffCurrentBranch && !result.restoreFailed) return {};
+  return {
+    target_branch: result.targetBranch,
+    ...(result.originalBranch ? { original_branch: result.originalBranch } : {}),
+    original_head: result.originalHead,
+    ...(result.landedOffCurrentBranch ? { landed_off_current_branch: true } : {}),
+    ...(result.restoreFailed ? { restore_failed: true } : {}),
+    ...(result.restoreWarning ? { restore_warning: result.restoreWarning } : {}),
+  };
+}
+
+export function renderDiscardMarkdown(env: DiscardEnvelope): string {
+  const base = `**Discarded** ${mdInlineCode(env.run_id)}`;
+  if (!env.cleanup_failed || !env.cleanup_errors || env.cleanup_errors.length === 0) {
+    return base;
+  }
+  return `${base}\n\nCleanup warning: ${env.cleanup_errors.join('; ')}`;
+}
+
+export function renderCancelMarkdown(env: {
+  readonly run_id: string;
+  readonly ok: boolean;
+  readonly reason?: string;
+}): string {
+  if (env.ok) {
+    return `**Cancelled** ${mdInlineCode(env.run_id)}`;
+  }
+  return `${mdInlineCode(env.run_id)} not cancelled: ${env.reason ?? 'unknown reason'}`;
+}
+
+export function getRunStatusContent<T extends object>(
+  runId: string,
+  payload: T,
+): ToolCallReturn {
+  return markdownContent(renderGetRunStatusMarkdown(runId, payload), payload);
+}
+
+export function renderGetRunStatusMarkdown(
+  runId: string,
+  payload: {
+    readonly status?: unknown;
+    readonly timed_out?: unknown;
+    readonly next_event_line?: unknown;
+    readonly filesChanged?: unknown;
+    readonly summary?: unknown;
+    readonly events_tail_skipped?: unknown;
+  },
+): string {
+  const status = typeof payload.status === 'string' ? payload.status : 'unknown';
+  if (payload.timed_out === true) {
+    const cursor = typeof payload.next_event_line === 'number'
+      ? ` at cursor ${payload.next_event_line}`
+      : '';
+    return `${mdInlineCode(runId)} status: \`${status}\` (timed out${cursor})`;
+  }
+
+  if (!isTerminalRunStatus(status)) {
+    const cursor = typeof payload.next_event_line === 'number'
+      ? String(payload.next_event_line)
+      : 'unknown';
+    return `${mdInlineCode(runId)} status: \`${status}\` (cursor: ${cursor})`;
+  }
+
+  const lines = [`**${mdInlineCode(runId)} ${status}**`];
+  const filesChanged = Array.isArray(payload.filesChanged)
+    ? payload.filesChanged.filter((path): path is string => typeof path === 'string')
+    : [];
+  if (filesChanged.length > 0) {
+    const firstPaths = filesChanged.slice(0, 3).join(', ');
+    const more = filesChanged.length > 3
+      ? ` [+ ${filesChanged.length - 3} more]`
+      : '';
+    lines.push(`${filesChanged.length} files changed: ${firstPaths}${more}`);
+  }
+  if (typeof payload.summary === 'string') {
+    lines.push(`> ${truncateMarkdownSummary(payload.summary, 200)}`);
+  }
+  if (
+    typeof payload.events_tail_skipped === 'number'
+    && payload.events_tail_skipped > 0
+  ) {
+    lines.push(`${payload.events_tail_skipped} events skipped`);
+  }
+  return lines.join('\n');
+}
+
+function truncateMarkdownSummary(summary: string, maxChars: number): string {
+  const normalized = summary.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}...`;
+}
+
+export function errorContent(message: string): ToolCallReturn {
+  return {
+    content: [{ type: 'text' as const, text: message }],
+    isError: true,
+  };
+}
+
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function isTerminalRunStatus(status: string): boolean {
+  return (
+    status === 'success'
+    || status === 'partial'
+    || status === 'error'
+    || status === 'cancelled'
+    || status === 'merged'
+    || status === 'merge_conflict'
+    || status === 'discarded'
+  );
+}
+
+export function inFlightForRun(
+  dispatcher: ToolDispatcher,
+  runId: string,
+): { toolCallId: string; toolName: string; runId?: string } | undefined {
+  return dispatcher.listInFlight().find((entry) => entry.runId === runId);
+}

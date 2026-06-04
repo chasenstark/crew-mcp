@@ -4,6 +4,8 @@ import type { DispatchContext } from '../dispatch-run-agent-internal.js';
 import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import { errorContent, jsonContent } from './shared.js';
 
 export const getPanelStatusInputSchema = z.object({
   panel_id: z.string().min(1),
@@ -49,6 +51,21 @@ export interface GetPanelStatusHandlerContext extends Pick<DispatchContext, 'cre
 
 export const GET_PANEL_STATUS_DESCRIPTION =
   'Read a panel by panel_id. Returns dispatched reviewer statuses, failed_reviewers, durable dispatch_warnings, and counts for dispatched reviewers only. Rejects unknown, corrupted, unknown-schema, or cross-repo panels.';
+
+export function getPanelStatusToolHandler(
+  args: GetPanelStatusInput,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore'>,
+): ToolCallReturn {
+  try {
+    const out = getPanelStatusHandler(args, {
+      crewHome: deps.crewHome,
+      runStateStore: deps.runStateStore,
+    });
+    return jsonContent(out);
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
+}
 
 export function getPanelStatusHandler(
   args: unknown,

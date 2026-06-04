@@ -15,6 +15,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import type { RunStateV1, RunStatus } from '../run-state.js';
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import { jsonContent } from './shared.js';
 
 const RUN_STATUS_VALUES = [
   'running',
@@ -66,6 +68,14 @@ export interface ListRunsOutput {
 export interface ListRunsContext {
   readonly crewHome: string;
   readonly repoRoot: string;
+}
+
+export function listRunsToolHandler(
+  args: ListRunsInput,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'projectRoot'>,
+): ToolCallReturn {
+  const out = listRuns(args, { crewHome: deps.crewHome, repoRoot: deps.projectRoot });
+  return jsonContent(out);
 }
 
 interface ParsedRunStateCacheEntry {

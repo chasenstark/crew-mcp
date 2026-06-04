@@ -23,10 +23,8 @@
 // project's logger (src/utils/logger.ts) emits to stderr via console.error,
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
-import { randomUUID } from 'node:crypto';
 import { readdirSync, realpathSync, type Dirent } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -38,171 +36,103 @@ import {
 } from '../../adapters/registry.js';
 import { WorktreeManager } from '../../git/worktree.js';
 import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
-import { filterEventsTailNoise } from '../../orchestrator/events-filter.js';
-import {
-  formatProgressLines,
-  type ProgressNotifier,
-} from '../../orchestrator/progress.js';
-import {
-  DispatchError,
-  dispatchRunAgentInternal,
-} from '../../orchestrator/dispatch-run-agent-internal.js';
 import {
   drainPendingTerminalPersists,
-  installRunLifecycleListeners,
 } from '../../orchestrator/run-lifecycle-listeners.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRuns, type RunGcArgs } from '../../orchestrator/run-gc.js';
-import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
-import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.js';
 import {
-  listAgents,
   listAgentsInputSchema,
+  listAgentsToolHandler,
   LIST_AGENTS_DESCRIPTION,
 } from '../../orchestrator/tools/list-agents.js';
 import {
-  getCrewPreferencesHandler,
   getCrewPreferencesInputSchema,
+  getCrewPreferencesToolHandler,
   GET_CREW_PREFERENCES_DESCRIPTION,
 } from '../../orchestrator/tools/get-crew-preferences.js';
 import {
-  listRuns,
   listRunsInputSchema,
+  listRunsToolHandler,
   LIST_RUNS_DESCRIPTION,
 } from '../../orchestrator/tools/list-runs.js';
 import {
-  buildAdapterDispatchTask,
-  captureRunBranchPointSnapshot,
-  readOnlyAdvisoryWarning,
-  resolveEffectiveEffort,
-  resolveEffectiveModel,
+  runAgentToolHandler,
   runAgentInputSchema,
   RUN_AGENT_DESCRIPTION,
 } from '../../orchestrator/tools/run-agent.js';
 import {
   continueRunInputSchema,
+  continueRunToolHandler,
   CONTINUE_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/continue-run.js';
 import {
   mergeRunInputSchema,
+  mergeRunToolHandler,
   MERGE_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/merge-run.js';
 import {
   cancelRunInputSchema,
+  cancelRunToolHandler,
   CANCEL_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/cancel-run.js';
 import {
   discardRunInputSchema,
+  discardRunToolHandler,
   DISCARD_RUN_DESCRIPTION,
 } from '../../orchestrator/tools/discard-run.js';
 import {
-  DEFAULT_MAX_EVENTS_TAIL,
   getRunStatusInputSchema,
+  getRunStatusToolHandler,
   GET_RUN_STATUS_DESCRIPTION,
-  MAX_EVENTS_TAIL_CAP,
 } from '../../orchestrator/tools/get-run-status.js';
 import {
-  runPanelHandler,
   runPanelInputSchema,
+  runPanelToolHandler,
   RUN_PANEL_DESCRIPTION,
 } from '../../orchestrator/tools/run-panel.js';
 import {
-  getPanelStatusHandler,
   getPanelStatusInputSchema,
+  getPanelStatusToolHandler,
   GET_PANEL_STATUS_DESCRIPTION,
 } from '../../orchestrator/tools/get-panel-status.js';
 import {
-  aggregatePanelHandler,
   aggregatePanelInputSchema,
+  aggregatePanelToolHandler,
   AGGREGATE_PANEL_DESCRIPTION,
 } from '../../orchestrator/tools/aggregate-panel.js';
+import {
+  classifyClient,
+  type ClientKind,
+  type ProgressTokenSeen,
+  type ToolHandlerDeps,
+} from '../../orchestrator/tools/shared.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
-import { readConfigFile } from '../../utils/config-store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger, setLogFilePath } from '../../utils/logger.js';
 import { CREW_MCP_VERSION } from '../version.js';
-import { crewTailUrl } from './tail-url.js';
 
 export const SERVE_VERSION = CREW_MCP_VERSION;
-
-/**
- * Server-side cap on the long-poll wait that `get_run_status` honors
- * via `wait_for_change_ms`. Kept under the smallest known host MCP
- * tool-call timeout so a long-poll never trips the host's own deadline.
- * Captains usually pass 30000; we clamp anything larger to this value.
- */
-export const MAX_LONG_POLL_MS = 60_000;
-
-/**
- * Classification of the MCP host CLI that initialized this server, derived
- * from the `clientInfo.name` carried in the MCP `initialize` request. Used
- * to tailor the dispatch envelope's "next step" copy: Claude Code captains
- * need to spawn a watcher overlay before ending the turn, while Codex /
- * Gemini captains just end the turn after the dispatch tool returns.
- */
-export type ClientKind = 'claude-code' | 'codex' | 'gemini' | 'unknown';
-
-/**
- * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
- * (not equality) so future renames of host clients still classify
- * correctly without re-shipping crew-mcp. Normalizes separators
- * (whitespace, underscores → hyphens) and case before matching so
- * `"Claude Code"`, `"claude_code"`, and `"claude-code-cli"` all fold
- * to the same kind. Exported for unit tests; the production lookup
- * runs once per server via `getClientKind` in `buildCrewMcpServer`.
- */
-export function classifyClient(name: string | undefined): ClientKind {
-  if (!name) return 'unknown';
-  const n = name.toLowerCase().replace(/[\s_]+/g, '-');
-  if (n.includes('claude-code') || n === 'claude') return 'claude-code';
-  if (n.includes('codex')) return 'codex';
-  if (n.includes('gemini')) return 'gemini';
-  return 'unknown';
-}
-
-/**
- * Host-specific "next step" sentence appended to the dispatch envelope
- * summary and the markdown `- Next:` bullet. Single source of truth so
- * the structured `summary` field and the human-facing markdown can never
- * disagree. Unknown hosts get a neutral fallback that doesn't claim a
- * watcher will or won't exist — the captain's skill body covers the
- * host-specific watcher protocol.
- */
-export function nextStepSentence(kind: ClientKind): string {
-  switch (kind) {
-    case 'claude-code':
-      return 'End your turn after spawning the watcher; user is free to chat.';
-    case 'codex':
-    case 'gemini':
-      return 'End your turn after this dispatch returns; user is free to chat.';
-    case 'unknown':
-      return 'End your turn after dispatch; user is free to chat.';
-  }
-}
-
-function agentIdForClientKind(kind: ClientKind): string | undefined {
-  switch (kind) {
-    case 'claude-code':
-      return 'claude-code';
-    case 'codex':
-      return 'codex';
-    case 'gemini':
-      return 'gemini-cli';
-    case 'unknown':
-      return undefined;
-  }
-}
-
-const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
-  'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
-  'Ask the user to approve, then call merge_run again with {confirmed: true}. ' +
-  'Run this from the captain skill — never auto-pass confirmed:true without an explicit user "yes".';
 
 // Re-export for callers that imported these from this module.
 // Canonical definitions live in `orchestrator/tools/get-run-status` so
 // the schema bound and the default share one source of truth.
-export { DEFAULT_MAX_EVENTS_TAIL, MAX_EVENTS_TAIL_CAP };
+export { DEFAULT_MAX_EVENTS_TAIL, MAX_EVENTS_TAIL_CAP } from '../../orchestrator/tools/get-run-status.js';
 export { formatProgressLines } from '../../orchestrator/progress.js';
+export {
+  classifyClient,
+  fileUrlHref,
+  MAX_LONG_POLL_MS,
+  nextStepSentence,
+} from '../../orchestrator/tools/shared.js';
+export type {
+  ClientKind,
+  DiscardEnvelope,
+  FullRunEnvelope,
+  MergeEnvelope,
+  RunEnvelope,
+  RunStatus,
+} from '../../orchestrator/tools/shared.js';
 
 export interface ServeOptions {
   /**
@@ -254,90 +184,6 @@ export interface ServeOptions {
    * path so the env stays clean.
    */
   logFile?: string;
-}
-
-export type RunStatus = 'running' | 'success' | 'partial' | 'error' | 'cancelled';
-
-export interface RunEnvelope {
-  readonly run_id: string;
-  /**
-   * Custom `crew-tail://` URL pointing directly at the run's events.log.
-   * This is the one path-like field captains need in structuredContent by
-   * default; markdown still carries the human-facing worktree and manual
-   * tail details.
-   */
-  readonly tail_url: string;
-  readonly summary: string;
-  readonly files_changed: readonly string[];
-  /**
-   * Advisory messages from the dispatch layer (not the agent itself).
-   * Producers: read-only dirty-tree probe (markTerminal) and peer_messages
-   * truncation/cap warnings (run_agent / continue_run dispatch).
-   */
-  readonly warnings?: readonly string[];
-  /**
-   * Full-envelope opt-in fields. Set CREW_FULL_ENVELOPE=1 to restore
-   * the pre-trim structuredContent for legacy structured consumers.
-   */
-  readonly status?: RunStatus;
-  /**
-   * The adapter id that's running this dispatch (e.g., "codex",
-   * "claude-code", "gemini"). Surfaced so the captain (and any host
-   * UI reading `structuredContent`) can label the run without
-   * round-tripping back through state.json. Optional for backward
-   * compat — older callers that constructed envelopes without it
-   * still type-check.
-   */
-  readonly agent_id?: string;
-  readonly worktree_path?: string;
-  readonly events_log_path?: string;
-  /**
-   * Absolute path to a generated `tail.command` shell script that
-   * tails `events_log_path` indefinitely. On macOS this is the
-   * extension Terminal.app registers as a launcher: a user can
-   * `open` the file or click a `file://` link to it and a Terminal
-   * window opens running the tail. The dispatch markdown surfaces a
-   * clickable link only on macOS; on other platforms the file is
-   * still a runnable shell script the user can invoke directly.
-   */
-  readonly tail_command_path?: string;
-  /**
-   * Pre-encoded `file://` URL pointing at `tail_command_path`. Provided
-   * as a separate field so captains can paste it verbatim into a
-   * markdown link without having to re-implement path encoding (we
-   * use `pathToFileURL().href` here so paths with `#`, `?`, spaces, or
-   * unicode round-trip correctly).
-   */
-  readonly tail_command_url?: string;
-}
-
-export interface FullRunEnvelope extends RunEnvelope {
-  readonly status: RunStatus;
-  readonly agent_id?: string;
-  readonly worktree_path: string;
-  readonly events_log_path: string;
-  readonly tail_command_path: string;
-  readonly tail_command_url: string;
-}
-
-export interface MergeEnvelope {
-  readonly run_id: string;
-  readonly status: 'merged' | 'conflict' | 'no-changes';
-  readonly commit_sha?: string;
-  readonly conflicts?: readonly string[];
-  readonly target_branch?: string;
-  readonly original_branch?: string;
-  readonly original_head?: string;
-  readonly landed_off_current_branch?: boolean;
-  readonly restore_failed?: boolean;
-  readonly restore_warning?: string;
-}
-
-export interface DiscardEnvelope {
-  readonly run_id: string;
-  readonly ok: true;
-  readonly cleanup_failed?: true;
-  readonly cleanup_errors?: readonly string[];
 }
 
 export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
@@ -514,6 +360,18 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     return cachedClientKind;
   };
 
+  const toolDeps: ToolHandlerDeps = {
+    registry,
+    worktreeManager,
+    runStateStore,
+    dispatcher,
+    crewHome,
+    projectRoot,
+    getClientKind,
+    progressTokenSeen,
+    readAgentPrefs: () => readAgentPrefsFile(crewHome),
+  };
+
   // ---- list_agents -----------------------------------------------------
   server.registerTool(
     'list_agents',
@@ -521,13 +379,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: LIST_AGENTS_DESCRIPTION,
       inputSchema: listAgentsInputSchema.shape,
     },
-    async (args) => {
-      // Re-read on every call: the file is small and the user may
-      // have edited it between dispatches without restarting serve.
-      const agentPrefs = readAgentPrefsFile(crewHome);
-      const out = await listAgents({ registry, agentPrefs, refresh: args.refresh });
-      return jsonContent(out);
-    },
+    async (args) => listAgentsToolHandler(args, toolDeps),
   );
 
   // ---- get_crew_preferences -------------------------------------------
@@ -537,19 +389,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: GET_CREW_PREFERENCES_DESCRIPTION,
       inputSchema: getCrewPreferencesInputSchema.shape,
     },
-    async (args) => {
-      const agentPrefs = readAgentPrefsFile(crewHome);
-      try {
-        const out = await getCrewPreferencesHandler(args, {
-          projectRoot,
-          registry,
-          agentPrefs,
-        });
-        return jsonContent(out);
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-    },
+    async (args) => getCrewPreferencesToolHandler(args, toolDeps),
   );
 
   // ---- list_runs -------------------------------------------------------
@@ -559,10 +399,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: LIST_RUNS_DESCRIPTION,
       inputSchema: listRunsInputSchema.shape,
     },
-    async (args) => {
-      const out = listRuns(args, { crewHome, repoRoot: projectRoot });
-      return jsonContent(out);
-    },
+    async (args) => listRunsToolHandler(args, toolDeps),
   );
 
   // ---- run_agent -------------------------------------------------------
@@ -572,53 +409,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: RUN_AGENT_DESCRIPTION,
       inputSchema: runAgentInputSchema.shape,
     },
-    async (args, extra) => {
-      const agentPrefs = readAgentPrefsFile(crewHome);
-      const progress = progressNotifierFrom(extra, args.agent_id, progressTokenSeen);
-      let dispatchResult: Awaited<ReturnType<typeof dispatchRunAgentInternal>>;
-      try {
-        dispatchResult = await dispatchRunAgentInternal({
-          input: args,
-          ctx: {
-            registry,
-            worktreeManager,
-            runStateStore,
-            agentPrefs,
-            dispatcher,
-            crewHome,
-            repoRoot: runStateStore.repoRoot,
-            projectRoot,
-          },
-          progress,
-        });
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-
-      const clientKind = getClientKind();
-      const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(clientKind)}`;
-      const eventsLogPath = runStateStore.eventsLogPath(dispatchResult.runId);
-      const env: FullRunEnvelope = {
-        run_id: dispatchResult.runId,
-        agent_id: args.agent_id,
-        worktree_path: dispatchResult.worktreePath,
-        events_log_path: eventsLogPath,
-        tail_command_path: dispatchResult.tailCommandPath,
-        tail_command_url: fileUrlHref(dispatchResult.tailCommandPath),
-        tail_url: dispatchResult.tailUrl,
-        status: 'running',
-        summary,
-        files_changed: [],
-        ...mergeEnvelopeWarnings(
-          runStateStore.read(dispatchResult.runId)?.warnings,
-          dispatchResult.warnings,
-        ),
-      };
-      return {
-        content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, clientKind) }],
-        structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
-      };
-    },
+    async (args, extra) => runAgentToolHandler(args, extra, toolDeps),
   );
 
   // ---- run_panel -------------------------------------------------------
@@ -628,26 +419,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: RUN_PANEL_DESCRIPTION,
       inputSchema: runPanelInputSchema.shape,
     },
-    async (args, extra) => {
-      const agentPrefs = readAgentPrefsFile(crewHome);
-      try {
-        const out = await runPanelHandler(args, {
-          registry,
-          worktreeManager,
-          runStateStore,
-          agentPrefs,
-          dispatcher,
-          crewHome,
-          repoRoot: runStateStore.repoRoot,
-          projectRoot,
-          sameHostAgentId: agentIdForClientKind(getClientKind()),
-          progress: progressNotifierFrom(extra, 'run_panel', progressTokenSeen),
-        });
-        return jsonContent(out);
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-    },
+    async (args, extra) => runPanelToolHandler(args, extra, toolDeps),
   );
 
   // ---- get_panel_status ------------------------------------------------
@@ -657,14 +429,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: GET_PANEL_STATUS_DESCRIPTION,
       inputSchema: getPanelStatusInputSchema.shape,
     },
-    async (args) => {
-      try {
-        const out = getPanelStatusHandler(args, { crewHome, runStateStore });
-        return jsonContent(out);
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-    },
+    async (args) => getPanelStatusToolHandler(args, toolDeps),
   );
 
   // ---- aggregate_panel -------------------------------------------------
@@ -674,14 +439,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: AGGREGATE_PANEL_DESCRIPTION,
       inputSchema: aggregatePanelInputSchema.shape,
     },
-    async (args) => {
-      try {
-        const out = aggregatePanelHandler(args, { crewHome, runStateStore });
-        return jsonContent(out);
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-    },
+    async (args) => aggregatePanelToolHandler(args, toolDeps),
   );
 
   // ---- continue_run ----------------------------------------------------
@@ -691,143 +449,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: CONTINUE_RUN_DESCRIPTION,
       inputSchema: continueRunInputSchema.shape,
     },
-    async (args, extra) => {
-      const userPrompt = args.prompt ?? '';
-      const preState = runStateStore.read(args.run_id);
-      if (!preState) {
-        return errorContent(`Unknown run_id "${args.run_id}".`);
-      }
-
-      let validatedInput: readonly PeerMessageInput[];
-      try {
-        validatedInput = validatePeerMessagesPreflight(args.peer_messages, runStateStore.caps);
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-
-      if (userPrompt === '' && validatedInput.length === 0) {
-        return errorContent('peer_messages.no_op: continue_run requires either prompt or peer_messages');
-      }
-
-      if (preState.status === 'running') {
-        return errorContent('continue_run: run is currently running; call cancel_run first.');
-      }
-      const existingInFlight = inFlightForRun(dispatcher, args.run_id);
-      if (existingInFlight) {
-        return errorContent(
-          `continue_run: run "${args.run_id}" still has in-flight work ` +
-          `(${existingInFlight.toolName}); retry after it finishes or call cancel_run first.`,
-        );
-      }
-      if (
-        preState.status === 'discarded'
-        || preState.status === 'merged'
-        || preState.status === 'merge_conflict'
-      ) {
-        return errorContent(
-          `Cannot continue run "${args.run_id}" with status "${preState.status}".`,
-        );
-      }
-      const adapter = typeof registry.load === 'function'
-        ? await registry.load(preState.agentId)
-        : registry.get(preState.agentId);
-      if (!adapter) {
-        return errorContent(
-          `Agent "${preState.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
-        );
-      }
-      const continueExtra = extra;
-
-      const toolCallId = randomUUID();
-      // Resolve effort + model with the same precedence run_agent
-      // uses: per-call > agents.json > adapter default. Re-read prefs
-      // each continue so a user edit between dispatches is honored
-      // without a serve restart.
-      const continueAgentPrefs = readAgentPrefsFile(crewHome);
-      const effectiveEffort = resolveEffectiveEffort(
-        adapter,
-        args.effort,
-        continueAgentPrefs,
-      );
-      const effectiveModel = resolveEffectiveModel(
-        adapter,
-        args.model,
-        continueAgentPrefs,
-      );
-      let appendResult: Awaited<ReturnType<RunStateStore['appendPrompt']>>;
-      try {
-        appendResult = await runStateStore.appendPrompt(args.run_id, {
-          userPrompt,
-          peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
-        });
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-      const { state, composedPrompt, warnings } = appendResult;
-      const dispatchWarnings = state.readOnly === true && adapter.enforcesReadOnly !== true
-        ? [readOnlyAdvisoryWarning(adapter.name)]
-        : [];
-
-      const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
-        const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
-        await markContinueDispatchFailed(runStateStore, args.run_id, message);
-        return new DispatchError(message, { warnings: [...dispatchWarnings, ...warnings] });
-      };
-
-      // Re-mirror uncommitted host state into the worktree so changes
-      // the user made between turns are visible to this turn's agent.
-      // Skip for read-only runs — they don't have a worktree we own.
-      if (state.readOnly !== true) {
-        try {
-          await worktreeManager.syncUncommittedToRunWorktree(args.run_id);
-        } catch (err) {
-          const dispatchErr = await rollbackContinuation(err);
-          return errorContent(dispatchErr.message);
-        }
-      }
-      const branchPointBefore =
-        state.readOnly !== true
-          ? await captureRunBranchPointSnapshot(worktreeManager, args.run_id, state.worktreePath)
-          : undefined;
-
-      const task = buildAdapterDispatchTask({
-        toolCallId,
-        runId: args.run_id,
-        adapter,
-        prompt: composedPrompt,
-        effectiveWorkingDirectory: state.worktreePath,
-        worktreePath: state.worktreePath,
-        // Stickiness: a continue_run inherits the original dispatch's
-        // read_only bit. Read it back from state.json so the
-        // post-dispatch probe (warning vs. worktree enrichment)
-        // matches the original run's contract.
-        readOnly: state.readOnly === true,
-        dispatchWarnings,
-        branchPointBefore,
-        effectiveModel,
-        effectiveEffort,
-        worktreeManager,
-        input: { ...args },
-      });
-
-      try {
-        return await runDispatchAndRespond({
-          runId: args.run_id,
-          agentName: state.agentId,
-          worktreePath: state.worktreePath,
-          toolCallId,
-          task,
-          dispatcher,
-          runStateStore,
-          warnings: [...dispatchWarnings, ...warnings],
-          progress: progressNotifierFrom(continueExtra, state.agentId, progressTokenSeen),
-          clientKind: getClientKind(),
-          onStartFailure: rollbackContinuation,
-        });
-      } catch (err) {
-        return errorContent(err instanceof Error ? err.message : String(err));
-      }
-    },
+    async (args, extra) => continueRunToolHandler(args, extra, toolDeps),
   );
 
   // ---- merge_run -------------------------------------------------------
@@ -837,114 +459,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: MERGE_RUN_DESCRIPTION,
       inputSchema: mergeRunInputSchema.shape,
     },
-    async (args) => {
-      const state = runStateStore.read(args.run_id);
-      if (!state) {
-        return errorContent(`Unknown run_id "${args.run_id}".`);
-      }
-      if (state.status === 'running') {
-        return errorContent('merge_run: run is currently running; call cancel_run first.');
-      }
-      if (state.readOnly) {
-        // No worktree exists for read-only runs; merge is meaningless.
-        // Surface a precise reason so the captain can explain the
-        // category mismatch instead of pretending the merge could
-        // have worked under different circumstances.
-        return errorContent(
-          `Run "${args.run_id}" was dispatched read-only; nothing to merge. ` +
-          'Read-only runs run against the host repo (or a target worktree) without ' +
-          'allocating their own branch. Use `discard_run` to drop the run record.',
-        );
-      }
-      if (state.status === 'discarded') {
-        return errorContent(
-          `Cannot merge run "${args.run_id}" — it was discarded.`,
-        );
-      }
-      if (state.status === 'merged') {
-        return errorContent(
-          `Run "${args.run_id}" was already merged${
-            state.mergeStatus?.commitSha
-              ? ` at commit ${state.mergeStatus.commitSha}`
-              : ''
-          }.`,
-        );
-      }
-      const confirmationGate = resolveMergeConfirmationGate(crewHome);
-      if (confirmationGate.error) {
-        return errorContent(confirmationGate.error);
-      }
-      if (confirmationGate.enabled && args.confirmed !== true) {
-        return errorContent(MERGE_CONFIRMATION_REQUIRED_MESSAGE);
-      }
-      try {
-        const result = await worktreeManager.mergeRunWorktree(args.run_id, {
-          targetBranch: args.target_branch,
-          force: args.force,
-          mergeStrategy: args.merge_strategy,
-          commitTitle: args.commit_title,
-          commitBody: args.commit_body,
-        });
-        if (result.status === 'merged') {
-          await runStateStore.markMerged(args.run_id, {
-            target: result.targetBranch,
-            commitSha: result.commitSha,
-          });
-          // Best-effort worktree cleanup: once the run is merged into
-          // the host's HEAD, the worktree itself has no remaining
-          // value (the changes are durably in main). state.json +
-          // events.log persist for archeology per cleanupByRunId
-          // semantics. If cleanup fails, the merge still succeeded
-          // and the captain can retry via discard_run.
-          try {
-            const cleanup = await worktreeManager.cleanupByRunId(args.run_id);
-            if (!cleanup.success) {
-              logger.warn(
-                `merge_run ${args.run_id}: worktree cleanup failed after `
-                + `successful merge — call discard_run to retry. Error: `
-                + cleanup.errors.join('; '),
-              );
-            }
-          } catch (err) {
-            logger.warn(
-              `merge_run ${args.run_id}: worktree cleanup failed after `
-              + `successful merge — call discard_run to retry. Error: `
-              + `${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-          const env: MergeEnvelope = {
-            run_id: args.run_id,
-            status: 'merged',
-            commit_sha: result.commitSha,
-            ...checkoutEnvelope(result),
-          };
-          return markdownContent(renderMergeMarkdown(env), env);
-        }
-        if (result.status === 'conflict') {
-          await runStateStore.markMergeConflict(args.run_id, {
-            target: result.targetBranch,
-            conflicts: result.conflicts,
-          });
-          const env: MergeEnvelope = {
-            run_id: args.run_id,
-            status: 'conflict',
-            conflicts: result.conflicts,
-          };
-          return markdownContent(renderMergeMarkdown(env), env, /* isError */ true);
-        }
-        // no-changes
-        const env: MergeEnvelope = {
-          run_id: args.run_id,
-          status: 'no-changes',
-          ...checkoutEnvelope(result),
-        };
-        return markdownContent(renderMergeMarkdown(env), env);
-      } catch (err) {
-        return errorContent(
-          err instanceof Error ? err.message : `merge_run failed: ${String(err)}`,
-        );
-      }
-    },
+    async (args) => mergeRunToolHandler(args, toolDeps),
   );
 
   // ---- discard_run -----------------------------------------------------
@@ -954,57 +469,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: DISCARD_RUN_DESCRIPTION,
       inputSchema: discardRunInputSchema.shape,
     },
-    async (args) => {
-      // Idempotent: if state.json doesn't exist, succeed quietly. Already
-      // discarded non-read-only runs still retry residual cleanup while an
-      // owned worktree metadata record exists.
-      const state = runStateStore.read(args.run_id);
-      if (state?.status === 'running') {
-        return errorContent('discard_run: run is currently running; call cancel_run first.');
-      }
-      const existingInFlight = inFlightForRun(dispatcher, args.run_id);
-      const cleanupErrors: string[] = [];
-      try {
-        if (state) {
-          // Read-only runs never allocated a worktree, so the
-          // worktree-cleanup branch would no-op anyway — but skipping
-          // it explicitly makes the contract clearer and avoids the
-          // run-lock acquisition the cleanup helper takes.
-          if (!state.readOnly) {
-            if (existingInFlight) {
-              cleanupErrors.push(
-                `worktree cleanup skipped: run "${args.run_id}" still has in-flight work ` +
-                `(${existingInFlight.toolName})`,
-              );
-            } else {
-              try {
-                const cleanup = await worktreeManager.cleanupByRunId(args.run_id);
-                if (!cleanup.success) {
-                  cleanupErrors.push(...cleanup.errors);
-                }
-              } catch (err) {
-                cleanupErrors.push(err instanceof Error ? err.message : String(err));
-              }
-            }
-          }
-          if (state.status !== 'discarded') {
-            await runStateStore.markDiscarded(args.run_id);
-          }
-        }
-      } catch (err) {
-        return errorContent(
-          err instanceof Error ? err.message : `discard_run failed: ${String(err)}`,
-        );
-      }
-      const env: DiscardEnvelope = {
-        run_id: args.run_id,
-        ok: true,
-        ...(cleanupErrors.length > 0
-          ? { cleanup_failed: true as const, cleanup_errors: cleanupErrors }
-          : {}),
-      };
-      return markdownContent(renderDiscardMarkdown(env), env);
-    },
+    async (args) => discardRunToolHandler(args, toolDeps),
   );
 
   // ---- get_run_status --------------------------------------------------
@@ -1014,83 +479,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: GET_RUN_STATUS_DESCRIPTION,
       inputSchema: getRunStatusInputSchema.shape,
     },
-    async (args) => {
-      const state = runStateStore.read(args.run_id);
-      if (!state) {
-        return errorContent(`Unknown run_id "${args.run_id}".`);
-      }
-
-      const cursor = args.since_event_line ?? 0;
-      const useLongPoll = (args.wait_for_change_ms ?? 0) > 0
-        && !isTerminalRunStatus(state.status);
-
-      // Snapshot path — fast return.
-      if (!useLongPoll) {
-        return buildGetRunStatusResponse(
-          state,
-          runStateStore,
-          args.run_id,
-          cursor,
-          args.log_lines,
-          args.max_events_tail,
-        );
-      }
-
-      const terminalOnly = args.wait_for_terminal_only === true;
-
-      if (!terminalOnly) {
-        // Already-have-data path: if the events log already has *signal*
-        // lines past the captain's cursor, return immediately without
-        // waiting. Lines the noise filter would drop (codex receipts:
-        // command-started / exit-0 / item.* lifecycle frames) don't
-        // count — they'd round-trip the captain a payload of
-        // events_tail: [] and a bumped cursor, which is strictly worse
-        // than a long-poll wait. The cursor still advances on the next
-        // poll because buildGetRunStatusResponse reads the raw file via
-        // readEventsSince. Terminal-only waits skip this fast-return
-        // entirely because the caller asked to wake only on terminal.
-        // See docs/plans/active/noise-symmetric-filter.md.
-        const head = runStateStore.readSignalEventsSince(args.run_id, cursor);
-        if (head.lines.length > 0) {
-          return buildGetRunStatusResponse(
-            state,
-            runStateStore,
-            args.run_id,
-            cursor,
-            args.log_lines,
-            args.max_events_tail,
-          );
-        }
-      }
-
-      // Long-poll: subscribe to dispatcher events for this run; resolve
-      // on the first stream/terminal event or after wait_for_change_ms.
-      // In terminal-only mode, omit the stream subscription so chunks do
-      // not wake the captain.
-      // The clamp prevents a misbehaving captain from holding the
-      // request open longer than the host's MCP tool-call timeout.
-      const waitMs = Math.min(args.wait_for_change_ms ?? 0, MAX_LONG_POLL_MS);
-      const timedOut = await waitForRunChange({
-        dispatcher,
-        agentName: state.agentId,
-        runId: args.run_id,
-        waitMs,
-        terminalOnly,
-      });
-
-      if (terminalOnly && timedOut && !isTerminalRunStatus(state.status)) {
-        return getRunStatusContent(args.run_id, { status: 'running', timed_out: true });
-      }
-      const fresh = runStateStore.read(args.run_id) ?? state;
-      return buildGetRunStatusResponse(
-        fresh,
-        runStateStore,
-        args.run_id,
-        cursor,
-        args.log_lines,
-        args.max_events_tail,
-      );
-    },
+    async (args) => getRunStatusToolHandler(args, toolDeps),
   );
 
   // ---- cancel_run ------------------------------------------------------
@@ -1100,43 +489,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: CANCEL_RUN_DESCRIPTION,
       inputSchema: cancelRunInputSchema.shape,
     },
-    async (args) => {
-      // Match by runId rather than toolCallId — the captain knows the
-      // run_id (returned from run_agent), not the internal toolCallId.
-      const inFlight = dispatcher
-        .listInFlight()
-        .find((t) => t.runId === args.run_id);
-      if (!inFlight) {
-        // Not in-flight: either already terminal, never started, or
-        // unknown. Surface state to help the captain explain to the user.
-        const state = runStateStore.read(args.run_id);
-        const reason = state
-          ? `Run "${args.run_id}" is not in-flight (status="${state.status}").`
-          : `Unknown run_id "${args.run_id}".`;
-        const env = { run_id: args.run_id, ok: false, reason };
-        return markdownContent(renderCancelMarkdown(env), env);
-      }
-      // Trigger abort — the existing run:cancelled lifecycle listener
-      // will mark the run terminal with status='cancelled'.
-      dispatcher.cancel(inFlight.toolCallId, 'cancel_run requested');
-      const env = { run_id: args.run_id, ok: true };
-      return markdownContent(renderCancelMarkdown(env), env);
-    },
+    async (args) => cancelRunToolHandler(args, toolDeps),
   );
 
   return { server, dispatcher, worktreeManager, runStateStore };
-}
-
-function resolveMergeConfirmationGate(crewHome: string):
-  | { enabled: boolean; error?: undefined }
-  | { enabled?: undefined; error: string } {
-  if (process.env.CREW_CONFIRM_BEFORE_MERGE === 'off') {
-    return { enabled: false };
-  }
-  // readConfigFile is forgiving — fs/JSON failures return DEFAULT_CONFIG
-  // (confirmBeforeMerge=true), which is fail-closed by default. We don't
-  // need a wrapping try/catch here.
-  return { enabled: readConfigFile(crewHome).confirmBeforeMerge };
 }
 
 /**
@@ -1201,483 +557,6 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-}
-
-// ---------------------------------------------------------------------------
-// Internal: dispatch lifecycle + envelope shaping
-// ---------------------------------------------------------------------------
-
-type ToolCallReturn = {
-  content: Array<{ type: 'text'; text: string }>;
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-};
-
-interface DispatchAndRespondArgs {
-  runId: string;
-  /**
-   * Adapter id for this dispatch. Used as the `[prefix]` on
-   * `notifications/progress` chunks (so the host UI labels each line
-   * with which subagent emitted it) and surfaced in the markdown
-   * tool-call result for human readability. Must match the adapter
-   * the dispatcher is invoking — the captain's `run_agent` /
-   * `continue_run` call sites both have it on hand.
-   */
-  agentName: string;
-  worktreePath: string;
-  toolCallId: string;
-  task: import('../../orchestrator/tool-dispatcher.js').DispatchTask;
-  dispatcher: ToolDispatcher;
-  runStateStore: RunStateStore;
-  /**
-   * Advisory warnings generated before dispatch, such as peer_messages
-   * truncation or cap repair notices. These are shown in the immediate
-   * dispatch envelope while terminal adapter warnings continue to persist
-   * through markTerminal().
-   */
-  warnings?: readonly string[];
-  /**
-   * Optional MCP progress notifier — when supplied, each adapter
-   * onOutput chunk fires `notifications/progress` so the host CLI
-   * can render live streaming output during the tool call. Absent
-   * when the client did not include a `progressToken` in the request
-   * `_meta`. Callers build this via `progressNotifierFrom(extra)`.
-   */
-  progress?: ProgressNotifier;
-  /**
-   * Called only when `dispatcher.start()` throws synchronously before the
-   * task becomes in-flight. `continue_run` uses this to roll back the
-   * appendPrompt() state flip; run_agent has its own transaction path.
-   */
-  onStartFailure?: (err: unknown) => Promise<Error>;
-  /**
-   * Host-CLI classification (claude-code / codex / gemini / unknown),
-   * resolved once per server lifetime from the MCP initialize handshake.
-   * Drives the "next step" copy in the dispatch envelope: Claude Code
-   * captains need to spawn a watcher overlay; Codex / Gemini captains
-   * just end the turn. See `nextStepSentence`.
-   */
-  clientKind: ClientKind;
-}
-
-/**
- * Async-first dispatch — pre-2026-05 this raced a sync window against
- * the terminal event so fast runs could return inline; now it always
- * returns `status: "running"` immediately and the captain yields the
- * turn after dispatch. Lifecycle listeners keep state.json current
- * while the user can keep chatting.
- *
- * Why: the prior model produced a 60s opening blackout for every
- * dispatch on hosts that don't surface MCP progress notifications
- * (codex), and snapshot polling at 10–20s cadence felt like a hung
- * UI even when the agent was actively working. Async-first lets the
- * captain hand chat back to the user while progress remains available
- * via the tail side channel and later status reads.
- *
- * The lifecycle listeners installed here keep firing in the
- * background after we return — they own state.json writes on
- * terminal events. Later status reads observe state.json + events.log.
- */
-async function runDispatchAndRespond(args: DispatchAndRespondArgs): Promise<ToolCallReturn> {
-  // Install terminal-event listeners + start the dispatch; we don't
-  // await the terminal promise — it resolves in the background and
-  // its side effects (markTerminal on state.json) are what later
-  // get_run_status calls observe.
-  void installRunLifecycleListeners({
-    dispatcher: args.dispatcher,
-    runStateStore: args.runStateStore,
-    runId: args.runId,
-    agentName: args.agentName,
-    toolCallId: args.toolCallId,
-    progress: args.progress,
-  });
-  try {
-    args.dispatcher.start(args.task);
-  } catch (err) {
-    if (args.onStartFailure) {
-      throw await args.onStartFailure(err);
-    }
-    throw err;
-  }
-
-  const summary = `Dispatched as "${args.runId}". ${nextStepSentence(args.clientKind)}`;
-  const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
-  const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
-  const env: FullRunEnvelope = {
-    run_id: args.runId,
-    agent_id: args.agentName,
-    worktree_path: args.worktreePath,
-    events_log_path: eventsLogPath,
-    tail_command_path: tailCommandPath,
-    tail_command_url: fileUrlHref(tailCommandPath),
-    tail_url: crewTailUrl(eventsLogPath),
-    status: 'running',
-    summary,
-    files_changed: [],
-    ...mergeEnvelopeWarnings(
-      args.runStateStore.read(args.runId)?.warnings,
-      args.warnings,
-    ),
-  };
-  return {
-    content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, args.clientKind) }],
-    structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
-  };
-}
-
-function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
-  if (process.env.CREW_FULL_ENVELOPE === '1') {
-    return env;
-  }
-  return {
-    run_id: env.run_id,
-    tail_url: env.tail_url,
-    summary: env.summary,
-    files_changed: env.files_changed,
-    ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
-  };
-}
-
-/**
- * Human-facing markdown rendered into the MCP tool-call result for
- * `run_agent` / `continue_run`. Hosts that show the result inline
- * (Claude Code's expand-on-click panel, codex's `> tool` block)
- * render this directly; the structured payload still travels via
- * `structuredContent` for programmatic consumers.
- *
- * Why markdown over the prior JSON.stringify: hosts collapse MCP
- * tool calls to a one-line title and only show the result when the
- * user expands. Raw JSON in that expand reads as noise; a short
- * markdown block reads as a status report. Captain still extracts
- * `run_id` reliably — it appears in a backticked code span the
- * model can pluck verbatim.
- */
-function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientKind): string {
-  const lines = [
-    `**Dispatched** ${mdInlineCode(env.agent_id ?? 'agent')} as run \`${env.run_id}\`.`,
-    '',
-    `- Status: \`${env.status}\``,
-    `- Worktree: ${mdInlineCode(env.worktree_path)}`,
-  ];
-  // The clickable custom-scheme link only does something useful on macOS,
-  // where LaunchServices can route `crew-tail://` to the optional handler
-  // app. On Linux/Windows (and on macOS before installation), the manual
-  // tail line below stays the portable recovery path. Rationale comments
-  // live here, not in the user-visible markdown — captains read this on
-  // every dispatch.
-  if (process.platform === 'darwin') {
-    lines.push(
-      `- **Tail in Terminal**: [open in a side window](${env.tail_url})`,
-    );
-  }
-  lines.push(
-    `- Tail manually: \`tail -F ${env.events_log_path}\``,
-    `- Next: ${nextStepSentence(clientKind)}`,
-    `- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``,
-  );
-  if (env.warnings && env.warnings.length > 0) {
-    lines.push(
-      '',
-      '## Warnings',
-      '',
-      ...env.warnings.map((warning) => `- ${warning}`),
-    );
-  }
-  return lines.join('\n');
-}
-
-function mergeEnvelopeWarnings(
-  ...warnings: Array<readonly string[] | undefined>
-): { warnings?: readonly string[] } {
-  const merged = warnings.flatMap((entry) => entry ?? []);
-  return merged.length > 0 ? { warnings: merged } : {};
-}
-
-/**
- * Convert an absolute filesystem path to a `file://` URI. `pathToFileURL`
- * handles URI delimiters such as `#` and `?` as literal path characters.
- */
-export function fileUrlHref(absPath: string): string {
-  return pathToFileURL(absPath).href;
-}
-
-function mdInlineCode(value: string): string {
-  const normalized = value.replace(/[\r\n]+/g, ' ');
-  if (!normalized.includes('`')) return `\`${normalized}\``;
-  const longestBacktickRun = Math.max(
-    ...Array.from(normalized.matchAll(/`+/g), (match) => match[0].length),
-  );
-  const fence = '`'.repeat(Math.max(2, longestBacktickRun + 1));
-  return `${fence} ${normalized} ${fence}`;
-}
-
-/**
- * Per-server one-shot loud-log state for progressToken presence/absence.
- * The per-call info-level log still fires every dispatch; this state
- * is only consulted to elevate the FIRST occurrence to warn so the
- * "is my host streaming progress?" question has a hard-to-miss
- * answer at server startup. Reset per `buildCrewMcpServer` so tests
- * (which spin a fresh server per case) start clean.
- */
-interface ProgressTokenSeen {
-  presentLogged: boolean;
-  absentLogged: boolean;
-  lastObserved?: 'present' | 'absent';
-}
-
-/**
- * Build a per-call progress notifier from the MCP request `extra`. If
- * the client did not provide a `progressToken` in the request `_meta`,
- * returns undefined — caller treats that as "no progress notifications
- * for this call." The captain shouldn't depend on progress events; they
- * are pure UX, the tool result is the contract.
- *
- * Counter is monotonically increasing per the MCP progress spec. We
- * don't know the total chunk count up-front so `total` is omitted
- * (renderers handle that as an indeterminate progress bar).
- *
- * Notification failures are caught + dropped: a transport hiccup
- * (e.g., client disconnected) must never fail the dispatch.
- */
-function progressNotifierFrom(
-  extra: {
-    _meta?: { progressToken?: string | number };
-    sendNotification: (n: {
-      method: 'notifications/progress';
-      params: { progressToken: string | number; progress: number; message?: string };
-    }) => Promise<void>;
-  },
-  agentId: string,
-  seen: ProgressTokenSeen,
-): ProgressNotifier | undefined {
-  const token = extra._meta?.progressToken;
-  const observed = token === undefined ? 'absent' : 'present';
-  // Per-call info log: a one-liner the operator can grep when sanity-
-  // checking a single dispatch ("did this run get a token?"). Cheap.
-  logger.info(
-    `progress token (agent=${agentId}): ${
-      token === undefined ? 'absent (no streaming chunks to captain)' : String(token)
-    }`,
-  );
-  if (seen.lastObserved !== undefined && seen.lastObserved !== observed) {
-    logger.info(
-      `progressToken state changed from ${seen.lastObserved} to ${observed} this server session (agent=${agentId}).`,
-    );
-  }
-  seen.lastObserved = observed;
-  // First-occurrence warn-level log: the question "is my host actually
-  // providing a progressToken?" deserves a loud answer the first time
-  // it's answered, so users catch a missing token without grepping
-  // info-level lines. Subsequent calls fall back to the info log
-  // above so we don't spam.
-  if (token === undefined && !seen.absentLogged) {
-    seen.absentLogged = true;
-    logger.warn(
-      'progressToken absent on first dispatch without a token this server session ' +
-      `(agent=${agentId}). Inline notifications/progress will not fire for this call. ` +
-      'The dispatch markdown\'s tail.command / events.log side-channel and any ' +
-      'later get_run_status / list_runs reads are the live progress paths. ' +
-      'Known: codex CLI 0.128.0 omits the token; Claude Code supplies it.',
-    );
-  } else if (token !== undefined && !seen.presentLogged) {
-    seen.presentLogged = true;
-    logger.info(
-      `progressToken present on first dispatch with a token this server session (agent=${agentId}); inline progress streaming active for this call.`,
-    );
-  }
-  if (token === undefined) return undefined;
-  let counter = 0;
-  return {
-    send(message: string): void {
-      counter += 1;
-      void extra
-        .sendNotification({
-          method: 'notifications/progress',
-          params: { progressToken: token, progress: counter, message },
-        })
-        .catch(() => {
-          // Swallow — see jsdoc above.
-        });
-    },
-  };
-}
-
-/**
- * `get_run_status` payload shape — intentionally lean to keep the
- * captain's context window clean across long-poll loops.
- *
- * **Always present:** `status`, `events_tail`, `next_event_line`,
- * except terminal-only wait timeouts, which intentionally return only
- * `{status:"running", timed_out:true}`. While the run is `running`,
- * that's *all* — every other field is either static (already returned
- * in the run_agent / continue_run dispatch result: run_id and tail_url
- * in structuredContent by default, plus human-facing worktree/tail
- * details in markdown) or terminal-only.
- *
- * **Terminal-only fields** appear when `status` ∈ {success, partial,
- * error, cancelled, merged, merge_conflict, discarded}: `filesChanged`,
- * `prompts` (turn metadata only — `{turn, startedAt, completedAt}`;
- * per-turn summaries and verbatim prompts are durable in state.json
- * but elided here so multi-turn polls don't re-ship prior output the
- * captain already received in earlier tool returns), `summary`
- * (top-level convenience for the last turn's adapter output), and
- * the conditional `lastError` / `mergeStatus` / `warnings` /
- * `readOnly`. `events_tail` carries the recent tail of the full run
- * log on terminal (capped per `max_events_tail`).
- *
- * `log_tail` is retained for legacy snapshot callers that pass
- * `log_lines` without a cursor — modern captains use the cursor
- * exclusively via `next_event_line`.
- */
-interface GetRunStatusResponse {
-  readonly status: string;
-  readonly events_tail: readonly string[];
-  readonly next_event_line: number;
-  readonly timed_out?: true;
-  // Terminal-only fields. Indexed-signature shape kept additive so the
-  // server can grow new terminal fields without revising every caller's
-  // type narrowing.
-  readonly [key: string]: unknown;
-  readonly events_tail_skipped?: number;
-  readonly log_tail?: readonly string[];
-}
-
-/**
- * Public projection of a per-turn record on terminal poll-returns.
- * Mirrors `PromptRecord` from run-state.ts minus `prompt` and
- * `summary` — verbatim prompt text and per-turn output are durable
- * on disk in state.json but not worth re-shipping on every poll.
- * Top-level `summary` carries the latest turn's output for
- * convenience; prior-turn summaries are recoverable from state.json
- * if a captain ever needs them post-compaction. Multi-turn runs
- * see the biggest savings — a 5-turn p90 run was previously
- * shipping ~30K chars of redundant per-turn summaries on every
- * terminal poll.
- */
-type TerminalPromptRecord = {
-  readonly turn: number;
-  readonly startedAt: string;
-  readonly completedAt?: string;
-};
-
-function buildGetRunStatusResponse(
-  state: RunStateV1,
-  store: RunStateStore,
-  runId: string,
-  sinceLine: number,
-  logLines: number | undefined,
-  maxEventsTail: number | undefined,
-): ToolCallReturn {
-  // Captain-context conservation: while the run is running, `events_tail`
-  // is intentionally empty. Captains coordinate; they don't narrate. Users
-  // follow along via the dispatch result's `tail_url` on macOS (or the
-  // generated `tail.command` helper / manual tail line elsewhere). The
-  // cursor (`next_event_line`) still advances so anything that *does* read
-  // events_tail later — most
-  // importantly, the terminal poll-return — has a coherent view.
-  const status = state.status;
-  const terminal = isTerminalRunStatus(status);
-
-  // Always advance the cursor relative to the requested sinceLine; the
-  // file is the source of truth and the cursor must match it regardless
-  // of whether we're emitting events_tail content this turn.
-  let cursorAfterDelta: number;
-
-  let cappedLines: readonly string[] = [];
-  let skipped = 0;
-  // Skip the tail build for discarded runs: the worktree is gone and the
-  // captain rarely wants forensics on a run the user explicitly threw
-  // away. `events_log_path` still resolves on disk if anyone needs it.
-  if (terminal && status !== 'discarded') {
-    // On terminal: ignore the cursor and return the recent tail of the
-    // entire log. The captain wants "what the run did" for its final
-    // summary, not "what happened since my last 30s long-poll" — those
-    // are usually the same anyway because terminal events fire close to
-    // last activity, but this gives a stable rendering surface even
-    // across long-quiet runs.
-    //
-    // Filter pure adapter receipts (codex command-started / exit-0
-    // / item.* lines) before applying the cap so the budget gets
-    // spent on synthesis lines, not on `command: started ...` noise
-    // the captain reads and learns nothing from. events.log on disk
-    // is unchanged — users tailing `events_log_path` see everything.
-    const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
-    const tail = store.readFilteredTailFromEnd(runId, maxTail);
-    cursorAfterDelta = tail.totalLineCount;
-    const overCap = tail.totalFilteredCount > maxTail;
-    // Reserve one slot for the "(N skipped)" marker so total length
-    // stays at maxTail — keeps verbatim renderers honest about elision.
-    const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
-    skipped = overCap ? tail.totalFilteredCount - eventLineBudget : 0;
-    const tailLines = eventLineBudget > 0 ? tail.lines.slice(-eventLineBudget) : [];
-    cappedLines = overCap
-      ? [`(${skipped} more events skipped)`, ...tailLines]
-      : tail.lines;
-  } else {
-    const { nextLine } = store.readEventsSince(runId, sinceLine);
-    cursorAfterDelta = nextLine;
-  }
-
-  // Legacy snapshot tail — only populated for callers that passed
-  // `log_lines` without a cursor. Same in both running and terminal
-  // branches; computed once.
-  const legacyLogTail = sinceLine === 0 && logLines !== undefined
-    ? { log_tail: store.tailEvents(runId, logLines) }
-    : {};
-
-  // Running poll-return: minimum viable payload. The captain already
-  // has run_id/tail_url from dispatch structuredContent and the
-  // worktree/manual-tail details from dispatch markdown; we do not
-  // re-ship them on every long-poll wake-up.
-  if (!terminal) {
-    const payload: GetRunStatusResponse = {
-      status,
-      events_tail: cappedLines,
-      next_event_line: cursorAfterDelta,
-      ...legacyLogTail,
-    };
-    return getRunStatusContent(runId, payload);
-  }
-
-  // Terminal poll-return: include the synthesis surface the captain
-  // needs for its end-of-run summary. Each conditional spread keeps
-  // unset fields off the wire entirely (avoids null/undefined noise).
-  const projectedPrompts: readonly TerminalPromptRecord[] = state.prompts.map((p) => ({
-    turn: p.turn,
-    startedAt: p.startedAt,
-    ...(p.completedAt !== undefined ? { completedAt: p.completedAt } : {}),
-  }));
-  const lastSummary = state.prompts.length > 0
-    ? state.prompts[state.prompts.length - 1]?.summary
-    : undefined;
-
-  const payload: GetRunStatusResponse = {
-    status,
-    events_tail: cappedLines,
-    next_event_line: cursorAfterDelta,
-    filesChanged: state.filesChanged,
-    prompts: projectedPrompts,
-    ...(lastSummary !== undefined ? { summary: lastSummary } : {}),
-    ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
-    ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
-    ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
-    ...(state.readOnly ? { readOnly: state.readOnly } : {}),
-    ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
-    ...legacyLogTail,
-  };
-  return getRunStatusContent(runId, payload);
-}
-
-function isTerminalRunStatus(status: string): boolean {
-  return (
-    status === 'success'
-    || status === 'partial'
-    || status === 'error'
-    || status === 'cancelled'
-    || status === 'merged'
-    || status === 'merge_conflict'
-    || status === 'discarded'
-  );
 }
 
 /**
@@ -1797,32 +676,6 @@ function dispatcherInFlightRunIds(dispatcher: ToolDispatcher): Set<string> {
       .map((entry) => entry.runId)
       .filter((runId): runId is string => typeof runId === 'string'),
   );
-}
-
-function inFlightForRun(
-  dispatcher: ToolDispatcher,
-  runId: string,
-): { toolCallId: string; toolName: string; runId?: string } | undefined {
-  return dispatcher.listInFlight().find((entry) => entry.runId === runId);
-}
-
-async function markContinueDispatchFailed(
-  runStateStore: RunStateStore,
-  runId: string,
-  message: string,
-): Promise<void> {
-  try {
-    await runStateStore.markTerminal(runId, {
-      status: 'error',
-      summary: message,
-      filesChanged: [],
-      lastError: message,
-    });
-  } catch (err) {
-    logger.warn(
-      `continue_run terminal rollback failed for ${runId}: ${errorMessage(err)}`,
-    );
-  }
 }
 
 async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> {
@@ -1953,223 +806,6 @@ function resolveComparableRepoRoot(path: string): string {
   } catch {
     return path;
   }
-}
-
-/**
- * Block until the dispatcher fires a watched event for `runId`, OR
- * `waitMs` elapses — whichever happens first. Returns true when the
- * wait elapsed rather than an event waking it. Normal long-polls watch
- * signal stream chunks plus terminal events; terminal-only long-polls
- * omit the stream subscription entirely so stream chunks never wake
- * the captain. Listeners self-dispose on either path. The next
- * `get_run_status` snapshot read picks up the latest state + events.
- */
-async function waitForRunChange(args: {
-  dispatcher: ToolDispatcher;
-  agentName: string;
-  runId: string;
-  waitMs: number;
-  terminalOnly: boolean;
-}): Promise<boolean> {
-  const subs: Array<{ dispose(): void }> = [];
-  return new Promise<boolean>((resolve) => {
-    let done = false;
-    let timer: NodeJS.Timeout | undefined;
-    const finish = (timedOut: boolean): void => {
-      if (done) return;
-      done = true;
-      if (timer !== undefined) clearTimeout(timer);
-      for (const s of subs) s.dispose();
-      resolve(timedOut);
-    };
-    const matches = (info: { runId?: string }): boolean => info.runId === args.runId;
-    if (!args.terminalOnly) {
-      // Stream wake-ups gate on signal: a chunk that the noise filter
-      // would drop (codex receipt lines like "command: started ...",
-      // "(exit 0)", or item.* lifecycle frames) does NOT resolve the
-      // long-poll. The dispatcher still fires `run:stream` for every
-      // chunk and `events.log` still records it; we just don't wake
-      // the captain on noise. Terminal-only waits skip this
-      // subscription entirely. See
-      // docs/plans/active/noise-symmetric-filter.md.
-      subs.push(args.dispatcher.onEvent('run:stream', (info) => {
-        if (!matches(info)) return;
-        const lines = formatProgressLines(args.agentName, info.chunk);
-        if (filterEventsTailNoise(lines).length === 0) return;
-        finish(false);
-      }));
-    }
-    subs.push(
-      args.dispatcher.onEvent('run:complete', (info) => {
-        if (matches(info)) finish(false);
-      }),
-      args.dispatcher.onEvent('run:failed', (info) => {
-        if (matches(info)) finish(false);
-      }),
-      args.dispatcher.onEvent('run:cancelled', (info) => {
-        if (matches(info)) finish(false);
-      }),
-    );
-    timer = setTimeout(() => finish(true), args.waitMs);
-  });
-}
-
-function markdownContent<T extends object>(
-  text: string,
-  value: T,
-  isError = false,
-): ToolCallReturn {
-  return {
-    content: [{ type: 'text' as const, text }],
-    structuredContent: value as unknown as Record<string, unknown>,
-    isError,
-  };
-}
-
-function jsonContent<T extends object>(value: T, isError = false): ToolCallReturn {
-  return markdownContent(JSON.stringify(value), value, isError);
-}
-
-function renderMergeMarkdown(env: MergeEnvelope): string {
-  if (env.status === 'merged') {
-    const base = `**Merged** ${mdInlineCode(env.run_id)} → ${mdInlineCode(env.commit_sha ?? '')}`;
-    if (env.restore_failed) {
-      return `${base}\n\n${env.restore_warning ?? 'Merge landed, but checkout restore failed.'}`;
-    }
-    if (!env.landed_off_current_branch) return base;
-    const original = env.original_branch
-      ? mdInlineCode(env.original_branch)
-      : `detached HEAD ${mdInlineCode(env.original_head ?? '')}`;
-    return `${base}\n\nLanded on ${mdInlineCode(env.target_branch ?? '')}; restored ${original}.`;
-  }
-  if (env.status === 'conflict') {
-    const conflicts = env.conflicts ?? [];
-    return `**Conflict** on ${mdInlineCode(env.run_id)} (${conflicts.length} files): ${conflicts.join(', ')}`;
-  }
-  const base = `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
-  if (env.restore_failed) {
-    return `${base}\n\n${env.restore_warning ?? 'No changes were merged, but checkout restore failed.'}`;
-  }
-  return base;
-}
-
-function checkoutEnvelope(result: {
-  readonly targetBranch: string;
-  readonly originalBranch?: string;
-  readonly originalHead: string;
-  readonly landedOffCurrentBranch: boolean;
-  readonly restoreFailed?: boolean;
-  readonly restoreWarning?: string;
-}): Pick<
-  MergeEnvelope,
-  | 'target_branch'
-  | 'original_branch'
-  | 'original_head'
-  | 'landed_off_current_branch'
-  | 'restore_failed'
-  | 'restore_warning'
-> {
-  if (!result.landedOffCurrentBranch && !result.restoreFailed) return {};
-  return {
-    target_branch: result.targetBranch,
-    ...(result.originalBranch ? { original_branch: result.originalBranch } : {}),
-    original_head: result.originalHead,
-    ...(result.landedOffCurrentBranch ? { landed_off_current_branch: true } : {}),
-    ...(result.restoreFailed ? { restore_failed: true } : {}),
-    ...(result.restoreWarning ? { restore_warning: result.restoreWarning } : {}),
-  };
-}
-
-function renderDiscardMarkdown(env: DiscardEnvelope): string {
-  const base = `**Discarded** ${mdInlineCode(env.run_id)}`;
-  if (!env.cleanup_failed || !env.cleanup_errors || env.cleanup_errors.length === 0) {
-    return base;
-  }
-  return `${base}\n\nCleanup warning: ${env.cleanup_errors.join('; ')}`;
-}
-
-function renderCancelMarkdown(env: {
-  readonly run_id: string;
-  readonly ok: boolean;
-  readonly reason?: string;
-}): string {
-  if (env.ok) {
-    return `**Cancelled** ${mdInlineCode(env.run_id)}`;
-  }
-  return `${mdInlineCode(env.run_id)} not cancelled: ${env.reason ?? 'unknown reason'}`;
-}
-
-function getRunStatusContent<T extends object>(
-  runId: string,
-  payload: T,
-): ToolCallReturn {
-  return markdownContent(renderGetRunStatusMarkdown(runId, payload), payload);
-}
-
-function renderGetRunStatusMarkdown(
-  runId: string,
-  payload: {
-    readonly status?: unknown;
-    readonly timed_out?: unknown;
-    readonly next_event_line?: unknown;
-    readonly filesChanged?: unknown;
-    readonly summary?: unknown;
-    readonly events_tail_skipped?: unknown;
-  },
-): string {
-  const status = typeof payload.status === 'string' ? payload.status : 'unknown';
-  if (payload.timed_out === true) {
-    const cursor = typeof payload.next_event_line === 'number'
-      ? ` at cursor ${payload.next_event_line}`
-      : '';
-    return `${mdInlineCode(runId)} status: \`${status}\` (timed out${cursor})`;
-  }
-
-  if (!isTerminalRunStatus(status)) {
-    const cursor = typeof payload.next_event_line === 'number'
-      ? String(payload.next_event_line)
-      : 'unknown';
-    return `${mdInlineCode(runId)} status: \`${status}\` (cursor: ${cursor})`;
-  }
-
-  const lines = [`**${mdInlineCode(runId)} ${status}**`];
-  const filesChanged = Array.isArray(payload.filesChanged)
-    ? payload.filesChanged.filter((path): path is string => typeof path === 'string')
-    : [];
-  if (filesChanged.length > 0) {
-    const firstPaths = filesChanged.slice(0, 3).join(', ');
-    const more = filesChanged.length > 3
-      ? ` [+ ${filesChanged.length - 3} more]`
-      : '';
-    lines.push(`${filesChanged.length} files changed: ${firstPaths}${more}`);
-  }
-  if (typeof payload.summary === 'string') {
-    lines.push(`> ${truncateMarkdownSummary(payload.summary, 200)}`);
-  }
-  if (
-    typeof payload.events_tail_skipped === 'number'
-    && payload.events_tail_skipped > 0
-  ) {
-    lines.push(`${payload.events_tail_skipped} events skipped`);
-  }
-  return lines.join('\n');
-}
-
-function truncateMarkdownSummary(summary: string, maxChars: number): string {
-  const normalized = summary.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxChars) return normalized;
-  return `${normalized.slice(0, maxChars)}...`;
-}
-
-function errorContent(message: string): ToolCallReturn {
-  return {
-    content: [{ type: 'text' as const, text: message }],
-    isError: true,
-  };
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // Re-export RunStateV1 for tests that want to inspect persisted state.

@@ -47,6 +47,16 @@
 
 import { z } from 'zod';
 
+import { logger } from '../../utils/logger.js';
+import { readConfigFile } from '../../utils/config-store.js';
+import type { ToolCallReturn, ToolHandlerDeps, MergeEnvelope } from './shared.js';
+import {
+  checkoutEnvelope,
+  errorContent,
+  markdownContent,
+  renderMergeMarkdown,
+} from './shared.js';
+
 export const mergeRunInputSchema = z.object({
   run_id: z.string().min(1),
   target_branch: z.string().optional(),
@@ -86,3 +96,118 @@ export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
   "Merge a completed run worktree into a target branch after user approval. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true must follow explicit approval. Lands linearly: 'squash' creates one commit; 'preserve' keeps individual commits. Returns merged+commit_sha, conflict+conflicts, or no-changes. Off-checkout success adds landed_off_current_branch plus target/original fields; restore failure adds restore_failed+restore_warning but still reports the landed result.";
+
+const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
+  'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
+  'Ask the user to approve, then call merge_run again with {confirmed: true}. ' +
+  'Run this from the captain skill — never auto-pass confirmed:true without an explicit user "yes".';
+
+export async function mergeRunToolHandler(
+  args: MergeRunInput,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore' | 'worktreeManager'>,
+): Promise<ToolCallReturn> {
+  const state = deps.runStateStore.read(args.run_id);
+  if (!state) {
+    return errorContent(`Unknown run_id "${args.run_id}".`);
+  }
+  if (state.status === 'running') {
+    return errorContent('merge_run: run is currently running; call cancel_run first.');
+  }
+  if (state.readOnly) {
+    return errorContent(
+      `Run "${args.run_id}" was dispatched read-only; nothing to merge. ` +
+      'Read-only runs run against the host repo (or a target worktree) without ' +
+      'allocating their own branch. Use `discard_run` to drop the run record.',
+    );
+  }
+  if (state.status === 'discarded') {
+    return errorContent(
+      `Cannot merge run "${args.run_id}" — it was discarded.`,
+    );
+  }
+  if (state.status === 'merged') {
+    return errorContent(
+      `Run "${args.run_id}" was already merged${
+        state.mergeStatus?.commitSha
+          ? ` at commit ${state.mergeStatus.commitSha}`
+          : ''
+      }.`,
+    );
+  }
+  const confirmationGate = resolveMergeConfirmationGate(deps.crewHome);
+  if (confirmationGate.error) {
+    return errorContent(confirmationGate.error);
+  }
+  if (confirmationGate.enabled && args.confirmed !== true) {
+    return errorContent(MERGE_CONFIRMATION_REQUIRED_MESSAGE);
+  }
+  try {
+    const result = await deps.worktreeManager.mergeRunWorktree(args.run_id, {
+      targetBranch: args.target_branch,
+      force: args.force,
+      mergeStrategy: args.merge_strategy,
+      commitTitle: args.commit_title,
+      commitBody: args.commit_body,
+    });
+    if (result.status === 'merged') {
+      await deps.runStateStore.markMerged(args.run_id, {
+        target: result.targetBranch,
+        commitSha: result.commitSha,
+      });
+      try {
+        const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id);
+        if (!cleanup.success) {
+          logger.warn(
+            `merge_run ${args.run_id}: worktree cleanup failed after `
+            + `successful merge — call discard_run to retry. Error: `
+            + cleanup.errors.join('; '),
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          `merge_run ${args.run_id}: worktree cleanup failed after `
+          + `successful merge — call discard_run to retry. Error: `
+          + `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const env: MergeEnvelope = {
+        run_id: args.run_id,
+        status: 'merged',
+        commit_sha: result.commitSha,
+        ...checkoutEnvelope(result),
+      };
+      return markdownContent(renderMergeMarkdown(env), env);
+    }
+    if (result.status === 'conflict') {
+      await deps.runStateStore.markMergeConflict(args.run_id, {
+        target: result.targetBranch,
+        conflicts: result.conflicts,
+      });
+      const env: MergeEnvelope = {
+        run_id: args.run_id,
+        status: 'conflict',
+        conflicts: result.conflicts,
+      };
+      return markdownContent(renderMergeMarkdown(env), env, /* isError */ true);
+    }
+    const env: MergeEnvelope = {
+      run_id: args.run_id,
+      status: 'no-changes',
+      ...checkoutEnvelope(result),
+    };
+    return markdownContent(renderMergeMarkdown(env), env);
+  } catch (err) {
+    return errorContent(
+      err instanceof Error ? err.message : `merge_run failed: ${String(err)}`,
+    );
+  }
+}
+
+function resolveMergeConfirmationGate(crewHome: string):
+  | { enabled: boolean; error?: undefined }
+  | { enabled?: undefined; error: string } {
+  if (process.env.CREW_CONFIRM_BEFORE_MERGE === 'off') {
+    return { enabled: false };
+  }
+  return { enabled: readConfigFile(crewHome).confirmBeforeMerge };
+}

@@ -41,6 +41,17 @@ import type { DispatchTask } from '../tool-dispatcher.js';
 import type { WorktreeManager } from '../../git/worktree.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
+import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
+import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra, FullRunEnvelope } from './shared.js';
+import {
+  errorContent,
+  fileUrlHref,
+  mergeEnvelopeWarnings,
+  nextStepSentence,
+  progressNotifierFrom,
+  renderDispatchMarkdown,
+  structuredRunEnvelope,
+} from './shared.js';
 
 /**
  * Minimal registry surface for run_agent. Accepts either AdapterRegistry or
@@ -91,6 +102,58 @@ export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
   'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent with optional structured peer_messages prepended as worker context. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope (run_id, worktree_path, tail_url); chat-available default is to spawn crew-wait <run_id> in background on Claude Code, or check via get_run_status / list_runs on a later turn (Codex/Gemini). Do not block the turn long-polling get_run_status.';
+
+export async function runAgentToolHandler(
+  args: RunAgentInput,
+  extra: ToolRequestExtra,
+  deps: ToolHandlerDeps,
+): Promise<ToolCallReturn> {
+  const agentPrefs = deps.readAgentPrefs();
+  const progress = progressNotifierFrom(extra, args.agent_id, deps.progressTokenSeen);
+  let dispatchResult: Awaited<ReturnType<typeof dispatchRunAgentInternal>>;
+  try {
+    dispatchResult = await dispatchRunAgentInternal({
+      input: args,
+      ctx: {
+        registry: deps.registry,
+        worktreeManager: deps.worktreeManager,
+        runStateStore: deps.runStateStore,
+        agentPrefs,
+        dispatcher: deps.dispatcher,
+        crewHome: deps.crewHome,
+        repoRoot: deps.runStateStore.repoRoot,
+        projectRoot: deps.projectRoot,
+      },
+      progress,
+    });
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
+
+  const clientKind = deps.getClientKind();
+  const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(clientKind)}`;
+  const eventsLogPath = deps.runStateStore.eventsLogPath(dispatchResult.runId);
+  const env: FullRunEnvelope = {
+    run_id: dispatchResult.runId,
+    agent_id: args.agent_id,
+    worktree_path: dispatchResult.worktreePath,
+    events_log_path: eventsLogPath,
+    tail_command_path: dispatchResult.tailCommandPath,
+    tail_command_url: fileUrlHref(dispatchResult.tailCommandPath),
+    tail_url: dispatchResult.tailUrl,
+    status: 'running',
+    summary,
+    files_changed: [],
+    ...mergeEnvelopeWarnings(
+      deps.runStateStore.read(dispatchResult.runId)?.warnings,
+      dispatchResult.warnings,
+    ),
+  };
+  return {
+    content: [{ type: 'text' as const, text: renderDispatchMarkdown(env, clientKind) }],
+    structuredContent: structuredRunEnvelope(env) as unknown as Record<string, unknown>,
+  };
+}
 
 export interface RunAgentHandlerContext {
   readonly registry: AdapterRegistry | RegistryForRunAgent;

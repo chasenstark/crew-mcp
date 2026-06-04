@@ -31,6 +31,18 @@
 
 import { z } from 'zod';
 
+import { filterEventsTailNoise } from '../events-filter.js';
+import { formatProgressLines } from '../progress.js';
+import type { RunStateStore, RunStateV1 } from '../run-state.js';
+import type { ToolDispatcher } from '../tool-dispatcher.js';
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import {
+  errorContent,
+  getRunStatusContent,
+  isTerminalRunStatus,
+  MAX_LONG_POLL_MS,
+} from './shared.js';
+
 /**
  * Default per-poll cap on `events_tail` lines. Caller can request a
  * different cap via `max_events_tail` up to {@link MAX_EVENTS_TAIL_CAP}.
@@ -101,3 +113,194 @@ export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
   `Read a run's current status by run_id. Default: omit wait params for an immediate snapshot (turn-start, post-watcher, status question). wait_for_change_ms / wait_for_terminal_only block the turn until events arrive or terminal; opt-in only when the user explicitly asks to wait. Captain's chat-available default is the crew-wait watcher (Claude Code) or a next-turn snapshot — not a long-poll here. Pass since_event_line to page events, max_events_tail to cap tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Returns status, cursor, paths, summary/filesChanged/prompts/warnings, and events_tail on terminal; wait timeouts return { status: "running", timed_out: true }.`;
+
+export async function getRunStatusToolHandler(
+  args: GetRunStatusInput,
+  deps: Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>,
+): Promise<ToolCallReturn> {
+  const state = deps.runStateStore.read(args.run_id);
+  if (!state) {
+    return errorContent(`Unknown run_id "${args.run_id}".`);
+  }
+
+  const cursor = args.since_event_line ?? 0;
+  const useLongPoll = (args.wait_for_change_ms ?? 0) > 0
+    && !isTerminalRunStatus(state.status);
+
+  if (!useLongPoll) {
+    return buildGetRunStatusResponse(
+      state,
+      deps.runStateStore,
+      args.run_id,
+      cursor,
+      args.log_lines,
+      args.max_events_tail,
+    );
+  }
+
+  const terminalOnly = args.wait_for_terminal_only === true;
+
+  if (!terminalOnly) {
+    const head = deps.runStateStore.readSignalEventsSince(args.run_id, cursor);
+    if (head.lines.length > 0) {
+      return buildGetRunStatusResponse(
+        state,
+        deps.runStateStore,
+        args.run_id,
+        cursor,
+        args.log_lines,
+        args.max_events_tail,
+      );
+    }
+  }
+
+  const waitMs = Math.min(args.wait_for_change_ms ?? 0, MAX_LONG_POLL_MS);
+  const timedOut = await waitForRunChange({
+    dispatcher: deps.dispatcher,
+    agentName: state.agentId,
+    runId: args.run_id,
+    waitMs,
+    terminalOnly,
+  });
+
+  if (terminalOnly && timedOut && !isTerminalRunStatus(state.status)) {
+    return getRunStatusContent(args.run_id, { status: 'running', timed_out: true });
+  }
+  const fresh = deps.runStateStore.read(args.run_id) ?? state;
+  return buildGetRunStatusResponse(
+    fresh,
+    deps.runStateStore,
+    args.run_id,
+    cursor,
+    args.log_lines,
+    args.max_events_tail,
+  );
+}
+
+interface GetRunStatusResponse {
+  readonly status: string;
+  readonly events_tail: readonly string[];
+  readonly next_event_line: number;
+  readonly timed_out?: true;
+  readonly [key: string]: unknown;
+  readonly events_tail_skipped?: number;
+  readonly log_tail?: readonly string[];
+}
+
+type TerminalPromptRecord = {
+  readonly turn: number;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+};
+
+function buildGetRunStatusResponse(
+  state: RunStateV1,
+  store: RunStateStore,
+  runId: string,
+  sinceLine: number,
+  logLines: number | undefined,
+  maxEventsTail: number | undefined,
+): ToolCallReturn {
+  const status = state.status;
+  const terminal = isTerminalRunStatus(status);
+  let cursorAfterDelta: number;
+
+  let cappedLines: readonly string[] = [];
+  let skipped = 0;
+  if (terminal && status !== 'discarded') {
+    const maxTail = maxEventsTail ?? DEFAULT_MAX_EVENTS_TAIL;
+    const tail = store.readFilteredTailFromEnd(runId, maxTail);
+    cursorAfterDelta = tail.totalLineCount;
+    const overCap = tail.totalFilteredCount > maxTail;
+    const eventLineBudget = overCap ? Math.max(0, maxTail - 1) : maxTail;
+    skipped = overCap ? tail.totalFilteredCount - eventLineBudget : 0;
+    const tailLines = eventLineBudget > 0 ? tail.lines.slice(-eventLineBudget) : [];
+    cappedLines = overCap
+      ? [`(${skipped} more events skipped)`, ...tailLines]
+      : tail.lines;
+  } else {
+    const { nextLine } = store.readEventsSince(runId, sinceLine);
+    cursorAfterDelta = nextLine;
+  }
+
+  const legacyLogTail = sinceLine === 0 && logLines !== undefined
+    ? { log_tail: store.tailEvents(runId, logLines) }
+    : {};
+
+  if (!terminal) {
+    const payload: GetRunStatusResponse = {
+      status,
+      events_tail: cappedLines,
+      next_event_line: cursorAfterDelta,
+      ...legacyLogTail,
+    };
+    return getRunStatusContent(runId, payload);
+  }
+
+  const projectedPrompts: readonly TerminalPromptRecord[] = state.prompts.map((p) => ({
+    turn: p.turn,
+    startedAt: p.startedAt,
+    ...(p.completedAt !== undefined ? { completedAt: p.completedAt } : {}),
+  }));
+  const lastSummary = state.prompts.length > 0
+    ? state.prompts[state.prompts.length - 1]?.summary
+    : undefined;
+
+  const payload: GetRunStatusResponse = {
+    status,
+    events_tail: cappedLines,
+    next_event_line: cursorAfterDelta,
+    filesChanged: state.filesChanged,
+    prompts: projectedPrompts,
+    ...(lastSummary !== undefined ? { summary: lastSummary } : {}),
+    ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
+    ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
+    ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
+    ...(state.readOnly ? { readOnly: state.readOnly } : {}),
+    ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
+    ...legacyLogTail,
+  };
+  return getRunStatusContent(runId, payload);
+}
+
+async function waitForRunChange(args: {
+  dispatcher: ToolDispatcher;
+  agentName: string;
+  runId: string;
+  waitMs: number;
+  terminalOnly: boolean;
+}): Promise<boolean> {
+  const subs: Array<{ dispose(): void }> = [];
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (timedOut: boolean): void => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) clearTimeout(timer);
+      for (const s of subs) s.dispose();
+      resolve(timedOut);
+    };
+    const matches = (info: { runId?: string }): boolean => info.runId === args.runId;
+    if (!args.terminalOnly) {
+      subs.push(args.dispatcher.onEvent('run:stream', (info) => {
+        if (!matches(info)) return;
+        const lines = formatProgressLines(args.agentName, info.chunk);
+        if (filterEventsTailNoise(lines).length === 0) return;
+        finish(false);
+      }));
+    }
+    subs.push(
+      args.dispatcher.onEvent('run:complete', (info) => {
+        if (matches(info)) finish(false);
+      }),
+      args.dispatcher.onEvent('run:failed', (info) => {
+        if (matches(info)) finish(false);
+      }),
+      args.dispatcher.onEvent('run:cancelled', (info) => {
+        if (matches(info)) finish(false);
+      }),
+    );
+    timer = setTimeout(() => finish(true), args.waitMs);
+  });
+}

@@ -21,6 +21,8 @@ import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel } from '../../adapters/types.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
+import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import { jsonContent } from './shared.js';
 
 /**
  * Minimal registry surface list_agents needs. Both AdapterRegistry and
@@ -109,6 +111,15 @@ export interface ListAgentsContext {
     remainingTokens?: number;
     resetAt?: string;
   } | undefined>;
+}
+
+export async function listAgentsToolHandler(
+  args: ListAgentsInput,
+  deps: Pick<ToolHandlerDeps, 'registry' | 'readAgentPrefs'>,
+): Promise<ToolCallReturn> {
+  const agentPrefs = deps.readAgentPrefs();
+  const out = await listAgents({ registry: deps.registry, agentPrefs, refresh: args.refresh });
+  return jsonContent(out);
 }
 
 /**
