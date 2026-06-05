@@ -52,7 +52,7 @@ describe('GeminiCliAdapter', () => {
     expect(result.status).toBe('error');
   });
 
-  it('passes the composed prompt through the gemini argv', async () => {
+  it('delivers the composed prompt via stdin, not argv', async () => {
     const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
     mockExeca.mockResolvedValueOnce({
       stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,
@@ -65,12 +65,16 @@ describe('GeminiCliAdapter', () => {
       context: { workingDirectory: '/tmp/project' },
     });
 
-    const args = mockExeca.mock.calls[0]?.[1] as string[];
-    expect(args.at(-1)).toBe(composedPrompt);
-    expect(args.at(-2)).toBe('--');
+    const [, args, options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
+    // Gemini runs headless on `--output-format json`; the prompt must not be
+    // a positional or post-`--` argv token (Gemini would never see it).
+    expect(args).toEqual(['--output-format', 'json']);
+    expect(args).not.toContain('--');
+    expect(args).not.toContain(composedPrompt);
+    expect(options.input).toBe(composedPrompt);
   });
 
-  it('separates a leading-dash prompt from gemini options', async () => {
+  it('delivers a leading-dash prompt via stdin so it is never parsed as a flag', async () => {
     mockExeca.mockResolvedValueOnce({
       stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,
       stderr: '',
@@ -84,24 +88,34 @@ describe('GeminiCliAdapter', () => {
 
     expect(mockExeca).toHaveBeenCalledWith(
       'gemini',
-      ['--output-format', 'json', '--', '-not-a-gemini-flag'],
+      ['--output-format', 'json'],
       expect.objectContaining({
         cwd: '/tmp/project',
+        input: '-not-a-gemini-flag',
         reject: false,
       }),
     );
   });
 
-  it('fails fast before spawn when an argv prompt exceeds the byte budget', async () => {
+  it('delivers a prompt that would exceed the argv byte budget via stdin', async () => {
+    const largePrompt = 'x'.repeat(129 * 1024);
+    mockExeca.mockResolvedValueOnce({
+      stdout: `${JSON.stringify({ type: 'result', content: 'ok' })}\n`,
+      stderr: '',
+      exitCode: 0,
+    } as any);
+
     const result = await adapter.execute({
-      prompt: 'x'.repeat(129 * 1024),
+      prompt: largePrompt,
       context: { workingDirectory: '/tmp/project' },
     });
 
-    expect(mockExeca).not.toHaveBeenCalled();
-    expect(result.status).toBe('error');
-    expect(result.output).toContain('Adapter "gemini-cli" cannot receive this prompt via argv');
-    expect(result.output).toContain('argv safety limit');
+    // stdin has no argv byte limit, so a large prompt is delivered, not rejected.
+    expect(mockExeca).toHaveBeenCalledTimes(1);
+    const [, args, options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
+    expect(args).toEqual(['--output-format', 'json']);
+    expect(options.input).toBe(largePrompt);
+    expect(result.status).toBe('success');
   });
 
   it('passes --model when specified in execute constraints', async () => {
@@ -119,9 +133,10 @@ describe('GeminiCliAdapter', () => {
 
     expect(mockExeca).toHaveBeenCalledWith(
       'gemini',
-      ['--output-format', 'json', '--model', 'gemini-2.5-pro', '--', 'test'],
+      ['--output-format', 'json', '--model', 'gemini-2.5-pro'],
       expect.objectContaining({
         cwd: '/tmp/project',
+        input: 'test',
         reject: false,
       }),
     );
@@ -150,9 +165,8 @@ describe('GeminiCliAdapter', () => {
       'json',
       '--model',
       'gemini-2.5-flash',
-      '--',
-      expect.stringContaining('return json'),
     ]);
+    expect((callArgs?.[2] as { input?: string }).input).toContain('return json');
   });
 
   it('does not replay the full transcript inline when resuming a provider session', async () => {

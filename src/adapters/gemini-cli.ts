@@ -18,7 +18,6 @@ import {
   terminateProcessGroupOnAbort,
 } from './process-group.js';
 import {
-  argvPromptTooLargeResult,
   assertArgvPromptWithinLimit,
 } from './prompt-transport.js';
 import type {
@@ -292,14 +291,20 @@ export class GeminiCliAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
-    const promptTooLarge = argvPromptTooLargeResult(this.name, task.prompt);
-    if (promptTooLarge) return promptTooLarge;
-
     const args = ['--output-format', 'json'];
     if (task.constraints?.model) {
       args.push('--model', task.constraints.model);
     }
-    args.push('--', task.prompt);
+
+    // The prompt is delivered via stdin, never argv. Gemini reads a piped
+    // (non-TTY) stdin as the prompt, and `--output-format json` forces
+    // headless mode. Argv delivery is wrong here on three counts: the prompt
+    // carries untrusted peer_messages/file excerpts, it can exceed the argv
+    // byte limit, and a leading-dash prompt would be parsed as a flag. A `--`
+    // separator does NOT help — Gemini's parser routes post-`--` tokens into
+    // its passthrough array rather than the prompt positional, so the CLI
+    // receives no input and exits. Mirrors the codex/claude-code stdin
+    // transport.
 
     // No wall-clock timeout (was 300_000). Cancellation flows through
     // the captain-supplied cancelSignal; the agent's own budget caps
@@ -314,6 +319,7 @@ export class GeminiCliAdapter implements AgentAdapter {
         ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
         reject: false,
+        input: task.prompt,
       });
       const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
         subprocess,
