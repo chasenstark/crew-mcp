@@ -152,28 +152,47 @@ machine-checkable from reviewer output alone:
 
 - **`[M]` Mechanical**: a test command, lint check, file-content
   assertion, or build step producing a binary signal.
-  Example: `[M] pnpm test src/install/skill-renderer.test.ts exits 0`.
+  Example: **Skill-renderer tests pass** `[M]` —
+  `pnpm test src/install/skill-renderer.test.ts` exits 0.
 - **`[B]` Behavioral**: a property a reviewer can verify by reading
   the diff.
-  Example: `[B] SKILL_MANIFEST entries each have a unique id and a
-  bodyFile present on disk`.
+  Example: **Manifest entries well-formed** `[B]` — SKILL_MANIFEST
+  entries each have a unique id and a bodyFile present on disk.
 - **`[N]` Negative**: a "doesn't break X" clause for load-bearing
   code the change touches.
-  Example: `[N] existing v1 install-manifest fixtures still parse via
-  the v1→v2 migration path`.
+  Example: **v1 fixtures still parse** `[N]` — existing v1
+  install-manifest fixtures still parse via the v1→v2 migration path.
 
 Avoid pure-vibes criteria ("looks idiomatic", "feels clean") unless
 paired with a concrete signal. Avoid criteria the reviewer can't
 check from the diff alone (don't say "performance regresses by <5%"
 unless you also dispatch a benchmark).
 
-Surface to the user verbatim:
+**Formatting.** Give each criterion a short **bold title** so the list
+scans at a glance, with its `[M]`/`[B]`/`[N]` tag immediately AFTER the
+title (not before). Put the testable detail below the title: one line
+when the criterion is single-clause, or a `-` sub-bullet list when it
+bundles several checks that must all hold. Sub-bullets are facets of
+ONE criterion — the reviewer scores the numbered parent as a whole, so
+don't number them. Keep the explicit `N.` numbering on criteria: it's
+the stable handle for "edit criterion 3" and per-criterion scoring
+downstream. Don't reorder into `[M]`/`[B]`/`[N]` sections — keep the
+criteria interleaved in dependency order.
+
+Surface to the user verbatim (titles and sub-bullets illustrative):
 
 > Before I dispatch, here are the acceptance criteria I'll iterate
 > against (`[M]` mechanical, `[B]` behavioral, `[N]` negative):
-> 1. [M] <criterion 1>
-> 2. [B] <criterion 2>
-> 3. [N] <criterion 3>
+>
+> **1. <short title>** `[M]`
+> <one-line detail>
+>
+> **2. <short title>** `[B]`
+> - <sub-criterion that must hold>
+> - <sub-criterion that must hold>
+>
+> **3. <short title>** `[N]`
+> <one-line detail>
 >
 > Confirm, edit, or add criteria. I'll dispatch once you OK.
 
@@ -187,8 +206,10 @@ continue_run, merge surfacing. Format:
 
 ```
 ## User-confirmed acceptance criteria (Step 0)
-1. [M] <criterion>
-2. [B] <criterion>
+1. **<short title>** [M]
+   <one-line detail, or `-` sub-bullets for multi-part criteria>
+2. **<short title>** [B]
+   <one-line detail>
 ...
 ```
 
@@ -574,7 +595,9 @@ included in peer_messages above.
 Your job has TWO parts:
 
 PART 1 — Score every acceptance criterion. For each numbered criterion
-the captain gave you in peer_messages, decide:
+the captain gave you in peer_messages, decide (a criterion may carry
+`-` sub-bullets — they are facets of that one criterion; score the
+numbered parent as a whole, PASS only if every sub-bullet holds):
 
   PASS  — the change meets this criterion. State why in 1 line. For
           MECHANICAL criteria (test command, lint, file content), you
