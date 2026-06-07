@@ -64,6 +64,17 @@ hosts whose native subagent can't background, and only after the crew
 panel is already dispatched async. That is the deliberate exception,
 not a violation of this invariant.
 
+**Crew before captain-side work (when independent).** When a round
+both dispatches crew and does captain-side work — a native subagent,
+or your own inline review — issue the crew dispatch(es) FIRST so the
+workers run concurrently; prefer `run_in_background: true` for native
+subagents. **Exception:** if the captain-side work produces the crew
+dispatch's input (e.g. a reviewer's `peer_messages` built from the
+implementer's `summary` / `files_changed`, per Step 2), it's a
+prerequisite, not a peer — do it first. Otherwise crew-second
+serializes the round, and the loop accumulates 6–10 dispatches, so
+serializing any of them wastes the most wall-clock.
+
 **3. Escape hatch.** If the user says "stop / cancel / abandon /
 discard / pause" at any point: stop dispatching new runs, `cancel_run`
 any in-flight runs they name, and ask whether to discard or keep
@@ -371,7 +382,8 @@ When the implementer reaches terminal, dispatch the crew reviewer(s)
 **and** run the host's review via a native subagent. Both review
 against the SAME acceptance criteria from Step 0. Order matters:
 dispatch crew **first** (async), then launch the host reviewer — so
-the panel is underway regardless of how the host review runs.
+the panel is underway regardless of how the host review runs
+(invariant #2).
 
 **(a) Crew review (default-on).** Dispatch the reviewer(s) confirmed
 in Step 0.5 — the exact set and count the user OK'd. Do not re-pick or

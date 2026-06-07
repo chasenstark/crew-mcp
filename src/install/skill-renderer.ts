@@ -54,7 +54,7 @@ export const SKILL_DESCRIPTION =
  * to avoid poaching one-shot dispatches.
  */
 export const ITERATE_SKILL_DESCRIPTION =
-  'Keep iterating on an implementation until acceptance criteria pass and reviewers approve. Loads when the user wants to ship-quality something via a multi-agent loop — phrasings like "keep working on X with review", "implement X and review until it\'s good", "iterate to convergence", "ship-quality loop", "use Claude + Codex to push this until criteria pass". The captain derives acceptance criteria, confirms with the user, dispatches an implementer with criteria embedded, runs dual review (inline + dispatched) scoring per criterion, and folds findings back via continue_run until every criterion is PASS and every reviewer\'s overall verdict is APPROVE. Composes run_agent, continue_run, run_panel, aggregate_panel, merge_run.';
+  'Keep iterating on an implementation until acceptance criteria pass and reviewers approve. Loads when the user wants to ship-quality something via a multi-agent loop — phrasings like "keep working on X with review", "implement X and review until it\'s good", "iterate to convergence", "ship-quality loop", "use Claude + Codex to push this until criteria pass". The captain derives acceptance criteria, confirms with the user, dispatches an implementer with criteria embedded, runs crew + host-native review scoring per criterion, and folds findings back via continue_run until every criterion is PASS and every reviewer\'s overall verdict is APPROVE. Composes run_agent, continue_run, run_panel, aggregate_panel, merge_run.';
 
 export interface SkillTool {
   readonly name: string;

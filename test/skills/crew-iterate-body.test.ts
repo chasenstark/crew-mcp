@@ -168,6 +168,34 @@ describe('crew-iterate body — standalone safety invariants', () => {
     }
   });
 
+  it('folds the crew-first ordering into invariant #2 (no 9th invariant)', async () => {
+    const body = await loadBody();
+    // The rule lives inside invariant #2, not as a new invariant — the
+    // intro count and the count test below must stay at eight.
+    const start = body.indexOf('**2. Dispatch lifecycle');
+    const end = body.indexOf('**3. Escape hatch', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const inv2 = body.slice(start, end);
+    expectContainsCI(inv2, 'Crew before captain-side work');
+    expectContainsCI(inv2, 'run_in_background');
+    // Dependency carve-out must be present (contradiction anchor).
+    expectContainsCI(inv2, 'prerequisite');
+
+    // Count is unchanged: intro still says eight, and no 9th invariant
+    // bullet was introduced. Collapse whitespace — the intro wraps
+    // "eight\ninvariants below" across a line break.
+    const flat = body.replace(/\s+/g, ' ');
+    expectContainsCI(flat, 'eight invariants below');
+    expect(body).not.toContain('**9.');
+
+    // Step 2 cross-references the invariant so it reads as an instance.
+    const s2start = body.indexOf('### Step 2 —');
+    const s2end = body.indexOf('### Step 3 —', s2start);
+    const step2 = body.slice(s2start, s2end);
+    expect(step2).toContain('(invariant #2)');
+  });
+
   it('renders the verbatim review prompt template anchors', async () => {
     const body = await loadBody();
     // The template is embedded so reviewers receive the same instructions

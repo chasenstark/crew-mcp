@@ -35,3 +35,31 @@ describe('crew-captain body — review panel agent picks', () => {
     expect(section).toContain('native subagent');
   });
 });
+
+describe('crew-captain body — general dispatch-order rule', () => {
+  it('states crew-first ordering with the dependency carve-out in Dispatch lifecycle', async () => {
+    const body = await loadBody();
+    // Slice the Dispatch lifecycle section so anchors can't be satisfied
+    // by the unrelated watcher prose (which also says run_in_background)
+    // elsewhere in the body. Section end is "## The tools" (NOT "## Tools"
+    // — that heading belongs to the iterate body).
+    const start = body.indexOf('## Dispatch lifecycle');
+    const end = body.indexOf('## The tools', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const section = body.slice(start, end);
+
+    // Deletion anchors: the subsection and its core mechanics.
+    expect(section).toContain('### Dispatch order — crew first');
+    expect(section).toContain('native subagent');
+    expect(section).toContain('run_in_background');
+
+    // Contradiction anchor: the dependency exception. A crew-first rule
+    // without this carve-out contradicts §"The default flow" step 3 and
+    // §implement-then-review, where the dispatch is produced by prior
+    // captain-side work. Dropping the carve-out must fail the test.
+    expect(section).toContain('Exception');
+    expect(section).toContain('produces');
+    expect(section).toContain('prerequisite');
+  });
+});

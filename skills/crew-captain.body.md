@@ -84,9 +84,11 @@ Dispatch the crew reviewers **first** so they run async, then launch
 the native subagent — backgrounded if your host supports it
 (`run_in_background: true`), otherwise foreground (the panel's already
 async, so only the turn waits). Inline review is the last resort, for
-hosts with no native subagent at all. See _"The host reviewer"_ for
-the full ordering and _"Review panels"_ for how to fold the native
-review into consolidation (`aggregate_panel` won't include it).
+hosts with no native subagent at all. (This is the general
+dispatch-order rule — see _"Dispatch order — crew first"_.) See _"The
+host reviewer"_ for the full ordering and _"Review panels"_ for how to
+fold the native review into consolidation (`aggregate_panel` won't
+include it).
 
 ## The default flow — code → review → iterate → merge
 
@@ -264,12 +266,63 @@ is how Claude Code captains surface a terminal result without
 blocking. The only legitimate in-turn waits are (1) the explicit
 foreground opt-in described further down, which applies only when the
 user said "wait for this" out loud, and (2) the bounded synchronous
-host-review subagent (see _"The host reviewer"_), which blocks one
-turn by design on hosts that can't background a native subagent, and
-only after the crew panel is already dispatched async. Neither is an
-MCP long-poll on a crew run. On Codex / Gemini,
-default to a snapshot `get_run_status` at the next user turn —
+native subagent (host review is the canonical instance — see _"The
+host reviewer"_), which blocks one turn by design on hosts that can't
+background a native subagent, and only after crew is already
+dispatched async. Neither is an MCP long-poll on a crew run. On
+Codex / Gemini, default to a snapshot `get_run_status` at the next
+user turn —
 never a long-poll inside the dispatch turn.
+
+### Dispatch order — crew first, then captain-side work
+
+This is purely an *ordering* rule for turns where you've already
+decided (per _"Dispatch-vs-inline"_) to do both crew work and
+captain-side work. It never argues *for* dispatching crew — most
+turns shouldn't.
+
+When a turn will do BOTH — a crew dispatch AND captain-side work that
+takes real time (your own inline reasoning/implementation, or a
+delegation to a native subagent via `Agent` / `Task`) — **issue the
+crew dispatch first, then do the captain-side work**, provided the two
+are independent (see the exception below).
+
+`run_agent`, `run_panel`, and `continue_run` are async: they return
+immediately and the worker starts the moment you call them. Fire crew
+first and the worker runs concurrently with your captain-side work.
+The cost of firing it second depends on that work:
+
+- **Inline / foreground work** blocks the turn, so crew can't even
+  start until that work returns — the turn fully serializes
+  (wall-clock = captain work + crew work instead of max).
+- **A backgrounded native subagent** runs concurrently either way, so
+  ordering it after crew costs only the crew launch/setup overlap —
+  smaller, but still free to claim by dispatching crew first.
+
+When you delegate to a native subagent alongside crew, crew goes first
+and the subagent second, and **prefer `run_in_background: true`**
+(Claude Code) so the subagent also runs concurrently and chat stays
+available. If your host can't background a native subagent, you may
+launch it synchronously — but only after crew is already dispatched
+async, so the blocking subagent never stalls the crew worker (this is
+the bounded-wait carve-out the _"only legitimate in-turn waits"_
+paragraph above allows).
+
+**Exception — when captain-side work produces the dispatch.** "Crew
+first" applies only when the crew prompt/context is already known. If
+the captain-side work *produces* what you'd dispatch — composing a
+reviewer's `peer_messages` from an implementer's terminal output
+(_"The default flow"_ step 3, _"Pattern: implement-then-review"_), or
+analyzing locally to decide what to delegate — that work is a
+*prerequisite*, not a parallel peer. Do it first; the crew dispatch
+can't precede the input it consumes. Order crew first only across
+*independent* work streams.
+
+This is the general rule. The review-panel ordering in _"The host
+reviewer (native subagent)"_ — crew reviewers via `run_panel` first,
+host review via a backgrounded native subagent second — is this rule
+applied to reviews (and it dodges the exception because the host and
+crew reviewers share one pre-composed prompt).
 
 ### Step 1 dispatch confirmation
 
@@ -673,7 +726,8 @@ it as a native subagent, not a `run_panel` reviewer:
 
 1. **Dispatch the crew reviewers first** (`run_agent` for one,
    `run_panel` for ≥2) so they start async and the panel is underway
-   no matter what the host review does next.
+   no matter what the host review does next. (This is the general
+   dispatch-order rule — see _"Dispatch order — crew first"_.)
 2. **Then launch the host reviewer via your native subagent**
    (`Agent` / `Task`). Hand it the **same full-review prompt** the
    crew reviewers got — same diff/worktree path, same schema,
