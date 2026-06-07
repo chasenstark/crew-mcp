@@ -219,6 +219,34 @@ describe('gcTerminalRuns', () => {
     expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
   });
 
+  it('dry-run marks a run-dir blocked behind a worktree reclaim as pending, not deleted', async () => {
+    // A run past BOTH windows that still owns a worktree: the real pass must
+    // reclaim the worktree first and only delete the run-dir once it is gone.
+    // The dry-run preview must NOT promise the run-dir deletion outright (the
+    // optimistic "runDirDeleted: deleteRunDir" bug) — it surfaces it as
+    // pending so the forecast matches what the real pass can do this pass.
+    const runId = 'aaaaaaaa-0000-0000-0000-00000000002a';
+    await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });
+
+    const dry = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      dryRun: true,
+    });
+
+    expect(dry.runDirsDeleted).toBe(0); // not promised now
+    expect(dry.runDirsPending).toBe(1); // deferred behind the worktree reclaim
+    expect(dry.outcomes).toMatchObject([
+      { runId, worktreeReclaimed: true, runDirDeleted: false, runDirPending: true },
+    ]);
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(true); // untouched
+  });
+
   it('keeps the run-dir and counts no reclaim when worktree cleanup reports failure', async () => {
     const runId = 'aaaaaaaa-0000-0000-0000-000000000012';
     await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });

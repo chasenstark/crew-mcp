@@ -97,7 +97,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     + `${opts.allRepos ? `${repoRoots.length} repo(s)` : 'current repo'}\n`,
   );
 
-  const totals = { worktreesReclaimed: 0, branchesDeleted: 0, runDirsDeleted: 0 };
+  const totals = { worktreesReclaimed: 0, branchesDeleted: 0, runDirsDeleted: 0, runDirsPending: 0 };
   const allOutcomes: RunGcOutcome[] = [];
 
   for (const repoRoot of repoRoots) {
@@ -116,6 +116,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     totals.worktreesReclaimed += result.worktreesReclaimed;
     totals.branchesDeleted += result.branchesDeleted;
     totals.runDirsDeleted += result.runDirsDeleted;
+    totals.runDirsPending += result.runDirsPending;
     allOutcomes.push(...result.outcomes);
   }
 
@@ -125,20 +126,33 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
       const acts = [
         o.worktreeReclaimed ? 'worktree' : null,
         o.branchDeleted ? 'branch' : null,
-        o.runDirDeleted ? 'run-dir' : null,
+        o.runDirDeleted ? 'run-dir' : (o.runDirPending ? 'run-dir (after worktree reclaim)' : null),
       ].filter(Boolean).join(' + ');
       stdout.write(`  ${o.runId.slice(0, 8)}  ${o.status.padEnd(14)}  ${o.ageDays}d old  → ${acts}\n`);
     }
   }
 
-  const verb = opts.dryRun ? 'Would reclaim' : 'Reclaimed';
-  stdout.write(
-    `\n${verb}: ${totals.worktreesReclaimed} worktree(s)`
-    + ` (${totals.branchesDeleted} merged branch(es) deleted), `
-    + `${totals.runDirsDeleted} run-dir(s) deleted.\n`,
-  );
-  if (!opts.dryRun && (totals.worktreesReclaimed > 0 || totals.runDirsDeleted > 0)) {
-    stdout.write('Tip: run `du -sh ~/.crew` to see reclaimed disk.\n');
+  if (opts.dryRun) {
+    stdout.write(
+      `\nWould reclaim: ${totals.worktreesReclaimed} worktree(s)`
+      + ` (${totals.branchesDeleted} merged branch(es) deleted), `
+      + `${totals.runDirsDeleted} run-dir(s) now.\n`,
+    );
+    if (totals.runDirsPending > 0) {
+      stdout.write(
+        `  (${totals.runDirsPending} more run-dir(s) past TTL but pending worktree reclaim —`
+        + ` deleted on a later pass once the worktree is gone.)\n`,
+      );
+    }
+  } else {
+    stdout.write(
+      `\nReclaimed: ${totals.worktreesReclaimed} worktree(s)`
+      + ` (${totals.branchesDeleted} merged branch(es) deleted), `
+      + `${totals.runDirsDeleted} run-dir(s) deleted.\n`,
+    );
+    if (totals.worktreesReclaimed > 0 || totals.runDirsDeleted > 0) {
+      stdout.write('Tip: run `du -sh ~/.crew` to see reclaimed disk.\n');
+    }
   }
   return 0;
 }

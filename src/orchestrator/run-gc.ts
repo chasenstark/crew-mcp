@@ -152,6 +152,15 @@ export interface RunGcOutcome {
   readonly worktreeReclaimed: boolean;
   readonly branchDeleted: boolean;
   readonly runDirDeleted: boolean;
+  /**
+   * Dry-run only: the run-dir is past its TTL but a worktree/owned-record must
+   * be reclaimed first, so the real pass won't delete it THIS pass — it's
+   * deferred to a later pass (and skipped entirely if that reclaim fails).
+   * Distinguishes "will be deleted now" from "would be deleted eventually" so
+   * the preview doesn't over-promise vs. the real run. Always false/undefined
+   * for a real (non-dry) pass.
+   */
+  readonly runDirPending?: boolean;
 }
 
 export interface RunGcResult {
@@ -160,6 +169,8 @@ export interface RunGcResult {
   readonly worktreesReclaimed: number;
   readonly branchesDeleted: number;
   readonly runDirsDeleted: number;
+  /** Dry-run only: run-dirs past TTL but blocked behind a worktree reclaim. */
+  readonly runDirsPending: number;
   readonly outcomes: readonly RunGcOutcome[];
 }
 
@@ -179,6 +190,7 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     worktreesReclaimed: 0,
     branchesDeleted: 0,
     runDirsDeleted: 0,
+    runDirsPending: 0,
     outcomes: [],
   };
   // Both windows disabled → nothing to do.
@@ -254,13 +266,21 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
 
     if (args.dryRun) {
       const worktreeReclaimed = shouldReclaimWorktree;
+      // Mirror the real pass's run-dir gate: it deletes the run-dir only once
+      // nothing remains to reclaim. When a worktree/owned-record must be
+      // reclaimed first, the real pass defers run-dir deletion to a later pass
+      // (and skips it if reclaim fails), so don't promise deletion now —
+      // surface it as pending instead.
+      const runDirDeletedNow = deleteRunDir && !shouldReclaimWorktree;
+      const runDirPending = deleteRunDir && shouldReclaimWorktree;
       outcomes.push({
         runId,
         status: state.status,
         ageDays: Math.floor(ageMs / (24 * 60 * 60 * 1000)),
         worktreeReclaimed,
         branchDeleted: worktreeReclaimed && state.status === 'merged',
-        runDirDeleted: deleteRunDir,
+        runDirDeleted: runDirDeletedNow,
+        runDirPending,
       });
       continue;
     }
@@ -342,6 +362,7 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     worktreesReclaimed: outcomes.filter((o) => o.worktreeReclaimed).length,
     branchesDeleted: outcomes.filter((o) => o.branchDeleted).length,
     runDirsDeleted: outcomes.filter((o) => o.runDirDeleted).length,
+    runDirsPending: outcomes.filter((o) => o.runDirPending).length,
     outcomes,
   };
 }

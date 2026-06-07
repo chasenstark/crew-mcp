@@ -94,6 +94,29 @@ describe('cleanupCommand', () => {
     expect(stdout.text).toMatch(/Would reclaim: 1 worktree/);
   });
 
+  it('dry run reports a TTL-aged run-dir as pending behind its worktree, not deleted', async () => {
+    // Past both windows but the worktree is still present: the real pass
+    // reclaims the worktree first and defers run-dir deletion, so the preview
+    // must say "pending worktree reclaim" rather than count it as deleted.
+    const wt = await seedRun('aaaaaaaa-0000-0000-0000-0000000000aa', '2026-01-01T00:00:00.000Z');
+    const stdout = captureStdout();
+
+    await cleanupCommand({
+      cwd: repoRoot,
+      crewHome,
+      dryRun: true,
+      worktreeTtlDays: 7,
+      runDirTtlDays: 30,
+      now: T0 + 31 * DAY_MS,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    expect(existsSync(wt)).toBe(true); // untouched
+    expect(stdout.text).toMatch(/Would reclaim: 1 worktree.* 0 run-dir\(s\) now/);
+    expect(stdout.text).toContain('pending worktree reclaim');
+    expect(stdout.text).toContain('run-dir (after worktree reclaim)');
+  });
+
   it('reclaims the worktree for real', async () => {
     const wt = await seedRun('aaaaaaaa-0000-0000-0000-000000000002', '2026-01-01T00:00:00.000Z');
     const stdout = captureStdout();
