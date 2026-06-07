@@ -57,7 +57,12 @@ the turn, and:
 one-shot dispatches in the umbrella body, iterate runs MUST NOT use
 the foreground-wait params (`wait_for_terminal_only`, long
 `wait_for_change_ms`). The loop accumulates 6–10 dispatches;
-turn-blocking on any one defeats the chat-available default.
+turn-blocking on any one defeats the chat-available default. This bans
+MCP long-poll waits on crew runs — **not** the bounded synchronous
+host-review subagent of Step 2b, which blocks one turn by design on
+hosts whose native subagent can't background, and only after the crew
+panel is already dispatched async. That is the deliberate exception,
+not a violation of this invariant.
 
 **3. Escape hatch.** If the user says "stop / cancel / abandon /
 discard / pause" at any point: stop dispatching new runs, `cancel_run`
@@ -70,12 +75,15 @@ confirm the chosen agent is `available: true`. Unavailable agents
 alternative rather than retrying silently. Never invent an `agent_id`
 absent from `list_agents`.
 
-**5. Do NOT dispatch to your own host product.** If you are running
-on Claude Code, do not dispatch `claude-code` as implementer or
-reviewer (use the host's native subagents). Same rule for Codex →
-Codex, Gemini → Gemini. Crew is for cross-product delegation;
-same-host crew dispatches lose the heterogeneity that makes review
-valuable and can cause nested-session resource conflicts.
+**5. Do NOT Crew-dispatch your own host product.** If you are running
+on Claude Code, do not `run_agent` / `run_panel` `claude-code` as
+implementer or reviewer. Same rule for Codex → Codex, Gemini →
+Gemini. Crew is for cross-product delegation; same-host crew
+dispatches lose the heterogeneity that makes review valuable and can
+cause nested-session resource conflicts. This bans **Crew dispatch**,
+not native subagents: the host model still reviews, via a native
+subagent (Step 2), and that native review is not a crew run — it won't
+appear in `list_runs` or `aggregate_panel`.
 
 **6. Never shell out to `crew-mcp`.** Use the MCP tool surface
 (`mcp__crew__*`). The MCP server is the authoritative interface;
@@ -232,8 +240,11 @@ bugs."
    heterogeneity or availability, even if it is the only remaining
    option. If banning empties a role, leave that role unfilled and ask
    the user — do NOT reach for a banned agent to fill it.
-4. Also remove your own host product (invariant #5) and any
-   `available: false` agents.
+4. Remove any `available: false` agents, and remove your own host
+   product from the **crew** candidate pools (invariant #5). Don't
+   drop the host from the review plan, though: unless it's banned or
+   the user excluded it, carry it as the **host reviewer** — a native
+   subagent run outside Crew (Step 2).
 5. Fill each role by this precedence, highest first:
    a. **Per-run override** the user states in this conversation.
    b. **Configured preference** — `iterate.implementer` for the
@@ -249,7 +260,7 @@ bugs."
 
 **How many reviewers — scale the count to the change.** The number of
 dispatched reviewers is the captain's call, sized to complexity and
-risk (this is in addition to the always-on free inline review):
+risk (this is in addition to the host reviewer — your native subagent):
 
 - **1 dispatched reviewer** (the default): narrow, localized, low-risk
   change — a handful of files, no load-bearing code.
@@ -279,15 +290,19 @@ Surface to the user verbatim:
 
 > Agents for this iteration:
 > - Implementer: <id> <reason: "your default" | "heuristic: ...">
-> - Reviewer(s): <id, id> <reason: "your default" | "complexity:
+> - Crew reviewer(s): <id, id> <reason: "your default" | "complexity:
 >   <why this many>">
-> - Inline reviewer: captain <reason: "free, always">
+> - Host reviewer: <host via native subagent | host foreground native |
+>   host inline fallback | omitted>
+>   <reason: "fresh same-host review" | "synchronous subagent → foreground" |
+>   "no native subagent → inline fallback" | "excluded by preference">
 > [if a role is unfilled because bans excluded every candidate:]
 > - <role>: unfilled — your banList excludes all remaining
 >   candidates. Name an agent or lift a ban.
 >
 > Override (e.g., "swap implementer to <id>", "add reviewer <id>",
-> "drop reviewer <id>", "just one reviewer", "use <id> for both") or OK.
+> "drop reviewer <id>", "drop host reviewer", "just one reviewer",
+> "use <id> for both") or OK.
 
 Wait for OK. **Silence is not consent.** If the user overrides, restate
 the final picks and ask again.
@@ -300,6 +315,8 @@ Recognize these phrases consistently:
 - `just one reviewer` / `add another reviewer` / `<N> reviewers` →
   resize the reviewer count (pull from / add distinct eligible models).
 - `use only <id>` / `use <id> for both` → collapse picks.
+- `drop host reviewer` / `no host reviewer` → omit the host native
+  subagent for this iteration (one-run exclusion, not a ban).
 - `no <id>` / `never <id>` → session-scoped ban only; do not persist.
 
 After confirmation, include this block VERBATIM in every downstream
@@ -308,8 +325,8 @@ prompt, immediately after the acceptance criteria block:
 ```
 ## Agent-pick (Step 0.5)
 Implementer: <id> (<reason>)
-Dispatched reviewer(s): <id, id> (<reason>)
-Inline reviewer: captain (free, always)
+Crew reviewer(s): <id, id> (<reason>)
+Host reviewer: <host via native subagent | foreground native | inline fallback | omitted> (<reason>)
 This block is included in downstream prompts so reviewers can audit agent-drift across rounds.
 ```
 
@@ -348,29 +365,53 @@ run_agent({
 - Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
   the turn, spawn the watcher on Claude Code (per invariant #2).
 
-### Step 2 — Dual-review (inline + dispatched, parallel)
+### Step 2 — Review (crew + host native subagent, parallel)
 
-When the implementer reaches terminal, **always run inline review**
-plus (default-on) at least one dispatched reviewer. Both review
-against the SAME acceptance criteria from Step 0.
+When the implementer reaches terminal, dispatch the crew reviewer(s)
+**and** run the host's review via a native subagent. Both review
+against the SAME acceptance criteria from Step 0. Order matters:
+dispatch crew **first** (async), then launch the host reviewer — so
+the panel is underway regardless of how the host review runs.
 
-**(a) Inline review (mandatory, free).** Read `A.summary`,
-`A.files_changed`, and the diff via the worktree path. Score
-**every criterion** PASS/FAIL/N-A plus an overall verdict using the
-SAME schema the dispatched reviewer uses (§"Review prompt template"
-below). Inline review costs zero MCP round-trips and sees the full
-diff in your context window.
-
-**(b) Dispatched review (default-on).** Dispatch the reviewer(s)
-confirmed in Step 0.5 — the exact set and count the user OK'd. Do not
-re-pick or resize here, and do not swap in a different model for
-variety. The dispatch mechanism depends on the count:
+**(a) Crew review (default-on).** Dispatch the reviewer(s) confirmed
+in Step 0.5 — the exact set and count the user OK'd. Do not re-pick or
+resize here, and do not swap in a different model for variety. The
+dispatch mechanism depends on the count:
 
 - **One reviewer → `run_agent`** (single read-only dispatch, below).
 - **Two or more reviewers → `run_panel`** (one call, all reviewers at
   once; see §"1+1 vs panel" and the `run_panel` dispatch shape). Never
   fan out N separate `run_agent` calls by hand — you'd lose the
   `panel_id` and the `aggregate_panel` consolidation hook.
+
+**(b) Host review (default-on, via native subagent).** This is the
+host model's review vote. Crew can't dispatch your own host product
+(invariant #5), so run it as a native subagent (`Agent` / `Task`) —
+**not** `run_agent`. Launch it **after** the crew dispatch so the
+panel never waits on it. Hand it the SAME `REVIEW_PROMPT_TEMPLATE`,
+acceptance criteria, agent-pick block, implementer summary, and
+worktree path the crew reviewers get; tell it review-only, do not
+edit. Native subagents have no `peer_messages` channel — inline those
+blocks into the subagent prompt.
+
+- **Background it if your host supports it** (e.g. Claude Code's
+  `run_in_background: true`) so chat stays available while it reviews.
+- **If the native subagent is synchronous,** run it in the
+  **foreground**. The crew panel is already async, so this blocks only
+  the current turn, not the panel — keep it bounded. On a very large
+  diff, tell the user you're holding the turn for it (or ask whether to
+  drop the host reviewer for this round). A foreground fresh-context
+  vote still beats an inline self-review.
+- **Inline review is the last resort** — only when the host exposes no
+  native subagent tool at all: read `A.summary`, `A.files_changed`, and
+  the diff via the worktree path, scoring every criterion with the same
+  schema. It shares the captain's context, so it's the host vote only
+  when no fresh-context option exists — never a second vote stacked on a
+  subagent that already ran.
+
+The captain ALSO reads the diff to consolidate (Step 3) — that read is
+mandatory orchestration QA, not an extra same-model vote. Don't
+double-count the captain's read and the host subagent's review.
 
 Single-reviewer dispatch:
 
@@ -391,16 +432,19 @@ run_agent({
 })
 ```
 
-When to skip the dispatched reviewer (inline-only):
-- User said "no review" out loud.
+**Skip review entirely** (crew AND host) only when the user says "no
+review" out loud.
+
+When to skip just the **crew** reviewer (the host review still runs):
 - Typo / comment / pure-doc commit (<10 LOC, no production-code
   changes) AND all criteria are behavioral (no mechanical signals).
 
-**Always dispatch (override skip) when:** any criterion is
-mechanical. The dispatched reviewer can actually run the test command
-from the worktree, which inline reading can't do reliably. Criteria
-type is a stronger signal than diff size for whether a dispatched
-reviewer earns its keep.
+**Always dispatch a crew reviewer (override skip) when:** any
+criterion is mechanical. A crew reviewer is dispatched read-only at
+the implementer's worktree and can actually run the test command
+there — more reliable than a review that only reads the diff. Criteria
+type is a stronger signal than diff size for whether a crew reviewer
+earns its keep.
 
 **Always review on `partial` / `error`.** When the implementer
 terminates with `partial` or `error`, the reviewer's read often
@@ -408,15 +452,17 @@ diagnoses why it stalled — diagnostic signal worth $0.01 even when
 the captain plans to route the run back to the user.
 
 Otherwise: always dispatch. The cost (~30–60s + ~$0.01) is dwarfed
-by the cost of merging a regression the inline review missed.
+by the cost of merging a regression the host review alone missed.
 
 **1+1 vs panel** (the reviewer count was decided in Step 0.5 by
 complexity — this is how each shape dispatches):
-- **1+1** (one inline + one dispatched): one full review from a single
-  dispatched model. Step 0.5 sized the change as narrow/low-risk.
-- **Panel** (one inline + N dispatched via `run_panel`): Step 0.5 sized
-  the change as moderate-to-complex or high-risk and picked ≥2 distinct
-  models. Each model does a **full review** of the entire diff, then the
+- **1+1** (host native review + one crew dispatched): one full review
+  from a single crew model alongside the host's. Step 0.5 sized the
+  change as narrow/low-risk.
+- **Panel** (host native review + N crew dispatched via `run_panel`):
+  Step 0.5 sized the change as moderate-to-complex or high-risk and
+  picked ≥2 distinct models. Each model does a **full review** of the
+  entire diff, then the
   captain consolidates findings and cross-checks for agreement and
   disagreement across models. The independent perspectives are the
   whole point of scaling the count up.
@@ -603,8 +649,9 @@ criterion.
 
 ### Step 3 — Iterate or converge
 
-Once both verdicts are in, parse each reviewer's criteria scoring +
-overall verdict. The stop condition is mechanical.
+Once the host review and all crew reviewer verdicts are in, parse each
+reviewer's criteria scoring + overall verdict. The stop condition is
+mechanical.
 
 **Converged (go to Step 4).** ALL of:
 - **every criterion** is scored PASS by every reviewer, OR N-A by
@@ -644,7 +691,9 @@ Do not soften this guard; do not skip the user prompt because the
 N-A "looks reasonable."
 
 **Cross-model consolidation (panels).** When using a panel, the
-captain must produce a consolidated review report before iterating:
+captain must produce a consolidated review report before iterating.
+The host native subagent's review is one of the models here — fold it
+in alongside the crew reviewers (`aggregate_panel` won't return it):
 
 1. **Per-criterion agreement matrix.** For each criterion, list every
    model's score (PASS/FAIL/N-A). Flag disagreements — one model
@@ -676,12 +725,13 @@ continue_run({
       from_label: "acceptance criteria (unchanged)" },
     { body: <agent-pick block>, kind: "note",
       from_label: "agent picks (unchanged)" },
-    { body: <inline review's failing criteria + findings>,
-      kind: "review", from_label: "captain inline review" },
-    { body: <dispatched review's failing criteria + findings>,
+    { body: <host native review's failing criteria + findings>,
+      kind: "review", from_label: "<host> native subagent review" },
+      // label "captain inline review" if you used the inline fallback
+    { body: <crew review's failing criteria + findings>,
       kind: "review", from_label: "${reviewer_agent_id} review",
       files: dispatched_review.files_changed },
-    // one per reviewer if panel
+    // one per crew reviewer if panel
   ],
   prompt: "Address these review findings. Specifically, make the
            FAILing criteria PASS. Reply with a brief summary of what
@@ -689,8 +739,11 @@ continue_run({
 })
 ```
 
-For panels, call `aggregate_panel({panel_id})` and pass the result
-as `peer_messages` (also re-pass the criteria peer-message).
+For panels, the crew reviewer entries come from
+`aggregate_panel({panel_id})` — pass its result as `peer_messages`
+rather than hand-building the crew entries. Then re-pass the criteria
+peer-message and **hand-append the host review** as one synthetic
+entry; `aggregate_panel` won't include it.
 
 After `continue_run` reaches terminal, `discard_run` the read-only
 reviewer runs (they don't auto-clean per invariant #7) and re-dispatch
@@ -802,9 +855,12 @@ acknowledge to the user.
 
 - Reviewer effort defaults to mirror the implementer's. When you
   override, restate in the reviewer's prompt.
-- Inline review is mandatory; you can't "skip the inline review
-  because the dispatched one is more thorough." Inline is fast,
-  free, and catches the obvious stuff.
+- The host review is mandatory and default-on (via its own native
+  subagent — see Step 2b); inline review is its fallback only when no
+  fresh-context subagent is available. You can't drop the host vote
+  because a crew reviewer "is more thorough." Separately, the
+  captain's own diff read is mandatory consolidation QA, not a second
+  same-model vote — don't double-count it against the host review.
 - Do not pre-allocate reviewer runs before the implementer
   terminates. Reviewer needs `working_directory: <A.worktree>`, and
   `A.worktree` is only stable post-terminal.

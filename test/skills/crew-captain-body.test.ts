@@ -30,5 +30,8 @@ describe('crew-captain body — review panel agent picks', () => {
     expect(section).toContain('get_crew_preferences({scope: "panel"})');
     expect(section).toContain('panel.reviewers');
     expect(section).toContain('panel.banList');
+    // The host model reviews via a native subagent, not run_panel.
+    expect(section).toContain('The host reviewer');
+    expect(section).toContain('native subagent');
   });
 });

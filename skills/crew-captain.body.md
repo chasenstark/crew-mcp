@@ -73,6 +73,21 @@ native subagent. If unsure, ask. When `list_agents` shows your own
 host product, treat it as "available for explicit isolation
 requests only" rather than a default routing target.
 
+**This rule governs Crew dispatch, not your native subagents.** For
+**review panels**, the host model should still review — as a
+first-class reviewer through your native subagent (the `Agent` /
+`Task` tool), never through `run_panel`. A fresh native subagent gives
+the host model a clean context and the same review prompt the crew
+reviewers get: a real independent vote, not the confirmation-biased
+"I just orchestrated this, looks good to me" of an inline self-review.
+Dispatch the crew reviewers **first** so they run async, then launch
+the native subagent — backgrounded if your host supports it
+(`run_in_background: true`), otherwise foreground (the panel's already
+async, so only the turn waits). Inline review is the last resort, for
+hosts with no native subagent at all. See _"The host reviewer"_ for
+the full ordering and _"Review panels"_ for how to fold the native
+review into consolidation (`aggregate_panel` won't include it).
+
 ## The default flow — code → review → iterate → merge
 
 When the user dispatches an implementation:
@@ -206,11 +221,14 @@ them hold.
    guessing. Picking the wrong agent costs the user a 30–60s
    round-trip and a discard.
 5. **The user named the same product as the host CLI without an
-   explicit isolation reason.** Don't dispatch — see _"Don't
-   dispatch to your own host product"_ above. Use the host's
-   native subagent mechanism instead, or ask whether they want
-   worktree isolation (the only reason to route same-product
-   work through crew).
+   explicit isolation reason.** Don't route it through Crew — see
+   _"Don't dispatch to your own host product"_ above. For
+   implementation or one-off same-host work, use the host's native
+   subagent mechanism instead, or ask whether they want worktree
+   isolation (the only reason to route same-product work through
+   crew). For a **review panel**, the host belongs in the panel via a
+   native subagent (not `run_panel`), so this isn't a reason to ask —
+   just include it.
 
 The rubric only fires **after** you've decided to dispatch. If a
 dispatch signal already applies and the five items above are clean —
@@ -243,9 +261,13 @@ holds the turn open until the run lands — the user can't chat,
 can't interrupt, can't redirect. Async-first dispatch exists so
 the captain stays available; the watcher overlay (Step 2 below)
 is how Claude Code captains surface a terminal result without
-blocking. The only legitimate in-turn wait is the explicit
-foreground opt-in described further down, and it only applies
-when the user said "wait for this" out loud. On Codex / Gemini,
+blocking. The only legitimate in-turn waits are (1) the explicit
+foreground opt-in described further down, which applies only when the
+user said "wait for this" out loud, and (2) the bounded synchronous
+host-review subagent (see _"The host reviewer"_), which blocks one
+turn by design on hosts that can't background a native subagent, and
+only after the crew panel is already dispatched async. Neither is an
+MCP long-poll on a crew run. On Codex / Gemini,
 default to a snapshot `get_run_status` at the next user turn —
 never a long-poll inside the dispatch turn.
 
@@ -604,8 +626,14 @@ install.
   heterogeneity — even if it is the only remaining option. If bans
   empty the pool, say so and ask the user to name an agent or lift a
   ban; do NOT reach for a banned agent.
-- Use `panel.reviewers` as-is when present. Also filter out
-  unavailable agents and your own host product.
+- Use `panel.reviewers` as-is when present. Filter out unavailable
+  and banned agents.
+- **Your own host product stays in the panel, but not via Crew.**
+  Remove it from the `run_panel` reviewer list (never Crew-dispatch
+  your own host) — but unless the user's preferences or this
+  conversation exclude it, keep it as a first-class reviewer through a
+  native subagent (see _"The host reviewer"_ below). A banned host is
+  excluded from the native slot too.
 - Fall back to the heterogeneity heuristic only for slots no user
   preference covers.
 
@@ -613,10 +641,14 @@ Surface to the user verbatim:
 
 > Agents for this panel:
 >
-> - Reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
+> - Crew reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
+> - Host reviewer: <host via native subagent | host foreground native |
+>   host inline fallback | omitted>
+>   <reason: "fresh same-host review" | "synchronous subagent → foreground" |
+>   "no native subagent → inline fallback" | "excluded by preference">
 >
 > Override (e.g., "add reviewer <id>", "drop reviewer <id>",
-> "use only <id>") or OK.
+> "drop host reviewer", "use only <id>") or OK.
 
 Wait for OK. Silence is not consent. If the user overrides, restate
 the final reviewer list and ask again. Include the final reviewer-pick
@@ -629,7 +661,44 @@ Recognize these phrases consistently:
 
 - `add reviewer <id>` / `drop reviewer <id>` → mutate reviewer set.
 - `use only <id>` → collapse to a single reviewer.
+- `drop host reviewer` / `no host reviewer` → omit the host native
+  subagent for this panel.
 - `no <id>` / `never <id>` → session-scoped ban only; do not persist.
+
+### The host reviewer (native subagent)
+
+Crew can't dispatch your own host product (see _"Don't dispatch to
+your own host product"_), but the host model should still review. Run
+it as a native subagent, not a `run_panel` reviewer:
+
+1. **Dispatch the crew reviewers first** (`run_agent` for one,
+   `run_panel` for ≥2) so they start async and the panel is underway
+   no matter what the host review does next.
+2. **Then launch the host reviewer via your native subagent**
+   (`Agent` / `Task`). Hand it the **same full-review prompt** the
+   crew reviewers got — same diff/worktree path, same schema,
+   review-only ("do not edit"). Native subagents have no
+   `peer_messages` channel, so inline the criteria and the implementer
+   summary into the subagent prompt.
+   - **If your host can background a native subagent** (e.g. Claude
+     Code's `run_in_background: true`), do that — chat stays available
+     while it reviews.
+   - **If it can't** (the native subagent is synchronous), run it in
+     the **foreground**. The crew panel is already async, so this
+     blocks only the current turn, not the panel — keep the review
+     bounded. On a very large diff, tell the user you're holding the
+     turn for it (or ask whether to drop the host reviewer for this
+     round). A foreground fresh-context vote still beats an inline
+     self-review.
+3. **Inline review is the last resort** — only when the host exposes
+   no native subagent tool at all. Note the host's vote then came from
+   inline, not a fresh subagent: it shares the captain's context, so it
+   carries the confirmation bias the subagent paths avoid.
+
+The native subagent is the host model's review **vote**. The captain's
+own inline read of the diff is a mandatory orchestration sanity check
+and the basis for consolidation — not a second same-model vote. Don't
+count both as independent host-model findings.
 
 ### `run_panel`: parallel reviewers with shared context
 
@@ -655,7 +724,8 @@ Bound to an implementer:
 run_panel({
   implementer_run_id: "A",
   reviewers: [
-    // Single-agent review from claude-code
+    // Single-agent review from claude-code (a CREW reviewer — only when
+    // the captain is NOT Claude Code; the host reviews via native subagent)
     { agent_id: "claude-code", prompt: "<full review prompt>" },
     // Split review from codex (large diff)
     { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files A–M]." },
@@ -677,6 +747,8 @@ Standalone (no implementer):
 ```
 run_panel({
   reviewers: [
+    // crew reviewers only — drop whichever id is your own host (it
+    // reviews via native subagent, not run_panel)
     { agent_id: "claude-code", prompt: "<full review prompt>", read_only: true },
     { agent_id: "gemini", prompt: "<full review prompt>", read_only: true },
   ],
@@ -720,15 +792,29 @@ continue_run({
 })
 ```
 
+**Fold in the host reviewer.** `aggregate_panel` only returns the
+crew-dispatched reviewers — it has no record of the native subagent.
+Append the host reviewer's output to the aggregated `peer_messages` as
+a synthetic entry before `continue_run`:
+
+```
+{ kind: "review", from_label: "<host> native subagent review",
+  body: <native review output>, files: A.files_changed }
+```
+
+If the host vote came from the inline fallback instead, append it the
+same way, labeled "captain inline review".
+
 `aggregate_panel` rejects with `run_panel.aggregate_not_ready:` if
 any reviewer is still running. It emits all reviewer messages
 even when they're identical — different reviewers reaching the
 same conclusion is signal, not noise.
 
 **Captain consolidation (mandatory before acting on panel results).**
-After `aggregate_panel` returns, the captain produces a consolidated
-review report before forwarding to the implementer or surfacing to
-the user:
+After `aggregate_panel` returns and you've appended the host reviewer,
+the captain produces a consolidated review report over all of them —
+crew reviewers plus the host native subagent — before forwarding to
+the implementer or surfacing to the user:
 
 1. **Cross-model agreement.** Group findings that multiple models
    flagged independently — these are high-confidence issues.
@@ -751,8 +837,11 @@ implementer sees what happened. You decide whether to proceed.
 
 ### When NOT to use run_panel
 
-- One reviewer only: just `run_agent` with `read_only: true` +
-  `working_directory`. Panel is overhead.
+- One crew reviewer only: just `run_agent` with `read_only: true` +
+  `working_directory`. `run_panel` is overhead for a single crew
+  dispatch. (The host reviewer still runs as a native subagent
+  alongside it — "one crew reviewer" isn't "no host review"; fold the
+  host vote in by hand, since there's no `panel_id` to aggregate.)
 - You want auto-cancel-on-blocker: not supported (yet). Cancel
   per-reviewer with `cancel_run`.
 - Anti-pattern: don't use `run_panel` to split a review by concern

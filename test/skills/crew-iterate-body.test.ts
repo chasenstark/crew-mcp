@@ -52,7 +52,8 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
       'every criterion',
       'out-of-scope',
       'iteration cap',
-      'always run inline review',
+      'Host review (default-on',
+      'native subagent',
       'do not auto-merge',
       'Silence is not consent',
       'synthetic-turn',
@@ -70,6 +71,43 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     for (const phrase of phrases) {
       expectContainsCI(body, phrase);
     }
+  });
+
+  it('does not carry the stale inline-default doctrine', async () => {
+    // The host vote is a native subagent by default; inline is fallback
+    // only. The old "Inline review is mandatory" guardrail must be gone.
+    const body = (await loadBody()).toLowerCase();
+    expect(body).not.toContain('inline review is mandatory');
+  });
+
+  it('guards the host-review launch contract within Step 2', async () => {
+    // Scope to the review step so the anchors can't be satisfied by the
+    // unrelated watcher / foreground-wait prose elsewhere in the body.
+    const body = await loadBody();
+    const start = body.indexOf('### Step 2 —');
+    const end = body.indexOf('### Step 3 —', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const step2 = body.slice(start, end);
+
+    // crew dispatched first, host backgrounded if supported, else
+    // foreground, inline only as last resort.
+    expectContainsCI(step2, 'dispatch the crew reviewer');
+    expectContainsCI(step2, 'run_in_background: true');
+    expectContainsCI(step2, 'foreground');
+    expectContainsCI(step2, 'last resort');
+
+    // Order: crew dispatch precedes the foreground host path.
+    expect(step2.toLowerCase().indexOf('dispatch the crew reviewer'))
+      .toBeLessThan(step2.toLowerCase().indexOf('foreground'));
+
+    // Inline is tied to "no native subagent", NOT to large diffs (the
+    // round-2 regression that re-allowed inline for big diffs).
+    const flat = step2.replace(/\s+/g, ' ').toLowerCase();
+    expect(flat).toContain(
+      'inline review is the last resort** — only when the host exposes no native subagent tool at all',
+    );
+    expect(flat).not.toContain('too large to review');
   });
 
   it('mentions a new-epoch concept (either "new epoch" or "new loop epoch")', async () => {
