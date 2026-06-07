@@ -17,10 +17,12 @@ import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js'
 import {
   daysToMs,
   gcTerminalRuns,
+  resolveCriteriaSetTtlMs,
   resolveRunDirTtlMs,
   resolveWorktreeTtlMs,
   type RunGcOutcome,
 } from '../../orchestrator/run-gc.js';
+import { gcCriteriaSets } from '../../orchestrator/criteria/store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 
 export interface CleanupCommandOptions {
@@ -32,6 +34,8 @@ export interface CleanupCommandOptions {
   readonly worktreeTtlDays?: number;
   /** Override the run-dir retention window (days; -1 = off). */
   readonly runDirTtlDays?: number;
+  /** Override the criteria-set retention window (days; -1 = off). */
+  readonly criteriaSetTtlDays?: number;
   /** Test seam. */
   readonly stdout?: NodeJS.WriteStream;
   /** Test seam — fixed clock. */
@@ -88,16 +92,26 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
   const runDirTtlMs = opts.runDirTtlDays !== undefined
     ? daysToMs(opts.runDirTtlDays)
     : resolveRunDirTtlMs(crewHome);
+  const criteriaSetTtlMs = opts.criteriaSetTtlDays !== undefined
+    ? daysToMs(opts.criteriaSetTtlDays)
+    : resolveCriteriaSetTtlMs(crewHome);
 
   const repoRoots = opts.allRepos ? discoverRepoRoots(crewHome) : [cwd];
 
   stdout.write(
     `crew cleanup${opts.dryRun ? ' (dry run)' : ''}: `
     + `worktree TTL ${fmtTtl(worktreeTtlMs)}, run-dir TTL ${fmtTtl(runDirTtlMs)}, `
+    + `criteria-set TTL ${fmtTtl(criteriaSetTtlMs)}, `
     + `${opts.allRepos ? `${repoRoots.length} repo(s)` : 'current repo'}\n`,
   );
 
-  const totals = { worktreesReclaimed: 0, branchesDeleted: 0, runDirsDeleted: 0, runDirsPending: 0 };
+  const totals = {
+    worktreesReclaimed: 0,
+    branchesDeleted: 0,
+    runDirsDeleted: 0,
+    runDirsPending: 0,
+    criteriaSetsDeleted: 0,
+  };
   const allOutcomes: RunGcOutcome[] = [];
 
   for (const repoRoot of repoRoots) {
@@ -119,6 +133,9 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     totals.runDirsPending += result.runDirsPending;
     allOutcomes.push(...result.outcomes);
   }
+  if (!opts.dryRun) {
+    totals.criteriaSetsDeleted = gcCriteriaSets(crewHome, criteriaSetTtlMs, opts.now);
+  }
 
   if (opts.dryRun && allOutcomes.length > 0) {
     stdout.write('\nWould reclaim:\n');
@@ -136,7 +153,8 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     stdout.write(
       `\nWould reclaim: ${totals.worktreesReclaimed} worktree(s)`
       + ` (${totals.branchesDeleted} merged branch(es) deleted), `
-      + `${totals.runDirsDeleted} run-dir(s) now.\n`,
+      + `${totals.runDirsDeleted} run-dir(s) now, `
+      + `${totals.criteriaSetsDeleted} criteria set(s).\n`,
     );
     if (totals.runDirsPending > 0) {
       stdout.write(
@@ -148,9 +166,14 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     stdout.write(
       `\nReclaimed: ${totals.worktreesReclaimed} worktree(s)`
       + ` (${totals.branchesDeleted} merged branch(es) deleted), `
-      + `${totals.runDirsDeleted} run-dir(s) deleted.\n`,
+      + `${totals.runDirsDeleted} run-dir(s) deleted, `
+      + `${totals.criteriaSetsDeleted} criteria set(s) deleted.\n`,
     );
-    if (totals.worktreesReclaimed > 0 || totals.runDirsDeleted > 0) {
+    if (
+      totals.worktreesReclaimed > 0
+      || totals.runDirsDeleted > 0
+      || totals.criteriaSetsDeleted > 0
+    ) {
       stdout.write('Tip: run `du -sh ~/.crew` to see reclaimed disk.\n');
     }
   }

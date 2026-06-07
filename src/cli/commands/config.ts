@@ -66,6 +66,7 @@ export type MutableCrewConfig = {
   cleanup: {
     worktreeTtlDays: number;
     runDirTtlDays: number;
+    criteriaSetTtlDays: number;
   };
 };
 
@@ -137,6 +138,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     }
     stdout.write(`  cleanup.worktreeTtlDays: ${fmtTtlDays(current.cleanup.worktreeTtlDays)}\n`);
     stdout.write(`  cleanup.runDirTtlDays: ${fmtTtlDays(current.cleanup.runDirTtlDays)}\n`);
+    stdout.write(`  cleanup.criteriaSetTtlDays: ${fmtTtlDays(current.cleanup.criteriaSetTtlDays)}\n`);
     writeAgentDefaultsSummary(stdout, showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults);
     stdout.write(
       `\nInteractive editing requires a TTY. Edit ${configPath} directly,\n`
@@ -154,6 +156,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     cleanup: {
       worktreeTtlDays: current.cleanup.worktreeTtlDays,
       runDirTtlDays: current.cleanup.runDirTtlDays,
+      criteriaSetTtlDays: current.cleanup.criteriaSetTtlDays,
     },
   };
   const agentInventory = await loadAgentInventory({
@@ -200,7 +203,8 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
   // file mtime on a no-op save.
   const crewChanged = !sameConfig(current, state, entries)
     || current.cleanup.worktreeTtlDays !== state.cleanup.worktreeTtlDays
-    || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays;
+    || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays
+    || current.cleanup.criteriaSetTtlDays !== state.cleanup.criteriaSetTtlDays;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
   if (crewChanged) {
     writeConfigFile(crewHome, state);
@@ -368,6 +372,7 @@ function mutableConfig(config: CrewConfig): MutableCrewConfig {
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,
+      criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
     },
   };
 }

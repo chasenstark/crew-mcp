@@ -16,7 +16,14 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
-import { DispatchError } from '../dispatch-run-agent-internal.js';
+import {
+  criteriaPeerMessageBypassWarnings,
+  DispatchError,
+} from '../dispatch-run-agent-internal.js';
+import {
+  resolveConfirmedCriteriaContract,
+  type CriteriaContractResolution,
+} from '../criteria/store.js';
 import { validatePeerMessagesPreflight } from '../peer-messages/preflight.js';
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
@@ -41,6 +48,7 @@ export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
   prompt: z.string().default(''),
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
+  criteria_set_id: z.string().min(1).optional(),
   model: z.string().optional(),
   /**
    * Per-call reasoning effort override. Same precedence as run_agent:
@@ -53,7 +61,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with a new prompt and/or structured peer_messages when the same agent should continue in the same worktree. Input takes run_id, optional prompt, optional peer_messages, and optional model/effort overrides; read_only mode stays sticky from the original run. Returns the same async dispatch envelope as run_agent (run_id, tail_url); on Claude Code spawn crew-wait <run_id> in background, on other hosts check via get_run_status / list_runs on a later turn. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the run-linked criteria contract; passing a different id is rejected. model/effort may override defaults and read_only stays sticky. Returns the async dispatch envelope; spawn crew-wait on Claude Code or check later. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -105,6 +113,17 @@ export async function continueRunToolHandler(
     );
   }
   const continueExtra = extra;
+  let criteriaContract: CriteriaContractResolution | undefined;
+  try {
+    criteriaContract = resolveContinuationCriteriaContract({
+      crewHome: deps.crewHome,
+      repoRoot: deps.runStateStore.repoRoot,
+      requestedCriteriaSetId: args.criteria_set_id,
+      recordedCriteriaSetId: preState.criteriaSetId,
+    });
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
 
   const toolCallId = randomUUID();
   const continueAgentPrefs = deps.readAgentPrefs();
@@ -123,11 +142,22 @@ export async function continueRunToolHandler(
     appendResult = await deps.runStateStore.appendPrompt(args.run_id, {
       userPrompt,
       peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
+      ...(criteriaContract !== undefined
+        ? {
+            contractPrefix: criteriaContract.contractPrefix,
+            criteriaSetId: criteriaContract.criteriaSetId,
+            criteriaEpoch: criteriaContract.criteriaEpoch,
+          }
+        : {}),
     });
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
-  const { state, composedPrompt, warnings } = appendResult;
+  const { state, composedPrompt } = appendResult;
+  const warnings = [
+    ...appendResult.warnings,
+    ...criteriaPeerMessageBypassWarnings(args.criteria_set_id, validatedInput, criteriaContract),
+  ];
   const dispatchWarnings = state.readOnly === true && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
@@ -184,6 +214,30 @@ export async function continueRunToolHandler(
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
+}
+
+function resolveContinuationCriteriaContract(args: {
+  readonly crewHome: string;
+  readonly repoRoot: string;
+  readonly requestedCriteriaSetId: string | undefined;
+  readonly recordedCriteriaSetId: string | undefined;
+}): CriteriaContractResolution | undefined {
+  if (
+    args.requestedCriteriaSetId !== undefined
+    && args.recordedCriteriaSetId !== undefined
+    && args.requestedCriteriaSetId !== args.recordedCriteriaSetId
+  ) {
+    throw new Error(
+      `criteria.linkage_mismatch: run is linked to ${args.recordedCriteriaSetId}, got ${args.requestedCriteriaSetId}`,
+    );
+  }
+  const criteriaSetId = args.requestedCriteriaSetId ?? args.recordedCriteriaSetId;
+  if (criteriaSetId === undefined) return undefined;
+  return resolveConfirmedCriteriaContract({
+    crewHome: args.crewHome,
+    repoRoot: args.repoRoot,
+    criteriaSetId,
+  });
 }
 
 async function markContinueDispatchFailed(

@@ -57,11 +57,13 @@ export function buildProgram(): Command {
     .option('--all-repos', 'Sweep every repo represented in ~/.crew/runs (not just the current one)')
     .option('--worktree-ttl-days <n>', 'Override the worktree retention window for this run (-1 = off)')
     .option('--rundir-ttl-days <n>', 'Override the run-dir retention window for this run (-1 = off)')
+    .option('--criteria-set-ttl-days <n>', 'Override the criteria-set retention window for this run (-1 = off)')
     .action(async (opts: {
       dryRun?: boolean;
       allRepos?: boolean;
       worktreeTtlDays?: string;
       rundirTtlDays?: string;
+      criteriaSetTtlDays?: string;
     }) => {
       applyDebugFlag(program);
       const { cleanupCommand } = await import('./cli/commands/cleanup.js');
@@ -78,6 +80,7 @@ export function buildProgram(): Command {
         allRepos: opts.allRepos,
         worktreeTtlDays: parseDays(opts.worktreeTtlDays, '--worktree-ttl-days'),
         runDirTtlDays: parseDays(opts.rundirTtlDays, '--rundir-ttl-days'),
+        criteriaSetTtlDays: parseDays(opts.criteriaSetTtlDays, '--criteria-set-ttl-days'),
       });
       if (code !== 0) process.exitCode = code;
     });

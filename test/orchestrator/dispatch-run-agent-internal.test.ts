@@ -12,9 +12,15 @@ import {
   dispatchRunAgentInternal,
   type DispatchContext,
 } from '../../src/orchestrator/dispatch-run-agent-internal.js';
+import {
+  criteriaDir,
+  readCriteriaState,
+} from '../../src/orchestrator/criteria/store.js';
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
 import { ToolDispatcher, type DispatchTask } from '../../src/orchestrator/tool-dispatcher.js';
 import { crewTailUrl } from '../../src/cli/commands/tail-url.js';
+import { confirmCriteriaHandler } from '../../src/orchestrator/tools/confirm-criteria.js';
+import { createCriteriaHandler } from '../../src/orchestrator/tools/create-criteria.js';
 
 function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
   return {
@@ -141,6 +147,47 @@ function withEnv(overrides: Record<string, string>): () => void {
       }
     }
   };
+}
+
+async function createConfirmedCriteria(
+  h: ReturnType<typeof makeHarness>,
+  id = 'criteria-1',
+  repoRoot = h.runStateStore.repoRoot,
+): Promise<void> {
+  createCriteriaHandler({
+    criteria: [
+      {
+        title: 'Tests green',
+        type: 'mechanical',
+        detail: 'npm run test:run exits 0',
+        signal: 'test output',
+      },
+      {
+        title: 'Contract enforced',
+        type: 'behavioral',
+        subCriteria: [
+          'contract is prepended before peer messages',
+          'criteriaContract is stored separately',
+        ],
+      },
+      {
+        title: 'No regressions',
+        type: 'negative',
+        detail: 'dispatch without criteria stays unchanged',
+      },
+    ],
+  }, {
+    crewHome: h.crewHome,
+    repoRoot,
+    makeCriteriaSetId: () => id,
+    now: () => '2026-01-01T00:00:00.000Z',
+  });
+  await confirmCriteriaHandler({
+    criteria_set_id: id,
+  }, {
+    crewHome: h.crewHome,
+    now: () => '2026-01-02T00:00:00.000Z',
+  });
 }
 
 function runWorktreePath(crewHome: string, runId: string): string {
@@ -333,5 +380,177 @@ describe('dispatchRunAgentInternal', () => {
     const state = h.runStateStore.read(result.runId);
     expect(state?.prompts.at(-1)?.summary).toBe('terminal summary');
     expect(state?.filesChanged).toEqual(['changed.ts']);
+  });
+
+  it('injects confirmed criteria ahead of peer messages and stores contract metadata untruncated', async () => {
+    const restore = withEnv({ CREW_PROMPT_STORAGE_CAP_CHARS: '24' });
+    try {
+      let capturedPrompt = '';
+      const adapter = makeMockAdapter({
+        name: 'mock',
+        execute: async (task) => {
+          capturedPrompt = task.prompt;
+          return {
+            output: 'done',
+            filesModified: [],
+            status: 'success',
+            metadata: {},
+          };
+        },
+      });
+      const h = makeHarness([adapter]);
+      cleanups.push(h.cleanup);
+      await createConfirmedCriteria(h);
+
+      const result = await dispatchRunAgentInternal({
+        input: {
+          agent_id: 'mock',
+          criteria_set_id: 'criteria-1',
+          prompt: 'x'.repeat(100),
+          peer_messages: [{ body: 'review context', kind: 'review', from_label: 'reviewer' }],
+        },
+        ctx: h.ctx,
+      });
+      await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+
+      const state = h.runStateStore.read(result.runId);
+      const promptRecord = state?.prompts[0];
+      expect(capturedPrompt.startsWith('Acceptance Criteria Contract\ncriteria_set_id: criteria-1')).toBe(true);
+      expect(capturedPrompt.indexOf('Acceptance Criteria Contract')).toBeLessThan(
+        capturedPrompt.indexOf('## Peer messages'),
+      );
+      expect(state?.criteriaSetId).toBe('criteria-1');
+      expect(state?.criteriaEpoch).toBe(0);
+      expect(promptRecord?.criteriaSetId).toBe('criteria-1');
+      expect(promptRecord?.criteriaEpoch).toBe(0);
+      expect(promptRecord?.criteriaContract).toContain('criteria_set_id: criteria-1');
+      expect(promptRecord?.prompt).toContain('[... truncated for storage; original was');
+      expect(readCriteriaState(criteriaDir(h.crewHome, 'criteria-1'))?.implementerRunId)
+        .toBe(result.runId);
+    } finally {
+      restore();
+    }
+  });
+
+  it('refuses unknown, unconfirmed, and cross-repo criteria before creating state', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'mock' })]);
+    cleanups.push(h.cleanup);
+
+    await expect(dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'p', criteria_set_id: 'missing' },
+      ctx: h.ctx,
+    })).rejects.toMatchObject({ message: expect.stringMatching(/^criteria\.unknown:/) });
+
+    createCriteriaHandler({
+      criteria: [
+        {
+          title: 'Tests green',
+          type: 'mechanical',
+          detail: 'npm run test:run exits 0',
+          signal: 'test output',
+        },
+      ],
+    }, {
+      crewHome: h.crewHome,
+      repoRoot: h.runStateStore.repoRoot,
+      makeCriteriaSetId: () => 'proposed',
+    });
+    await expect(dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'p', criteria_set_id: 'proposed' },
+      ctx: h.ctx,
+    })).rejects.toMatchObject({ message: expect.stringMatching(/^criteria\.not_confirmed:/) });
+
+    await createConfirmedCriteria(h, 'foreign', '/other/repo');
+    await expect(dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'p', criteria_set_id: 'foreign' },
+      ctx: h.ctx,
+    })).rejects.toMatchObject({ message: expect.stringMatching(/^criteria\.cross_repo:/) });
+  });
+
+  it('throws criteria.contract_too_large when the resolved contract exceeds the composed prompt cap', async () => {
+    const restore = withEnv({
+      CREW_PEER_MESSAGES_PREPEND_CAP_CHARS: '64',
+      CREW_PEER_MESSAGES_HARD_CEILING: '128',
+      CREW_DISPATCH_PROMPT_CAP_CHARS: '160',
+    });
+    try {
+      const h = makeHarness([makeMockAdapter({ name: 'mock' })]);
+      cleanups.push(h.cleanup);
+      createCriteriaHandler({
+        criteria: [
+          {
+            title: 'Large contract',
+            type: 'mechanical',
+            detail: 'x'.repeat(500),
+            signal: 'large detail',
+          },
+        ],
+      }, {
+        crewHome: h.crewHome,
+        repoRoot: h.runStateStore.repoRoot,
+        makeCriteriaSetId: () => 'large',
+      });
+      await confirmCriteriaHandler({ criteria_set_id: 'large' }, { crewHome: h.crewHome });
+
+      await expect(dispatchRunAgentInternal({
+        input: { agent_id: 'mock', prompt: 'p', criteria_set_id: 'large' },
+        ctx: h.ctx,
+      })).rejects.toMatchObject({
+        name: 'DispatchError',
+        message: expect.stringMatching(/^criteria\.contract_too_large:/),
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('warns when criteria-shaped peer_messages are passed without criteria_set_id', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'mock' })]);
+    cleanups.push(h.cleanup);
+
+    const result = await dispatchRunAgentInternal({
+      input: {
+        agent_id: 'mock',
+        prompt: 'p',
+        peer_messages: [{
+          body: '1. Tests pass',
+          kind: 'note',
+          from_label: 'acceptance criteria',
+        }],
+      },
+      ctx: h.ctx,
+    });
+
+    expect(result.warnings).toContain(
+      'criteria.peer_message_without_criteria_set_id: criteria passed as peer_message without criteria_set_id - store enforcement bypassed',
+    );
+  });
+
+  it('dispatch without criteria_set_id keeps the legacy prompt and state shape', async () => {
+    let capturedPrompt = '';
+    const h = makeHarness([makeMockAdapter({
+      name: 'mock',
+      execute: async (task) => {
+        capturedPrompt = task.prompt;
+        return {
+          output: 'ok',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    })]);
+    cleanups.push(h.cleanup);
+
+    const result = await dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'plain prompt' },
+      ctx: h.ctx,
+    });
+    await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+
+    const state = h.runStateStore.read(result.runId);
+    expect(capturedPrompt).toBe('plain prompt');
+    expect(state?.criteriaSetId).toBeUndefined();
+    expect(state?.prompts[0].criteriaContract).toBeUndefined();
   });
 });

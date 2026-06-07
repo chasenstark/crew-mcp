@@ -8,13 +8,14 @@ import type { KeyResult, Screen, TuiKey } from './screen.js';
 export interface CleanupScreenState {
   worktreeTtlDays: number;
   runDirTtlDays: number;
+  criteriaSetTtlDays: number;
 }
 
 /** Day presets the TTL rows cycle through (-1 renders as "off"). */
 const PRESETS: readonly number[] = [-1, 0, 1, 3, 7, 14, 30, 60, 90];
 
-type Row = 'worktree' | 'rundir' | 'preview' | 'run' | 'back';
-const ROWS: readonly Row[] = ['worktree', 'rundir', 'preview', 'run', 'back'];
+type Row = 'worktree' | 'rundir' | 'criteria' | 'preview' | 'run' | 'back';
+const ROWS: readonly Row[] = ['worktree', 'rundir', 'criteria', 'preview', 'run', 'back'];
 
 function fmtDays(days: number): string {
   return days < 0 ? 'off' : `${days}d`;
@@ -55,6 +56,9 @@ export class CleanupScreen implements Screen {
           break;
         case 'rundir':
           lines.push(`${pointer} run-dir TTL:   ${fmtDays(this.state.runDirTtlDays)}   (space cycles)`);
+          break;
+        case 'criteria':
+          lines.push(`${pointer} criteria TTL:  ${fmtDays(this.state.criteriaSetTtlDays)}   (space cycles)`);
           break;
         case 'preview':
           lines.push(`${pointer} Preview cleanup now (dry run)`);
@@ -107,6 +111,9 @@ export class CleanupScreen implements Screen {
         return 'continue';
       case 'rundir':
         this.state.runDirTtlDays = nextPreset(this.state.runDirTtlDays);
+        return 'continue';
+      case 'criteria':
+        this.state.criteriaSetTtlDays = nextPreset(this.state.criteriaSetTtlDays);
         return 'continue';
       case 'preview':
         this.requested = 'dry';

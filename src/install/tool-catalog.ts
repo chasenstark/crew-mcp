@@ -15,14 +15,18 @@
 import {
   AGGREGATE_PANEL_DESCRIPTION,
   CANCEL_RUN_DESCRIPTION,
+  CONFIRM_CRITERIA_DESCRIPTION,
   CONTINUE_RUN_DESCRIPTION,
+  CREATE_CRITERIA_DESCRIPTION,
   DISCARD_RUN_DESCRIPTION,
   GET_CREW_PREFERENCES_DESCRIPTION,
+  GET_CRITERIA_DESCRIPTION,
   GET_PANEL_STATUS_DESCRIPTION,
   GET_RUN_STATUS_DESCRIPTION,
   LIST_AGENTS_DESCRIPTION,
   LIST_RUNS_DESCRIPTION,
   MERGE_RUN_DESCRIPTION,
+  REVISE_CRITERIA_DESCRIPTION,
   RUN_PANEL_DESCRIPTION,
   RUN_AGENT_DESCRIPTION,
 } from '../orchestrator/tools/index.js';
@@ -41,6 +45,10 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'run_panel', description: RUN_PANEL_DESCRIPTION },
   { name: 'get_panel_status', description: GET_PANEL_STATUS_DESCRIPTION },
   { name: 'aggregate_panel', description: AGGREGATE_PANEL_DESCRIPTION },
+  { name: 'create_criteria', description: CREATE_CRITERIA_DESCRIPTION },
+  { name: 'confirm_criteria', description: CONFIRM_CRITERIA_DESCRIPTION },
+  { name: 'get_criteria', description: GET_CRITERIA_DESCRIPTION },
+  { name: 'revise_criteria', description: REVISE_CRITERIA_DESCRIPTION },
 ];
 
 export function getCatalogToolNames(): readonly string[] {

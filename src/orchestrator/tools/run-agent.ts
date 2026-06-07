@@ -69,6 +69,7 @@ export const runAgentInputSchema = z.object({
   agent_id: z.string().min(1),
   prompt: z.string().min(1),
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
+  criteria_set_id: z.string().min(1).optional(),
   working_directory: z.string().optional(),
   model: z.string().optional(),
   /**
@@ -101,7 +102,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a new subagent run for a bounded task; agent_id must come from list_agents and prompt is sent with optional structured peer_messages prepended as worker context. Optional model and effort override the agent defaults, working_directory changes the starting path, and read_only=true skips worktree allocation for review/triage. Returns an async dispatch envelope (run_id, worktree_path, tail_url); chat-available default is to spawn crew-wait <run_id> in background on Claude Code, or check via get_run_status / list_runs on a later turn (Codex/Gemini). Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. Optional peer_messages are prepended as untrusted context; optional confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults, working_directory changes the start path, and read_only skips worktree allocation for review. Returns an async dispatch envelope; spawn crew-wait on Claude Code or check status later. Do not block the turn long-polling get_run_status.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,

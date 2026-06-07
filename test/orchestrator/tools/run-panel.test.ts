@@ -27,6 +27,9 @@ import {
   runPanelHandler,
   type RunPanelHandlerContext,
 } from '../../../src/orchestrator/tools/run-panel.js';
+import { confirmCriteriaHandler } from '../../../src/orchestrator/tools/confirm-criteria.js';
+import { createCriteriaHandler } from '../../../src/orchestrator/tools/create-criteria.js';
+import { criteriaDir, readCriteriaState } from '../../../src/orchestrator/criteria/store.js';
 import { setConfigValue } from '../../../src/workflow/config-service.js';
 import { getPanelStatusHandler } from '../../../src/orchestrator/tools/get-panel-status.js';
 import {
@@ -74,6 +77,34 @@ function withEnv(overrides: Record<string, string>): () => void {
   };
 }
 
+async function createConfirmedCriteria(h: PanelHarness, id = 'criteria-1'): Promise<void> {
+  createCriteriaHandler({
+    criteria: [
+      {
+        title: 'Tests green',
+        type: 'mechanical',
+        detail: 'npm run test:run exits 0',
+        signal: 'test output',
+      },
+      {
+        title: 'Review contract enforced',
+        type: 'behavioral',
+        subCriteria: ['reviewers receive the contract'],
+      },
+      {
+        title: 'No regressions',
+        type: 'negative',
+        detail: 'panel without criteria stays unchanged',
+      },
+    ],
+  }, {
+    crewHome: h.crewHome,
+    repoRoot: h.runStateStore.repoRoot,
+    makeCriteriaSetId: () => id,
+  });
+  await confirmCriteriaHandler({ criteria_set_id: id }, { crewHome: h.crewHome });
+}
+
 function fakeDispatchResult(agentId: string, index: number): DispatchRunAgentInternalResult {
   return {
     runId: `${agentId}-run-${index}`,
@@ -108,6 +139,80 @@ describe('runPanelHandler', () => {
 
     expect(out.reviewers.map((reviewer) => reviewer.agent_id)).toEqual(['codex', 'claude-code']);
     expect(dispatched).toEqual(['codex', 'claude-code']);
+  });
+
+  it('injects a passed criteria contract into reviewer runs without relinking implementerRunId', async () => {
+    let capturedPrompt = '';
+    const h = makeHarness([makeMockAdapter({
+      name: 'reviewer',
+      execute: async (task) => {
+        capturedPrompt = task.prompt;
+        return {
+          output: 'review done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    })]);
+    cleanupHarness(h);
+    await createConfirmedCriteria(h);
+    await createRunState(h, {
+      runId: 'impl',
+      agentId: 'implementer',
+      status: 'success',
+      summary: 'implementation summary',
+      filesChanged: ['src/a.ts'],
+    });
+    await h.runStateStore.update('impl', (state) => ({
+      ...state,
+      criteriaSetId: 'criteria-1',
+      criteriaEpoch: 0,
+    }));
+
+    const out = await runPanelHandler({
+      implementer_run_id: 'impl',
+      criteria_set_id: 'criteria-1',
+      reviewers: [
+        {
+          agent_id: 'reviewer',
+          prompt: 'review',
+        },
+      ],
+    }, h.ctx);
+
+    expect(out.reviewers).toHaveLength(1);
+    await waitFor(() => capturedPrompt.length > 0);
+    expect(capturedPrompt.startsWith('Acceptance Criteria Contract\ncriteria_set_id: criteria-1')).toBe(true);
+    expect(capturedPrompt.indexOf('Acceptance Criteria Contract')).toBeLessThan(
+      capturedPrompt.indexOf('## Peer messages'),
+    );
+    const reviewerState = h.runStateStore.read(out.reviewers[0].run_id);
+    expect(reviewerState?.criteriaSetId).toBe('criteria-1');
+    expect(reviewerState?.prompts[0].criteriaContract).toContain('criteria_set_id: criteria-1');
+    expect(readCriteriaState(criteriaDir(h.crewHome, 'criteria-1'))?.implementerRunId)
+      .toBeUndefined();
+  });
+
+  it('rejects criteria linkage mismatch against the implementer run', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    await createConfirmedCriteria(h, 'criteria-1');
+    await createRunState(h, {
+      runId: 'impl',
+      status: 'success',
+    });
+    await h.runStateStore.update('impl', (state) => ({
+      ...state,
+      criteriaSetId: 'other-criteria',
+      criteriaEpoch: 0,
+    }));
+
+    await expect(runPanelHandler({
+      implementer_run_id: 'impl',
+      criteria_set_id: 'criteria-1',
+      reviewers: [{ agent_id: 'reviewer', prompt: 'review' }],
+    }, h.ctx)).rejects.toThrow(/^criteria\.linkage_mismatch:/);
   });
 
   it('rejects empty preference-filled reviewers after banList filtering', async () => {

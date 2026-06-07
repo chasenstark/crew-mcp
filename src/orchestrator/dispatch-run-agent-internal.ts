@@ -3,6 +3,11 @@ import type { AgentPrefsMap } from '../agent-prefs/store.js';
 import type { WorktreeManager } from '../git/worktree.js';
 import { crewTailUrl } from '../cli/commands/tail-url.js';
 import { logger } from '../utils/logger.js';
+import {
+  linkCriteriaSetImplementerRun,
+  resolveConfirmedCriteriaContract,
+  type CriteriaContractResolution,
+} from './criteria/store.js';
 import { validatePeerMessagesPreflight } from './peer-messages/preflight.js';
 import { type ProgressNotifier } from './progress.js';
 import { installRunLifecycleListeners } from './run-lifecycle-listeners.js';
@@ -30,6 +35,8 @@ export interface DispatchRunAgentInternalArgs {
   readonly input: RunAgentInput;
   readonly ctx: DispatchContext;
   readonly progress?: ProgressNotifier;
+  readonly criteriaContract?: CriteriaContractResolution;
+  readonly linkCriteriaImplementerRun?: boolean;
   readonly onStart?: (
     info: { agentName: string; runId: string; worktreePath: string },
   ) => void | Promise<void>;
@@ -67,6 +74,20 @@ export async function dispatchRunAgentInternal(
   } catch (err) {
     throw new DispatchError(errorMessage(err));
   }
+  let criteriaContract: CriteriaContractResolution | undefined;
+  try {
+    criteriaContract = args.criteriaContract ?? (
+      input.criteria_set_id !== undefined
+        ? resolveConfirmedCriteriaContract({
+            crewHome: ctx.crewHome,
+            repoRoot: ctx.runStateStore.repoRoot,
+            criteriaSetId: input.criteria_set_id,
+          })
+        : undefined
+    );
+  } catch (err) {
+    throw new DispatchError(errorMessage(err));
+  }
 
   let plan: Awaited<ReturnType<typeof planRunAgent>>;
   try {
@@ -90,9 +111,27 @@ export async function dispatchRunAgentInternal(
       worktreePath: plan.worktreePath,
       initialPrompt: input.prompt,
       initialPeerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
+      ...(criteriaContract !== undefined
+        ? {
+            contractPrefix: criteriaContract.contractPrefix,
+            criteriaSetId: criteriaContract.criteriaSetId,
+            criteriaEpoch: criteriaContract.criteriaEpoch,
+          }
+        : {}),
       readOnly: plan.readOnly,
     });
-    warnings = [...plan.dispatchWarnings, ...createResult.warnings];
+    if (criteriaContract !== undefined && args.linkCriteriaImplementerRun !== false) {
+      await linkCriteriaSetImplementerRun({
+        crewHome: ctx.crewHome,
+        criteriaSetId: criteriaContract.criteriaSetId,
+        runId: plan.runId,
+      });
+    }
+    warnings = [
+      ...plan.dispatchWarnings,
+      ...createResult.warnings,
+      ...criteriaPeerMessageBypassWarnings(input.criteria_set_id, validatedInput, criteriaContract),
+    ];
   } catch (err) {
     await cleanupAllocatedWorktree(ctx, plan, 'rejection');
     throw new DispatchError(errorMessage(err));
@@ -139,6 +178,21 @@ export async function dispatchRunAgentInternal(
     toolCallId: plan.toolCallId,
     warnings,
   };
+}
+
+export function criteriaPeerMessageBypassWarnings(
+  criteriaSetId: string | undefined,
+  peerMessages: readonly { readonly from_label?: string }[],
+  criteriaContract: CriteriaContractResolution | undefined,
+): readonly string[] {
+  if (criteriaSetId !== undefined || criteriaContract !== undefined) return [];
+  if (!peerMessages.some((message) =>
+    message.from_label !== undefined && /acceptance criteria/i.test(message.from_label))) {
+    return [];
+  }
+  return [
+    'criteria.peer_message_without_criteria_set_id: criteria passed as peer_message without criteria_set_id - store enforcement bypassed',
+  ];
 }
 
 async function cleanupAllocatedWorktree(

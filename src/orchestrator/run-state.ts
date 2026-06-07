@@ -69,6 +69,10 @@ export interface PromptRecord {
   readonly turn: number;
   readonly prompt: string;
   readonly peer_messages_input?: readonly PeerMessageRendered[];
+  /** Non-droppable acceptance-criteria contract injected ahead of peer messages. */
+  readonly criteriaContract?: string;
+  readonly criteriaSetId?: string;
+  readonly criteriaEpoch?: number;
   readonly startedAt: string;
   readonly completedAt?: string;
   /** The adapter's `output` text for this turn. */
@@ -123,6 +127,8 @@ export interface RunStateV1 {
    * manually if they turn out to be truly stale.
    */
   readonly serverPid?: number;
+  readonly criteriaSetId?: string;
+  readonly criteriaEpoch?: number;
   readonly prompts: readonly PromptRecord[];
   readonly filesChanged: readonly string[];
   readonly lastError?: string;
@@ -190,6 +196,9 @@ export interface CreateRunStateInit {
   readonly worktreePath: string;
   readonly initialPrompt: string;
   readonly initialPeerMessagesInput?: readonly PeerMessageInput[];
+  readonly contractPrefix?: string;
+  readonly criteriaSetId?: string;
+  readonly criteriaEpoch?: number;
   /**
    * Whether this run was dispatched with `read_only: true`. Persisted
    * so `continue_run` can read the bit back and stay sticky, and so
@@ -224,6 +233,9 @@ export interface CreateRunStateResult {
 export interface AppendPromptOptions {
   readonly userPrompt: string;
   readonly peerMessagesInput?: readonly PeerMessageInput[];
+  readonly contractPrefix?: string;
+  readonly criteriaSetId?: string;
+  readonly criteriaEpoch?: number;
 }
 
 export interface AppendPromptResult {
@@ -304,10 +316,11 @@ export class RunStateStore {
         caps: this.caps,
       });
       const renderedMessages = pipelineResult.renderedMessages;
-      const composedPrompt = pipelineResult.rendered + init.initialPrompt;
+      const contractPrefix = init.contractPrefix ?? '';
+      const composedPrompt = contractPrefix + pipelineResult.rendered + init.initialPrompt;
       if (composedPrompt.length > this.caps.composedPromptCap) {
         throw new Error(
-          `peer_messages.composed_prompt_too_large: ${composedPrompt.length} ` +
+          `${contractPrefix.length > 0 ? 'criteria.contract_too_large' : 'peer_messages.composed_prompt_too_large'}: ${composedPrompt.length} ` +
           `> ${this.caps.composedPromptCap}`,
         );
       }
@@ -322,11 +335,18 @@ export class RunStateStore {
         repoRoot: this.repoRoot,
         serverPid: process.pid,
         ...(init.readOnly ? { readOnly: true } : {}),
+        ...(init.criteriaSetId !== undefined
+          ? { criteriaSetId: init.criteriaSetId, criteriaEpoch: init.criteriaEpoch }
+          : {}),
         prompts: [
           {
             turn: 1,
             prompt: truncatePromptForStorage(init.initialPrompt),
             ...(renderedMessages.length > 0 ? { peer_messages_input: [...renderedMessages] } : {}),
+            ...(contractPrefix.length > 0 ? { criteriaContract: contractPrefix } : {}),
+            ...(init.criteriaSetId !== undefined
+              ? { criteriaSetId: init.criteriaSetId, criteriaEpoch: init.criteriaEpoch }
+              : {}),
             startedAt: now,
           },
         ],
@@ -480,10 +500,11 @@ export class RunStateStore {
         caps: this.caps,
       });
       const renderedMessages = pipelineResult.renderedMessages;
-      const composedPrompt = pipelineResult.rendered + options.userPrompt;
+      const contractPrefix = options.contractPrefix ?? '';
+      const composedPrompt = contractPrefix + pipelineResult.rendered + options.userPrompt;
       if (composedPrompt.length > this.caps.composedPromptCap) {
         throw new Error(
-          `peer_messages.composed_prompt_too_large: ${composedPrompt.length} ` +
+          `${contractPrefix.length > 0 ? 'criteria.contract_too_large' : 'peer_messages.composed_prompt_too_large'}: ${composedPrompt.length} ` +
           `> ${this.caps.composedPromptCap}`,
         );
       }
@@ -499,12 +520,19 @@ export class RunStateStore {
         // clearing it here is the single source-of-truth fix.
         lastError: undefined,
         serverPid: process.pid,
+        ...(options.criteriaSetId !== undefined
+          ? { criteriaSetId: options.criteriaSetId, criteriaEpoch: options.criteriaEpoch }
+          : {}),
         prompts: [
           ...s.prompts,
           {
             turn: turnNumber,
             prompt: truncatePromptForStorage(options.userPrompt),
             ...(renderedMessages.length > 0 ? { peer_messages_input: [...renderedMessages] } : {}),
+            ...(contractPrefix.length > 0 ? { criteriaContract: contractPrefix } : {}),
+            ...(options.criteriaSetId !== undefined
+              ? { criteriaSetId: options.criteriaSetId, criteriaEpoch: options.criteriaEpoch }
+              : {}),
             startedAt: now,
           },
         ],

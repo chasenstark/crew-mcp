@@ -264,9 +264,10 @@ describe('crew-mcp config subcommands', () => {
     stdin.press('down');
     stdin.press('return'); // push CleanupScreen
     await waitForOutput(stdout, 'Cleanup & retention');
-    // Cleanup rows: worktree(0), rundir(1), preview(2), run(3), back(4).
+    // Cleanup rows: worktree(0), rundir(1), criteria(2), preview(3), run(4), back(5).
     stdin.press('space'); // worktree TTL 7 → 14
     stdin.press('down'); // rundir
+    stdin.press('down'); // criteria
     stdin.press('down'); // preview
     stdin.press('down'); // run
     stdin.press('return'); // "Run cleanup now" → save + run

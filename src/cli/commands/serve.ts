@@ -18,6 +18,8 @@
 //   run_panel        — dispatch a parallel reviewer panel
 //   get_panel_status — read panel reviewer status
 //   aggregate_panel  — build peer_messages from panel results
+//   create_criteria / confirm_criteria / get_criteria / revise_criteria
+//                    — persist and approve acceptance criteria for dispatch
 //
 // Logging discipline: stdout is reserved for the MCP wire protocol. The
 // project's logger (src/utils/logger.ts) emits to stderr via console.error,
@@ -40,7 +42,7 @@ import {
   drainPendingTerminalPersists,
 } from '../../orchestrator/run-lifecycle-listeners.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
-import { gcTerminalRuns, type RunGcArgs } from '../../orchestrator/run-gc.js';
+import { gcTerminalRunsAndCriteriaSets, type RunGcArgs } from '../../orchestrator/run-gc.js';
 import {
   listAgentsInputSchema,
   listAgentsToolHandler,
@@ -101,6 +103,26 @@ import {
   aggregatePanelToolHandler,
   AGGREGATE_PANEL_DESCRIPTION,
 } from '../../orchestrator/tools/aggregate-panel.js';
+import {
+  createCriteriaInputSchema,
+  createCriteriaToolHandler,
+  CREATE_CRITERIA_DESCRIPTION,
+} from '../../orchestrator/tools/create-criteria.js';
+import {
+  confirmCriteriaInputSchema,
+  confirmCriteriaToolHandler,
+  CONFIRM_CRITERIA_DESCRIPTION,
+} from '../../orchestrator/tools/confirm-criteria.js';
+import {
+  getCriteriaInputSchema,
+  getCriteriaToolHandler,
+  GET_CRITERIA_DESCRIPTION,
+} from '../../orchestrator/tools/get-criteria.js';
+import {
+  reviseCriteriaInputSchema,
+  reviseCriteriaToolHandler,
+  REVISE_CRITERIA_DESCRIPTION,
+} from '../../orchestrator/tools/revise-criteria.js';
 import {
   classifyClient,
   type ClientKind,
@@ -254,7 +276,7 @@ export function getRunGc(): Promise<void> | null {
  */
 export function scheduleRunGc(
   args: RunGcArgs,
-  gc: (args: RunGcArgs) => void | Promise<unknown> = gcTerminalRuns,
+  gc: (args: RunGcArgs) => void | Promise<unknown> = gcTerminalRunsAndCriteriaSets,
 ): Promise<void> {
   const key = singleFlightKey(args.crewHome, args.projectRoot);
   const existing = runGcPromises.get(key);
@@ -440,6 +462,46 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: aggregatePanelInputSchema.shape,
     },
     async (args) => aggregatePanelToolHandler(args, toolDeps),
+  );
+
+  // ---- create_criteria -------------------------------------------------
+  server.registerTool(
+    'create_criteria',
+    {
+      description: CREATE_CRITERIA_DESCRIPTION,
+      inputSchema: createCriteriaInputSchema.shape,
+    },
+    async (args) => createCriteriaToolHandler(args, toolDeps),
+  );
+
+  // ---- confirm_criteria ------------------------------------------------
+  server.registerTool(
+    'confirm_criteria',
+    {
+      description: CONFIRM_CRITERIA_DESCRIPTION,
+      inputSchema: confirmCriteriaInputSchema.shape,
+    },
+    async (args) => confirmCriteriaToolHandler(args, toolDeps),
+  );
+
+  // ---- get_criteria ----------------------------------------------------
+  server.registerTool(
+    'get_criteria',
+    {
+      description: GET_CRITERIA_DESCRIPTION,
+      inputSchema: getCriteriaInputSchema.shape,
+    },
+    async (args) => getCriteriaToolHandler(args, toolDeps),
+  );
+
+  // ---- revise_criteria -------------------------------------------------
+  server.registerTool(
+    'revise_criteria',
+    {
+      description: REVISE_CRITERIA_DESCRIPTION,
+      inputSchema: reviseCriteriaInputSchema.shape,
+    },
+    async (args) => reviseCriteriaToolHandler(args, toolDeps),
   );
 
   // ---- continue_run ----------------------------------------------------

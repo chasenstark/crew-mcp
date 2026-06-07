@@ -8,6 +8,10 @@ import {
   type DispatchContext,
   type DispatchRunAgentInternalResult,
 } from '../dispatch-run-agent-internal.js';
+import {
+  resolveConfirmedCriteriaContract,
+  type CriteriaContractResolution,
+} from '../criteria/store.js';
 import { validatePeerMessagesPreflight } from '../peer-messages/preflight.js';
 import { peerMessageInputSchema, type PeerMessageInput } from '../peer-messages/schema.js';
 import type { ProgressNotifier } from '../progress.js';
@@ -49,6 +53,7 @@ const runPanelReviewerInputSchema = z.object({
 
 export const runPanelInputSchema = z.object({
   implementer_run_id: z.string().min(1).optional(),
+  criteria_set_id: z.string().min(1).optional(),
   reviewers: z.array(runPanelReviewerInputSchema).max(100).optional(),
 }).strict();
 
@@ -127,6 +132,7 @@ export async function runPanelHandler(
   const implementerState = input.implementer_run_id
     ? readImplementerState(input.implementer_run_id, ctx)
     : undefined;
+  const criteriaContract = resolvePanelCriteriaContract(input, implementerState, ctx);
 
   const panelId = randomUUID();
   const targetPanelDir = panelDir(ctx.crewHome, panelId);
@@ -207,6 +213,7 @@ export async function runPanelHandler(
         input: {
           agent_id: reviewer.agent_id,
           prompt: reviewer.prompt,
+          ...(input.criteria_set_id !== undefined ? { criteria_set_id: input.criteria_set_id } : {}),
           ...(reviewer.model !== undefined ? { model: reviewer.model } : {}),
           ...(reviewer.effort !== undefined ? { effort: reviewer.effort } : {}),
           ...(effectiveWorkingDirectory !== undefined
@@ -217,6 +224,8 @@ export async function runPanelHandler(
         },
         ctx,
         progress: ctx.progress,
+        ...(criteriaContract !== undefined ? { criteriaContract } : {}),
+        linkCriteriaImplementerRun: false,
         onStart: async (info) => {
           await replaceReviewer(
             index,
@@ -269,6 +278,26 @@ export async function runPanelHandler(
         error: reviewer.error,
       })),
   };
+}
+
+function resolvePanelCriteriaContract(
+  input: RunPanelInput,
+  implementerState: RunStateV1 | undefined,
+  ctx: RunPanelHandlerContext,
+): CriteriaContractResolution | undefined {
+  if (input.criteria_set_id === undefined) return undefined;
+  if (implementerState !== undefined && implementerState.criteriaSetId !== input.criteria_set_id) {
+    throw new Error(
+      `criteria.linkage_mismatch: implementer run is linked to ${
+        implementerState.criteriaSetId ?? '(none)'
+      }, got ${input.criteria_set_id}`,
+    );
+  }
+  return resolveConfirmedCriteriaContract({
+    crewHome: ctx.crewHome,
+    repoRoot: ctx.runStateStore.repoRoot,
+    criteriaSetId: input.criteria_set_id,
+  });
 }
 
 async function mapBounded<T>(

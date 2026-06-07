@@ -6,10 +6,12 @@ import { warnOnce } from '../utils/warn-once.js';
 import {
   DEFAULT_WORKTREE_TTL_DAYS,
   DEFAULT_RUNDIR_TTL_DAYS,
+  DEFAULT_CRITERIA_SET_TTL_DAYS,
   readConfigFile,
 } from '../utils/config-store.js';
 import type { RunStateStore, RunStateV1 } from './run-state.js';
 import type { WorktreeManager } from '../git/worktree.js';
+import { gcCriteriaSets } from './criteria/store.js';
 
 /**
  * Garbage-collect terminal crew runs so worktrees and run-dirs don't
@@ -99,6 +101,18 @@ export function resolveRunDirTtlMs(crewHome?: string): number {
   );
 }
 
+export function resolveCriteriaSetTtlMs(crewHome?: string): number {
+  const configDays = crewHome !== undefined
+    ? readConfigFile(crewHome).cleanup.criteriaSetTtlDays
+    : undefined;
+  return resolveTtlMs(
+    process.env.CREW_CRITERIA_SET_TTL_DAYS,
+    configDays,
+    DEFAULT_CRITERIA_SET_TTL_DAYS,
+    'CREW_CRITERIA_SET_TTL_DAYS',
+  );
+}
+
 function resolveComparablePath(path: string): string {
   try {
     return realpathSync(path);
@@ -137,6 +151,7 @@ export type RunGcArgs = {
   /** Injectable TTLs for tests; default to the env-resolved values. */
   worktreeTtlMs?: number;
   runDirTtlMs?: number;
+  criteriaSetTtlMs?: number;
   /**
    * When true, compute and return what WOULD be reclaimed without touching
    * the filesystem or git. Used by `crew-mcp cleanup --dry-run`.
@@ -364,5 +379,21 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     runDirsDeleted: outcomes.filter((o) => o.runDirDeleted).length,
     runDirsPending: outcomes.filter((o) => o.runDirPending).length,
     outcomes,
+  };
+}
+
+export interface CrewGcResult extends RunGcResult {
+  readonly criteriaSetsDeleted: number;
+}
+
+export async function gcTerminalRunsAndCriteriaSets(args: RunGcArgs): Promise<CrewGcResult> {
+  const runResult = await gcTerminalRuns(args);
+  const criteriaSetTtlMs = args.criteriaSetTtlMs ?? resolveCriteriaSetTtlMs(args.crewHome);
+  const criteriaSetsDeleted = args.dryRun
+    ? 0
+    : gcCriteriaSets(args.crewHome, criteriaSetTtlMs, args.now);
+  return {
+    ...runResult,
+    criteriaSetsDeleted,
   };
 }

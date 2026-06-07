@@ -442,20 +442,24 @@ describe('crew serve — listTools surface', () => {
     await h.close();
   });
 
-  it('exposes the v2 tool surface (12 tools incl. preferences + panel tools)', async () => {
+  it('exposes the v2 tool surface (16 tools incl. preferences, panel, and criteria tools)', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'aggregate_panel',
       'cancel_run',
+      'confirm_criteria',
       'continue_run',
+      'create_criteria',
       'discard_run',
       'get_crew_preferences',
+      'get_criteria',
       'get_panel_status',
       'get_run_status',
       'list_agents',
       'list_runs',
       'merge_run',
+      'revise_criteria',
       'run_agent',
       'run_panel',
     ]);
@@ -473,6 +477,7 @@ describe('crew serve — listTools surface', () => {
     expect(schema.properties).toHaveProperty('agent_id');
     expect(schema.properties).toHaveProperty('prompt');
     expect(schema.properties).toHaveProperty('peer_messages');
+    expect(schema.properties).toHaveProperty('criteria_set_id');
     expect(schema.required).toContain('agent_id');
     expect(schema.required).toContain('prompt');
   });
@@ -488,6 +493,7 @@ describe('crew serve — listTools surface', () => {
     expect(schema.properties).toHaveProperty('run_id');
     expect(schema.properties).toHaveProperty('prompt');
     expect(schema.properties).toHaveProperty('peer_messages');
+    expect(schema.properties).toHaveProperty('criteria_set_id');
     expect(schema.required).toContain('run_id');
     expect(schema.required ?? []).not.toContain('prompt');
   });

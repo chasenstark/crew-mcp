@@ -139,7 +139,7 @@ describe('cleanupCommand', () => {
     // worktreeTtlDays 0 → reclaim any terminal run immediately.
     writeConfigFile(crewHome, {
       ...DEFAULT_CONFIG,
-      cleanup: { worktreeTtlDays: 0, runDirTtlDays: 30 },
+      cleanup: { worktreeTtlDays: 0, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
     });
     const stdout = captureStdout();
 

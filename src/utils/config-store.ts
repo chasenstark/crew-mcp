@@ -41,6 +41,7 @@ export interface CrewNotificationsConfig {
 /** Default retention windows for the terminal-run garbage collector. */
 export const DEFAULT_WORKTREE_TTL_DAYS = 7;
 export const DEFAULT_RUNDIR_TTL_DAYS = 30;
+export const DEFAULT_CRITERIA_SET_TTL_DAYS = DEFAULT_RUNDIR_TTL_DAYS;
 
 export interface CrewCleanupConfig {
   /**
@@ -56,6 +57,12 @@ export interface CrewCleanupConfig {
    * var `CREW_RUNDIR_TTL_DAYS` overrides.
    */
   readonly runDirTtlDays: number;
+  /**
+   * Days after a criteria set was last updated before it is deleted by
+   * the GC. `-1` disables. Env var `CREW_CRITERIA_SET_TTL_DAYS`
+   * overrides.
+   */
+  readonly criteriaSetTtlDays: number;
 }
 
 export interface CrewConfig {
@@ -82,6 +89,7 @@ export const DEFAULT_CONFIG: CrewConfig = {
   cleanup: {
     worktreeTtlDays: DEFAULT_WORKTREE_TTL_DAYS,
     runDirTtlDays: DEFAULT_RUNDIR_TTL_DAYS,
+    criteriaSetTtlDays: DEFAULT_CRITERIA_SET_TTL_DAYS,
   },
 };
 
@@ -184,6 +192,14 @@ export function readConfigFile(crewHome: string): CrewConfig {
         DEFAULT_CONFIG.cleanup.runDirTtlDays,
         path,
       );
+      out.cleanup.criteriaSetTtlDays = cleanup.criteriaSetTtlDays === undefined
+        ? DEFAULT_CONFIG.cleanup.criteriaSetTtlDays
+        : readTtlDays(
+            cleanup.criteriaSetTtlDays,
+            'cleanup.criteriaSetTtlDays',
+            DEFAULT_CONFIG.cleanup.criteriaSetTtlDays,
+            path,
+          );
     } else {
       logger.warn(`[config] ${path}: "cleanup" must be an object; using defaults`);
     }
@@ -222,6 +238,7 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
   merged.cleanup = {
     worktreeTtlDays: cleanup.worktreeTtlDays,
     runDirTtlDays: cleanup.runDirTtlDays,
+    criteriaSetTtlDays: cleanup.criteriaSetTtlDays ?? DEFAULT_CONFIG.cleanup.criteriaSetTtlDays,
   };
   const serialized = JSON.stringify(merged, null, 2) + '\n';
   atomicWrite(path, serialized);
@@ -274,6 +291,8 @@ const DEFAULT_README: readonly string[] = [
   '    CREW_WORKTREE_TTL_DAYS overrides.',
   '  - cleanup.runDirTtlDays (number): days before a terminal run\'s dir',
   '    is deleted by the GC (-1 = off). Env var CREW_RUNDIR_TTL_DAYS overrides.',
+  '  - cleanup.criteriaSetTtlDays (number): days before a criteria set',
+  '    is deleted by the GC (-1 = off). Env var CREW_CRITERIA_SET_TTL_DAYS overrides.',
   'Delete this file to reset to defaults.',
 ];
 
@@ -287,6 +306,7 @@ function cloneConfig(config: CrewConfig): CrewConfig {
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,
+      criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
     },
   };
 }
@@ -294,7 +314,7 @@ function cloneConfig(config: CrewConfig): CrewConfig {
 function mutableConfig(config: CrewConfig): {
   notifications: { success: boolean; error: boolean };
   confirmBeforeMerge: boolean;
-  cleanup: { worktreeTtlDays: number; runDirTtlDays: number };
+  cleanup: { worktreeTtlDays: number; runDirTtlDays: number; criteriaSetTtlDays: number };
 } {
   return {
     notifications: {
@@ -305,6 +325,7 @@ function mutableConfig(config: CrewConfig): {
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,
+      criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
     },
   };
 }
