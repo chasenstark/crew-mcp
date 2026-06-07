@@ -147,11 +147,18 @@ reference them. Skip this step and you have no defined "done".
 
 Read the user's request. Derive 3–7 criteria. **Every criterion must
 be tagged with one of three TYPE labels** — these are MANDATORY
-because they make the mechanical-evidence rule (Step 3)
-machine-checkable from reviewer output alone:
+because the type decides *who* establishes the criterion's truth: `[M]`
+is verified by running the command in a writable tree (the implementer
+reports it, the captain re-runs to confirm — Step 3), while `[B]`/`[N]`
+are scored by the reviewers reading the diff:
 
 - **`[M]` Mechanical**: a test command, lint check, file-content
-  assertion, or build step producing a binary signal.
+  assertion, or build step producing a binary signal. The captain owns
+  this signal — it re-runs the command itself in the implementer's
+  worktree (Step 3). Do NOT rely on a dispatched reviewer to run it: a
+  read-only Codex reviewer's sandbox blocks the temp-dir writes Vitest
+  needs, so it physically cannot run the suite and would FAIL the
+  criterion environmentally.
   Example: **Skill-renderer tests pass** `[M]` —
   `pnpm test src/install/skill-renderer.test.ts` exits 0.
 - **`[B]` Behavioral**: a property a reviewer can verify by reading
@@ -368,10 +375,19 @@ the same way they detect criteria drift.
 
 ### Step 1 — Dispatch implementer
 
+The implementer runs in its own worktree under `workspace-write`, so it
+is the one place the `[M]` commands can actually run before the captain
+re-checks. Make the task description require it: for every `[M]`
+criterion, run the command and report the exact command + its exit code
+in the run summary. That reported run is the captain's first mechanical
+signal (corroborated, not trusted blindly — Step 3).
+
 ```
 run_agent({
   agent_id: <implementer>,
-  prompt: <task description, restating the criteria inline>,
+  prompt: <task description, restating the criteria inline, ending with
+    "Before you finish: run every [M] criterion's command and report
+     the command + exit code in your summary.">,
   effort: <one level higher than for raw implementation, clamped at "max">,
   peer_messages: [
     { body: <numbered criteria list, verbatim from Step 0>,
@@ -470,14 +486,19 @@ review" out loud.
 
 When to skip just the **crew** reviewer (the host review still runs):
 - Typo / comment / pure-doc commit (<10 LOC, no production-code
-  changes) AND all criteria are behavioral (no mechanical signals).
+  changes). The host review still runs and the captain still verifies
+  any `[M]` criteria itself (below).
 
-**Always dispatch a crew reviewer (override skip) when:** any
-criterion is mechanical. A crew reviewer is dispatched read-only at
-the implementer's worktree and can actually run the test command
-there — more reliable than a review that only reads the diff. Criteria
-type is a stronger signal than diff size for whether a crew reviewer
-earns its keep.
+**The captain owns mechanical verification — not the crew reviewer.**
+A dispatched reviewer runs read-only, and a read-only Codex reviewer
+cannot run the suite at all (sandbox EPERM on Vitest's temp dirs). So
+never gate the crew-reviewer decision on whether a criterion is `[M]`,
+and never treat a reviewer's `[M]` score as the mechanical signal. The
+captain re-runs every `[M]` command itself in the implementer's
+worktree (Step 3); the implementer's own reported run is the first
+signal, the captain's re-run is authoritative. Crew reviewers earn
+their keep on `[B]`/`[N]` judgment and out-of-scope findings — dispatch
+them for that.
 
 **Always review on `partial` / `error`.** When the implementer
 terminates with `partial` or `error`, the reviewer's read often
@@ -599,17 +620,23 @@ the captain gave you in peer_messages, decide (a criterion may carry
 `-` sub-bullets — they are facets of that one criterion; score the
 numbered parent as a whole, PASS only if every sub-bullet holds):
 
-  PASS  — the change meets this criterion. State why in 1 line. For
-          MECHANICAL criteria (test command, lint, file content), you
-          MUST cite the evidence: the command you ran AND its exit
-          code, or the file:line you read AND what it said. "PASS —
-          tests pass" without evidence is treated as FAIL by the
-          captain.
+  PASS  — the change meets this criterion. State why in 1 line. For a
+          file-content / `[B]` / `[N]` criterion, cite the file:line you
+          read AND what it said.
   FAIL  — the change does not meet this criterion. State the gap in
           1-2 lines, cite file:line where relevant.
   N-A   — the criterion truly does not apply to this diff (extremely
           rare). Say why. The captain prompts the user for explicit
           acceptance before treating N-A as PASS.
+
+For `[M]` MECHANICAL criteria (test command, lint, build): do NOT run
+the command yourself — you are read-only and your sandbox may block the
+temp-dir writes the runner needs. The captain re-runs every `[M]`
+command itself and owns that score. Score `[M]` from your read of the
+diff plus the implementer's reported run (in peer_messages): PASS if the
+two are consistent, FAIL only if the diff contradicts the claim (cite
+file:line). NEVER FAIL an `[M]` criterion because you could not run the
+command — that is an environment limit, not a defect.
 
 PART 2 — Produce an overall verdict:
 
@@ -630,8 +657,8 @@ Out-of-scope rule (single source of truth, do not improvise):
 Output format (mandatory, strict):
 
   ## Criteria scoring
-  - [1] <verbatim criterion label>: PASS|FAIL|N-A — <one-line reason
-        with evidence for mechanical PASS>
+  - [1] <verbatim criterion label>: PASS|FAIL|N-A — <one-line reason;
+        file:line evidence for [B]/[N], implementer-run consistency for [M]>
   - [2] <verbatim criterion label>: PASS|FAIL|N-A — <one-line reason>
   - ... one line per criterion, in the captain's order.
 
@@ -688,10 +715,25 @@ Once the host review and all crew reviewer verdicts are in, parse each
 reviewer's criteria scoring + overall verdict. The stop condition is
 mechanical.
 
+**Captain mechanical pass (do this FIRST, before reading verdicts).**
+For every `[M]` criterion, the captain runs the command itself in the
+implementer's worktree (`A.worktree_path`) and records the exit code.
+The captain has full write access there — no sandbox — so the runner's
+temp writes succeed; this is the authoritative mechanical signal. These
+captain scores OVERRIDE any reviewer's `[M]` score: a read-only
+reviewer that FAILed an `[M]` criterion only because its sandbox
+blocked the suite is discarded as environmental, not a defect.
+Cross-check against the implementer's reported run — if the captain's
+re-run disagrees with what the implementer claimed, that gap is itself
+iterate-worthy signal. Only `[B]`/`[N]` criteria are scored from
+reviewer output.
+
 **Converged (go to Step 4).** ALL of:
-- **every criterion** is scored PASS by every reviewer, OR N-A by
-  every reviewer **with explicit user acceptance** (see N-A guard
-  below — N-A is not free); no FAILs, no unscored, no malformed
+- **every `[M]` criterion** exits cleanly in the captain's mechanical
+  pass (above);
+- **every `[B]`/`[N]` criterion** is scored PASS by every reviewer, OR
+  N-A by every reviewer **with explicit user acceptance** (see N-A
+  guard below — N-A is not free); no FAILs, no unscored, no malformed
   sections, no PASS+Criterion-N contradictions;
 - every reviewer's overall verdict is APPROVE.
 
@@ -703,7 +745,8 @@ and never reach Step 3 — if you see one in Findings, treat the
 reviewer as malformed and re-dispatch.
 
 **Iterate (run another round).** ANY of:
-- one or more criteria FAILed by any reviewer, OR
+- one or more `[M]` criteria failed the captain's mechanical pass, OR
+- one or more `[B]`/`[N]` criteria FAILed by any reviewer, OR
 - one or more reviewer overall verdicts is CHANGES_NEEDED.
 
 **N-A guard (user-confirmation gate).** N-A is the escape hatch a
@@ -801,10 +844,13 @@ the same reviewers against the new diff. Round count increments by 1.
 - **`criteria drift detected`.** Treat as captain audit failure:
   stop, surface to user, re-confirm the canonical criteria list,
   resume with the correct block.
-- **Mechanical-PASS without evidence — treat as FAIL.** Mechanical
-  criterion scored PASS without command + exit code or file:line +
-  content → criterion is FAIL. Implementer needs no fix; reviewer
-  needs to re-run with evidence (malformed-output re-dispatch path).
+- **A reviewer's `[M]` score never converges the loop.** `[M]` truth
+  is the captain's mechanical pass, not reviewer output. If a reviewer
+  PASSes an `[M]` criterion that the captain's re-run FAILs, the
+  captain's score wins (iterate). If a reviewer FAILs an `[M]`
+  criterion only because its sandbox blocked the command, ignore it —
+  that is environmental, not a defect, and is NOT a malformed-output
+  re-dispatch.
 - **BLOCKING verdict.** Stop the loop. Surface the reviewer's
   Recommended action. Ask: "rethink the approach, revise the
   criteria, discard, or continue anyway?" Do NOT silently continue.
