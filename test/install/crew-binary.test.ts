@@ -4,8 +4,63 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isCrewWaitOnPath,
+  projectCrewBinaryResolver,
+  projectCrewWaitCommand,
   resolveCrewWaitBinary,
 } from '../../src/install/crew-binary.js';
+
+describe('projectCrewBinaryResolver', () => {
+  it('renders the POSIX node_modules/.bin command without absolute paths', () => {
+    const result = projectCrewBinaryResolver({
+      repoRoot: '/Users/me/repo',
+      platform: 'darwin',
+    });
+
+    expect(result).toEqual({
+      command: './node_modules/.bin/crew-mcp',
+      args: ['serve'],
+    });
+    expect(JSON.stringify(result)).not.toContain('/Users/me/repo');
+    expect(JSON.stringify(result)).not.toContain('dist/index.js');
+  });
+
+  it('renders the Windows node_modules .cmd shim', () => {
+    expect(projectCrewBinaryResolver({
+      repoRoot: 'C:\\repo',
+      platform: 'win32',
+    })).toEqual({
+      command: '.\\node_modules\\.bin\\crew-mcp.cmd',
+      args: ['serve'],
+    });
+  });
+
+  it('renders the npx --no-install fallback', () => {
+    expect(projectCrewBinaryResolver({
+      repoRoot: '/repo',
+      strategy: 'npx',
+    })).toEqual({
+      command: 'npx',
+      args: ['--no-install', 'crew-mcp', 'serve'],
+    });
+  });
+});
+
+describe('projectCrewWaitCommand', () => {
+  it('matches the project node_modules strategy on POSIX and Windows', () => {
+    expect(projectCrewWaitCommand({ platform: 'darwin' })).toBe(
+      './node_modules/.bin/crew-wait',
+    );
+    expect(projectCrewWaitCommand({ platform: 'win32' })).toBe(
+      '.\\node_modules\\.bin\\crew-wait.cmd',
+    );
+  });
+
+  it('matches the npx fallback strategy', () => {
+    expect(projectCrewWaitCommand({ strategy: 'npx' })).toBe(
+      'npx --no-install crew-wait',
+    );
+  });
+});
 
 describe('resolveCrewWaitBinary', () => {
   it('returns the first executable POSIX crew-wait on PATH', () => {

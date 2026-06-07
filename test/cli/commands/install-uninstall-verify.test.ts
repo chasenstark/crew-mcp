@@ -29,6 +29,8 @@ import { uninstallCommand } from '../../../src/cli/commands/uninstall.js';
 import { verifyCommand } from '../../../src/cli/commands/verify.js';
 import { HOST_ADAPTERS } from '../../../src/install/hosts/index.js';
 import { manifestPath } from '../../../src/install/install-manifest.js';
+import { projectManifestPath } from '../../../src/install/project-install-manifest.js';
+import { CATALOG_TOOLS } from '../../../src/install/tool-catalog.js';
 import { logger } from '../../../src/utils/logger.js';
 
 const STUB_BIN = {
@@ -991,6 +993,316 @@ describe('install / verify / uninstall — happy path', () => {
     const result = await installCommand(args);
     expect(result.installed).toEqual(['codex']);
     expect(result.skipped).toEqual([]);
+  });
+});
+
+describe('project-scope install / verify / uninstall', () => {
+  let home: string;
+  let repoRoot: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'crew-project-home-'));
+    repoRoot = mkdtempSync(join(tmpdir(), 'crew-project-repo-'));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  function repoFiles(): string[] {
+    const out: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const abs = join(dir, entry.name);
+        const rel = abs.slice(repoRoot.length + 1);
+        if (entry.isDirectory()) {
+          walk(abs);
+        } else {
+          out.push(rel);
+        }
+      }
+    };
+    walk(repoRoot);
+    return out.sort();
+  }
+
+  async function installProjectAll(): Promise<void> {
+    const result = await installCommand({
+      scope: 'project',
+      target: 'claude-code,codex',
+      home,
+      repoRoot,
+      skipRunningCheck: true,
+    });
+    expect(result.installed).toEqual(['claude-code', 'codex']);
+    expect(result.skipped).toEqual([]);
+  }
+
+  it('install --scope project writes portable Claude and Codex project files only', async () => {
+    await installProjectAll();
+
+    expect(repoFiles()).toEqual([
+      '.claude/settings.json',
+      '.claude/skills/crew-iterate/SKILL.md',
+      '.claude/skills/crew/SKILL.md',
+      '.codex/config.toml',
+      '.codex/skills/crew-iterate/SKILL.md',
+      '.codex/skills/crew/SKILL.md',
+      '.crew/install.project.json',
+      '.mcp.json',
+    ]);
+    expect(existsSync(manifestPath(home))).toBe(false);
+    expect(existsSync(join(home, '.crew', 'agents.json'))).toBe(false);
+
+    const claudeConfig = JSON.parse(readFileSync(join(repoRoot, '.mcp.json'), 'utf-8')) as {
+      mcpServers: { crew: { command: string; args: string[] } };
+    };
+    expect(claudeConfig.mcpServers.crew).toEqual({
+      command: './node_modules/.bin/crew-mcp',
+      args: ['serve'],
+    });
+
+    const codexConfig = readFileSync(join(repoRoot, '.codex', 'config.toml'), 'utf-8');
+    expect(codexConfig).toContain('command = "./node_modules/.bin/crew-mcp"');
+    for (const tool of CATALOG_TOOLS) {
+      expect(codexConfig).toContain(
+        `[mcp_servers.crew.tools.${tool.name}]\napproval_mode = "approve"`,
+      );
+    }
+
+    const permissions = JSON.parse(readFileSync(join(repoRoot, '.claude', 'settings.json'), 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toContain('mcp__crew__*');
+    expect(permissions.permissions.allow).toContain('Bash(./node_modules/.bin/crew-wait:*)');
+
+    const manifest = JSON.parse(readFileSync(projectManifestPath(repoRoot), 'utf-8')) as {
+      scope: string;
+      targets: Record<string, {
+        configPath: string;
+        writtenPaths: string[];
+        serverCommand: string;
+        serverArgs: string[];
+      }>;
+    };
+    expect(manifest.scope).toBe('project');
+    expect(manifest.targets.codex.configPath).toBe('.codex/config.toml');
+    expect(manifest.targets.codex.serverCommand).toBe('./node_modules/.bin/crew-mcp');
+    expect(manifest.targets.codex.serverArgs).toEqual(['serve']);
+    expect(JSON.stringify(manifest)).not.toContain(repoRoot);
+    expect(JSON.stringify(manifest)).not.toContain(home);
+    expect(JSON.stringify(manifest)).not.toContain('dist/index.js');
+  });
+
+  it('project --target all and omitted non-interactive target skip host binary detection', async () => {
+    const claudeDetect = vi.spyOn(HOST_ADAPTERS['claude-code'], 'detectInstalled')
+      .mockRejectedValue(new Error('should not detect claude'));
+    const codexDetect = vi.spyOn(HOST_ADAPTERS.codex, 'detectInstalled')
+      .mockRejectedValue(new Error('should not detect codex'));
+    const geminiDetect = vi.spyOn(HOST_ADAPTERS.gemini, 'detectInstalled')
+      .mockRejectedValue(new Error('should not detect gemini'));
+
+    const allResult = await installCommand({
+      scope: 'project',
+      target: 'all',
+      home,
+      repoRoot,
+      skipRunningCheck: true,
+    });
+    expect(allResult.installed).toEqual(['claude-code', 'codex']);
+
+    rmSync(repoRoot, { recursive: true, force: true });
+    repoRoot = mkdtempSync(join(tmpdir(), 'crew-project-repo-'));
+    const omittedResult = await installCommand({
+      scope: 'project',
+      home,
+      repoRoot,
+      skipRunningCheck: true,
+      isInteractive: false,
+    });
+    expect(omittedResult.installed).toEqual(['claude-code', 'codex']);
+    expect(claudeDetect).not.toHaveBeenCalled();
+    expect(codexDetect).not.toHaveBeenCalled();
+    expect(geminiDetect).not.toHaveBeenCalled();
+  });
+
+  it('project omitted TTY target offers all project-capable hosts to the selector', async () => {
+    let receivedIds: string[] = [];
+    const result = await installCommand({
+      scope: 'project',
+      home,
+      repoRoot,
+      skipRunningCheck: true,
+      isInteractive: true,
+      selectTargets: async (hosts) => {
+        receivedIds = hosts.map((host) => host.id);
+        expect(hosts.every((host) => host.installed)).toBe(true);
+        return ['codex'];
+      },
+    });
+
+    expect(receivedIds).toEqual(['claude-code', 'codex']);
+    expect(result.installed).toEqual(['codex']);
+  });
+
+  it('verify --scope project passes after install and warns for missing Codex trust', async () => {
+    await installProjectAll();
+    const report = await verifyCommand({ scope: 'project', home, repoRoot });
+    expect(report.ok).toBe(true);
+    expect(report.targets.map((target) => target.host).sort()).toEqual(['claude-code', 'codex']);
+    expect(report.targets.every((target) => target.issues.length === 0)).toBe(true);
+    expect(report.probes).toContainEqual({
+      name: 'codex-project-trust',
+      status: 'warn',
+      message: expect.stringContaining('Codex project trust missing'),
+    });
+  });
+
+  it('verify --scope project reports drift for corrupted skills and removed MCP blocks', async () => {
+    await installProjectAll();
+    for (const skillPath of [
+      join(repoRoot, '.codex', 'skills', 'crew', 'SKILL.md'),
+      join(repoRoot, '.codex', 'skills', 'crew-iterate', 'SKILL.md'),
+    ]) {
+      const original = readFileSync(skillPath, 'utf-8');
+      writeFileSync(skillPath, original.replace(/mcp__crew__merge_run/g, 'NUKED'), 'utf-8');
+    }
+
+    const skillReport = await verifyCommand({
+      scope: 'project',
+      target: 'codex',
+      home,
+      repoRoot,
+    });
+    expect(skillReport.ok).toBe(false);
+    expect(skillReport.targets[0].issues.join('\n')).toMatch(/missing tool references.*merge_run/);
+
+    await installCommand({
+      scope: 'project',
+      target: 'codex',
+      home,
+      repoRoot,
+      skipRunningCheck: true,
+    });
+    writeFileSync(join(repoRoot, '.codex', 'config.toml'), '# crew removed\n', 'utf-8');
+    const configReport = await verifyCommand({
+      scope: 'project',
+      target: 'codex',
+      home,
+      repoRoot,
+    });
+    expect(configReport.ok).toBe(false);
+    expect(configReport.targets[0].issues.join('\n')).toContain('crew MCP block');
+  });
+
+  it('verify --scope project fails non-portable committed commands', async () => {
+    await installProjectAll();
+    const configPath = join(repoRoot, '.codex', 'config.toml');
+    const config = readFileSync(configPath, 'utf-8')
+      .replace(
+        'command = "./node_modules/.bin/crew-mcp"\nargs = ["serve"]',
+        `command = "/usr/local/bin/node"\nargs = ["${repoRoot}/dist/index.js", "serve"]`,
+      );
+    writeFileSync(configPath, config, 'utf-8');
+
+    const report = await verifyCommand({
+      scope: 'project',
+      target: 'codex',
+      home,
+      repoRoot,
+    });
+    expect(report.ok).toBe(false);
+    expect(report.targets[0].issues.join('\n')).toContain('not portable');
+    expect(report.targets[0].issues.join('\n')).toContain('repo-absolute path');
+  });
+
+  it('uninstall --scope project removes crew-owned files and preserves unrelated config', async () => {
+    writeFileSync(
+      join(repoRoot, '.mcp.json'),
+      JSON.stringify({ mcpServers: { other: { command: 'other', args: [] } } }, null, 2),
+      'utf-8',
+    );
+    mkdirSync(join(repoRoot, '.claude'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { allow: ['Read'] } }, null, 2),
+      'utf-8',
+    );
+    mkdirSync(join(repoRoot, '.codex'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.codex', 'config.toml'),
+      '[mcp_servers.other]\ncommand = "other"\nargs = []\n',
+      'utf-8',
+    );
+
+    await installProjectAll();
+    const result = await uninstallCommand({
+      scope: 'project',
+      target: 'claude-code,codex',
+      home,
+      repoRoot,
+    });
+    expect(result.removed).toEqual(['claude-code', 'codex']);
+
+    expect(existsSync(join(repoRoot, '.claude', 'skills', 'crew', 'SKILL.md'))).toBe(false);
+    expect(existsSync(join(repoRoot, '.codex', 'skills', 'crew', 'SKILL.md'))).toBe(false);
+    const claudeConfig = JSON.parse(readFileSync(join(repoRoot, '.mcp.json'), 'utf-8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(claudeConfig.mcpServers.other).toEqual({ command: 'other', args: [] });
+    expect(claudeConfig.mcpServers.crew).toBeUndefined();
+    const permissions = JSON.parse(readFileSync(join(repoRoot, '.claude', 'settings.json'), 'utf-8')) as {
+      permissions: { allow: string[] };
+    };
+    expect(permissions.permissions.allow).toEqual(['Read']);
+    const codexConfig = readFileSync(join(repoRoot, '.codex', 'config.toml'), 'utf-8');
+    expect(codexConfig).toContain('[mcp_servers.other]');
+    expect(codexConfig).not.toContain('[mcp_servers.crew');
+
+    const manifest = JSON.parse(readFileSync(projectManifestPath(repoRoot), 'utf-8')) as {
+      targets: Record<string, unknown>;
+    };
+    expect(manifest.targets.codex).toBeUndefined();
+    expect(manifest.targets['claude-code']).toBeUndefined();
+  });
+
+  it('uninstall --scope project works best-effort without a manifest', async () => {
+    await installProjectAll();
+    rmSync(projectManifestPath(repoRoot), { force: true });
+
+    const result = await uninstallCommand({
+      scope: 'project',
+      target: 'codex',
+      home,
+      repoRoot,
+    });
+    expect(result.removed).toEqual(['codex']);
+    expect(existsSync(join(repoRoot, '.codex', 'skills', 'crew', 'SKILL.md'))).toBe(false);
+    expect(readFileSync(join(repoRoot, '.codex', 'config.toml'), 'utf-8')).not.toContain(
+      '[mcp_servers.crew',
+    );
+  });
+
+  it('rejects invalid project scope and unsupported project targets clearly', async () => {
+    await expect(
+      installCommand({
+        scope: 'workspace',
+        target: 'codex',
+        home,
+        repoRoot,
+      }),
+    ).rejects.toThrow(/Invalid --scope/);
+
+    await expect(
+      installCommand({
+        scope: 'project',
+        target: 'gemini',
+        home,
+        repoRoot,
+      }),
+    ).rejects.toThrow(/does not support project scope/);
   });
 });
 

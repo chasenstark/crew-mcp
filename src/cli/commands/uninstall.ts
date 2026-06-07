@@ -16,20 +16,34 @@ import { homedir } from 'node:os';
 
 import {
   HOST_ADAPTERS,
+  type HostAdapter,
   type HostId,
 } from '../../install/hosts/index.js';
 import {
   readInstallManifest,
   removeInstalledTarget,
 } from '../../install/install-manifest.js';
+import {
+  absolutizeProjectTarget,
+  projectManifestPath,
+  readProjectInstallManifest,
+  removeProjectInstalledTarget,
+} from '../../install/project-install-manifest.js';
+import { resolveGitRepoRoot } from '../../install/repo-root.js';
+import { parseInstallScope, type InstallScope } from '../../install/scope.js';
+import { SKILL_MANIFEST } from '../../install/skill-renderer.js';
 import { logger } from '../../utils/logger.js';
 import { resolveTargets } from './install.js';
 
 export interface UninstallOptions {
+  /** Install scope. Defaults to global. */
+  scope?: InstallScope | string;
   /** Comma-separated host ids, or 'all'. Required. */
   target: string;
   /** Override $HOME (tests). */
   home?: string;
+  /** Override repository root for project-scope tests. */
+  repoRoot?: string;
 }
 
 export interface UninstallResult {
@@ -38,8 +52,16 @@ export interface UninstallResult {
 }
 
 export async function uninstallCommand(opts: UninstallOptions): Promise<UninstallResult> {
+  const scope = parseInstallScope(opts.scope);
+  if (scope === 'project') {
+    return uninstallProjectCommand(opts);
+  }
+  return uninstallGlobalCommand(opts);
+}
+
+async function uninstallGlobalCommand(opts: UninstallOptions): Promise<UninstallResult> {
   const home = opts.home ?? homedir();
-  const targets = resolveTargets(opts.target);
+  const targets = resolveTargets(opts.target, 'global');
 
   // Load the manifest once. We prefer the recorded skillPath over the
   // adapter's current skillPath so that an older crew version's install
@@ -118,6 +140,85 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<Uninstal
   return result;
 }
 
+async function uninstallProjectCommand(opts: UninstallOptions): Promise<UninstallResult> {
+  const repoRoot = await resolveGitRepoRoot({ repoRoot: opts.repoRoot });
+  const targets = resolveTargets(opts.target, 'project');
+  const manifestWasPresent = existsSync(projectManifestPath(repoRoot));
+  const manifest = await readProjectInstallManifest(repoRoot);
+  if (!manifestWasPresent) {
+    logger.warn(
+      `crew uninstall: project manifest absent at ${projectManifestPath(repoRoot)}; using best-effort project path cleanup.`,
+    );
+  }
+
+  const result: UninstallResult = { removed: [], skipped: [] };
+
+  for (const targetId of targets) {
+    const adapter = HOST_ADAPTERS[targetId];
+    try {
+      assertProjectCapable(adapter);
+      const manifestTarget = manifest.targets[targetId];
+      const target = manifestTarget
+        ? absolutizeProjectTarget(repoRoot, manifestTarget)
+        : undefined;
+      const configPath = target?.configPath ?? adapter.projectConfigPath(repoRoot);
+
+      if (existsSync(configPath)) {
+        const existing = readFileSync(configPath, 'utf-8');
+        const stripped = adapter.removeMcpBlock(existing);
+        if (stripped !== existing) {
+          writeFileSync(configPath, stripped, 'utf-8');
+        }
+      }
+
+      if (adapter.clearAutoApproval) {
+        const approvalFile = target?.permissionsPath
+          ?? adapter.projectPermissionsPath?.(repoRoot)
+          ?? configPath;
+        if (existsSync(approvalFile)) {
+          const before = readFileSync(approvalFile, 'utf-8');
+          const afterAutoApproval = adapter.clearAutoApproval(before);
+          const after = targetId === 'claude-code'
+            ? removeClaudeCrewWaitPermissions(afterAutoApproval)
+            : afterAutoApproval;
+          if (after !== before) {
+            writeFileSync(approvalFile, after, 'utf-8');
+          }
+        }
+      }
+
+      const candidatePaths = new Set<string>();
+      for (const p of target?.writtenPaths ?? []) {
+        if (p.endsWith('/SKILL.md') || p.endsWith('\\SKILL.md')) candidatePaths.add(p);
+      }
+      for (const p of Object.values(target?.skills ?? {})) candidatePaths.add(p);
+      if (target?.skillPath) candidatePaths.add(target.skillPath);
+      if (!target) {
+        for (const skill of SKILL_MANIFEST) {
+          candidatePaths.add(adapter.projectSkillInstallSpecFor(repoRoot, skill).skillPath);
+        }
+        candidatePaths.add(adapter.projectSkillPath(repoRoot));
+      }
+      for (const skillPath of candidatePaths) {
+        if (existsSync(skillPath)) {
+          rmSync(skillPath, { force: true });
+        }
+      }
+
+      await removeProjectInstalledTarget(repoRoot, targetId);
+
+      result.removed.push(targetId);
+      logger.info(`crew uninstall: ${adapter.displayName} project scope ✓`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(`crew uninstall: ${adapter.displayName} project scope failed — ${message}`);
+      result.skipped.push({ host: targetId, reason: message });
+    }
+  }
+
+  return result;
+}
+
 function removeClaudeCrewWaitPermissions(existing: string): string {
   if (existing.trim().length === 0) return existing;
   let parsed: Record<string, unknown>;
@@ -156,7 +257,24 @@ function removeClaudeCrewWaitPermissions(existing: string): string {
   return JSON.stringify(parsed, null, 2) + '\n';
 }
 
+function assertProjectCapable(
+  adapter: HostAdapter,
+): asserts adapter is HostAdapter & {
+  projectConfigPath(repoRoot: string): string;
+  projectSkillPath(repoRoot: string): string;
+  projectSkillInstallSpecFor(repoRoot: string, skill: (typeof SKILL_MANIFEST)[number]): { skillPath: string };
+} {
+  if (
+    !adapter.projectConfigPath
+    || !adapter.projectSkillPath
+    || !adapter.projectSkillInstallSpecFor
+  ) {
+    throw new Error(`${adapter.displayName} does not support project-scope uninstall.`);
+  }
+}
+
 function isCrewWaitBashPermission(entry: string): boolean {
   if (entry === 'Bash(crew-wait:*)') return true;
+  if (entry === 'Bash(npx --no-install crew-wait:*)') return true;
   return /^Bash\(.+[\\/]crew-wait(?:\.(?:cmd|ps1|exe|bat))?:\*\)$/i.test(entry);
 }

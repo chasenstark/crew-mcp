@@ -17,7 +17,8 @@ scripts/tail-handler/build/
 scripts/tail-handler/*.app/
 
 # Crew state (project-specific, not committed)
-.crew/
+.crew/*
+!.crew/install.project.json
 .crew/worktrees/
 .crew/state.json
 .crew/passes/
@@ -27,6 +28,3 @@ scripts/tail-handler/*.app/
 
 # Legacy state dir (pre-rename); keep ignored until local copies are cleaned up
 .orchestra/
-
-# Keep the workflow config
-!.crew/workflow.yaml

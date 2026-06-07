@@ -53,6 +53,25 @@ describe('codexAdapter.skillInstallSpecFor', () => {
   });
 });
 
+describe('codexAdapter project paths', () => {
+  it('points project config and skills inside the repo', () => {
+    const repoRoot = '/repo';
+    expect(codexAdapter.projectConfigPath!(repoRoot)).toBe('/repo/.codex/config.toml');
+    expect(codexAdapter.projectSkillPath!(repoRoot)).toBe(
+      '/repo/.codex/skills/crew/SKILL.md',
+    );
+
+    const spec = codexAdapter.projectSkillInstallSpecFor!(repoRoot, {
+      id: 'crew:iterate',
+      slug: 'iterate',
+      bodyFile: 'crew-iterate.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe('/repo/.codex/skills/crew-iterate/SKILL.md');
+    expect(spec.frontmatterName).toBe('crew-iterate');
+  });
+});
+
 describe('codexAdapter.mergeMcpBlock', () => {
   it('writes the block as the entire file when input is empty', () => {
     const out = codexAdapter.mergeMcpBlock('', CMD, ARGS);

@@ -46,6 +46,9 @@ export const claudeCodeAdapter: HostAdapter = {
   configPath: (home) => join(home, '.claude.json'),
   skillPath: (home) => join(home, '.claude', 'skills', 'crew', 'SKILL.md'),
   skillInstallSpecFor: claudeCodeSkillInstallSpecFor,
+  projectConfigPath: (repoRoot) => join(repoRoot, '.mcp.json'),
+  projectSkillPath: (repoRoot) => join(repoRoot, '.claude', 'skills', 'crew', 'SKILL.md'),
+  projectSkillInstallSpecFor: claudeCodeProjectSkillInstallSpecFor,
 
   mergeMcpBlock(existing, crewBin, crewArgs) {
     const parsed = parseClaudeConfig(existing);
@@ -92,6 +95,7 @@ export const claudeCodeAdapter: HostAdapter = {
   },
 
   permissionsPath: (home) => join(home, '.claude', 'settings.json'),
+  projectPermissionsPath: (repoRoot) => join(repoRoot, '.claude', 'settings.json'),
 
   writeAutoApproval(existing, _tools) {
     // Wildcard covers all 6 tools and any future additions; per-tool
@@ -146,9 +150,23 @@ function claudeCodeSkillInstallSpecFor(
   home: string,
   skill: SkillManifestEntry,
 ): SkillInstallSpec {
+  return claudeCodeSkillInstallSpecAt(home, skill);
+}
+
+function claudeCodeProjectSkillInstallSpecFor(
+  repoRoot: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
+  return claudeCodeSkillInstallSpecAt(repoRoot, skill);
+}
+
+function claudeCodeSkillInstallSpecAt(
+  root: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
   const dir = skill.id.replace(':', '-');
   return {
-    skillPath: join(home, '.claude', 'skills', dir, 'SKILL.md'),
+    skillPath: join(root, '.claude', 'skills', dir, 'SKILL.md'),
     frontmatterName: dir,
     legacyPathsToRemove: [],
   };

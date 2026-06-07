@@ -146,6 +146,46 @@ crew-mcp verify
 Restart your host CLI session. The `mcp__crew__*` tools and the captain
 skill are now available.
 
+### Project-scoped install
+
+For a shared repo, commit portable host config and skills once:
+
+```sh
+npm install --save-dev crew-mcp
+npx crew-mcp install --scope project --target claude-code,codex
+git add .mcp.json .claude .codex .crew/install.project.json package.json package-lock.json
+```
+
+Project scope writes `./node_modules/.bin/crew-mcp serve` into the
+host config, not a machine-specific `dist/index.js` or home-directory
+path. It also writes `.crew/install.project.json` with repo-relative
+paths, does not write `~/.crew/install.json`, and does not seed
+`~/.crew/agents.json`.
+
+After pulling the repo, each developer runs:
+
+```sh
+npm install
+```
+
+Claude Code reads `.mcp.json` and `.claude/skills` from the project.
+Codex developers must trust the repo once before `.codex/config.toml`
+is loaded:
+
+```toml
+[projects."/absolute/path/to/repo"]
+trust_level = "trusted"
+```
+
+Then restart the host and run:
+
+```sh
+npx crew-mcp verify --scope project
+```
+
+Per-machine agent overrides still use `crew-mcp agents add` or
+`crew-mcp agents edit`.
+
 ### 🤖 Add local models
 
 ```sh

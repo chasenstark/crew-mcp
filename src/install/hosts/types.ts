@@ -47,6 +47,24 @@ export interface HostAdapter {
    */
   skillInstallSpecFor(home: string, skill: SkillManifestEntry): SkillInstallSpec;
 
+  /** Project-local host MCP config path, when this host supports project scope. */
+  projectConfigPath?(repoRoot: string): string;
+
+  /**
+   * Project-local umbrella `crew` skill path. Kept parallel to skillPath
+   * for adapters that support project scope.
+   */
+  projectSkillPath?(repoRoot: string): string;
+
+  /**
+   * Project-local per-skill install spec. Optional so new hosts can be
+   * global-only until their project config surface is known.
+   */
+  projectSkillInstallSpecFor?(
+    repoRoot: string,
+    skill: SkillManifestEntry,
+  ): SkillInstallSpec;
+
   /**
    * Merge the crew MCP block into the host's config. `existing` is the
    * current file content (empty string if file doesn't exist). Returns
@@ -94,6 +112,12 @@ export interface HostAdapter {
    * the adapter returns.
    */
   permissionsPath?(home: string): string;
+
+  /** Project-local approval/permissions path, if separate from projectConfigPath. */
+  projectPermissionsPath?(repoRoot: string): string;
+
+  /** Host-specific residual setup notes printed after a project install. */
+  projectInstallNotes?(repoRoot: string): readonly string[];
 
   /**
    * Pre-approve the listed crew tools so the host CLI doesn't prompt

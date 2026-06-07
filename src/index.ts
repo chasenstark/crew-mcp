@@ -131,16 +131,31 @@ export function buildProgram(): Command {
       'Target host: claude-code | codex | gemini | all. '
       + 'Omit to detect installed CLIs and pick interactively.',
     )
+    .option('--scope <scope>', 'Install scope: global | project', 'global')
+    .option('--project', 'Alias for --scope project')
+    .option(
+      '--binary-strategy <strategy>',
+      'Project-scope server command strategy: node-modules-bin | npx',
+      'node-modules-bin',
+    )
     .option(
       '--no-auto-approve',
       'Do not pre-approve mcp__crew__* tools (host CLI will prompt before each call). Default: pre-approve.',
     )
-    .action(async (opts: { target?: string; autoApprove: boolean }) => {
+    .action(async (opts: {
+      target?: string;
+      scope: string;
+      project?: boolean;
+      binaryStrategy: string;
+      autoApprove: boolean;
+    }) => {
       applyDebugFlag(program);
       const { installCommand } = await import('./cli/commands/install.js');
       // commander's --no-foo sets opts.foo = false; default is true.
       const result = await installCommand({
         target: opts.target,
+        scope: opts.project ? 'project' : opts.scope,
+        binaryStrategy: opts.binaryStrategy,
         autoApprove: opts.autoApprove,
       });
       if (result.installed.length === 0 && result.skipped.length > 0) {
@@ -174,10 +189,16 @@ export function buildProgram(): Command {
   program
     .command('verify')
     .description('Check installed skill ↔ MCP tool catalog parity')
-    .action(async () => {
+    .option('-t, --target <host>', 'Target host: claude-code | codex | gemini | all')
+    .option('--scope <scope>', 'Install scope: global | project', 'global')
+    .option('--project', 'Alias for --scope project')
+    .action(async (opts: { target?: string; scope: string; project?: boolean }) => {
       applyDebugFlag(program);
       const { verifyCommand } = await import('./cli/commands/verify.js');
-      const report = await verifyCommand();
+      const report = await verifyCommand({
+        target: opts.target,
+        scope: opts.project ? 'project' : opts.scope,
+      });
       if (!report.ok) {
         process.exitCode = 1;
       }
@@ -192,10 +213,15 @@ export function buildProgram(): Command {
       '-t, --target <host>',
       'Target host: claude-code | codex | gemini | all',
     )
-    .action(async (opts: { target: string }) => {
+    .option('--scope <scope>', 'Install scope: global | project', 'global')
+    .option('--project', 'Alias for --scope project')
+    .action(async (opts: { target: string; scope: string; project?: boolean }) => {
       applyDebugFlag(program);
       const { uninstallCommand } = await import('./cli/commands/uninstall.js');
-      await uninstallCommand({ target: opts.target });
+      await uninstallCommand({
+        target: opts.target,
+        scope: opts.project ? 'project' : opts.scope,
+      });
     });
 
   return program;

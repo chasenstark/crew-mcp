@@ -41,6 +41,28 @@ describe('claudeCodeAdapter.skillInstallSpecFor', () => {
   });
 });
 
+describe('claudeCodeAdapter project paths', () => {
+  it('points project config, permissions, and skills inside the repo', () => {
+    const repoRoot = '/repo';
+    expect(claudeCodeAdapter.projectConfigPath!(repoRoot)).toBe('/repo/.mcp.json');
+    expect(claudeCodeAdapter.projectPermissionsPath!(repoRoot)).toBe(
+      '/repo/.claude/settings.json',
+    );
+    expect(claudeCodeAdapter.projectSkillPath!(repoRoot)).toBe(
+      '/repo/.claude/skills/crew/SKILL.md',
+    );
+
+    const spec = claudeCodeAdapter.projectSkillInstallSpecFor!(repoRoot, {
+      id: 'crew:iterate',
+      slug: 'iterate',
+      bodyFile: 'crew-iterate.body.md',
+      description: 'desc',
+    });
+    expect(spec.skillPath).toBe('/repo/.claude/skills/crew-iterate/SKILL.md');
+    expect(spec.frontmatterName).toBe('crew-iterate');
+  });
+});
+
 describe('claudeCodeAdapter.mergeMcpBlock', () => {
   it('writes a fresh config when input is empty', () => {
     const out = claudeCodeAdapter.mergeMcpBlock('', CMD, ARGS);

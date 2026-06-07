@@ -27,6 +27,7 @@ export interface ResolvedCrewBinary {
 }
 
 export type CrewBinaryResolver = () => ResolvedCrewBinary;
+export type ProjectCrewBinaryStrategy = 'node-modules-bin' | 'npx';
 
 /**
  * Default resolver — used in production. argv[1] is the script path
@@ -46,6 +47,54 @@ export const defaultCrewBinaryResolver: CrewBinaryResolver = () => {
     args: [scriptPath, 'serve'],
   };
 };
+
+export interface ProjectCrewBinaryResolverOptions {
+  readonly repoRoot: string;
+  readonly strategy?: ProjectCrewBinaryStrategy;
+  readonly platform?: NodeJS.Platform;
+}
+
+export const projectCrewBinaryResolver = (
+  options: ProjectCrewBinaryResolverOptions,
+): ResolvedCrewBinary => {
+  if (options.repoRoot.trim().length === 0) {
+    throw new Error('Cannot resolve project crew-mcp binary: repoRoot is empty.');
+  }
+  const strategy = options.strategy ?? 'node-modules-bin';
+  if (strategy === 'npx') {
+    return {
+      command: 'npx',
+      args: ['--no-install', 'crew-mcp', 'serve'],
+    };
+  }
+  return {
+    command: options.platform === 'win32'
+      ? '.\\node_modules\\.bin\\crew-mcp.cmd'
+      : './node_modules/.bin/crew-mcp',
+    args: ['serve'],
+  };
+};
+
+export function projectCrewWaitCommand(options: {
+  readonly strategy?: ProjectCrewBinaryStrategy;
+  readonly platform?: NodeJS.Platform;
+} = {}): string {
+  const strategy = options.strategy ?? 'node-modules-bin';
+  if (strategy === 'npx') {
+    return 'npx --no-install crew-wait';
+  }
+  return options.platform === 'win32'
+    ? '.\\node_modules\\.bin\\crew-wait.cmd'
+    : './node_modules/.bin/crew-wait';
+}
+
+export function parseProjectCrewBinaryStrategy(raw: unknown): ProjectCrewBinaryStrategy {
+  if (raw === undefined || raw === null || raw === '') return 'node-modules-bin';
+  if (raw === 'node-modules-bin' || raw === 'npx') return raw;
+  throw new Error(
+    `Invalid --binary-strategy "${String(raw)}"; expected "node-modules-bin" or "npx".`,
+  );
+}
 
 export interface ResolveCrewWaitBinaryOptions {
   readonly platform?: NodeJS.Platform;

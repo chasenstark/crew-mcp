@@ -18,9 +18,14 @@ export const HOST_ADAPTERS: Record<HostId, HostAdapter> = {
 };
 
 export const ALL_HOST_IDS: readonly HostId[] = ['claude-code', 'codex', 'gemini'];
+export const PROJECT_HOST_IDS: readonly HostId[] = ['claude-code', 'codex'];
 
 export function getHostAdapter(id: HostId): HostAdapter {
   return HOST_ADAPTERS[id];
+}
+
+export function isProjectHostId(id: HostId): boolean {
+  return PROJECT_HOST_IDS.includes(id);
 }
 
 export type { HostAdapter };

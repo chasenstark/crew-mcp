@@ -42,20 +42,35 @@ import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   ALL_HOST_IDS,
   HOST_ADAPTERS,
+  PROJECT_HOST_IDS,
+  isProjectHostId,
   type HostAdapter,
   type HostId,
 } from '../../install/hosts/index.js';
 import {
   defaultCrewBinaryResolver,
   isCrewWaitOnPath,
+  parseProjectCrewBinaryStrategy,
+  projectCrewBinaryResolver,
+  projectCrewWaitCommand,
   resolveCrewWaitBinary,
   type CrewBinaryResolver,
+  type ProjectCrewBinaryStrategy,
 } from '../../install/crew-binary.js';
 import {
   readInstallManifest,
   recordInstalledTarget,
   type InstalledTarget,
 } from '../../install/install-manifest.js';
+import {
+  absolutizeProjectTarget,
+  readProjectInstallManifest,
+  recordProjectInstalledTarget,
+  relativizeProjectTarget,
+  type ProjectInstalledTarget,
+} from '../../install/project-install-manifest.js';
+import { resolveGitRepoRoot } from '../../install/repo-root.js';
+import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { withInstallLock, writeFileAtomic } from '../../install/atomic-write.js';
 import {
   selectTargets as defaultSelectTargets,
@@ -81,6 +96,8 @@ import { logger } from '../../utils/logger.js';
 export type TargetSelector = (hosts: readonly DetectedHost[]) => Promise<HostId[]>;
 
 export interface InstallOptions {
+  /** Install scope. Defaults to global for backward-compatible CLI behavior. */
+  scope?: InstallScope | string;
   /**
    * Comma-separated host ids, or 'all'. When omitted, the install
    * command falls back to interactive selection: detect every
@@ -99,8 +116,14 @@ export interface InstallOptions {
    * and falls through to `resolveCrewHome()`.
    */
   crewHome?: string;
+  /** Override repository root for project-scope tests. */
+  repoRoot?: string;
   /** Override the package root (tests; otherwise auto-detected). */
   packageRoot?: string;
+  /** Portable project command strategy. Ignored for global scope. */
+  binaryStrategy?: ProjectCrewBinaryStrategy | string;
+  /** Platform seam for project binary resolver tests. */
+  platform?: NodeJS.Platform;
   /** Override crew binary resolution (tests). */
   resolveCrewBinary?: CrewBinaryResolver;
   /** Test seam for Claude Code `crew-wait` PATH discoverability. */
@@ -147,6 +170,14 @@ export interface InstallResult {
 }
 
 export async function installCommand(opts: InstallOptions): Promise<InstallResult> {
+  const scope = parseInstallScope(opts.scope);
+  if (scope === 'project') {
+    return installProjectCommand(opts);
+  }
+  return installGlobalCommand(opts);
+}
+
+async function installGlobalCommand(opts: InstallOptions): Promise<InstallResult> {
   const home = opts.home ?? homedir();
   const packageRoot = resolvePackageRoot(opts.packageRoot);
   const resolveBin = opts.resolveCrewBinary ?? defaultCrewBinaryResolver;
@@ -159,7 +190,7 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
   let targets: HostId[];
   let camethroughInteractive = false;
   if (targetInput.length === 0) {
-    targets = await resolveTargetsInteractively(opts);
+    targets = await resolveTargetsInteractively(opts, 'global');
     camethroughInteractive = true;
     if (targets.length === 0) {
       // User cancelled or no detected hosts — exit cleanly without an error.
@@ -167,7 +198,7 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
       return { installed: [], skipped: [] };
     }
   } else {
-    targets = resolveTargets(targetInput);
+    targets = resolveTargets(targetInput, 'global');
   }
 
   // For --target all (and the interactive fallback) we only install where
@@ -250,6 +281,76 @@ export async function installCommand(opts: InstallOptions): Promise<InstallResul
     }
     logger.info(
       'Run `crew-mcp agents add` to register additional models (Ollama, LM Studio, OpenAI-compatible endpoints).',
+    );
+  }
+
+  return result;
+}
+
+async function installProjectCommand(opts: InstallOptions): Promise<InstallResult> {
+  const repoRoot = await resolveGitRepoRoot({ repoRoot: opts.repoRoot });
+  const packageRoot = resolvePackageRoot(opts.packageRoot);
+  const strategy = parseProjectCrewBinaryStrategy(opts.binaryStrategy);
+  const { command: crewBin, args: crewArgs } = projectCrewBinaryResolver({
+    repoRoot,
+    strategy,
+    platform: opts.platform,
+  });
+
+  const targetInput = (opts.target ?? '').trim();
+  let targets: HostId[];
+  if (targetInput.length === 0) {
+    targets = await resolveTargetsInteractively(opts, 'project');
+    if (targets.length === 0) {
+      return { installed: [], skipped: [] };
+    }
+  } else {
+    targets = resolveTargets(targetInput, 'project');
+  }
+
+  const result: InstallResult = { installed: [], skipped: [] };
+
+  await withInstallLock(repoRoot, async () => {
+    for (const targetId of targets) {
+      const adapter = HOST_ADAPTERS[targetId];
+      try {
+        assertProjectCapable(adapter);
+        await installSingleProjectTarget({
+          adapter,
+          repoRoot,
+          packageRoot,
+          crewBin,
+          crewArgs,
+          autoApprove: opts.autoApprove ?? true,
+          strategy,
+          platform: opts.platform,
+        });
+
+        if (!opts.skipRunningCheck) {
+          const running = await adapter.detectRunning();
+          if (running) {
+            logger.warn(
+              `${adapter.displayName} appears to be running. Restart any open sessions to pick up the new project MCP config.`,
+            );
+          }
+        }
+
+        result.installed.push(targetId);
+        logger.info(`crew install: ${adapter.displayName} project scope ✓`);
+        for (const note of adapter.projectInstallNotes?.(repoRoot) ?? []) {
+          logger.info(note);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(`crew install: ${adapter.displayName} project scope failed — ${message}`);
+        result.skipped.push({ host: targetId, reason: message });
+      }
+    }
+  });
+
+  if (result.installed.length > 0) {
+    logger.info(
+      'Project install written. Commit the generated host config, skills, and .crew/install.project.json, then restart each host session.',
     );
   }
 
@@ -383,6 +484,107 @@ export async function installSingleTarget(args: {
   return entry;
 }
 
+export async function installSingleProjectTarget(args: {
+  adapter: HostAdapter;
+  repoRoot: string;
+  packageRoot: string;
+  crewBin: string;
+  crewArgs: readonly string[];
+  autoApprove: boolean;
+  strategy: ProjectCrewBinaryStrategy;
+  platform?: NodeJS.Platform;
+}): Promise<ProjectInstalledTarget> {
+  const {
+    adapter,
+    repoRoot,
+    packageRoot,
+    crewBin,
+    crewArgs,
+    autoApprove,
+    strategy,
+  } = args;
+  assertProjectCapable(adapter);
+
+  const crewWaitCommand = projectCrewWaitCommand({
+    strategy,
+    platform: args.platform,
+  });
+
+  const { skillsMap, writtenPaths: skillWrittenPaths, skillPath, sharedSkills } =
+    await renderAndWriteSkills({
+      adapter,
+      home: repoRoot,
+      packageRoot,
+      crewWaitCommand,
+      skillInstallSpecFor: (skill) => adapter.projectSkillInstallSpecFor!(repoRoot, skill),
+      fallbackSkillPath: adapter.projectSkillPath!(repoRoot),
+      ownedPaths: await collectProjectCrewOwnedPaths(repoRoot),
+    });
+
+  const configPath = adapter.projectConfigPath(repoRoot);
+  const existing = existsSync(configPath) ? await readFile(configPath, 'utf-8') : '';
+  const merged = adapter.mergeMcpBlock(existing, crewBin, crewArgs);
+  writeFileAtomic(configPath, merged);
+
+  const writtenPaths = [...skillWrittenPaths, configPath];
+  const permissionsPath = adapter.projectPermissionsPath?.(repoRoot);
+
+  if (adapter.writeAutoApproval && adapter.clearAutoApproval) {
+    const approvalFile = permissionsPath ?? configPath;
+    const approvalExisting = existsSync(approvalFile)
+      ? await readFile(approvalFile, 'utf-8')
+      : '';
+    const approvalUpdated = autoApprove
+      ? adapter.writeAutoApproval(approvalExisting, CATALOG_TOOLS.map((t) => t.name))
+      : adapter.clearAutoApproval(approvalExisting);
+    if (approvalUpdated !== approvalExisting) {
+      writeFileAtomic(approvalFile, approvalUpdated);
+    }
+    if (approvalFile !== configPath) {
+      writtenPaths.push(approvalFile);
+    }
+  }
+
+  if (adapter.id === 'claude-code') {
+    const approvalFile = permissionsPath ?? configPath;
+    const approvalExisting = existsSync(approvalFile)
+      ? await readFile(approvalFile, 'utf-8')
+      : '';
+    const approvalUpdated = addClaudePermission(
+      approvalExisting,
+      `Bash(${crewWaitCommand}:*)`,
+    );
+    if (approvalUpdated !== approvalExisting) {
+      writeFileAtomic(approvalFile, approvalUpdated);
+    }
+    if (approvalFile !== configPath && !writtenPaths.includes(approvalFile)) {
+      writtenPaths.push(approvalFile);
+    }
+    logger.info(
+      `crew install: Claude Code project crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
+      + 'Skill body uses the same command.',
+    );
+  }
+
+  const absoluteEntry: ProjectInstalledTarget = {
+    configPath,
+    skillPath,
+    skills: skillsMap,
+    writtenPaths,
+    ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
+    ...(permissionsPath ? { permissionsPath } : {}),
+    version: CREW_MCP_VERSION,
+    installedAt: new Date().toISOString(),
+    serverCommand: crewBin,
+    serverArgs: [...crewArgs],
+    autoApproved: autoApprove,
+  };
+  const relativeEntry = relativizeProjectTarget(repoRoot, absoluteEntry);
+  await recordProjectInstalledTarget(repoRoot, adapter.id, relativeEntry);
+
+  return relativeEntry;
+}
+
 /**
  * Render every skill in the manifest and write each into its
  * adapter-resolved location. Strict two-phase commit per plan
@@ -412,6 +614,9 @@ async function renderAndWriteSkills(args: {
   readonly home: string;
   readonly packageRoot: string;
   readonly crewWaitCommand: string;
+  readonly skillInstallSpecFor?: (skill: SkillManifestEntry) => SkillInstallSpec;
+  readonly fallbackSkillPath?: string;
+  readonly ownedPaths?: Set<string>;
 }): Promise<{
   readonly skillsMap: Record<string, string>;
   readonly writtenPaths: string[];
@@ -420,18 +625,20 @@ async function renderAndWriteSkills(args: {
 }> {
   const { adapter, home, packageRoot, crewWaitCommand } = args;
   const templatePath = templatePathForHost(packageRoot, adapter.id);
+  const skillInstallSpecFor = args.skillInstallSpecFor
+    ?? ((skill: SkillManifestEntry) => adapter.skillInstallSpecFor(home, skill));
 
   // Resolve all specs up front so the preflight check sees every
   // target before we touch anything on disk.
   const specs = SKILL_MANIFEST.map((skill) => ({
     skill,
-    spec: adapter.skillInstallSpecFor(home, skill),
+    spec: skillInstallSpecFor(skill),
   }));
 
   // Preflight: refuse if any destination SKILL.md exists AND wasn't
   // written by a prior crew install. Plan §"Atomicity & locking
   // requirements" — preflight collision check.
-  const ownedPaths = await collectCrewOwnedPaths(home);
+  const ownedPaths = args.ownedPaths ?? await collectCrewOwnedPaths(home);
   for (const { spec } of specs) {
     if (spec.skip) continue;
     if (existsSync(spec.skillPath) && !ownedPaths.has(spec.skillPath)) {
@@ -611,7 +818,7 @@ async function renderAndWriteSkills(args: {
     // reader back-fills `skills['crew']` from a non-empty skillPath, and
     // that path would be the per-host copy we deliberately didn't write.
     const skillPath = skillsMap['crew']
-      ?? (sharedSkills['crew'] ? '' : adapter.skillPath(home));
+      ?? (sharedSkills['crew'] ? '' : (args.fallbackSkillPath ?? adapter.skillPath(home)));
     return { skillsMap, writtenPaths, skillPath, sharedSkills };
   } finally {
     // Always clean up leftover staging files (render-failure or
@@ -650,6 +857,43 @@ async function collectCrewOwnedPaths(home: string): Promise<Set<string>> {
     // default. The user can clean up + retry.
   }
   return owned;
+}
+
+async function collectProjectCrewOwnedPaths(repoRoot: string): Promise<Set<string>> {
+  const owned = new Set<string>();
+  try {
+    const manifest = await readProjectInstallManifest(repoRoot);
+    for (const target of Object.values(manifest.targets)) {
+      if (!target) continue;
+      const absoluteTarget = absolutizeProjectTarget(repoRoot, target);
+      for (const p of absoluteTarget.writtenPaths) owned.add(p);
+      for (const p of Object.values(absoluteTarget.skills)) owned.add(p);
+      if (absoluteTarget.skillPath) owned.add(absoluteTarget.skillPath);
+    }
+  } catch {
+    // Same safety rule as global installs: an unreadable manifest means
+    // no path is considered crew-owned, so preflight refuses collisions.
+  }
+  return owned;
+}
+
+function assertProjectCapable(
+  adapter: HostAdapter,
+): asserts adapter is HostAdapter & {
+  projectConfigPath(repoRoot: string): string;
+  projectSkillPath(repoRoot: string): string;
+  projectSkillInstallSpecFor(repoRoot: string, skill: SkillManifestEntry): SkillInstallSpec;
+} {
+  if (
+    !adapter.projectConfigPath
+    || !adapter.projectSkillPath
+    || !adapter.projectSkillInstallSpecFor
+  ) {
+    throw new Error(
+      `${adapter.displayName} does not support project-scope install. `
+      + `Project-scope targets: ${PROJECT_HOST_IDS.join(', ')}`,
+    );
+  }
 }
 
 function addClaudePermission(existing: string, pattern: string): string {
@@ -694,12 +938,13 @@ function getObjectField(parent: Record<string, unknown>, key: string): Record<st
  *
  * Throws on unknown ids; throws on empty target string. Deduplicates.
  */
-export function resolveTargets(input: string): HostId[] {
+export function resolveTargets(input: string, scope: InstallScope = 'global'): HostId[] {
   const trimmed = input.trim();
+  const allowed = scope === 'project' ? PROJECT_HOST_IDS : ALL_HOST_IDS;
   if (trimmed.length === 0) {
     throw new Error('crew install: --target is required (e.g., codex, claude-code, gemini, all)');
   }
-  if (trimmed === 'all') return [...ALL_HOST_IDS];
+  if (trimmed === 'all') return [...allowed];
   const parts = trimmed
     .split(',')
     .map((p) => p.trim())
@@ -710,6 +955,12 @@ export function resolveTargets(input: string): HostId[] {
     if (!isHostId(part)) {
       throw new Error(
         `crew install: unknown target "${part}". Known: ${ALL_HOST_IDS.join(', ')}, all`,
+      );
+    }
+    if (scope === 'project' && !isProjectHostId(part)) {
+      throw new Error(
+        `crew install: target "${part}" does not support project scope. `
+        + `Project-scope targets: ${PROJECT_HOST_IDS.join(', ')}, all`,
       );
     }
     if (!seen.has(part)) {
@@ -735,7 +986,14 @@ function isHostId(value: string): value is HostId {
  * helpful note is logged in each case so the user knows why nothing
  * happened.
  */
-async function resolveTargetsInteractively(opts: InstallOptions): Promise<HostId[]> {
+async function resolveTargetsInteractively(
+  opts: InstallOptions,
+  scope: InstallScope,
+): Promise<HostId[]> {
+  if (scope === 'project') {
+    return resolveProjectTargetsInteractively(opts);
+  }
+
   const detected = await detectAllHosts();
   const detectedCount = detected.filter((h) => h.installed).length;
   const isInteractive = opts.isInteractive ?? Boolean(process.stdin.isTTY);
@@ -766,6 +1024,30 @@ async function resolveTargetsInteractively(opts: InstallOptions): Promise<HostId
   const selector: TargetSelector = opts.selectTargets
     ?? ((hosts) => defaultSelectTargets({ hosts }));
   return selector(detected);
+}
+
+async function resolveProjectTargetsInteractively(opts: InstallOptions): Promise<HostId[]> {
+  const hosts = PROJECT_HOST_IDS.map((id): DetectedHost => {
+    const adapter = HOST_ADAPTERS[id];
+    return {
+      id,
+      displayName: adapter.displayName,
+      installed: true,
+      version: 'project scope',
+    };
+  });
+  const isInteractive = opts.isInteractive ?? Boolean(process.stdin.isTTY);
+
+  if (!isInteractive) {
+    logger.info(
+      `crew install: no --target given for project scope (non-interactive); installing project-capable hosts: ${PROJECT_HOST_IDS.join(', ')}.`,
+    );
+    return [...PROJECT_HOST_IDS];
+  }
+
+  const selector: TargetSelector = opts.selectTargets
+    ?? ((selectableHosts) => defaultSelectTargets({ hosts: selectableHosts }));
+  return selector(hosts);
 }
 
 /**

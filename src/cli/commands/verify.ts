@@ -15,13 +15,23 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 
 import { HOST_ADAPTERS, type HostId } from '../../install/hosts/index.js';
 import { readInstallManifest } from '../../install/install-manifest.js';
+import {
+  absolutizeProjectTarget,
+  readProjectInstallManifest,
+} from '../../install/project-install-manifest.js';
+import {
+  projectCrewBinaryResolver,
+  projectCrewWaitCommand,
+} from '../../install/crew-binary.js';
+import { resolveGitRepoRoot } from '../../install/repo-root.js';
+import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import { resolvePeerMessageCaps } from '../../orchestrator/peer-messages/caps.js';
 import { runPeerMessagesPipeline } from '../../orchestrator/peer-messages/pipeline.js';
@@ -29,10 +39,17 @@ import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/
 import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
+import { resolveTargets } from './install.js';
 
 export interface VerifyOptions {
+  /** Install scope. Defaults to global. */
+  scope?: InstallScope | string;
+  /** Optional selected targets for project/global verify. */
+  target?: string;
   /** Override $HOME (tests). */
   home?: string;
+  /** Override repository root for project-scope tests. */
+  repoRoot?: string;
   /** Override `<crewHome>` (tests). Defaults to `$CREW_HOME` or `~/.crew`. */
   crewHome?: string;
   /** Override env for runtime cap verification (tests). Defaults to process.env. */
@@ -62,12 +79,22 @@ export interface VerifyReport {
 }
 
 export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyReport> {
+  const scope = parseInstallScope(opts.scope);
+  if (scope === 'project') {
+    return verifyProjectCommand(opts);
+  }
+  return verifyGlobalCommand(opts);
+}
+
+async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyReport> {
   const home = opts.home ?? homedir();
   const crewHome = opts.crewHome
     ?? (opts.home ? join(opts.home, '.crew') : resolveCrewHome());
   const probes = await runRuntimeProbes({ crewHome, env: opts.env ?? process.env });
   const manifest = await readInstallManifest(home);
-  const installedTargets = Object.keys(manifest.targets) as HostId[];
+  const installedTargets = opts.target
+    ? resolveTargets(opts.target, 'global')
+    : Object.keys(manifest.targets) as HostId[];
 
   if (installedTargets.length === 0) {
     const note = 'No installed targets. Run `crew install --target <host>` first.';
@@ -85,8 +112,19 @@ export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyRep
 
   for (const targetId of installedTargets) {
     const adapter = HOST_ADAPTERS[targetId];
-    const entry = manifest.targets[targetId]!;
     const issues: string[] = [];
+    const entry = manifest.targets[targetId];
+    if (!entry) {
+      const report: VerifyTargetReport = {
+        host: targetId,
+        ok: false,
+        issues: [`install manifest missing target: ${targetId}`],
+      };
+      reports.push(report);
+      logger.warn(`crew verify: ${adapter.displayName} drift (1 issue)`);
+      logger.warn(`  - ${report.issues[0]}`);
+      continue;
+    }
 
     // 1. Skill file(s) present + tool-reference parity. Union references
     // across ALL recorded skill files before comparing to the live
@@ -170,6 +208,174 @@ export async function verifyCommand(opts: VerifyOptions = {}): Promise<VerifyRep
   return { ok: ok && probesOk, probes, targets: reports };
 }
 
+async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyReport> {
+  const home = opts.home ?? homedir();
+  const repoRoot = await resolveGitRepoRoot({ repoRoot: opts.repoRoot });
+  const manifest = await readProjectInstallManifest(repoRoot);
+  const targets = opts.target
+    ? resolveTargets(opts.target, 'project')
+    : Object.keys(manifest.targets) as HostId[];
+
+  if (targets.length === 0) {
+    const note = 'No project installed targets. Run `crew-mcp install --scope project --target <host>` first.';
+    logger.info(note);
+    return { ok: true, probes: [], targets: [], note };
+  }
+
+  const expectedNames = CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
+  const probes: VerifyProbeReport[] = [];
+  const reports: VerifyTargetReport[] = [];
+  let codexTrustChecked = false;
+
+  for (const targetId of targets) {
+    const adapter = HOST_ADAPTERS[targetId];
+    const manifestEntry = manifest.targets[targetId];
+    const issues: string[] = [];
+
+    if (!manifestEntry) {
+      issues.push(`project install manifest missing target: ${targetId}`);
+      reports.push({ host: targetId, ok: false, issues });
+      logger.warn(`crew verify: ${adapter.displayName} project drift (1 issue)`);
+      logger.warn(`  - ${issues[0]}`);
+      continue;
+    }
+
+    const entry = absolutizeProjectTarget(repoRoot, manifestEntry);
+    const recordedPaths = new Set(entry.writtenPaths);
+    for (const path of recordedPaths) {
+      if (!existsSync(path)) {
+        issues.push(`recorded project file missing: ${path}`);
+      }
+    }
+
+    const recordedSkillPaths = [
+      ...Object.values(entry.skills ?? {}),
+      ...Object.values(entry.sharedSkills ?? {}),
+    ];
+    if (recordedSkillPaths.length === 0 && entry.skillPath) {
+      recordedSkillPaths.push(entry.skillPath);
+    }
+
+    const union = new Set<string>();
+    let anySkillRead = false;
+    for (const skillPath of recordedSkillPaths) {
+      if (!existsSync(skillPath)) {
+        issues.push(`skill file missing: ${skillPath}`);
+        continue;
+      }
+      const skill = await readFile(skillPath, 'utf-8');
+      for (const ref of extractToolReferences(skill)) {
+        union.add(ref);
+      }
+      anySkillRead = true;
+    }
+    if (anySkillRead) {
+      const missing = expectedNames.filter((name) => !union.has(name));
+      const extras = [...union].filter((name) => !expectedNames.includes(name));
+      if (missing.length > 0) {
+        issues.push(`skill missing tool references: ${missing.join(', ')}`);
+      }
+      if (extras.length > 0) {
+        issues.push(`skill references unknown tools: ${extras.join(', ')}`);
+      }
+    }
+
+    let config = '';
+    if (!existsSync(entry.configPath)) {
+      issues.push(`host config missing: ${entry.configPath}`);
+    } else {
+      config = await readFile(entry.configPath, 'utf-8');
+      if (!adapter.hasMcpBlock(config)) {
+        issues.push(`host config missing crew MCP block: ${entry.configPath}`);
+      } else {
+        const server = extractProjectServerConfig(targetId, config);
+        if (!server) {
+          issues.push(`host config crew MCP block is not readable: ${entry.configPath}`);
+        } else {
+          issues.push(...verifyProjectCommandPortable({
+            home,
+            repoRoot,
+            entryCommand: entry.serverCommand,
+            entryArgs: entry.serverArgs,
+            configCommand: server.command,
+            configArgs: server.args,
+          }));
+        }
+      }
+    }
+
+    if (entry.autoApproved !== false) {
+      issues.push(...await verifyProjectAutoApproval({
+        targetId,
+        config,
+        permissionsPath: entry.permissionsPath,
+      }));
+    }
+
+    if (targetId === 'claude-code') {
+      const expectedWait = inferCrewWaitCommand(entry.serverCommand);
+      const permissionsPath = entry.permissionsPath;
+      const permissions = permissionsPath && existsSync(permissionsPath)
+        ? await readFile(permissionsPath, 'utf-8')
+        : '';
+      if (!permissions.includes(`Bash(${expectedWait}:*)`)) {
+        issues.push(`Claude Code permissions missing Bash(${expectedWait}:*) allowlist`);
+      }
+    }
+
+    if (targetId === 'codex' && !codexTrustChecked) {
+      codexTrustChecked = true;
+      if (!isCodexProjectTrusted(home, repoRoot)) {
+        probes.push({
+          name: 'codex-project-trust',
+          status: 'warn',
+          message: `Codex project trust missing for ${repoRoot}; project config is valid but this machine must trust the repo before Codex loads it.`,
+        });
+      } else {
+        probes.push({
+          name: 'codex-project-trust',
+          status: 'ok',
+          message: `Codex project trusted at ${repoRoot}`,
+        });
+      }
+    }
+
+    const report: VerifyTargetReport = {
+      host: targetId,
+      ok: issues.length === 0,
+      issues,
+    };
+    reports.push(report);
+
+    if (report.ok) {
+      logger.info(`crew verify: ${adapter.displayName} project scope ✓`);
+    } else {
+      logger.warn(
+        `crew verify: ${adapter.displayName} project drift (${report.issues.length} issue${
+          report.issues.length === 1 ? '' : 's'
+        })`,
+      );
+      for (const issue of issues) {
+        logger.warn(`  - ${issue}`);
+      }
+    }
+  }
+
+  for (const probe of probes) {
+    if (probe.status === 'ok') {
+      logger.info(`crew verify: ${probe.message} ✓`);
+    } else {
+      logger.warn(`crew verify: WARNING: ${probe.message}`);
+    }
+  }
+
+  const ok = reports.every((report) => report.ok);
+  if (!ok) {
+    logger.warn('crew verify: project drift detected. Run `crew-mcp install --scope project --target <host>` to re-sync.');
+  }
+  return { ok, probes, targets: reports };
+}
+
 /**
  * Extract every `mcp__crew__<name>` token referenced in the skill text.
  * Tokens are matched as whole words (no embedded substrings of larger
@@ -183,6 +389,199 @@ export function extractToolReferences(skill: string): Set<string> {
     out.add(match[0]);
   }
   return out;
+}
+
+interface ProjectServerConfig {
+  readonly command: string;
+  readonly args: readonly string[];
+}
+
+function extractProjectServerConfig(
+  targetId: HostId,
+  config: string,
+): ProjectServerConfig | null {
+  if (targetId === 'claude-code') {
+    try {
+      const parsed = JSON.parse(config) as {
+        mcpServers?: { crew?: { command?: unknown; args?: unknown } };
+      };
+      const crew = parsed.mcpServers?.crew;
+      if (!crew || typeof crew.command !== 'string' || !Array.isArray(crew.args)) {
+        return null;
+      }
+      return {
+        command: crew.command,
+        args: crew.args.filter((arg): arg is string => typeof arg === 'string'),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  if (targetId === 'codex') {
+    const block = extractTomlBlock(config, '[mcp_servers.crew]');
+    if (!block) return null;
+    const commandMatch = block.match(/^command\s*=\s*"((?:\\.|[^"])*)"/m);
+    const argsMatch = block.match(/^args\s*=\s*\[([^\]]*)\]/m);
+    if (!commandMatch) return null;
+    return {
+      command: unescapeTomlString(commandMatch[1]),
+      args: argsMatch ? parseTomlStringArray(argsMatch[1]) : [],
+    };
+  }
+
+  return null;
+}
+
+function verifyProjectCommandPortable(args: {
+  readonly home: string;
+  readonly repoRoot: string;
+  readonly entryCommand: string;
+  readonly entryArgs: readonly string[];
+  readonly configCommand: string;
+  readonly configArgs: readonly string[];
+}): string[] {
+  const issues: string[] = [];
+  if (args.entryCommand !== args.configCommand) {
+    issues.push(
+      `manifest serverCommand does not match host config command: ${args.entryCommand} != ${args.configCommand}`,
+    );
+  }
+  if (JSON.stringify(args.entryArgs) !== JSON.stringify(args.configArgs)) {
+    issues.push(
+      `manifest serverArgs do not match host config args: ${JSON.stringify(args.entryArgs)} != ${JSON.stringify(args.configArgs)}`,
+    );
+  }
+
+  const commandSets = [
+    projectCrewBinaryResolver({ repoRoot: args.repoRoot, strategy: 'node-modules-bin', platform: 'darwin' }),
+    projectCrewBinaryResolver({ repoRoot: args.repoRoot, strategy: 'node-modules-bin', platform: 'win32' }),
+    projectCrewBinaryResolver({ repoRoot: args.repoRoot, strategy: 'npx' }),
+  ];
+  const matchesPortableCommand = commandSets.some((candidate) =>
+    candidate.command === args.configCommand
+    && JSON.stringify(candidate.args) === JSON.stringify(args.configArgs),
+  );
+  if (!matchesPortableCommand) {
+    issues.push(
+      `project server command is not portable: ${args.configCommand} ${args.configArgs.join(' ')}`.trim(),
+    );
+  }
+
+  for (const value of [
+    args.entryCommand,
+    ...args.entryArgs,
+    args.configCommand,
+    ...args.configArgs,
+  ]) {
+    const forbidden = forbiddenProjectCommandReason(value, args.home, args.repoRoot);
+    if (forbidden) {
+      issues.push(`project server command contains ${forbidden}: ${value}`);
+    }
+  }
+
+  return issues;
+}
+
+async function verifyProjectAutoApproval(args: {
+  readonly targetId: HostId;
+  readonly config: string;
+  readonly permissionsPath?: string;
+}): Promise<string[]> {
+  const issues: string[] = [];
+  if (args.targetId === 'claude-code') {
+    const permissions = args.permissionsPath && existsSync(args.permissionsPath)
+      ? await readFile(args.permissionsPath, 'utf-8')
+      : '';
+    if (!permissions.includes('mcp__crew__*')) {
+      issues.push('Claude Code permissions missing mcp__crew__* auto-approval');
+    }
+    return issues;
+  }
+
+  if (args.targetId === 'codex') {
+    for (const tool of CATALOG_TOOLS) {
+      const block = extractTomlBlock(args.config, `[mcp_servers.crew.tools.${tool.name}]`);
+      if (!block || !/^approval_mode\s*=\s*"approve"/m.test(block)) {
+        issues.push(`Codex config missing approval_mode = "approve" for ${tool.name}`);
+      }
+    }
+  }
+  return issues;
+}
+
+function inferCrewWaitCommand(serverCommand: string): string {
+  return serverCommand === 'npx'
+    ? projectCrewWaitCommand({ strategy: 'npx' })
+    : projectCrewWaitCommand({ strategy: 'node-modules-bin' });
+}
+
+function forbiddenProjectCommandReason(
+  value: string,
+  home: string,
+  repoRoot: string,
+): string | null {
+  if (value.length === 0) return null;
+  if (home && value.includes(home)) return 'home directory path';
+  if (repoRoot && value.includes(repoRoot)) return 'repo-absolute path';
+  if (/\bdist[\\/]index\.js\b/.test(value) || /dist\\\\index\.js/.test(value)) {
+    return 'dist/index.js path';
+  }
+  if (value.includes('process.argv')) return 'process.argv reference';
+  if (posix.isAbsolute(value) || win32.isAbsolute(value)) return 'absolute path';
+  return null;
+}
+
+function extractTomlBlock(raw: string, header: string): string | null {
+  const start = raw.indexOf(header);
+  if (start === -1) return null;
+  const afterHeader = start + header.length;
+  const next = raw.slice(afterHeader).search(/^\[/m);
+  const end = next === -1 ? raw.length : afterHeader + next;
+  return raw.slice(start, end);
+}
+
+function parseTomlStringArray(raw: string): string[] {
+  const values: string[] = [];
+  const re = /"((?:\\.|[^"])*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw)) !== null) {
+    values.push(unescapeTomlString(match[1]));
+  }
+  return values;
+}
+
+function unescapeTomlString(value: string): string {
+  return value
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function isCodexProjectTrusted(home: string, repoRoot: string): boolean {
+  const configPath = join(home, '.codex', 'config.toml');
+  if (!existsSync(configPath)) return false;
+  try {
+    const raw = readFileSync(configPath, 'utf-8');
+    const tableHeader = `[projects.${tomlString(repoRoot)}]`;
+    const dotted = `projects.${tomlString(repoRoot)}.trust_level = "trusted"`;
+    if (raw.includes(dotted)) return true;
+    const block = extractTomlBlock(raw, tableHeader);
+    return Boolean(block && /^trust_level\s*=\s*"trusted"/m.test(block));
+  } catch {
+    return false;
+  }
+}
+
+function tomlString(value: string): string {
+  return `"${value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')}"`;
 }
 
 interface RuntimeProbeOptions {

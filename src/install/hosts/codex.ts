@@ -81,6 +81,13 @@ export const codexAdapter: HostAdapter = {
   configPath: (home) => join(home, '.codex', 'config.toml'),
   skillPath: (home) => join(home, '.codex', 'skills', 'crew', 'SKILL.md'),
   skillInstallSpecFor: codexSkillInstallSpecFor,
+  projectConfigPath: (repoRoot) => join(repoRoot, '.codex', 'config.toml'),
+  projectSkillPath: (repoRoot) => join(repoRoot, '.codex', 'skills', 'crew', 'SKILL.md'),
+  projectSkillInstallSpecFor: codexProjectSkillInstallSpecFor,
+  projectInstallNotes: (repoRoot) => [
+    'Codex project install written. Each developer must trust this repo once in Codex before project .codex/config.toml is loaded. '
+    + `Start Codex in this repo and accept the trust prompt, or add projects."${repoRoot}".trust_level = "trusted" to ~/.codex/config.toml.`,
+  ],
 
   mergeMcpBlock(existing, crewBin, crewArgs) {
     const block = renderCodexBlock(crewBin, crewArgs);
@@ -166,9 +173,23 @@ function codexSkillInstallSpecFor(
   home: string,
   skill: SkillManifestEntry,
 ): SkillInstallSpec {
+  return codexSkillInstallSpecAt(home, skill);
+}
+
+function codexProjectSkillInstallSpecFor(
+  repoRoot: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
+  return codexSkillInstallSpecAt(repoRoot, skill);
+}
+
+function codexSkillInstallSpecAt(
+  root: string,
+  skill: SkillManifestEntry,
+): SkillInstallSpec {
   const dir = skill.id.replace(':', '-');
   return {
-    skillPath: join(home, '.codex', 'skills', dir, 'SKILL.md'),
+    skillPath: join(root, '.codex', 'skills', dir, 'SKILL.md'),
     frontmatterName: dir,
     legacyPathsToRemove: [],
   };
