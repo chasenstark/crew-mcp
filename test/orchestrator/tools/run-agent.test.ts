@@ -5,6 +5,7 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import {
   planRunAgent,
+  readOnlyAdvisoryWarning,
   resolveEffectiveEffort,
   resolveEffectiveModel,
   type RunAgentHandlerContext,
@@ -550,6 +551,76 @@ describe('planRunAgent — read_only path', () => {
     }) as TaskResult;
     expect(result.output).toBe('read-only');
     expect(result.warnings).toBeUndefined();
+  });
+
+  it('readOnlyAdvisoryWarning gives gemini a tool-level note, others the generic advisory', () => {
+    const gemini = readOnlyAdvisoryWarning('gemini-cli');
+    expect(gemini).toContain('tool level');
+    expect(gemini).toContain('save_memory');
+    expect(gemini).toContain('not an OS filesystem sandbox');
+    // Honesty caveats codex flagged must be present.
+    expect(gemini).toContain('admin');
+    const claude = readOnlyAdvisoryWarning('claude-code');
+    expect(claude).toContain('does not enforce a read-only filesystem sandbox');
+  });
+
+  it('read_only gemini dispatch gets the tool-level note and trustWorkspace for the (crew-controlled) host repo', async () => {
+    let observedConstraints: Record<string, unknown> | undefined;
+    const adapter = makeMockAdapter({
+      name: 'gemini-cli',
+      enforcesReadOnly: false,
+      execute: async (task) => {
+        observedConstraints = task.constraints as Record<string, unknown>;
+        return { output: 'reviewed', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'gemini-cli', prompt: 'review', read_only: true },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.dispatchWarnings).toEqual([
+      expect.stringContaining('read_only note: adapter "gemini-cli" enforces read-only at the tool level'),
+    ]);
+
+    await plan.buildTask('review').run({ signal: makeAbortSignal(), onStream: () => undefined });
+    // Default read-only working_directory is the host repo root → crew-controlled
+    // → trustWorkspace true; sandbox read-only drives the --policy injection.
+    expect(observedConstraints?.sandbox).toBe('read-only');
+    expect(observedConstraints?.trustWorkspace).toBe(true);
+  });
+
+  it('read_only gemini dispatch does NOT set trustWorkspace for an external working_directory', async () => {
+    let observedConstraints: Record<string, unknown> | undefined;
+    const adapter = makeMockAdapter({
+      name: 'gemini-cli',
+      execute: async (task) => {
+        observedConstraints = task.constraints as Record<string, unknown>;
+        return { output: 'reviewed', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const external = mkdtempSync(join(tmpdir(), 'crew-external-'));
+    try {
+      const plan = await planRunAgent(
+        { agent_id: 'gemini-cli', prompt: 'review', read_only: true, working_directory: external },
+        ctx,
+      );
+      if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+      await plan.buildTask('review').run({ signal: makeAbortSignal(), onStream: () => undefined });
+      // External dir → not crew-controlled → policy still applies but no auto-trust.
+      expect(observedConstraints?.sandbox).toBe('read-only');
+      expect(observedConstraints?.trustWorkspace).toBe(false);
+    } finally {
+      rmSync(external, { recursive: true, force: true });
+    }
   });
 
   it('forwards explicit working_directory when read_only=true', async () => {

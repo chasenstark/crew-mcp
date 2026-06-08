@@ -552,12 +552,20 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   work. Skips worktree allocation (~100ms–1s saved); the
   reviewer-on-implementer pattern is `read_only: true` +
   `working_directory: <implementer-worktree>`. Caveats:
-  - **Adapter-dependent enforcement.** Codex enforces read-only with
-    its sandbox. Claude Code, Gemini, generic, and OpenAI-compatible
-    adapters treat read-only as an advisory prompt contract plus
-    Crew's best-effort dirty-tree probe. Crew still runs them for the
-    reviewer-on-implementer workflow, but the dispatch surfaces a loud
-    `warnings` entry saying enforcement is advisory — relay it.
+  - **Adapter-dependent enforcement.** Codex enforces read-only with an
+    OS filesystem sandbox. Gemini enforces it at the tool level — crew
+    dispatches it with a per-run `--policy` file that denies its
+    write_file/replace/run_shell_command/save_memory tools (blocks file
+    writes and git commits), backed by the dirty-tree probe. (Tool-level,
+    not an OS sandbox: a central admin Gemini policy could override the deny,
+    and project `.gemini` config/MCP/hooks loaded from a *trusted* dir run
+    outside it — crew only auto-trusts crew-controlled paths, so don't point
+    a read-only Gemini review at untrusted third-party code expecting a
+    sandbox.) Claude Code, generic, and OpenAI-compatible adapters treat
+    read-only as an advisory prompt contract plus Crew's best-effort
+    dirty-tree probe. Crew still runs them all for the reviewer-on-implementer
+    workflow, and the dispatch surfaces a `warnings` entry describing each
+    adapter's posture — relay it.
   - If the agent ignores the prompt and writes, edits land in
     `working_directory`. The post-run probe hashes pre-existing dirty
     files too, so it can warn even when an agent edits a file that was

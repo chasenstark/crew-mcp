@@ -1,7 +1,15 @@
 import { execa } from 'execa';
 import { z } from 'zod';
+import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { extractJson } from '../utils/json-parse.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
+import {
+  logBestEffortFailure,
+  registerTempDirForCleanup,
+  unregisterTempDirForCleanup,
+} from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
@@ -194,6 +202,54 @@ function renderProcessFailureOutput(stdout: string, stderr: string, message: str
 export const GEMINI_MIN_VERSION = { major: 0, minor: 20, patch: 0 } as const;
 
 /**
+ * Gemini built-in tools that can mutate the working tree or VCS state.
+ * Denied per-run (via a generated `--policy` file) on read_only dispatches
+ * so a dispatched reviewer cannot write files or commit. This is the exact
+ * set proven to block writes end-to-end against the real CLI (gemini refuses
+ * the tool call): `write_file`/`replace` are its file-mutation tools and
+ * `run_shell_command` covers `git commit`, `rm`, `mv`, `sed`, and any other
+ * shell-driven write. We list ONLY tool names known to exist in supported CLI
+ * versions — an unknown name risks a policy-load error.
+ *
+ * Test coverage of this list is split and has a known gap: the gated live test
+ * (CREW_GEMINI_LIVE) proves the policy MECHANISM end-to-end for `write_file`
+ * (real binary refuses the call), and the unit test asserts every entry here is
+ * present in the rendered TOML. Neither catches a CLI tool RENAME (e.g. if a
+ * future version renames `run_shell_command`) — that would silently leave the
+ * old name denied and the new one allowed. If the CLI renames or adds a mutate
+ * tool, update this list AND the live test together.
+ */
+export const GEMINI_READ_ONLY_DENIED_TOOLS = [
+  'write_file',
+  'replace',
+  'run_shell_command',
+  // save_memory persists to a GEMINI.md memory file. It is not a working-tree
+  // edit (and so is out of the dirty-tree probe's scope), but it IS a mutation
+  // a review should not perform, and the tool name is real in supported CLI
+  // versions, so denying it is safe and closes the gap.
+  'save_memory',
+] as const;
+
+/**
+ * Renders the TOML policy passed to `gemini --policy <file>` on read_only
+ * dispatches. One `[[rule]]` per denied tool with `priority = 999` so the
+ * deny wins over any allow in the user's global/user-tier policy. String
+ * (not array) `toolName` mirrors the exact form verified against the real CLI.
+ */
+export function renderReadOnlyPolicyToml(): string {
+  const header = [
+    '# Crew read-only review policy for the Gemini CLI (auto-generated per run).',
+    '# Denies the tools that mutate the working tree or VCS so a dispatched',
+    '# reviewer cannot write files or commit. Tool-level denial — not an OS',
+    '# filesystem sandbox; the dispatch layer also runs a dirty-tree probe.',
+  ].join('\n');
+  const rules = GEMINI_READ_ONLY_DENIED_TOOLS.map(
+    (tool) => `[[rule]]\ntoolName = "${tool}"\ndecision = "deny"\npriority = 999`,
+  ).join('\n\n');
+  return `${header}\n\n${rules}\n`;
+}
+
+/**
  * Returns the argv fragment for a `gemini -o stream-json` resume invocation.
  * The prompt is passed via `--prompt` (not positional) on resume turns; seed
  * turns use positional since no `--resume` target exists yet.
@@ -265,6 +321,12 @@ export class GeminiCliAdapter implements AgentAdapter {
   // post-validates with Zod. Reporting false makes downstream code pick the
   // right branch (prompt-based structured output instead of native schema).
   readonly supportsJsonSchema = false;
+  // Read-only is enforced at the TOOL level on read_only dispatches: execute()
+  // generates a per-run `--policy` file that denies write_file/replace/
+  // run_shell_command. That is NOT an OS filesystem sandbox, which is what
+  // `enforcesReadOnly` specifically reports (see types.ts), so it stays false:
+  // the dispatch layer keeps its dirty-tree probe as a backstop and surfaces a
+  // tool-policy advisory. See execute() + renderReadOnlyPolicyToml().
   readonly enforcesReadOnly = false;
   // Gemini terminal execution does not currently parse a file-change stream.
   readonly filesModifiedReliable = false;
@@ -296,6 +358,52 @@ export class GeminiCliAdapter implements AgentAdapter {
       args.push('--model', task.constraints.model);
     }
 
+    // Read-only dispatches (review/triage) are enforced at the tool level: we
+    // write a per-run policy that denies Gemini's file-write and shell tools
+    // and pass it via `--policy`. The signal arrives as `constraints.sandbox`,
+    // set to 'read-only' by run-agent.ts for read_only runs (mirrors how codex
+    // reads `--sandbox`). Unlike codex this is tool denial, not an OS sandbox —
+    // the dispatch layer keeps its dirty-tree probe as a backstop.
+    const readOnly = task.constraints?.sandbox === 'read-only';
+    // Trust is scoped UPSTREAM (run-agent sets trustWorkspace only for
+    // crew-controlled paths). We never derive it from readOnly here, because
+    // trusting a folder loads its project config and is unsafe on arbitrary
+    // dirs — see the env comment below and Task.constraints.trustWorkspace.
+    const trustWorkspace = task.constraints?.trustWorkspace === true;
+    let policyTmpDir: string | undefined;
+    if (readOnly) {
+      try {
+        policyTmpDir = mkdtempSync(join(tmpdir(), 'gemini-policy-'));
+        registerTempDirForCleanup(policyTmpDir);
+        const policyFile = join(policyTmpDir, 'review-only.toml');
+        writeFileSync(policyFile, renderReadOnlyPolicyToml(), 'utf-8');
+        args.push('--policy', policyFile);
+      } catch (error: unknown) {
+        // Fail CLOSED: a read-only review must never run without the deny
+        // policy. If we can't write it, error out instead of dispatching an
+        // unprotected reviewer.
+        if (policyTmpDir) {
+          try {
+            rmSync(policyTmpDir, { recursive: true, force: true });
+            unregisterTempDirForCleanup(policyTmpDir);
+          } catch (err) {
+            logBestEffortFailure('gemini.policy-tmp-cleanup', err);
+          }
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('[adapter:gemini-cli] failed to write read-only policy file', {
+          cwd: task.context.workingDirectory,
+          error: message,
+        });
+        return {
+          output: `Failed to write Gemini read-only policy file: ${message}`,
+          filesModified: [],
+          status: 'error',
+          metadata: { rawEvents: [{ error: message }] },
+        };
+      }
+    }
+
     // The prompt is delivered via stdin, never argv. Gemini reads a piped
     // (non-TTY) stdin as the prompt, and `--output-format json` forces
     // headless mode. Argv delivery is wrong here on three counts: the prompt
@@ -311,70 +419,100 @@ export class GeminiCliAdapter implements AgentAdapter {
     // runaway turns.
     const timeout = task.constraints?.timeout;
 
-    let result;
     try {
-      const subprocess = execa('gemini', args, {
-        cwd: task.context.workingDirectory,
-        ...(timeout ? { timeout } : {}),
-        ...processGroupSpawnOptions(),
-        cancelSignal: task.constraints?.signal,
-        reject: false,
-        input: task.prompt,
-      });
-      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
-        subprocess,
-        task.constraints?.signal,
-      );
+      let result;
       try {
-        result = await subprocess;
-      } finally {
-        disposeProcessGroupAbort();
+        const subprocess = execa('gemini', args, {
+          cwd: task.context.workingDirectory,
+          ...(timeout ? { timeout } : {}),
+          ...processGroupSpawnOptions(),
+          cancelSignal: task.constraints?.signal,
+          reject: false,
+          input: task.prompt,
+          // Crew dispatches non-interactively into dirs Gemini hasn't been told
+          // to trust; without trust, headless runs abort at the folder-trust
+          // gate. We only force trust for crew-controlled paths (trustWorkspace,
+          // set upstream) — NOT a blanket read-only grant. This matters because
+          // trusting a folder also loads its project `.gemini` settings/MCP/
+          // hooks/.env, which execute OUTSIDE the deny policy (the policy only
+          // blocks the model's own write_file/replace/run_shell_command/
+          // save_memory tools). Auto-trusting an arbitrary review target would
+          // reopen that vector.
+          //
+          // We set the var EXPLICITLY ('true'|'false') rather than only adding
+          // it when trusting: execa merges env over process.env (extendEnv
+          // default true), so a captain process that already exported
+          // GEMINI_CLI_TRUST_WORKSPACE=true would otherwise leak trust into an
+          // external review dir we computed as untrusted. Gemini reads the var
+          // strictly as `=== 'true'` (verified), so 'false' forces untrusted.
+          ...(readOnly
+            ? { env: { GEMINI_CLI_TRUST_WORKSPACE: trustWorkspace ? 'true' : 'false' } }
+            : {}),
+        });
+        const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
+          subprocess,
+          task.constraints?.signal,
+        );
+        try {
+          result = await subprocess;
+        } finally {
+          disposeProcessGroupAbort();
+        }
+      } catch (error: unknown) {
+        const stdoutText = typeof error === 'object' && error && 'stdout' in error
+          ? String((error as { stdout?: string }).stdout ?? '')
+          : '';
+        const stderrText = typeof error === 'object' && error && 'stderr' in error
+          ? String((error as { stderr?: string }).stderr ?? '')
+          : '';
+        const message =
+          error instanceof Error ? error.message : 'Unknown execution error';
+        logger.error('[adapter:gemini-cli] process execution threw', {
+          cwd: task.context.workingDirectory,
+          timeoutMs: timeout,
+          model: task.constraints?.model,
+          error: message,
+        });
+        return {
+          output: renderProcessFailureOutput(stdoutText, stderrText, message),
+          filesModified: [],
+          status: 'error',
+          metadata: {
+            rawEvents: [
+              {
+                error: message,
+                stdout: stdoutText,
+                stderr: stderrText,
+              },
+            ],
+          },
+        };
       }
-    } catch (error: unknown) {
-      const stdoutText = typeof error === 'object' && error && 'stdout' in error
-        ? String((error as { stdout?: string }).stdout ?? '')
-        : '';
-      const stderrText = typeof error === 'object' && error && 'stderr' in error
-        ? String((error as { stderr?: string }).stderr ?? '')
-        : '';
-      const message =
-        error instanceof Error ? error.message : 'Unknown execution error';
-      logger.error('[adapter:gemini-cli] process execution threw', {
-        cwd: task.context.workingDirectory,
-        timeoutMs: timeout,
-        model: task.constraints?.model,
-        error: message,
-      });
+
+      const stdoutText = result.stdout ?? '';
+      const stderrText = result.stderr ?? '';
+      const output = parseSingleJsonResponse(stdoutText);
+      if (task.onOutput && output) {
+        task.onOutput(output);
+      }
       return {
-        output: renderProcessFailureOutput(stdoutText, stderrText, message),
+        output: output || stderrText,
         filesModified: [],
-        status: 'error',
+        status: result.exitCode === 0 ? 'success' : 'error',
         metadata: {
-          rawEvents: [
-            {
-              error: message,
-              stdout: stdoutText,
-              stderr: stderrText,
-            },
-          ],
+          rawEvents: [{ stdout: stdoutText, stderr: stderrText }],
         },
       };
+    } finally {
+      if (policyTmpDir) {
+        try {
+          rmSync(policyTmpDir, { recursive: true, force: true });
+          unregisterTempDirForCleanup(policyTmpDir);
+        } catch (err) {
+          logBestEffortFailure('gemini.policy-tmp-cleanup', err);
+        }
+      }
     }
-
-    const stdoutText = result.stdout ?? '';
-    const stderrText = result.stderr ?? '';
-    const output = parseSingleJsonResponse(stdoutText);
-    if (task.onOutput && output) {
-      task.onOutput(output);
-    }
-    return {
-      output: output || stderrText,
-      filesModified: [],
-      status: result.exitCode === 0 ? 'success' : 'error',
-      metadata: {
-        rawEvents: [{ stdout: stdoutText, stderr: stderrText }],
-      },
-    };
   }
 
   async executeWithSchema<T extends z.ZodType>(

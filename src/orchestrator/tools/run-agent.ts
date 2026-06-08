@@ -34,6 +34,7 @@ import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
 import { clampEffortToSupported } from '../../adapters/types.js';
+import { AgentId } from '../../workflow/agents.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
@@ -466,6 +467,14 @@ export function buildAdapterDispatchTask(args: {
           model: args.effectiveModel,
           effort: args.effectiveEffort,
           sandbox: args.readOnly ? 'read-only' : 'workspace-write',
+          // Only auto-trust the workspace (gemini headless trust gate) when the
+          // dir is crew-controlled — the host repo or a crew worktree, i.e. the
+          // user's own code. Never force-trust an arbitrary caller-supplied
+          // working_directory: trusting loads its project config/MCP/hooks/.env,
+          // which run outside the read-only tool policy. See isCrewControlledPath.
+          trustWorkspace:
+            args.readOnly === true
+            && args.worktreeManager.isCrewControlledPath(args.effectiveWorkingDirectory),
           writablePaths,
           // Allow localhost egress so tests that hit a local DB or
           // devserver actually exercise the change. Without this,
@@ -539,6 +548,23 @@ export function buildAdapterDispatchTask(args: {
 }
 
 export function readOnlyAdvisoryWarning(adapterName: string): string {
+  if (adapterName === AgentId.GEMINI_CLI) {
+    // Gemini self-enforces read-only at the TOOL level (a per-run `--policy`
+    // deny on its write_file/replace/run_shell_command/save_memory tools). It
+    // is not an OS filesystem sandbox, so the note states the real posture and
+    // the dirty-tree probe still runs as a backstop. Two honest caveats: the
+    // `--policy` deny is user-tier, so a central admin policy could override it;
+    // and project `.gemini` config/MCP/hooks (loaded when the dir is trusted)
+    // run outside the policy — crew only auto-trusts crew-controlled paths, so
+    // do not point a read-only Gemini review at untrusted third-party code and
+    // expect it to be sandboxed.
+    return `read_only note: adapter "${adapterName}" enforces read-only at the tool level — `
+      + 'crew dispatches it with a per-run Gemini policy that denies the write_file, replace, '
+      + 'run_shell_command, and save_memory tools (blocks file writes and git commits). This is '
+      + 'tool-level denial, not an OS filesystem sandbox: the dirty-tree probe still runs as a '
+      + 'backstop, a central admin Gemini policy could override the deny, and project config/MCP/hooks '
+      + 'loaded from a trusted dir run outside it — so use it on your own code, not untrusted trees.';
+  }
   return `read_only advisory: adapter "${adapterName}" does not enforce a read-only filesystem sandbox. `
     + 'Crew will run it anyway for review/triage workflows, but the no-write contract relies on the prompt '
     + 'and the best-effort dirty-tree probe after the run.';

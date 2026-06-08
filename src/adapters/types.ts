@@ -149,8 +149,15 @@ export interface AgentAdapter {
   readonly supportsJsonSchema: boolean;
   /**
    * True only when this adapter's execution environment can enforce a
-   * read-only filesystem policy itself. False means `read_only` is an
-   * advisory prompt contract plus the dispatch layer's dirty-tree probe.
+   * read-only FILESYSTEM sandbox itself (e.g. codex `--sandbox read-only`,
+   * kernel-enforced). False means `read_only` is not OS-sandboxed: it relies
+   * on the dispatch layer's dirty-tree probe plus either a prompt contract
+   * (claude-code, generic, openai-compatible) or per-run TOOL-level denial
+   * that blocks the CLI's own write/shell tools (gemini `--policy`). Tool
+   * denial is strong but deliberately NOT reported as `true` here, because it
+   * is not a filesystem sandbox and a tool outside the deny set could still
+   * mutate — so the dirty-tree probe stays on and the dispatch surfaces an
+   * adapter-specific advisory describing the actual posture.
    */
   readonly enforcesReadOnly?: boolean;
   /**
@@ -296,6 +303,17 @@ export interface Task {
      * (claude-code, gemini, generic) ignore this.
      */
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+    /**
+     * Force the CLI's workspace-trust gate open for this dispatch. Only
+     * gemini-cli consumes it (sets GEMINI_CLI_TRUST_WORKSPACE=true) so a
+     * read-only review can run headless in a directory Gemini hasn't been
+     * told to trust. The dispatch layer sets this true ONLY for crew-controlled
+     * paths (host repo / crew run worktrees — the user's own code), never for
+     * arbitrary caller-supplied directories: trusting a folder also loads its
+     * project `.gemini` config/MCP/hooks/.env, which execute outside the
+     * read-only tool policy. Other adapters ignore this.
+     */
+    trustWorkspace?: boolean;
     /**
      * Allow network egress from inside the sandbox. Codex's
      * `workspace-write` default blocks localhost, which silently breaks
