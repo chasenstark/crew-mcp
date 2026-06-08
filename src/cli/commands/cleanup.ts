@@ -145,7 +145,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
         o.branchDeleted ? 'branch' : null,
         o.runDirDeleted ? 'run-dir' : (o.runDirPending ? 'run-dir (after worktree reclaim)' : null),
       ].filter(Boolean).join(' + ');
-      stdout.write(`  ${o.runId.slice(0, 8)}  ${o.status.padEnd(14)}  ${o.ageDays}d old  → ${acts}\n`);
+      stdout.write(`  ${o.runId.padEnd(32)}  ${o.status.padEnd(14)}  ${o.ageDays}d old  → ${acts}\n`);
     }
   }
 

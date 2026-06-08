@@ -21,7 +21,8 @@
  * surfaces terminal results out-of-band via `crew-wait` watchers (Claude
  * Code), `get_run_status` reads on later turns, or `list_runs` recovery.
  *
- * Worktree lifecycle: mint `runId = randomUUID()` per call, allocate
+ * Worktree lifecycle: mint a human-readable `runId` (`<agent>-<task>-<hex>`,
+ * see makeRunId) per call, allocate
  * `.crew/runs/<runId>/worktree/` via worktreeManager.createRunWorktree,
  * return the dispatch task. The host CLI is responsible for the worktree's
  * end-of-life through merge_run / discard_run.
@@ -43,6 +44,7 @@ import type { WorktreeManager } from '../../git/worktree.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
 import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
+import { makeRunId } from '../run-id.js';
 import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra, FullRunEnvelope } from './shared.js';
 import {
   errorContent,
@@ -244,7 +246,7 @@ export async function planRunAgent(
     };
   }
 
-  const runId = randomUUID();
+  const runId = makeRunId(input.agent_id, input.prompt);
   const readOnly = input.read_only === true;
   const dispatchWarnings = readOnly && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
