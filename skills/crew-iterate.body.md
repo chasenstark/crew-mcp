@@ -78,7 +78,12 @@ serializing any of them wastes the most wall-clock.
 **3. Escape hatch.** If the user says "stop / cancel / abandon /
 discard / pause" at any point: stop dispatching new runs, `cancel_run`
 any in-flight runs they name, and ask whether to discard or keep
-their worktrees. The escape hatch wins over any in-flight round.
+their worktrees. Use the host's structured-question tool
+(AskUserQuestion on Claude Code) to present the discard/keep options
+and capture the choice when available; if the host exposes no such
+tool, surface the options as prose and wait for a free-text reply.
+Either way, **Silence is not consent.** The escape hatch wins over any
+in-flight round.
 
 **4. Tool availability.** Before dispatching, call `list_agents` to
 confirm the chosen agent is `available: true`. Unavailable agents
@@ -110,7 +115,23 @@ invariant #1 — no user prompt required.
 **8. Ask the user before dispatching on ambiguity.** Step 0 is the
 natural disambiguation gate. If criteria are unclear, scope is
 fuzzy, or multiple interpretations are equally defensible, ask
-before any dispatch. **Silence is not consent.**
+before any dispatch. Use the structured-question surface below for
+discrete choices; keep genuinely open-ended scope questions as prose
+unless the host question tool includes an explicit Other/free-text
+escape. **Silence is not consent.**
+
+### Structured-choice surface
+
+For every discrete-choice confirmation or decision gate in this loop:
+Use the host's structured-question tool (AskUserQuestion on Claude
+Code) to present the options and capture the choice when available; if
+the host exposes no such tool, surface the options as prose and wait
+for a free-text reply. Either way, **Silence is not consent.**
+
+Genuinely open-ended asks are different. If the captain needs the user
+to define scope, "done", or another free-form requirement, either keep
+the ask as a prose question or use the host question tool only with an
+explicit Other/free-text escape.
 
 ### When to use this skill (vs umbrella `crew` alone)
 
@@ -185,7 +206,11 @@ the source of truth. Use them in this order:
    for `[M]` criteria when there is a concrete command or assertion.
 2. Surface the returned `rendered_block` verbatim to the user. Do not
    hand-format a parallel criteria list.
-3. Wait for explicit OK or edits. **Silence is not consent.**
+3. Use the host's structured-question tool (AskUserQuestion on Claude
+   Code) to present Confirm / Edit / Add options and capture the choice
+   when available; Edit and Add must allow free-text details. If the
+   host exposes no such tool, surface the options as prose and wait for
+   a free-text reply. Either way, **Silence is not consent.**
 4. If the user explicitly OKs with no edits, call
    `confirm_criteria({criteria_set_id})`.
 5. If the user explicitly OKs and includes edits in the same message,
@@ -220,8 +245,12 @@ criteria tools exist.
 **Tools-absent fallback.** Only when the criteria tools are genuinely
 absent from the MCP surface, fall back to the legacy prose criteria
 block: derive the same 3–7 `[M]`/`[B]`/`[N]` criteria, surface the
-numbered list to the user, wait for explicit confirmation, and carry
-that confirmed block in prompts/peer messages for the rest of the loop.
+numbered list to the user, use the host's structured-question tool
+(AskUserQuestion on Claude Code) to present Confirm / Edit / Add
+options and capture the choice when available, and carry that confirmed
+block in prompts/peer messages for the rest of the loop. If the host
+exposes no such tool, surface the options as prose and wait for a
+free-text reply. Either way, **Silence is not consent.**
 This fallback is a compatibility path, not the normal contract.
 
 **Criteria revision mid-loop (new-epoch rule).** If a later round
@@ -233,7 +262,12 @@ reveals a criterion is malformed or impossible:
    wait for it to terminate and then `continue_run` after the revised
    criteria are confirmed.
 2. **Flag to user; propose revision ops; wait for confirmation.**
-   Silence is not consent. If the user edits the proposal without
+   Use the host's structured-question tool (AskUserQuestion on Claude
+   Code) to present Confirm revision / Edit revision / Hand off options
+   and capture the choice when available; Edit revision must allow
+   free-text details. If the host exposes no such tool, surface the
+   options as prose and wait for a free-text reply. Either way,
+   **Silence is not consent.** If the user edits the proposal without
    explicitly OKing it, hold the pending ops and ask again.
 3. After explicit approval, call
    `revise_criteria({criteria_set_id, ops, note})`. This bumps
@@ -343,8 +377,13 @@ Surface to the user verbatim:
 > "drop reviewer <id>", "drop host reviewer", "just one reviewer",
 > "use <id> for both") or OK.
 
-Wait for OK. **Silence is not consent.** If the user overrides, restate
-the final picks and ask again.
+Use the host's structured-question tool (AskUserQuestion on Claude
+Code) to present OK / Override options and capture the choice when
+available; Override must allow free-text details. If the host exposes
+no such tool, surface the options as prose and wait for a free-text
+reply. Either way, **Silence is not consent.** If the user overrides,
+restate the final picks and ask again with the same structured-choice
+surface.
 
 #### Override grammar
 
@@ -778,8 +817,11 @@ structurally valid APPROVE.
 - If ANY reviewer scores N-A on ANY criterion, surface to the user
   before Step 4: "Reviewer X scored criterion N as N-A: '<reason>'.
   Accept N-A (treat as PASS), revise the criterion, override (treat
-  as FAIL and continue iterating), or hand off?" Wait for explicit
-  choice. **Silence is not consent.**
+  as FAIL and continue iterating), or hand off?" Use the host's
+  structured-question tool (AskUserQuestion on Claude Code) to present
+  those options and capture the choice when available; if the host
+  exposes no such tool, surface the options as prose and wait for a
+  free-text reply. Either way, **Silence is not consent.**
 - Treat N-A as malformed if the reviewer gave no reason or only a
   generic one — follow the malformed-output re-dispatch path.
 - ≥2 N-A scores on the same criterion across rounds, OR ≥3 N-A
@@ -876,14 +918,23 @@ the same reviewers against the new diff. Round count increments by 1.
   re-dispatch.
 - **BLOCKING verdict.** Stop the loop. Surface the reviewer's
   Recommended action. Ask: "rethink the approach, revise the
-  criteria, discard, or continue anyway?" Do NOT silently continue.
+  criteria, discard, or continue anyway?" Use the host's
+  structured-question tool (AskUserQuestion on Claude Code) to present
+  those options and capture the choice when available; if the host
+  exposes no such tool, surface the options as prose and wait for a
+  free-text reply. Either way, **Silence is not consent.** Do NOT
+  silently continue.
 - **Iteration cap reached (default 3 rounds per epoch; 9 total).**
   Reframe with criteria context: "We've iterated 3 rounds; criteria
   still failing: [2, 4]. Options: revise criteria → starts a new
   epoch (epoch-aware total cap still applies); switch implementer →
   continues current epoch; accept failing finding(s) and merge →
   carries into Step 4 as user-accepted/deferred (recorded in commit
-  body); hand off → captain stops dispatching."
+  body); hand off → captain stops dispatching." Use the host's
+  structured-question tool (AskUserQuestion on Claude Code) to present
+  those options and capture the choice when available; if the host
+  exposes no such tool, surface the options as prose and wait for a
+  free-text reply. Either way, **Silence is not consent.**
 - **Reviewer disagreement (one PASS, one FAIL on criterion N).**
   Treat as FAIL (conservative). Forward both reviewers' reasoning to
   the implementer. If disagreement persists across two rounds on the
@@ -926,7 +977,12 @@ Step 4 with out-of-scope material:
 > Ready to merge `<run_id>` (<N> files changed): `<commit_title>`
 > into `<target_branch>`?
 
-Wait for explicit "yes / go / merge". Then:
+Use the host's structured-question tool (AskUserQuestion on Claude
+Code) to present Merge / Do not merge options and capture the choice
+when available; if the host exposes no such tool, surface the options
+as prose and wait for a free-text reply. Either way, **Silence is not
+consent.** Wait for explicit "yes / go / merge" or the equivalent
+Merge selection. Then:
 
 ```
 merge_run({

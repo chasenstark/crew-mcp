@@ -57,6 +57,14 @@ cleanly.** Maybe-fits should not dispatch — they should ask. A
 clarifying question; dispatching for trivial work defeats the
 point of the user staying in their primary CLI.
 
+When the dispatch-vs-inline decision itself is a discrete choice, use
+the host's structured-question tool (AskUserQuestion on Claude Code) to
+present the options and capture the choice when available; if the host
+exposes no such tool, surface the options as prose and wait for a
+free-text reply. Either way, **Silence is not consent.** Genuinely
+open-ended clarification remains prose, or uses the host question tool
+only with an explicit Other/free-text escape.
+
 ### Don't dispatch to your own host product
 
 Crew bridges **between** agent products (Claude ↔ Codex ↔ Gemini ↔
@@ -72,6 +80,12 @@ working on main"). If the user names that, proceed. Otherwise:
 native subagent. If unsure, ask. When `list_agents` shows your own
 host product, treat it as "available for explicit isolation
 requests only" rather than a default routing target.
+If you need the user to choose between native subagent and explicit
+worktree isolation, use the host's structured-question tool
+(AskUserQuestion on Claude Code) to present those options and capture
+the choice when available; if the host exposes no such tool, surface
+the options as prose and wait for a free-text reply. Either way,
+**Silence is not consent.**
 
 **This rule governs Crew dispatch, not your native subagents.** For
 **review panels**, the host model should still review — as a
@@ -121,7 +135,12 @@ When the user dispatches an implementation:
    implementer run, ask: merge, continue iterating, or discard?
    For a **review-only run** (no edits expected), there's nothing to
    merge — surface the findings and ask whether to discard the
-   worktree (cleanup) or keep it around for follow-up.
+   worktree (cleanup) or keep it around for follow-up. For these
+   discrete follow-up prompts, use the host's structured-question tool
+   (AskUserQuestion on Claude Code) to present the options and capture
+   the choice when available; if the host exposes no such tool,
+   surface the options as prose and wait for a free-text reply. Either
+   way, **Silence is not consent.**
 5. **Merge or discard on user instruction.** Never call `merge_run`
    or `discard_run` without explicit approval — see merge-boundary
    safety rule below. When merging, pass `confirmed: true` only after
@@ -145,6 +164,15 @@ markers (resolve in place with `git add` + `git commit`, or bail with
 `git reset --hard HEAD`); `preserve` leaves a cherry-pick in progress
 (`git cherry-pick --abort`). Don't run a reset/abort yourself without
 asking; it throws away their working state.
+
+For merge and discard confirmations, use the host's structured-question
+tool (AskUserQuestion on Claude Code) to present the options and
+capture the choice when available; if the host exposes no such tool,
+surface the options as prose and wait for a free-text reply. Either
+way, **Silence is not consent.** The structured surface does not weaken
+consent: pass `confirmed: true` only after the user explicitly chooses
+Merge or otherwise gives an affirmative "yes / go / merge" in the
+immediately preceding turn.
 
 By default the server enforces this boundary too:
 `merge_run` requires `{ confirmed: true }` when
@@ -198,6 +226,11 @@ How to apply the choice against the confirmation gate:
   the run's commit list in your merge prompt ("3 commits — squash to
   one, or keep all three?"). The user confirms or flips; then
   `merge_run` with `confirmed: true` and the chosen `merge_strategy`.
+  Use the host's structured-question tool (AskUserQuestion on Claude
+  Code) to present Squash / Preserve options and capture the choice
+  when available; if the host exposes no such tool, surface the options
+  as prose and wait for a free-text reply. Either way, **Silence is not
+  consent.**
 - **`confirmBeforeMerge` off (auto-merge):** there's no gate to surface
   the choice at, so apply your own judgment from the run's `git log` —
   the same heuristic above — and merge. The user opted into landing runs
@@ -209,19 +242,30 @@ Before dispatching, **ask one clarifying question** if any of the
 following hold. The check is mandatory; skip it only when none of
 them hold.
 
+For discrete clarifying gates in this rubric, use the host's
+structured-question tool (AskUserQuestion on Claude Code) to present
+the options and capture the choice when available; if the host exposes
+no such tool, surface the options as prose and wait for a free-text
+reply. Either way, **Silence is not consent.** Do not force genuinely
+open-ended asks into rigid multiple choice: for "what does done look
+like?", broad scope, or approach details the listed options do not
+cover, ask in prose or include an explicit Other/free-text option.
+
 1. **Scope is open-ended.** The ask uses verbs like "improve",
    "rework", "redesign", or "make X better" without naming a target
    file, success criterion, or stop condition. Ask: _"What does
    done look like for this?"_
 2. **More than one plausible approach exists.** Name two and let
-   the user pick. Don't dispatch on the assumption your read is
+   the user pick, with an Other/free-text escape when the options do
+   not cover the space. Don't dispatch on the assumption your read is
    right when a different interpretation is equally defensible.
 3. **The work touches a sensitive area** — auth, money, data
    migrations, public APIs, deletion, anything irreversible. Confirm
    in-scope with the specific paths or symbols before dispatching.
 4. **You don't know which agent fits.** Ask the user rather than
-   guessing. Picking the wrong agent costs the user a 30–60s
-   round-trip and a discard.
+   guessing; include an Other/free-text option if the listed agents
+   are not exhaustive. Picking the wrong agent costs the user a
+   30–60s round-trip and a discard.
 5. **The user named the same product as the host CLI without an
    explicit isolation reason.** Don't route it through Crew — see
    _"Don't dispatch to your own host product"_ above. For
@@ -711,10 +755,15 @@ Surface to the user verbatim:
 > Override (e.g., "add reviewer <id>", "drop reviewer <id>",
 > "drop host reviewer", "use only <id>") or OK.
 
-Wait for OK. Silence is not consent. If the user overrides, restate
-the final reviewer list and ask again. Include the final reviewer-pick
-block in downstream panel prompts so later reviewers can audit
-agent-drift across rounds.
+Use the host's structured-question tool (AskUserQuestion on Claude
+Code) to present OK / Override options and capture the choice when
+available; Override must allow free-text details. If the host exposes
+no such tool, surface the options as prose and wait for a free-text
+reply. Either way, **Silence is not consent.** If the user overrides,
+restate the final reviewer list and ask again with the same
+structured-choice surface. Include the final reviewer-pick block in
+downstream panel prompts so later reviewers can audit agent-drift
+across rounds.
 
 #### Override grammar
 

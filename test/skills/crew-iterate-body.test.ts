@@ -45,6 +45,27 @@ function flattenWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ');
 }
 
+function sliceBetween(
+  haystack: string,
+  startNeedle: string,
+  endNeedle: string,
+): string {
+  const start = haystack.indexOf(startNeedle);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = haystack.indexOf(endNeedle, start);
+  expect(end).toBeGreaterThan(start);
+  return haystack.slice(start, end);
+}
+
+function expectStructuredQuestionGuidance(section: string): void {
+  const flat = flattenWhitespace(section);
+  expectContainsCI(flat, 'AskUserQuestion on Claude Code');
+  expectContainsCI(flat, 'if the host exposes no such tool');
+  expectContainsCI(flat, 'surface the options as prose');
+  expectContainsCI(flat, 'free-text reply');
+  expectContainsCI(flat, 'Silence is not consent');
+}
+
 describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', () => {
   it('mentions every load-bearing rule phrase', async () => {
     const body = await loadBody();
@@ -117,6 +138,124 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     expect(
       body.includes('new epoch') || body.includes('new loop epoch'),
     ).toBe(true);
+  });
+});
+
+describe('crew-iterate body — structured-question gates', () => {
+  it('defines the structured-choice surface and preserves open-ended asks', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '### Structured-choice surface',
+      '### When to use this skill',
+    );
+
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(section, 'Other/free-text escape');
+    expectContainsCI(section, 'Genuinely open-ended asks are different');
+  });
+
+  it('routes the escape hatch discard/keep gate through structured questions', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '**3. Escape hatch.',
+      '**4. Tool availability.',
+    );
+
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(section, 'discard/keep options');
+  });
+
+  it('routes Step 0 criteria confirmation and revision gates through structured questions', async () => {
+    const body = await loadBody();
+    const step0 = sliceBetween(
+      body,
+      '### Step 0 — Derive and confirm acceptance criteria',
+      '### Step 0.5 — Confirm agent picks',
+    );
+
+    const flat = flattenWhitespace(step0);
+    expectStructuredQuestionGuidance(step0);
+    expectContainsCI(flat, 'Confirm / Edit / Add options');
+    expectContainsCI(flat, 'Edit and Add must allow free-text details');
+    expectContainsCI(flat, 'Tools-absent fallback');
+    expectContainsCI(flat, 'Confirm revision / Edit revision / Hand off options');
+    expectContainsCI(flat, 'Edit revision must allow free-text details');
+    expectContainsCI(flat, 'Require explicit re-confirmation');
+  });
+
+  it('routes Step 0.5 agent-pick confirmation through structured questions', async () => {
+    const body = await loadBody();
+    const step = sliceBetween(
+      body,
+      '### Step 0.5 — Confirm agent picks',
+      '### Step 1 — Dispatch implementer',
+    );
+
+    expectStructuredQuestionGuidance(step);
+    expectContainsCI(step, 'OK / Override options');
+    expectContainsCI(step, 'Override must allow free-text details');
+    expectContainsCI(step, 'restate the final picks and ask again');
+  });
+
+  it('routes Step 3 N-A, BLOCKING, and iteration-cap gates through structured questions', async () => {
+    const body = await loadBody();
+    const step3 = sliceBetween(
+      body,
+      '### Step 3 — Iterate or converge',
+      '### Step 4 — Merge',
+    );
+
+    const naStart = step3.indexOf('**N-A guard');
+    const consolidationStart = step3.indexOf('**Cross-model consolidation', naStart);
+    expect(naStart).toBeGreaterThanOrEqual(0);
+    expect(consolidationStart).toBeGreaterThan(naStart);
+    const naGuard = step3.slice(naStart, consolidationStart);
+    const flatNaGuard = flattenWhitespace(naGuard);
+    expectStructuredQuestionGuidance(naGuard);
+    expectContainsCI(flatNaGuard, 'Accept N-A (treat as PASS)');
+    expectContainsCI(flatNaGuard, 'revise the criterion');
+    expectContainsCI(flatNaGuard, 'override (treat as FAIL');
+    expectContainsCI(flatNaGuard, 'hand off');
+
+    const blockingStart = step3.indexOf('**BLOCKING verdict.');
+    const capStart = step3.indexOf('**Iteration cap reached', blockingStart);
+    const disagreementStart = step3.indexOf('**Reviewer disagreement', capStart);
+    expect(blockingStart).toBeGreaterThanOrEqual(0);
+    expect(capStart).toBeGreaterThan(blockingStart);
+    expect(disagreementStart).toBeGreaterThan(capStart);
+
+    const blockingGate = step3.slice(blockingStart, capStart);
+    const flatBlockingGate = flattenWhitespace(blockingGate);
+    expectStructuredQuestionGuidance(blockingGate);
+    expectContainsCI(flatBlockingGate, 'rethink the approach');
+    expectContainsCI(flatBlockingGate, 'revise the criteria');
+    expectContainsCI(flatBlockingGate, 'discard');
+    expectContainsCI(flatBlockingGate, 'continue anyway');
+
+    const capGate = step3.slice(capStart, disagreementStart);
+    const flatCapGate = flattenWhitespace(capGate);
+    expectStructuredQuestionGuidance(capGate);
+    expectContainsCI(flatCapGate, 'revise criteria');
+    expectContainsCI(flatCapGate, 'switch implementer');
+    expectContainsCI(flatCapGate, 'accept failing finding(s) and merge');
+    expectContainsCI(flatCapGate, 'hand off');
+  });
+
+  it('routes Step 4 merge confirmation through structured questions without weakening explicit approval', async () => {
+    const body = await loadBody();
+    const step4 = sliceBetween(
+      body,
+      '### Step 4 — Merge',
+      '## Operating guardrails',
+    );
+
+    expectStructuredQuestionGuidance(step4);
+    expectContainsCI(step4, 'Merge / Do not merge options');
+    expectContainsCI(step4, 'explicit "yes / go / merge"');
+    expectContainsCI(step4, 'confirmed: true');
+    expectContainsCI(step4, 'Do not auto-merge');
   });
 });
 

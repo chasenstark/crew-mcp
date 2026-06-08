@@ -14,6 +14,40 @@ async function loadBody(): Promise<string> {
   return stripHtmlComments(raw);
 }
 
+function expectContainsCI(haystack: string, needle: string): void {
+  const ok = haystack.toLowerCase().includes(needle.toLowerCase());
+  if (!ok) {
+    throw new Error(
+      `Expected body to contain phrase (case-insensitive): "${needle}"`,
+    );
+  }
+}
+
+function flattenWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ');
+}
+
+function sliceBetween(
+  haystack: string,
+  startNeedle: string,
+  endNeedle: string,
+): string {
+  const start = haystack.indexOf(startNeedle);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = haystack.indexOf(endNeedle, start);
+  expect(end).toBeGreaterThan(start);
+  return haystack.slice(start, end);
+}
+
+function expectStructuredQuestionGuidance(section: string): void {
+  const flat = flattenWhitespace(section);
+  expectContainsCI(flat, 'AskUserQuestion on Claude Code');
+  expectContainsCI(flat, 'if the host exposes no such tool');
+  expectContainsCI(flat, 'surface the options as prose');
+  expectContainsCI(flat, 'free-text reply');
+  expectContainsCI(flat, 'Silence is not consent');
+}
+
 describe('crew-captain body — review panel agent picks', () => {
   it('contains the load-bearing panel-pick anchors in Review panels', async () => {
     const body = await loadBody();
@@ -33,6 +67,90 @@ describe('crew-captain body — review panel agent picks', () => {
     // The host model reviews via a native subagent, not run_panel.
     expect(section).toContain('The host reviewer');
     expect(section).toContain('native subagent');
+  });
+
+  it('routes reviewer-pick confirmation through structured questions', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '### Confirm reviewer picks',
+      '#### Override grammar',
+    );
+
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(section, 'OK / Override options');
+    expectContainsCI(section, 'Override must allow free-text details');
+    expectContainsCI(section, 'restate the final reviewer list');
+  });
+});
+
+describe('crew-captain body — structured-question gates', () => {
+  it('routes dispatch-vs-inline and same-host decisions through structured questions', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '## Dispatch-vs-inline',
+      '## The default flow',
+    );
+
+    const flat = flattenWhitespace(section);
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(flat, 'dispatch-vs-inline decision');
+    expectContainsCI(flat, 'native subagent and explicit worktree isolation');
+    expectContainsCI(flat, 'Other/free-text escape');
+  });
+
+  it('routes terminal follow-up choices through structured questions', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '## The default flow',
+      '## Merge boundary',
+    );
+
+    const flat = flattenWhitespace(section);
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(flat, 'merge, continue iterating, or discard');
+    expectContainsCI(flat, 'discard the worktree (cleanup) or keep it');
+  });
+
+  it('routes merge/discard confirmation and merge-strategy choice through structured questions', async () => {
+    const body = await loadBody();
+    const mergeBoundary = sliceBetween(
+      body,
+      '## Merge boundary',
+      '### Pick the merge strategy',
+    );
+    expectStructuredQuestionGuidance(mergeBoundary);
+    expectContainsCI(flattenWhitespace(mergeBoundary), 'merge and discard confirmations');
+    expectContainsCI(mergeBoundary, 'confirmed: true');
+    expectContainsCI(mergeBoundary, 'yes / go / merge');
+
+    const strategy = sliceBetween(
+      body,
+      '### Pick the merge strategy',
+      '## When to ask the user',
+    );
+    expectStructuredQuestionGuidance(strategy);
+    expectContainsCI(strategy, 'Squash / Preserve options');
+  });
+
+  it('keeps open-ended clarifications free-text capable while structuring discrete rubric choices', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '## When to ask the user',
+      '## Dispatch lifecycle',
+    );
+
+    const flat = flattenWhitespace(section);
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(flat, 'Do not force genuinely open-ended asks');
+    expectContainsCI(flat, 'what does done look like');
+    expectContainsCI(flat, 'Other/free-text option');
+    expectContainsCI(flat, 'Scope is open-ended');
+    expectContainsCI(flat, 'More than one plausible approach exists');
+    expectContainsCI(flat, "You don't know which agent fits");
   });
 });
 
