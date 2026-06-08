@@ -41,6 +41,10 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+function flattenWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ');
+}
+
 describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', () => {
   it('mentions every load-bearing rule phrase', async () => {
     const body = await loadBody();
@@ -60,8 +64,6 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
       'CREW_WAIT_TERMINAL',
       'Captain mechanical pass',
       'score-vs-finding',
-      'criteria drift detected',
-      'Audit check',
       'foreground-wait',
       'clamped at',
       '[M]',
@@ -115,6 +117,81 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     expect(
       body.includes('new epoch') || body.includes('new loop epoch'),
     ).toBe(true);
+  });
+});
+
+describe('crew-iterate body — criteria-store adoption', () => {
+  it('anchors the Step 0 criteria tool flow and explicit consent rules', async () => {
+    const body = await loadBody();
+    const start = body.indexOf('### Step 0 — Derive and confirm acceptance criteria');
+    const end = body.indexOf('### Step 0.5 — Confirm agent picks', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const step0 = body.slice(start, end);
+
+    expect(step0).toContain('create_criteria({criteria})');
+    expect(step0).toContain('rendered_block');
+    expect(step0).toContain('confirm_criteria({criteria_set_id})');
+    expect(step0).toContain('confirm_criteria({criteria_set_id, ops})');
+    expect(step0).toContain('CriteriaEditOps');
+    expectContainsCI(step0, 'confirmation is the point of no return');
+    expectContainsCI(step0, 'always sets `status: "confirmed"`');
+    expectContainsCI(step0, 'Silence is not consent');
+  });
+
+  it('passes criteria_set_id through dispatch without acceptance-criteria peer messages', async () => {
+    const body = await loadBody();
+    const start = body.indexOf('### Step 1 — Dispatch implementer');
+    const end = body.indexOf('### Step 3 — Iterate or converge', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const dispatchSteps = body.slice(start, end);
+
+    expectContainsCI(dispatchSteps, 'criteria_set_id: <confirmed criteria_set_id>');
+    expectContainsCI(dispatchSteps, 'run_agent({');
+    expectContainsCI(dispatchSteps, 'run_panel({');
+    expectContainsCI(dispatchSteps, 'Do not restate criteria inline');
+    expect(dispatchSteps).not.toContain('from_label: "acceptance criteria"');
+    expect(dispatchSteps).not.toContain('restating the criteria inline');
+  });
+
+  it('anchors host-native get_criteria and mid-loop revise_criteria handling', async () => {
+    const body = await loadBody();
+    expect(body).toContain('get_criteria({criteria_set_id})');
+    expect(body).toContain('get_criteria({criteria_set_id}).rendered_block');
+    expect(body).toContain('revise_criteria({criteria_set_id, ops, note})');
+    expectContainsCI(body, 'returns `status: "proposed"`');
+    expectContainsCI(body, 'Require explicit re-confirmation with `confirm_criteria`');
+  });
+
+  it('keeps the tools-absent fallback and removes stale reviewer criteria branches', async () => {
+    const body = await loadBody();
+    const flat = flattenWhitespace(body);
+    expectContainsCI(body, 'Tools-absent fallback');
+    expectContainsCI(flat, 'legacy prose criteria block');
+    expect(body).not.toContain('no criteria provided; cannot score');
+    expect(body).not.toContain('criteria drift detected');
+    expect(body).not.toContain('Audit check');
+  });
+
+  it('documents the exact criteria error scopes', async () => {
+    const body = await loadBody();
+    const flat = flattenWhitespace(body);
+    for (const error of [
+      'criteria.unknown',
+      'criteria.not_confirmed',
+      'criteria.cross_repo',
+      'criteria.unparsable',
+      'criteria.unknown_schema_version',
+      'criteria.linkage_mismatch',
+      'criteria.contract_too_large',
+    ]) {
+      expect(body).toContain(error);
+    }
+    expectContainsCI(
+      flat,
+      '`criteria.invalid` is a validation error for `create_criteria`, `confirm_criteria`, and `revise_criteria`',
+    );
   });
 });
 

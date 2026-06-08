@@ -143,7 +143,8 @@ upfront if you detect that host.
 **Mandatory. Do not skip. Do not dispatch without user-confirmed
 criteria.** Acceptance criteria are the contract for every downstream
 step — implementer prompt, reviewer prompt, and stop condition all
-reference them. Skip this step and you have no defined "done".
+reference the same persisted set. Skip this step and you have no
+defined "done".
 
 Read the user's request. Derive 3–7 criteria. **Every criterion must
 be tagged with one of three TYPE labels** — these are MANDATORY
@@ -175,56 +176,53 @@ paired with a concrete signal. Avoid criteria the reviewer can't
 check from the diff alone (don't say "performance regresses by <5%"
 unless you also dispatch a benchmark).
 
-**Formatting.** Give each criterion a short **bold title** so the list
-scans at a glance, with its `[M]`/`[B]`/`[N]` tag immediately AFTER the
-title (not before). Put the testable detail below the title: one line
-when the criterion is single-clause, or a `-` sub-bullet list when it
-bundles several checks that must all hold. Sub-bullets are facets of
-ONE criterion — the reviewer scores the numbered parent as a whole, so
-don't number them. Keep the explicit `N.` numbering on criteria: it's
-the stable handle for "edit criterion 3" and per-criterion scoring
-downstream. Don't reorder into `[M]`/`[B]`/`[N]` sections — keep the
-criteria interleaved in dependency order.
+**Criteria-store flow.** When the criteria tools are present, they are
+the source of truth. Use them in this order:
 
-Surface to the user verbatim (titles and sub-bullets illustrative):
+1. Call `create_criteria({criteria})` with each criterion as a
+   structured item: `title`, `type` (`mechanical`, `behavioral`, or
+   `negative`), exactly one of `detail` or `subCriteria`, and `signal`
+   for `[M]` criteria when there is a concrete command or assertion.
+2. Surface the returned `rendered_block` verbatim to the user. Do not
+   hand-format a parallel criteria list.
+3. Wait for explicit OK or edits. **Silence is not consent.**
+4. If the user explicitly OKs with no edits, call
+   `confirm_criteria({criteria_set_id})`.
+5. If the user explicitly OKs and includes edits in the same message,
+   translate the edits into `CriteriaEditOps` (`add`, `update`,
+   `removeIds`, `order`) and call
+   `confirm_criteria({criteria_set_id, ops})`.
+6. If the user gives edits without explicit OK, do **not** call
+   `confirm_criteria`: confirmation is the point of no return and
+   always sets `status: "confirmed"`. Hold the pending ops, re-surface
+   the proposed criteria in prose, and wait for OK.
 
-> Before I dispatch, here are the acceptance criteria I'll iterate
-> against (`[M]` mechanical, `[B]` behavioral, `[N]` negative):
->
-> **1. <short title>** `[M]`
-> <one-line detail>
->
-> **2. <short title>** `[B]`
-> - <sub-criterion that must hold>
-> - <sub-criterion that must hold>
->
-> **3. <short title>** `[N]`
-> <one-line detail>
->
-> Confirm, edit, or add criteria. I'll dispatch once you OK.
+`create_criteria`, `confirm_criteria`, and `revise_criteria` may return
+`criteria.invalid` for malformed criteria or edit ops. That is a
+criteria-tool validation error, not a dispatch-time criteria error.
 
-Wait for OK or edit. **Silence is not consent.** If the user edits,
-restate the final list and ask again. The final list becomes the
-**user-confirmed criteria** — the contract for all downstream prompts.
+**Store-backed contract.** After confirmation, retain the
+`criteria_set_id` and pass it on every `run_agent`, `run_panel`, and
+`continue_run` call in this loop. Do **not** restate criteria inline
+and do **not** pass acceptance criteria through `peer_messages`; the
+server injects the confirmed criteria as a non-droppable contract. The
+dispatch-time criteria errors are exactly `criteria.unknown`,
+`criteria.not_confirmed`, `criteria.cross_repo`,
+`criteria.unparsable`, `criteria.unknown_schema_version`,
+`criteria.linkage_mismatch`, and `criteria.contract_too_large`.
 
-**Captain audit-trail rule.** Include the user-confirmed criteria
-block VERBATIM in every downstream prompt — implementer, reviewers,
-continue_run, merge surfacing. Format:
+**Warning scope.** The server emits
+`criteria.peer_message_without_criteria_set_id` only when a dispatch has
+no `criteria_set_id` and at least one `peer_messages[].from_label`
+matches `/acceptance criteria/i`. Avoid that fallback shape when the
+criteria tools exist.
 
-```
-## User-confirmed acceptance criteria (Step 0)
-1. **<short title>** [M]
-   <one-line detail, or `-` sub-bullets for multi-part criteria>
-2. **<short title>** [B]
-   <one-line detail>
-...
-```
-
-The reviewer template's **Audit check** rejects criteria drift
-across rounds: if the current round's block differs from a prior
-round's (other than a documented unilateral clarification), the
-reviewer replies `criteria drift detected` and the captain must
-re-confirm. This protects against post-hoc fabrication.
+**Tools-absent fallback.** Only when the criteria tools are genuinely
+absent from the MCP surface, fall back to the legacy prose criteria
+block: derive the same 3–7 `[M]`/`[B]`/`[N]` criteria, surface the
+numbered list to the user, wait for explicit confirmation, and carry
+that confirmed block in prompts/peer messages for the rest of the loop.
+This fallback is a compatibility path, not the normal contract.
 
 **Criteria revision mid-loop (new-epoch rule).** If a later round
 reveals a criterion is malformed or impossible:
@@ -232,16 +230,18 @@ reveals a criterion is malformed or impossible:
 1. **Stop dispatching.** Cancel any in-flight reviewers (they were
    scoring against the old criteria). Either cancel the implementer's
    in-flight `continue_run` and re-dispatch with revised criteria, or
-   wait for it to terminate and then `continue_run` with the revised
-   criteria carried in `peer_messages`.
-2. **Flag to user; propose revision; wait for confirmation.** Silence
-   is not consent.
-3. **Invalidate prior PASSes.** After approval, all prior reviewer
-   scores on the revised criterion are stale and MUST NOT be carried
-   forward. Next round re-scores the FULL revised list; `peer_messages`
-   include the note "criteria were revised; previous scores are
-   invalid; rescore everything."
-4. **Start a new loop epoch.** The revised criteria define a fresh
+   wait for it to terminate and then `continue_run` after the revised
+   criteria are confirmed.
+2. **Flag to user; propose revision ops; wait for confirmation.**
+   Silence is not consent. If the user edits the proposal without
+   explicitly OKing it, hold the pending ops and ask again.
+3. After explicit approval, call
+   `revise_criteria({criteria_set_id, ops, note})`. This bumps
+   `epoch`, returns `status: "proposed"`, snapshots the old epoch, and
+   clears prior review state. Surface the returned `rendered_block`.
+4. Require explicit re-confirmation with `confirm_criteria` before any
+   new dispatch. The next round re-scores the FULL revised list.
+5. **Start a new loop epoch.** The revised criteria define a fresh
    epoch with its own round counter starting at 0. Total rounds across
    all epochs are bounded by an **epoch-aware safety cap (default 9
    total, no more than 3 in any one epoch)**. This prevents both the
@@ -358,20 +358,22 @@ Recognize these phrases consistently:
   subagent for this iteration (one-run exclusion, not a ban).
 - `no <id>` / `never <id>` → session-scoped ban only; do not persist.
 
-After confirmation, include this block VERBATIM in every downstream
-prompt, immediately after the acceptance criteria block:
+After confirmation, include this agent-pick block in downstream
+`peer_messages` and host-native prompts. The acceptance criteria
+contract travels separately via `criteria_set_id` when the tools are
+present, so do not paste the criteria beside this block except in the
+tools-absent fallback:
 
 ```
 ## Agent-pick (Step 0.5)
 Implementer: <id> (<reason>)
 Crew reviewer(s): <id, id> (<reason>)
 Host reviewer: <host via native subagent | foreground native | inline fallback | omitted> (<reason>)
-This block is included in downstream prompts so reviewers can audit agent-drift across rounds.
+This block is included in downstream prompts so reviewers can audit agent-pick consistency across rounds.
 ```
 
 If a later round uses different picks without a documented user
-override, stop and re-confirm. Reviewers can then detect agent drift
-the same way they detect criteria drift.
+override, stop and re-confirm before dispatching again.
 
 ### Step 1 — Dispatch implementer
 
@@ -385,22 +387,21 @@ signal (corroborated, not trusted blindly — Step 3).
 ```
 run_agent({
   agent_id: <implementer>,
-  prompt: <task description, restating the criteria inline, ending with
+  criteria_set_id: <confirmed criteria_set_id>,
+  prompt: <task description, ending with
     "Before you finish: run every [M] criterion's command and report
      the command + exit code in your summary.">,
   effort: <one level higher than for raw implementation, clamped at "max">,
   peer_messages: [
-    { body: <numbered criteria list, verbatim from Step 0>,
-      kind: "note", from_label: "acceptance criteria" },
     { body: <agent-pick block, verbatim from Step 0.5>,
       kind: "note", from_label: "agent picks" }
   ]
 })
 ```
 
-- Restate criteria in the prompt itself; models comply with criteria
-  read inline more reliably than criteria buried in peer-message
-  history.
+- Do not restate criteria inline or in `peer_messages`; `criteria_set_id`
+  makes the server prepend the non-droppable criteria contract to the
+  composed prompt.
 - Pick `effort` one level higher than for a raw implementation
   (**clamped at `max`**) — review catches mid-effort regressions but
   can't recover from a low-effort foundation.
@@ -410,6 +411,13 @@ run_agent({
   behavioral-heavy → careful-reasoning profile. Heterogeneity between
   implementer and reviewer is only a tiebreaker for heuristic picks —
   never a reason to deviate from a confirmed Step 0.5 pick.
+- If dispatch rejects the criteria contract, the dispatch-time criteria
+  errors are exactly `criteria.unknown`, `criteria.not_confirmed`,
+  `criteria.cross_repo`, `criteria.unparsable`,
+  `criteria.unknown_schema_version`, `criteria.linkage_mismatch`, and
+  `criteria.contract_too_large`. `criteria.invalid` belongs to
+  `create_criteria` / `confirm_criteria` / `revise_criteria`
+  validation, not dispatch.
 - Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
   the turn, spawn the watcher on Claude Code (per invariant #2).
 
@@ -417,10 +425,11 @@ run_agent({
 
 When the implementer reaches terminal, dispatch the crew reviewer(s)
 **and** run the host's review via a native subagent. Both review
-against the SAME acceptance criteria from Step 0. Order matters:
-dispatch crew **first** (async), then launch the host reviewer — so
-the panel is underway regardless of how the host review runs
-(invariant #2).
+against the SAME confirmed criteria set from Step 0. Crew dispatches
+pass `criteria_set_id`; the server injects the non-droppable criteria
+contract. Order matters: dispatch crew **first** (async), then launch
+the host reviewer — so the panel is underway regardless of how the
+host review runs (invariant #2).
 
 **(a) Crew review (default-on).** Dispatch the reviewer(s) confirmed
 in Step 0.5 — the exact set and count the user OK'd. Do not re-pick or
@@ -438,10 +447,15 @@ host model's review vote. Crew can't dispatch your own host product
 (invariant #5), so run it as a native subagent (`Agent` / `Task`) —
 **not** `run_agent`. Launch it **after** the crew dispatch so the
 panel never waits on it. Hand it the SAME `REVIEW_PROMPT_TEMPLATE`,
-acceptance criteria, agent-pick block, implementer summary, and
-worktree path the crew reviewers get; tell it review-only, do not
-edit. Native subagents have no `peer_messages` channel — inline those
-blocks into the subagent prompt.
+agent-pick block, implementer summary, and worktree path the crew
+reviewers get; tell it review-only, do not edit. Native subagents have
+no `criteria_set_id` param or `peer_messages` channel, so immediately
+before launching the host reviewer, call
+`get_criteria({criteria_set_id})` and build the subagent prompt from
+that returned `rendered_block` plus the agent-pick block, implementer
+summary, and worktree path. This is the one residual captain-inserted
+criteria block, and it must come from `get_criteria` rather than memory
+or hand reformatting.
 
 - **Background it if your host supports it** (e.g. Claude Code's
   `run_in_background: true`) so chat stays available while it reviews.
@@ -467,17 +481,33 @@ Single-reviewer dispatch:
 ```
 run_agent({
   agent_id: <reviewer>,
+  criteria_set_id: <confirmed criteria_set_id>,
   read_only: true,
   working_directory: <A.worktree_path>,
   peer_messages: [
-    { body: <acceptance criteria>, kind: "note",
-      from_label: "acceptance criteria" },
     { body: <agent-pick block>, kind: "note",
       from_label: "agent picks" },
     { body: A.summary, files: A.files_changed,
       kind: "review", from_label: "implementer" }
   ],
   prompt: <REVIEW_PROMPT_TEMPLATE>
+})
+```
+
+Panel dispatch:
+
+```
+run_panel({
+  implementer_run_id: A,
+  criteria_set_id: <confirmed criteria_set_id>,
+  reviewers: [
+    { agent_id: <reviewer>, prompt: <REVIEW_PROMPT_TEMPLATE>,
+      read_only: true,
+      peer_messages: [
+        { body: <agent-pick block>, kind: "note",
+          from_label: "agent picks" }
+      ] }
+  ]
 })
 ```
 
@@ -562,7 +592,7 @@ than a poorly partitioned split.
    module boundaries over strict equality.
 
 **Prompt for sub-agents.** Each sub-agent gets:
-- The full acceptance criteria (verbatim from Step 0).
+- The same `criteria_set_id` contract as every other crew reviewer.
 - The implementer's full summary (not partitioned).
 - A scoped file list: "Your partition covers these files: [list].
   Other partitions cover the remaining files — focus your review on
@@ -591,6 +621,7 @@ into a single per-model review:
 ```
 run_panel({
   implementer_run_id: "A",
+  criteria_set_id: <confirmed criteria_set_id>,
   reviewers: [
     // Model 1: split across 2 agents
     { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files A–M list]. Other files are covered by another codex reviewer." },
@@ -610,15 +641,19 @@ can merge sub-agent results before cross-model consolidation.
 You are reviewing changes made by ${implementer_label} against
 ${target_repo}. The implementer's working directory contains the
 proposed changes (you are running in read-only mode at that worktree
-path). The implementer's own summary and the acceptance criteria are
-included in peer_messages above.
+path). The acceptance criteria are provided as the non-droppable
+criteria contract injected at the top of this prompt. For a host-native
+subagent review, the captain inserted the current
+get_criteria({criteria_set_id}).rendered_block because native subagents
+cannot receive MCP params. The implementer's own summary is included in
+peer_messages or inline host-review context.
 
 Your job has TWO parts:
 
 PART 1 — Score every acceptance criterion. For each numbered criterion
-the captain gave you in peer_messages, decide (a criterion may carry
-`-` sub-bullets — they are facets of that one criterion; score the
-numbered parent as a whole, PASS only if every sub-bullet holds):
+in the criteria contract, decide (a criterion may carry `-`
+sub-bullets — they are facets of that one criterion; score the numbered
+parent as a whole, PASS only if every sub-bullet holds):
 
   PASS  — the change meets this criterion. State why in 1 line. For a
           file-content / `[B]` / `[N]` criterion, cite the file:line you
@@ -688,20 +723,6 @@ finding is treated as malformed by the captain (re-dispatch).
 
 Do not edit files. If you find yourself wanting to write, describe
 the edit instead — you are read-only by design.
-
-If you cannot find the criteria in peer_messages: STOP. Reply with
-"no criteria provided; cannot score" — the captain skipped Step 0
-and needs to fix that first.
-
-Audit check (cross-round): if peer_messages contains a prior round's
-`## User-confirmed acceptance criteria (Step 0)` block or
-`## Agent-pick (Step 0.5)` block AND the current round's corresponding
-block has different content (other than a documented unilateral
-clarification or user-approved override), STOP. Reply with
-"criteria drift detected; previous and current blocks differ" or
-"agent drift detected; previous and current picks differ" — the
-captain may have silently mutated criteria or agent choice without
-re-confirmation.
 ```
 
 Specialty-specific concerns belong INSIDE the acceptance criteria
@@ -798,9 +819,8 @@ findings into `peer_messages` and `continue_run` the implementer:
 ```
 continue_run({
   run_id: A,
+  criteria_set_id: <confirmed criteria_set_id>,
   peer_messages: [
-    { body: <acceptance criteria>, kind: "note",
-      from_label: "acceptance criteria (unchanged)" },
     { body: <agent-pick block>, kind: "note",
       from_label: "agent picks (unchanged)" },
     { body: <host native review's failing criteria + findings>,
@@ -812,16 +832,18 @@ continue_run({
     // one per crew reviewer if panel
   ],
   prompt: "Address these review findings. Specifically, make the
-           FAILing criteria PASS. Reply with a brief summary of what
-           changed and which criteria you believe now pass."
+           FAILing criteria PASS under the injected criteria contract.
+           Re-run every [M] criterion's command and report the command
+           + exit code in your summary. Reply with a brief summary of
+           what changed and which criteria you believe now pass."
 })
 ```
 
 For panels, the crew reviewer entries come from
 `aggregate_panel({panel_id})` — pass its result as `peer_messages`
-rather than hand-building the crew entries. Then re-pass the criteria
-peer-message and **hand-append the host review** as one synthetic
-entry; `aggregate_panel` won't include it.
+rather than hand-building the crew entries. Pass the same
+`criteria_set_id` to `continue_run` and **hand-append the host review**
+as one synthetic entry; `aggregate_panel` won't include it.
 
 After `continue_run` reaches terminal, `discard_run` the read-only
 reviewer runs (they don't auto-clean per invariant #7) and re-dispatch
@@ -837,13 +859,14 @@ the same reviewers against the new diff. Round count increments by 1.
   previous output was malformed; re-review the same diff at
   <worktree_path> per the template." If a reviewer fails the
   structural check twice, replace with a different agent and flag.
-- **`no criteria provided; cannot score`.** Captain skipped Step 0
-  or dropped the criteria block. Do NOT re-dispatch the reviewer.
-  Re-derive Step 0 with the user, then re-dispatch with the
-  user-confirmed block.
-- **`criteria drift detected`.** Treat as captain audit failure:
-  stop, surface to user, re-confirm the canonical criteria list,
-  resume with the correct block.
+- **Criteria contract dispatch errors.** Stop and fix the store,
+  confirmation, repo linkage, or prompt-size issue before retrying.
+  The dispatch-time criteria errors are exactly `criteria.unknown`,
+  `criteria.not_confirmed`, `criteria.cross_repo`,
+  `criteria.unparsable`, `criteria.unknown_schema_version`,
+  `criteria.linkage_mismatch`, and `criteria.contract_too_large`.
+  `criteria.invalid` is limited to `create_criteria`,
+  `confirm_criteria`, and `revise_criteria` validation.
 - **A reviewer's `[M]` score never converges the loop.** `[M]` truth
   is the captain's mechanical pass, not reviewer output. If a reviewer
   PASSes an `[M]` criterion that the captain's re-run FAILs, the
@@ -951,6 +974,16 @@ acknowledge to the user.
 
 ## Tools
 
-The MCP surface this skill composes:
+The MCP surface this skill composes includes the criteria-store tools
+`create_criteria`, `confirm_criteria`, `get_criteria`, and
+`revise_criteria`, plus dispatch tools whose inputs accept
+`criteria_set_id` (`run_agent`, `run_panel`, and `continue_run`).
+Dispatch-time criteria errors are exactly `criteria.unknown`,
+`criteria.not_confirmed`, `criteria.cross_repo`, `criteria.unparsable`,
+`criteria.unknown_schema_version`, `criteria.linkage_mismatch`, and
+`criteria.contract_too_large`. `criteria.invalid` is a validation error
+for `create_criteria`, `confirm_criteria`, and `revise_criteria`.
+
+The rendered installed tool list follows:
 
 {{TOOL_LIST}}
