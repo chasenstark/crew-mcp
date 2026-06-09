@@ -412,6 +412,22 @@ describe('crew-iterate body — standalone safety invariants', () => {
     expect(step2).toContain('(invariant #2)');
   });
 
+  it('requires one watcher per crew run in invariant #2', async () => {
+    const body = await loadBody();
+    const start = body.indexOf('**2. Dispatch lifecycle');
+    const end = body.indexOf('**3. Escape hatch', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const inv2 = flattenWhitespace(body.slice(start, end));
+
+    expectContainsCI(inv2, 'complete this checklist');
+    expectContainsCI(inv2, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
+    expectContainsCI(inv2, 'N crew runs means N watchers');
+    expectContainsCI(inv2, 'Agent');
+    expectContainsCI(inv2, 'Task');
+    expectContainsCI(inv2, 'not harness-tracked');
+  });
+
   it('renders the verbatim review prompt template anchors', async () => {
     const body = await loadBody();
     // The template is embedded so reviewers receive the same instructions

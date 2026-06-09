@@ -181,3 +181,22 @@ describe('crew-captain body — general dispatch-order rule', () => {
     expect(section).toContain('prerequisite');
   });
 });
+
+describe('crew-captain body — watcher checklist', () => {
+  it('requires one watcher per crew run and distinguishes native subagents', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '### Step 2 — background watcher overlay',
+      '### Foreground',
+    );
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'complete this checklist before ending the turn');
+    expectContainsCI(flat, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
+    expectContainsCI(flat, 'N crew runs means N watchers');
+    expectContainsCI(flat, 'Agent');
+    expectContainsCI(flat, 'Task');
+    expectContainsCI(flat, 'not harness-tracked');
+  });
+});

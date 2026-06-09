@@ -104,6 +104,7 @@ interface Harness {
   runStateStore: RunStateStore;
   root: string;
   crewHome: string;
+  home: string;
   close: () => Promise<void>;
 }
 
@@ -272,10 +273,15 @@ function closeServer(server: Server): Promise<void> {
 
 async function startHarness(
   adapters: AgentAdapter[],
-  options: { fullEnvelope?: boolean; clientName?: string } = {},
+  options: {
+    fullEnvelope?: boolean;
+    clientName?: string;
+    beforeBuild?: (paths: { root: string; crewHome: string; home: string }) => void;
+  } = {},
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
+  const home = mkdtempSync(join(tmpdir(), 'crew-serve-os-home-'));
   const previousFullEnvelope = process.env.CREW_FULL_ENVELOPE;
   if (options.fullEnvelope ?? true) {
     process.env.CREW_FULL_ENVELOPE = '1';
@@ -288,11 +294,13 @@ async function startHarness(
   writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
   execSync('git add README.md', { cwd: root });
   execSync('git commit -q -m init', { cwd: root });
+  options.beforeBuild?.({ root, crewHome, home });
 
   const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
   const { server, dispatcher, runStateStore } = buildCrewMcpServer({
     cwd: root,
     crewHome,
+    home,
     registry: makeRegistry(adapters),
     worktreeManager,
   });
@@ -316,6 +324,7 @@ async function startHarness(
     runStateStore,
     root,
     crewHome,
+    home,
     close: async () => {
       await client.close();
       await server.close();
@@ -327,6 +336,7 @@ async function startHarness(
       }
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     },
   };
 }
@@ -337,6 +347,7 @@ async function startDefaultRegistryHarness(
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-home-'));
+  const home = mkdtempSync(join(tmpdir(), 'crew-serve-os-home-'));
   const previousFullEnvelope = process.env.CREW_FULL_ENVELOPE;
   if (options.fullEnvelope ?? true) {
     process.env.CREW_FULL_ENVELOPE = '1';
@@ -359,6 +370,7 @@ async function startDefaultRegistryHarness(
   const { server, dispatcher, runStateStore } = buildCrewMcpServer({
     cwd: root,
     crewHome,
+    home,
     worktreeManager,
   });
 
@@ -377,6 +389,7 @@ async function startDefaultRegistryHarness(
     runStateStore,
     root,
     crewHome,
+    home,
     close: async () => {
       await client.close();
       await server.close();
@@ -388,6 +401,7 @@ async function startDefaultRegistryHarness(
       }
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     },
   };
 }
@@ -1519,7 +1533,7 @@ describe('crew serve — run_agent tool', () => {
         arguments: { agent_id: 'mock-coder', prompt: 'add CHANGE.md' },
       });
       const env = res.structuredContent as FullRunEnvelope;
-      expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(env.run_id).toMatch(/^mock-coder-add-change-md-[0-9a-f]{8}$/);
       // Async-first: run_agent always returns running; poll for terminal.
       expect(env.status).toBe('running');
       expect(env.events_log_path).toBe(join(h.crewHome, 'runs', env.run_id, 'events.log'));
@@ -1558,7 +1572,7 @@ describe('crew serve — run_agent tool', () => {
         'summary',
         'tail_url',
       ]);
-      expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(env.run_id).toMatch(/^mock-coder-go-[0-9a-f]{8}$/);
       expect(env.tail_url).toBe(crewTailUrl(join(h.crewHome, 'runs', env.run_id, 'events.log')));
       expect(env.summary).toContain(`Dispatched as "${env.run_id}"`);
       expect(env.files_changed).toEqual([]);
@@ -1573,6 +1587,96 @@ describe('crew serve — run_agent tool', () => {
       expect(text).toContain(`**Dispatched** \`mock-coder\` as run \`${env.run_id}\`.`);
       expect(text).toContain(`tail -F ${join(h.crewHome, 'runs', env.run_id, 'events.log')}`);
       expect(text).toContain('- Worktree: `');
+
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('includes required_next_action in the trimmed Claude Code dispatch envelope', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter], {
+      fullEnvelope: false,
+      clientName: 'claude-code',
+    });
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = res.structuredContent as RunEnvelope;
+      expect(Object.keys(env).sort()).toEqual([
+        'files_changed',
+        'required_next_action',
+        'run_id',
+        'summary',
+        'tail_url',
+      ]);
+      expect(env.required_next_action).toMatchObject({
+        type: 'spawn_watcher',
+        mechanism: 'background_shell',
+        command: `crew-wait ${env.run_id}`,
+        run_id: env.run_id,
+        run_in_background: true,
+        per_run: true,
+      });
+      expect(toolText(res)).toContain(
+        `Bash(crew-wait ${env.run_id}, run_in_background: true)`,
+      );
+
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('uses project crewWaitCommand over global crewWaitCommand for Claude Code dispatches', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter], {
+      clientName: 'claude-code',
+      beforeBuild: ({ root, home }) => {
+        mkdirSync(join(home, '.crew'), { recursive: true });
+        writeFileSync(
+          join(home, '.crew', 'install.json'),
+          JSON.stringify({
+            schemaVersion: 2,
+            targets: {
+              'claude-code': {
+                crewWaitCommand: '/usr/local/bin/crew-wait',
+              },
+            },
+          }),
+          'utf-8',
+        );
+        mkdirSync(join(root, '.crew'), { recursive: true });
+        writeFileSync(
+          join(root, '.crew', 'install.project.json'),
+          JSON.stringify({
+            schemaVersion: 1,
+            scope: 'project',
+            targets: {
+              'claude-code': {
+                crewWaitCommand: 'npx --no-install crew-wait',
+              },
+            },
+          }),
+          'utf-8',
+        );
+      },
+    });
+    try {
+      const res = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = res.structuredContent as FullRunEnvelope;
+      expect(env.required_next_action?.command).toBe(
+        `npx --no-install crew-wait ${env.run_id}`,
+      );
+      expect(toolText(res)).toContain(
+        `Bash(npx --no-install crew-wait ${env.run_id}, run_in_background: true)`,
+      );
 
       await pollUntilTerminal(h.client, env.run_id);
     } finally {
@@ -1596,7 +1700,7 @@ describe('crew serve — run_agent tool', () => {
       const env = res.structuredContent as FullRunEnvelope;
       // CREW_FULL_ENVELOPE=1 restores the legacy structuredContent shape
       // for any host UI that still plucks path fields programmatically.
-      expect(env.run_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(env.run_id).toMatch(/^mock-coder-go-[0-9a-f]{8}$/);
       expect(env.agent_id).toBe('mock-coder');
       expect(env.status).toBe('running');
       expect(env.events_log_path).toBe(join(h.crewHome, 'runs', env.run_id, 'events.log'));
@@ -2081,6 +2185,52 @@ describe('crew serve — peer_messages integration', () => {
         kind: 'review',
         files: ['src/impl.ts'],
       });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('run_panel lists one Claude Code watcher per reviewer run', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => ({ output: 'review ok', filesModified: [], status: 'success', metadata: {} }),
+    });
+    const h = await startHarness([adapter], { clientName: 'claude-code' });
+    try {
+      const panel = await h.client.callTool({
+        name: 'run_panel',
+        arguments: {
+          reviewers: [
+            { agent_id: 'mock-coder', prompt: 'review 1' },
+            { agent_id: 'mock-coder', prompt: 'review 2' },
+          ],
+        },
+      });
+      const panelEnv = panel.structuredContent as {
+        reviewers: Array<{
+          run_id: string;
+          required_next_action?: { command: string; run_id: string };
+        }>;
+      };
+      expect(panelEnv.reviewers).toHaveLength(2);
+      const text = toolText(panel);
+      expect(text).toContain('spawn one watcher per reviewer run');
+      for (const reviewer of panelEnv.reviewers) {
+        expect(reviewer.required_next_action).toEqual({
+          type: 'spawn_watcher',
+          mechanism: 'background_shell',
+          command: `crew-wait ${reviewer.run_id}`,
+          run_id: reviewer.run_id,
+          run_in_background: true,
+          per_run: true,
+          consequence_if_skipped:
+            'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+        });
+        expect(text).toContain(
+          `Bash(crew-wait ${reviewer.run_id}, run_in_background: true)`,
+        );
+        await pollUntilTerminal(h.client, reviewer.run_id);
+      }
     } finally {
       await h.close();
     }
@@ -4142,10 +4292,25 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       // the captain ends the turn and reads status on demand later.
       expect(env.status).toBe('running');
       expect(env.summary).toContain('user is free to chat');
-      expect(env.summary).toContain('spawning the watcher');
+      expect(env.summary).toContain('One required action');
+      expect(env.summary).toContain('spawn the crew-wait watcher');
       expect(env.summary).not.toMatch(/Poll get_run_status/);
       expect(env.summary).not.toMatch(/wait_for_change_ms/);
       expect(env.summary).not.toMatch(/wait_for_terminal_only/);
+      expect(env.required_next_action).toEqual({
+        type: 'spawn_watcher',
+        mechanism: 'background_shell',
+        command: `crew-wait ${env.run_id}`,
+        run_id: env.run_id,
+        run_in_background: true,
+        per_run: true,
+        consequence_if_skipped:
+          'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+      });
+      const text = toolText(run);
+      expect(text).toContain('**REQUIRED before you end this turn:**');
+      expect(text).toContain(`Bash(crew-wait ${env.run_id}, run_in_background: true)`);
+      expect(text).not.toContain('- Next:');
       // Status reads still resolve to terminal.
       const final = await pollUntilTerminal(h.client, env.run_id);
       expect(final.status).toBe('success');
@@ -4177,10 +4342,113 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       });
       const env = run.structuredContent as FullRunEnvelope;
       expect(env.summary).toContain('after this dispatch returns');
-      expect(env.summary).not.toContain('spawning the watcher');
+      expect(env.summary).not.toContain('spawn the crew-wait watcher');
+      expect(env.required_next_action).toBeUndefined();
       const text = toolText(run);
       expect(text).toContain('after this dispatch returns');
-      expect(text).not.toContain('spawning the watcher');
+      expect(text).toContain('- Next:');
+      expect(text).not.toContain('REQUIRED before you end this turn');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('gemini client omits required_next_action', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'instant',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter], { clientName: 'gemini-cli' });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.summary).toContain('after this dispatch returns');
+      expect(env.required_next_action).toBeUndefined();
+      expect(toolText(run)).not.toContain('REQUIRED before you end this turn');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('continue_run emits required_next_action for Claude Code', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'instant',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter], { clientName: 'claude-code' });
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'first' },
+      });
+      const firstEnv = first.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, firstEnv.run_id);
+
+      const second = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: firstEnv.run_id, prompt: 'second' },
+      });
+      const secondEnv = second.structuredContent as FullRunEnvelope;
+      expect(secondEnv.run_id).toBe(firstEnv.run_id);
+      expect(secondEnv.required_next_action).toMatchObject({
+        type: 'spawn_watcher',
+        command: `crew-wait ${firstEnv.run_id}`,
+        run_id: firstEnv.run_id,
+        run_in_background: true,
+      });
+      expect(toolText(second)).toContain(
+        `Bash(crew-wait ${firstEnv.run_id}, run_in_background: true)`,
+      );
+      await pollUntilTerminal(h.client, firstEnv.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it.each([
+    ['codex-cli', 'codex'],
+    ['gemini-cli', 'gemini'],
+    ['some-future-host', 'unknown'],
+  ] as const)('continue_run omits required_next_action for %s', async (clientName) => {
+    const adapter = makeMockAdapter({
+      name: 'mock-fast',
+      execute: async () => ({
+        output: 'instant',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter], { clientName });
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'first' },
+      });
+      const firstEnv = first.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, firstEnv.run_id);
+
+      const second = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: firstEnv.run_id, prompt: 'second' },
+      });
+      const secondEnv = second.structuredContent as FullRunEnvelope;
+      expect(secondEnv.required_next_action).toBeUndefined();
+      expect(toolText(second)).not.toContain('REQUIRED before you end this turn');
+      await pollUntilTerminal(h.client, firstEnv.run_id);
     } finally {
       await h.close();
     }
@@ -4204,11 +4472,12 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       });
       const env = run.structuredContent as FullRunEnvelope;
       expect(env.summary).toContain('End your turn after dispatch');
-      expect(env.summary).not.toContain('spawning the watcher');
+      expect(env.summary).not.toContain('spawn the crew-wait watcher');
       expect(env.summary).not.toContain('after this dispatch returns');
+      expect(env.required_next_action).toBeUndefined();
       const text = toolText(run);
       expect(text).toContain('End your turn after dispatch');
-      expect(text).not.toContain('spawning the watcher');
+      expect(text).not.toContain('REQUIRED before you end this turn');
       expect(text).not.toContain('after this dispatch returns');
     } finally {
       await h.close();
@@ -5462,7 +5731,7 @@ describe('nextStepSentence', () => {
   // can't drift one without the other.
   it('returns the watcher phrasing for claude-code', () => {
     expect(nextStepSentence('claude-code')).toBe(
-      'End your turn after spawning the watcher; user is free to chat.',
+      'One required action: spawn the crew-wait watcher before ending your turn; user is free to chat.',
     );
   });
   it('returns the dispatch-returns phrasing for codex', () => {

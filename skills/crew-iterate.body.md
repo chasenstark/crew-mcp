@@ -43,11 +43,17 @@ as part of the iterate cycle (see invariant #7).
 `continue_run` / `run_panel`, do NOT long-poll `get_run_status`
 in-turn. Confirm dispatch with the inline `tail_url` markdown, end
 the turn, and:
-- Claude Code: `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`
-  to spawn the watcher. The host will fire a synthetic next-turn
-  prefixed with `CREW_WAIT_TERMINAL run_id=... status=... worktree=...`
-  when the run reaches terminal. Parse that line on receipt, then
-  call `get_run_status({run_id})` for the full envelope. Without the
+- Claude Code: before ending the turn, complete this checklist for
+  every crew run returned by the dispatch:
+  1. Read the crew `run_id`.
+  2. Spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
+  3. Repeat once per crew run. N crew runs means N watchers; a
+     harness-tracked native `Agent` / `Task` subagent completing tells
+     you nothing about crew runs, which are not harness-tracked.
+  The host will fire a synthetic next-turn prefixed with
+  `CREW_WAIT_TERMINAL run_id=... status=... worktree=...` when the run
+  reaches terminal. Parse that line on receipt, then call
+  `get_run_status({run_id})` for the full envelope. Without the
   synthetic-turn handling, the loop deadlocks: dispatched and ended
   the turn but never recognizes the resume.
 - Codex / Gemini: no watcher. Discover terminal runs on the next user
@@ -458,7 +464,8 @@ run_agent({
   `create_criteria` / `confirm_criteria` / `revise_criteria`
   validation, not dispatch.
 - Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
-  the turn, spawn the watcher on Claude Code (per invariant #2).
+  the turn, and on Claude Code spawn the watcher for each returned
+  crew run ID before ending the turn (per invariant #2).
 
 ### Step 2 — Review (crew + host native subagent, parallel)
 

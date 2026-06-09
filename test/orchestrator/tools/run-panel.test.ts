@@ -141,6 +141,54 @@ describe('runPanelHandler', () => {
     expect(dispatched).toEqual(['codex', 'claude-code']);
   });
 
+  it('adds one required_next_action per reviewer run for Claude Code panels', async () => {
+    const h = makeHarness([
+      makeMockAdapter({ name: 'codex' }),
+      makeMockAdapter({ name: 'gemini-cli' }),
+    ]);
+    cleanupHarness(h);
+    let dispatched = 0;
+
+    const out = await runPanelHandler({
+      reviewers: [
+        { agent_id: 'codex', prompt: 'review a' },
+        { agent_id: 'gemini-cli', prompt: 'review b' },
+      ],
+    }, {
+      ...h.ctx,
+      clientKind: 'claude-code',
+      crewWaitCommand: '/usr/local/bin/crew-wait',
+      dispatchRunAgentInternalImpl: async (args) => {
+        dispatched += 1;
+        return fakeDispatchResult(args.input.agent_id, dispatched);
+      },
+    });
+
+    expect(out.reviewers).toHaveLength(2);
+    expect(out.reviewers.map((reviewer) => reviewer.required_next_action)).toEqual([
+      {
+        type: 'spawn_watcher',
+        mechanism: 'background_shell',
+        command: '/usr/local/bin/crew-wait codex-run-1',
+        run_id: 'codex-run-1',
+        run_in_background: true,
+        per_run: true,
+        consequence_if_skipped:
+          'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+      },
+      {
+        type: 'spawn_watcher',
+        mechanism: 'background_shell',
+        command: '/usr/local/bin/crew-wait gemini-cli-run-2',
+        run_id: 'gemini-cli-run-2',
+        run_in_background: true,
+        per_run: true,
+        consequence_if_skipped:
+          'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+      },
+    ]);
+  });
+
   it('injects a passed criteria contract into reviewer runs without relinking implementerRunId', async () => {
     let capturedPrompt = '';
     const h = makeHarness([makeMockAdapter({

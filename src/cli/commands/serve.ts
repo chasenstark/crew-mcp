@@ -25,8 +25,9 @@
 // project's logger (src/utils/logger.ts) emits to stderr via console.error,
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
-import { readdirSync, realpathSync, type Dirent } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, type Dirent } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -130,6 +131,9 @@ import {
   type ToolHandlerDeps,
 } from '../../orchestrator/tools/shared.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
+import { manifestPath } from '../../install/install-manifest.js';
+import { projectManifestPath } from '../../install/project-install-manifest.js';
+import type { HostId } from '../../install/hosts/index.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger, setLogFilePath } from '../../utils/logger.js';
 import { CREW_MCP_VERSION } from '../version.js';
@@ -184,6 +188,14 @@ export interface ServeOptions {
    * collide with the developer's real `~/.crew/runs/`.
    */
   crewHome?: string;
+
+  /**
+   * Test seam for reading the user-scope install manifest. Production
+   * defaults to the OS home; if `crewHome` is explicitly a `.crew`
+   * directory, that parent is used so custom CREW_HOME installs can
+   * still resolve their adjacent manifest.
+   */
+  home?: string;
 
   /**
    * Test seam: override the stale-run sweeper while preserving the same
@@ -311,6 +323,102 @@ function joinInFlightPromises(promises: Map<string, Promise<void>>): Promise<voi
   return Promise.allSettled(current).then(() => undefined);
 }
 
+interface CrewWaitCommandResolution {
+  readonly command: string;
+  readonly source: 'project-manifest' | 'global-manifest' | 'legacy-fallback';
+}
+
+const LEGACY_CREW_WAIT_COMMAND = 'crew-wait';
+
+/**
+ * Resolve the watcher command that dispatch envelopes tell Claude Code
+ * to spawn. Selection is deliberately host-scoped and deterministic:
+ * client kind -> HostId, then project install manifest first, then the
+ * user-scope manifest. That means a committed project install wins
+ * over an older global install for the same host. If the selected
+ * manifest predates `crewWaitCommand`, serve falls back to the legacy
+ * bare command and logs a warning instead of silently inferring from
+ * serverCommand.
+ */
+export function resolveCrewWaitCommandForClientKind(args: {
+  readonly clientKind: ClientKind;
+  readonly projectRoot: string;
+  readonly home: string;
+}): CrewWaitCommandResolution {
+  const hostId = hostIdForClientKind(args.clientKind);
+  if (hostId === undefined) {
+    return { command: LEGACY_CREW_WAIT_COMMAND, source: 'legacy-fallback' };
+  }
+
+  const project = readStoredCrewWaitCommand(projectManifestPath(args.projectRoot), hostId);
+  if (project.targetPresent) {
+    return {
+      command: project.command ?? LEGACY_CREW_WAIT_COMMAND,
+      source: project.command ? 'project-manifest' : 'legacy-fallback',
+    };
+  }
+
+  const global = readStoredCrewWaitCommand(manifestPath(args.home), hostId);
+  if (global.targetPresent) {
+    return {
+      command: global.command ?? LEGACY_CREW_WAIT_COMMAND,
+      source: global.command ? 'global-manifest' : 'legacy-fallback',
+    };
+  }
+
+  return { command: LEGACY_CREW_WAIT_COMMAND, source: 'legacy-fallback' };
+}
+
+function hostIdForClientKind(kind: ClientKind): HostId | undefined {
+  switch (kind) {
+    case 'claude-code':
+      return 'claude-code';
+    case 'codex':
+      return 'codex';
+    case 'gemini':
+      return 'gemini';
+    case 'unknown':
+      return undefined;
+  }
+}
+
+function readStoredCrewWaitCommand(
+  path: string,
+  hostId: HostId,
+): { targetPresent: boolean; command?: string } {
+  if (!existsSync(path)) return { targetPresent: false };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
+      targets?: Record<string, unknown>;
+    };
+    const target = parsed.targets?.[hostId];
+    if (!target || typeof target !== 'object' || Array.isArray(target)) {
+      return { targetPresent: false };
+    }
+    const command = (target as Record<string, unknown>).crewWaitCommand;
+    return {
+      targetPresent: true,
+      ...(typeof command === 'string' && command.trim().length > 0
+        ? { command }
+        : {}),
+    };
+  } catch (err) {
+    logger.warn(
+      `crew-mcp serve: failed to read install manifest ${path}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return { targetPresent: false };
+  }
+}
+
+function inferInstallManifestHome(crewHome: string): string {
+  if (crewHome.endsWith('/.crew') || crewHome.endsWith('\\.crew')) {
+    return dirname(crewHome);
+  }
+  return homedir();
+}
+
 /**
  * Build a fully-configured `McpServer` for crew without binding it to any
  * transport. The caller is responsible for `server.connect(transport)`.
@@ -322,6 +430,7 @@ function joinInFlightPromises(promises: Map<string, Promise<void>>): Promise<voi
 export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerInstance {
   const projectRoot = options.cwd ?? process.cwd();
   const crewHome = options.crewHome ?? resolveCrewHome();
+  const installManifestHome = options.home ?? inferInstallManifestHome(crewHome);
   const registry = options.registry ?? createBuiltinRegistry();
   if (!options.registry) {
     const before = new Set(registry.listAvailable().map((adapter) => adapter.name));
@@ -381,6 +490,30 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     cachedClientKind = classifyClient(info?.name);
     return cachedClientKind;
   };
+  let cachedCrewWaitCommand: string | undefined;
+  let loggedLegacyCrewWaitFallback = false;
+  const getCrewWaitCommand = (): string => {
+    if (cachedCrewWaitCommand !== undefined) return cachedCrewWaitCommand;
+    const resolution = resolveCrewWaitCommandForClientKind({
+      clientKind: getClientKind(),
+      projectRoot,
+      home: installManifestHome,
+    });
+    if (
+      resolution.source === 'legacy-fallback'
+      && getClientKind() === 'claude-code'
+      && !loggedLegacyCrewWaitFallback
+    ) {
+      loggedLegacyCrewWaitFallback = true;
+      logger.warn(
+        'crew-mcp serve: no stored crewWaitCommand found for Claude Code; '
+        + 'falling back to legacy `crew-wait`. Re-run `crew-mcp install -t claude-code` '
+        + 'to persist the exact allowlisted watcher command.',
+      );
+    }
+    cachedCrewWaitCommand = resolution.command;
+    return cachedCrewWaitCommand;
+  };
 
   const toolDeps: ToolHandlerDeps = {
     registry,
@@ -390,6 +523,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     crewHome,
     projectRoot,
     getClientKind,
+    getCrewWaitCommand,
     progressTokenSeen,
     readAgentPrefs: () => readAgentPrefsFile(crewHome),
   };

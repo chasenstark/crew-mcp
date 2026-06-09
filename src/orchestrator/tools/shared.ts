@@ -53,7 +53,7 @@ export function classifyClient(name: string | undefined): ClientKind {
 export function nextStepSentence(kind: ClientKind): string {
   switch (kind) {
     case 'claude-code':
-      return 'End your turn after spawning the watcher; user is free to chat.';
+      return 'One required action: spawn the crew-wait watcher before ending your turn; user is free to chat.';
     case 'codex':
     case 'gemini':
       return 'End your turn after this dispatch returns; user is free to chat.';
@@ -82,6 +82,7 @@ export interface RunEnvelope {
   readonly tail_url: string;
   readonly summary: string;
   readonly files_changed: readonly string[];
+  readonly required_next_action?: RequiredNextAction;
   readonly warnings?: readonly string[];
   readonly status?: RunStatus;
   readonly agent_id?: string;
@@ -98,6 +99,16 @@ export interface FullRunEnvelope extends RunEnvelope {
   readonly events_log_path: string;
   readonly tail_command_path: string;
   readonly tail_command_url: string;
+}
+
+export interface RequiredNextAction {
+  readonly type: 'spawn_watcher';
+  readonly mechanism: 'background_shell';
+  readonly command: string;
+  readonly run_id: string;
+  readonly run_in_background: true;
+  readonly per_run: true;
+  readonly consequence_if_skipped: string;
 }
 
 export interface MergeEnvelope {
@@ -148,6 +159,7 @@ export interface ToolHandlerDeps {
   readonly crewHome: string;
   readonly projectRoot: string;
   readonly getClientKind: () => ClientKind;
+  readonly getCrewWaitCommand: () => string;
   readonly progressTokenSeen: ProgressTokenSeen;
   readonly readAgentPrefs: () => AgentPrefsMap;
 }
@@ -164,6 +176,7 @@ interface DispatchAndRespondArgs {
   progress?: ProgressNotifier;
   onStartFailure?: (err: unknown) => Promise<Error>;
   clientKind: ClientKind;
+  crewWaitCommand: string;
 }
 
 export async function runDispatchAndRespond(
@@ -189,6 +202,11 @@ export async function runDispatchAndRespond(
   const summary = `Dispatched as "${args.runId}". ${nextStepSentence(args.clientKind)}`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
   const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
+  const requiredNextAction = requiredNextActionForRun(
+    args.clientKind,
+    args.crewWaitCommand,
+    args.runId,
+  );
   const env: FullRunEnvelope = {
     run_id: args.runId,
     agent_id: args.agentName,
@@ -200,6 +218,7 @@ export async function runDispatchAndRespond(
     status: 'running',
     summary,
     files_changed: [],
+    ...(requiredNextAction !== undefined ? { required_next_action: requiredNextAction } : {}),
     ...mergeEnvelopeWarnings(
       args.runStateStore.read(args.runId)?.warnings,
       args.warnings,
@@ -220,6 +239,9 @@ export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
     tail_url: env.tail_url,
     summary: env.summary,
     files_changed: env.files_changed,
+    ...(env.required_next_action !== undefined
+      ? { required_next_action: env.required_next_action }
+      : {}),
     ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
   };
 }
@@ -236,11 +258,15 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
       `- **Tail in Terminal**: [open in a side window](${env.tail_url})`,
     );
   }
-  lines.push(
-    `- Tail manually: \`tail -F ${env.events_log_path}\``,
-    `- Next: ${nextStepSentence(clientKind)}`,
-    `- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``,
-  );
+  lines.push(`- Tail manually: \`tail -F ${env.events_log_path}\``);
+  if (clientKind === 'claude-code' && env.required_next_action !== undefined) {
+    lines.push(
+      `**REQUIRED before you end this turn:** spawn the watcher -> \`Bash(${env.required_next_action.command}, run_in_background: true)\`. Skip it and the run is orphaned.`,
+    );
+  } else {
+    lines.push(`- Next: ${nextStepSentence(clientKind)}`);
+  }
+  lines.push(`- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``);
   if (env.warnings && env.warnings.length > 0) {
     lines.push(
       '',
@@ -250,6 +276,24 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
     );
   }
   return lines.join('\n');
+}
+
+export function requiredNextActionForRun(
+  clientKind: ClientKind,
+  crewWaitCommand: string,
+  runId: string,
+): RequiredNextAction | undefined {
+  if (clientKind !== 'claude-code') return undefined;
+  return {
+    type: 'spawn_watcher',
+    mechanism: 'background_shell',
+    command: `${crewWaitCommand} ${runId}`,
+    run_id: runId,
+    run_in_background: true,
+    per_run: true,
+    consequence_if_skipped:
+      'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+  };
 }
 
 export function mergeEnvelopeWarnings(

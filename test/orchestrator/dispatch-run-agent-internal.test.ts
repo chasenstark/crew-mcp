@@ -230,7 +230,7 @@ describe('dispatchRunAgentInternal', () => {
       progress: { send: (message) => progressMessages.push(message) },
     });
 
-    expect(result.runId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.runId).toMatch(/^mock-do-work-[0-9a-f]{8}$/);
     expect(result.worktreePath).toBe(runWorktreePath(h.crewHome, result.runId));
     expect(result.readOnly).toBe(false);
     expect(result.tailCommandPath).toBe(h.runStateStore.tailCommandPath(result.runId));

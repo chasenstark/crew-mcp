@@ -61,7 +61,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the run-linked criteria contract; passing a different id is rejected. model/effort may override defaults and read_only stays sticky. Returns the async dispatch envelope; spawn crew-wait on Claude Code or check later. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the run-linked criteria contract; passing a different id is rejected. model/effort may override defaults and read_only stays sticky. Returns the async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -209,6 +209,7 @@ export async function continueRunToolHandler(
       warnings: [...dispatchWarnings, ...warnings],
       progress: progressNotifierFrom(continueExtra, state.agentId, deps.progressTokenSeen),
       clientKind: deps.getClientKind(),
+      crewWaitCommand: deps.getCrewWaitCommand(),
       onStartFailure: rollbackContinuation,
     });
   } catch (err) {

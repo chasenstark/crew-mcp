@@ -114,11 +114,14 @@ When the user dispatches an implementation:
 2. **Yield while running.** `run_agent` returns immediately with the
    `run_id` and `tail_url`. Confirm the dispatch with the `run_id`
    and tail link, then end your turn so the user can keep chatting.
-   On Claude Code, before ending the turn, spawn the watcher overlay:
-   `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
-   On Codex / Gemini, just end the turn — no watcher. Read the
-   terminal payload with `get_run_status` on the watcher's synthetic
-   turn (Claude Code) or on the next user turn (Codex / Gemini).
+   On Claude Code, this is mandatory before ending the turn:
+   spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
+   For N crew runs, spawn N watchers — one watcher per crew run ID.
+   A harness-tracked native `Agent` / `Task` subagent completing tells
+   you nothing about crew runs, which are not harness-tracked. On
+   Codex / Gemini, just end the turn — no watcher. Read the terminal
+   payload with `get_run_status` on the watcher's synthetic turn
+   (Claude Code) or on the next user turn (Codex / Gemini).
    **Never** call `get_run_status` with `wait_for_terminal_only` or
    a long `wait_for_change_ms` to block the turn open — see the
    Dispatch lifecycle section.
@@ -395,11 +398,19 @@ tool result for the user who wants them.
 ### Step 2 — background watcher overlay (Claude Code, mandatory)
 
 On Claude Code, immediately after `run_agent` / `continue_run`
-returns, spawn `{{CREW_WAIT_COMMAND}} <run_id>` with `Bash` and
-`run_in_background: true`, then end your turn. The watcher polls
-`state.json` until the run reaches `success | partial | error |
-cancelled`, then exits. Claude Code turns that background
-completion into a synthetic captain turn.
+returns, complete this checklist before ending the turn:
+
+1. Read the returned `run_id`.
+2. Spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
+3. For a batch, repeat step 2 for every crew run ID. N crew runs
+   means N watchers. A native `Agent` / `Task` subagent completion is
+   harness-tracked by the host, not by Crew, and tells you nothing
+   about crew runs, which are not harness-tracked.
+4. End your turn.
+
+The watcher polls `state.json` until the run reaches `success |
+partial | error | cancelled`, then exits. Claude Code turns that
+background completion into a synthetic captain turn.
 
 **Use `{{CREW_WAIT_COMMAND}}` exactly as rendered above** — the
 install picks the literal form your `Bash(...)` allowlist accepts
@@ -488,11 +499,13 @@ runs, or cleanup / keep-around for read-only runs.
 
 ### Multiple terminations don't batch
 
-Claude Code watcher exits are not batched. If three runs finish close
-together, expect three separate synthetic turns. Handle each turn
-tightly: identify the run, summarize the terminal result, and ask the
-one relevant follow-up. Don't try to coalesce completions across
-synthetic turns; they don't queue together.
+Claude Code watcher exits are not batched. If three crew runs are
+dispatched, spawn three watchers, even when you also launched a
+native `Agent` / `Task` subagent. If those runs finish close together,
+expect three separate synthetic turns. Handle each turn tightly:
+identify the run, summarize the terminal result, and ask the one
+relevant follow-up. Don't try to coalesce completions across synthetic
+turns; they don't queue together.
 
 ### How users follow progress (not your problem)
 

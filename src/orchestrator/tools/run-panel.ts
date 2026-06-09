@@ -33,12 +33,19 @@ import {
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import type { FullConfig } from '../../workflow/types.js';
 import { logBestEffortFailure } from '../../utils/best-effort.js';
-import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra } from './shared.js';
+import type {
+  ClientKind,
+  RequiredNextAction,
+  ToolCallReturn,
+  ToolHandlerDeps,
+  ToolRequestExtra,
+} from './shared.js';
 import {
   agentIdForClientKind,
   errorContent,
-  jsonContent,
+  markdownContent,
   progressNotifierFrom,
+  requiredNextActionForRun,
 } from './shared.js';
 
 const runPanelReviewerInputSchema = z.object({
@@ -66,6 +73,7 @@ export interface ReviewerDispatchEnvelope {
   readonly tail_url: string;
   readonly worktree_path: string;
   readonly warnings: readonly string[];
+  readonly required_next_action?: RequiredNextAction;
 }
 
 export interface FailedReviewerEnvelope {
@@ -86,10 +94,12 @@ export interface RunPanelHandlerContext extends DispatchContext {
   readonly onPanelStateWritten?: (state: PanelStateV1) => void | Promise<void>;
   readonly loadConfig?: (projectRoot: string) => FullConfig;
   readonly sameHostAgentId?: string;
+  readonly clientKind?: ClientKind;
+  readonly crewWaitCommand?: string;
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Returns panel_id, successful reviewer run_ids, and failed_reviewers.';
+  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Returns panel_id, successful reviewer run_ids, and failed_reviewers. For Claude Code reviewer runs, spawn one crew-wait watcher per run. Do not block the turn long-polling get_run_status.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -97,6 +107,7 @@ export async function runPanelToolHandler(
   deps: ToolHandlerDeps,
 ): Promise<ToolCallReturn> {
   const agentPrefs = deps.readAgentPrefs();
+  const clientKind = deps.getClientKind();
   try {
     const out = await runPanelHandler(args, {
       registry: deps.registry,
@@ -107,10 +118,12 @@ export async function runPanelToolHandler(
       crewHome: deps.crewHome,
       repoRoot: deps.runStateStore.repoRoot,
       projectRoot: deps.projectRoot,
-      sameHostAgentId: agentIdForClientKind(deps.getClientKind()),
+      sameHostAgentId: agentIdForClientKind(clientKind),
+      clientKind,
+      crewWaitCommand: deps.getCrewWaitCommand(),
       progress: progressNotifierFrom(extra, 'run_panel', deps.progressTokenSeen),
     });
-    return jsonContent(out);
+    return markdownContent(renderRunPanelMarkdown(out, clientKind), out);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
@@ -141,6 +154,8 @@ export async function runPanelHandler(
   const implementerMessage = implementerState
     ? buildImplementerPeerMessage(implementerState)
     : undefined;
+  const clientKind = ctx.clientKind ?? 'unknown';
+  const crewWaitCommand = ctx.crewWaitCommand ?? 'crew-wait';
 
   let panelState = buildStubPanelState(panelId, ctx.runStateStore.repoRoot, implementerState);
   await writeAndNotify(targetPanelDir, panelState, ctx);
@@ -247,12 +262,24 @@ export async function runPanelHandler(
         },
       });
       record = dispatchedReviewerRecord(reviewer.agent_id, result);
+      // Each reviewer dispatch is an independent crew run. Claude Code
+      // therefore needs one watcher action per reviewer run, not one
+      // panel-level watcher, so captains can spawn N watchers for N
+      // reviewer run IDs.
+      const requiredNextAction = requiredNextActionForRun(
+        clientKind,
+        crewWaitCommand,
+        result.runId,
+      );
       envelope = {
         run_id: result.runId,
         agent_id: reviewer.agent_id,
         tail_url: result.tailUrl,
         worktree_path: result.worktreePath,
         warnings: result.warnings,
+        ...(requiredNextAction !== undefined
+          ? { required_next_action: requiredNextAction }
+          : {}),
       };
     } catch (err) {
       const warnings = err instanceof DispatchError ? err.warnings : [];
@@ -278,6 +305,36 @@ export async function runPanelHandler(
         error: reviewer.error,
       })),
   };
+}
+
+function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): string {
+  const lines = [
+    `**Panel dispatched** \`${out.panel_id}\`.`,
+    `- Reviewer runs: ${out.reviewers.length}`,
+  ];
+  for (const reviewer of out.reviewers) {
+    lines.push(`- ${reviewer.agent_id}: run \`${reviewer.run_id}\``);
+  }
+  if (out.failed_reviewers.length > 0) {
+    lines.push(
+      `- Failed reviewers: ${out.failed_reviewers.length}`,
+      ...out.failed_reviewers.map((reviewer) =>
+        `  - ${reviewer.agent_id}: ${reviewer.error}`),
+    );
+  }
+  const requiredActions = out.reviewers
+    .map((reviewer) => reviewer.required_next_action)
+    .filter((action): action is RequiredNextAction => action !== undefined);
+  if (clientKind === 'claude-code' && requiredActions.length > 0) {
+    lines.push(
+      '',
+      '**REQUIRED before you end this turn:** spawn one watcher per reviewer run.',
+      ...requiredActions.map((action) =>
+        `- \`Bash(${action.command}, run_in_background: true)\``),
+      'Skip any watcher and that crew run is orphaned.',
+    );
+  }
+  return lines.join('\n');
 }
 
 function resolvePanelCriteriaContract(

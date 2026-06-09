@@ -28,7 +28,6 @@ import {
 } from '../../install/project-install-manifest.js';
 import {
   projectCrewBinaryResolver,
-  projectCrewWaitCommand,
 } from '../../install/crew-binary.js';
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
@@ -176,6 +175,13 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
       }
     }
 
+    if (targetId === 'claude-code') {
+      issues.push(...await verifyClaudeCrewWaitAllowlist({
+        permissionsPath: adapter.permissionsPath?.(home),
+        crewWaitCommand: entry.crewWaitCommand,
+      }));
+    }
+
     const report: VerifyTargetReport = {
       host: targetId,
       ok: issues.length === 0,
@@ -313,14 +319,10 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     }
 
     if (targetId === 'claude-code') {
-      const expectedWait = inferCrewWaitCommand(entry.serverCommand);
-      const permissionsPath = entry.permissionsPath;
-      const permissions = permissionsPath && existsSync(permissionsPath)
-        ? await readFile(permissionsPath, 'utf-8')
-        : '';
-      if (!permissions.includes(`Bash(${expectedWait}:*)`)) {
-        issues.push(`Claude Code permissions missing Bash(${expectedWait}:*) allowlist`);
-      }
+      issues.push(...await verifyClaudeCrewWaitAllowlist({
+        permissionsPath: entry.permissionsPath,
+        crewWaitCommand: entry.crewWaitCommand,
+      }));
     }
 
     if (targetId === 'codex' && !codexTrustChecked) {
@@ -510,10 +512,17 @@ async function verifyProjectAutoApproval(args: {
   return issues;
 }
 
-function inferCrewWaitCommand(serverCommand: string): string {
-  return serverCommand === 'npx'
-    ? projectCrewWaitCommand({ strategy: 'npx' })
-    : projectCrewWaitCommand({ strategy: 'node-modules-bin' });
+async function verifyClaudeCrewWaitAllowlist(args: {
+  readonly permissionsPath?: string;
+  readonly crewWaitCommand: string;
+}): Promise<string[]> {
+  const expected = `Bash(${args.crewWaitCommand}:*)`;
+  const permissions = args.permissionsPath && existsSync(args.permissionsPath)
+    ? await readFile(args.permissionsPath, 'utf-8')
+    : '';
+  return permissions.includes(expected)
+    ? []
+    : [`Claude Code permissions missing ${expected} allowlist`];
 }
 
 function forbiddenProjectCommandReason(

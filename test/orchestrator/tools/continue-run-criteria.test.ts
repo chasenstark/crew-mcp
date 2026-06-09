@@ -27,6 +27,7 @@ function depsFor(h: PanelHarness): ToolHandlerDeps {
     crewHome: h.crewHome,
     projectRoot: h.root,
     getClientKind: () => 'codex',
+    getCrewWaitCommand: () => 'crew-wait',
     progressTokenSeen: {
       presentLogged: false,
       absentLogged: false,

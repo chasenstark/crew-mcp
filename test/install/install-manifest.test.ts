@@ -44,6 +44,7 @@ function makeTarget(overrides: Partial<InstalledTarget> = {}): InstalledTarget {
     installedAt: '2026-05-16T00:00:00.000Z',
     serverCommand: 'node',
     serverArgs: ['/path/dist/index.js', 'serve'],
+    crewWaitCommand: '/home/me/bin/crew-wait',
     autoApproved: true,
     ...overrides,
   };
@@ -121,6 +122,7 @@ describe('install-manifest v1→v2 migration', () => {
       expect(t.writtenPaths).toEqual([
         '/home/me/.claude/skills/crew/SKILL.md',
       ]);
+      expect(t.crewWaitCommand).toBe('crew-wait');
     });
   });
 
@@ -137,6 +139,7 @@ describe('install-manifest v1→v2 migration', () => {
       });
       const manifest = await readInstallManifest(home);
       expect(manifest.targets['claude-code']?.autoApproved).toBe(true);
+      expect(manifest.targets['claude-code']?.crewWaitCommand).toBe('crew-wait');
     });
   });
 

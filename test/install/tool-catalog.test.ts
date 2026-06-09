@@ -23,6 +23,7 @@ import { CATALOG_TOOLS } from '../../src/install/tool-catalog.js';
 import { CONTINUE_RUN_DESCRIPTION } from '../../src/orchestrator/tools/continue-run.js';
 import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run-status.js';
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
+import { RUN_PANEL_DESCRIPTION } from '../../src/orchestrator/tools/run-panel.js';
 import * as toolsIndex from '../../src/orchestrator/tools/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -97,12 +98,19 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     ] as const) {
       expect(description, `${name}: names crew-wait`).toContain('crew-wait');
       expect(description, `${name}: forbids long-polling`).toMatch(/Do not block the turn long-polling/);
+      expect(description, `${name}: no lazy check-later branch`).not.toMatch(/check (?:status )?later/i);
       // The old framing that re-centered get_run_status as the next op
       // must not come back.
       expect(description, `${name}: no terminal-results-later leak`).not.toContain(
         'read terminal results later with get_run_status',
       );
     }
+  });
+
+  it('run_panel description points at per-run watchers and forbids long-polling', () => {
+    expect(RUN_PANEL_DESCRIPTION).toContain('one crew-wait watcher per run');
+    expect(RUN_PANEL_DESCRIPTION).toMatch(/Do not block the turn long-polling/);
+    expect(RUN_PANEL_DESCRIPTION).not.toMatch(/check (?:status )?later/i);
   });
 
   // The product-invariant rule that the captain stays chat-available must

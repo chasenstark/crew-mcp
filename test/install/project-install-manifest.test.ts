@@ -40,6 +40,7 @@ function makeProjectTarget(repoRoot: string): ProjectInstalledTarget {
     installedAt: '2026-06-07T00:00:00.000Z',
     serverCommand: './node_modules/.bin/crew-mcp',
     serverArgs: ['serve'],
+    crewWaitCommand: './node_modules/.bin/crew-wait',
     autoApproved: true,
   };
 }
@@ -66,12 +67,15 @@ describe('project install manifest', () => {
       };
       expect(raw.targets.codex.configPath).toBe('.codex/config.toml');
       expect(raw.targets.codex.writtenPaths).toContain('.codex/config.toml');
+      expect(JSON.stringify(raw.targets.codex)).toContain('./node_modules/.bin/crew-wait');
       expect(JSON.stringify(raw)).not.toContain(repoRoot);
 
       const read = await readProjectInstallManifest(repoRoot);
-      expect(absolutizeProjectTarget(repoRoot, read.targets.codex!).configPath).toBe(
+      const absolute = absolutizeProjectTarget(repoRoot, read.targets.codex!);
+      expect(absolute.configPath).toBe(
         join(repoRoot, '.codex', 'config.toml'),
       );
+      expect(absolute.crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
     });
   });
 

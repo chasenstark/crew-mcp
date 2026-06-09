@@ -69,6 +69,13 @@ export interface InstalledTarget {
   serverCommand: string;
   serverArgs: readonly string[];
   /**
+   * Exact crew-wait command rendered into watcher instructions and
+   * allowlisted for Claude Code. Stored as a command string, not a path:
+   * project installs may use portable forms such as
+   * `npx --no-install crew-wait`.
+   */
+  crewWaitCommand: string;
+  /**
    * Whether the install wrote auto-approval state to bypass per-call
    * tool prompts. Optional for backward-compatibility with v0.2.0-dev
    * manifests that pre-date the field; absent treated as undefined.
@@ -315,6 +322,7 @@ function normalizeTargetEntry(value: unknown): InstalledTarget | null {
     serverArgs: Array.isArray(v.serverArgs)
       ? v.serverArgs.filter((a): a is string => typeof a === 'string')
       : [],
+    crewWaitCommand: typeof v.crewWaitCommand === 'string' ? v.crewWaitCommand : 'crew-wait',
     ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
   };
 }
@@ -356,6 +364,7 @@ function migrateV1Targets(
       serverArgs: Array.isArray(v.serverArgs)
         ? v.serverArgs.filter((a): a is string => typeof a === 'string')
         : [],
+      crewWaitCommand: typeof v.crewWaitCommand === 'string' ? v.crewWaitCommand : 'crew-wait',
       ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
     };
   }

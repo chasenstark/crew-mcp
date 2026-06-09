@@ -477,6 +477,7 @@ export async function installSingleTarget(args: {
     installedAt: new Date().toISOString(),
     serverCommand: crewBin,
     serverArgs: [...crewArgs],
+    crewWaitCommand,
     autoApproved: autoApprove,
   };
   await recordInstalledTarget(home, adapter.id, entry);
@@ -577,6 +578,7 @@ export async function installSingleProjectTarget(args: {
     installedAt: new Date().toISOString(),
     serverCommand: crewBin,
     serverArgs: [...crewArgs],
+    crewWaitCommand,
     autoApproved: autoApprove,
   };
   const relativeEntry = relativizeProjectTarget(repoRoot, absoluteEntry);

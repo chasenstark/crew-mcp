@@ -104,6 +104,7 @@ describe('install / verify / uninstall — happy path', () => {
         skills: Record<string, string>;
         writtenPaths: string[];
         version: string;
+        crewWaitCommand: string;
       }>;
     };
     expect(manifest.schemaVersion).toBe(2);
@@ -114,6 +115,7 @@ describe('install / verify / uninstall — happy path', () => {
     expect(manifest.targets.codex.skills['crew:iterate']).toMatch(/crew-iterate\/SKILL\.md$/);
     expect(manifest.targets.codex.writtenPaths).toContain(adapter.skillPath(home));
     expect(manifest.targets.codex.version).toMatch(/0\.2\.0/);
+    expect(manifest.targets.codex.crewWaitCommand).toBe('crew-wait');
   });
 
   it('install --target all installs every host (with forceWithoutBinary)', async () => {
@@ -250,6 +252,32 @@ describe('install / verify / uninstall — happy path', () => {
     expect(report.targets).toHaveLength(1);
     expect(report.targets[0].host).toBe('codex');
     expect(report.targets[0].issues).toEqual([]);
+  });
+
+  it('verify checks Claude Code crew-wait allowlist against the stored command', async () => {
+    const adapter = HOST_ADAPTERS['claude-code'];
+    await installCommand({
+      target: 'claude-code',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => false,
+      resolveCrewWaitBinary: () => STUB_CREW_WAIT,
+    });
+    const clean = await verifyCommand({ home });
+    expect(clean.ok).toBe(true);
+
+    const permissionsPath = adapter.permissionsPath!(home);
+    const permissions = readFileSync(permissionsPath, 'utf-8')
+      .replace(`Bash(${STUB_CREW_WAIT}:*)`, 'Bash(crew-wait:*)');
+    writeFileSync(permissionsPath, permissions, 'utf-8');
+
+    const drift = await verifyCommand({ home });
+    expect(drift.ok).toBe(false);
+    expect(drift.targets[0].issues).toContain(
+      `Claude Code permissions missing Bash(${STUB_CREW_WAIT}:*) allowlist`,
+    );
   });
 
   it('verify reports state-locks/ writable when the crew home allows probes', async () => {
@@ -627,6 +655,10 @@ describe('install / verify / uninstall — happy path', () => {
     };
     expect(permissions.permissions.allow).toContain(`Bash(${STUB_CREW_WAIT}:*)`);
     expect(permissions.permissions.allow).not.toContain('Bash(crew-wait:*)');
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { crewWaitCommand: string }>;
+    };
+    expect(manifest.targets['claude-code'].crewWaitCommand).toBe(STUB_CREW_WAIT);
   });
 
   it('install is idempotent for the Claude Code crew-wait Bash allowlist', async () => {
@@ -1085,12 +1117,15 @@ describe('project-scope install / verify / uninstall', () => {
         writtenPaths: string[];
         serverCommand: string;
         serverArgs: string[];
+        crewWaitCommand: string;
       }>;
     };
     expect(manifest.scope).toBe('project');
+    expect(manifest.targets['claude-code'].crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
     expect(manifest.targets.codex.configPath).toBe('.codex/config.toml');
     expect(manifest.targets.codex.serverCommand).toBe('./node_modules/.bin/crew-mcp');
     expect(manifest.targets.codex.serverArgs).toEqual(['serve']);
+    expect(manifest.targets.codex.crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
     expect(JSON.stringify(manifest)).not.toContain(repoRoot);
     expect(JSON.stringify(manifest)).not.toContain(home);
     expect(JSON.stringify(manifest)).not.toContain('dist/index.js');
@@ -1195,6 +1230,28 @@ describe('project-scope install / verify / uninstall', () => {
     });
     expect(configReport.ok).toBe(false);
     expect(configReport.targets[0].issues.join('\n')).toContain('crew MCP block');
+  });
+
+  it('verify --scope project checks Claude Code crew-wait allowlist against the stored command', async () => {
+    await installProjectAll();
+    const permissionsPath = join(repoRoot, '.claude', 'settings.json');
+    const permissions = readFileSync(permissionsPath, 'utf-8')
+      .replace(
+        'Bash(./node_modules/.bin/crew-wait:*)',
+        'Bash(crew-wait:*)',
+      );
+    writeFileSync(permissionsPath, permissions, 'utf-8');
+
+    const report = await verifyCommand({
+      scope: 'project',
+      target: 'claude-code',
+      home,
+      repoRoot,
+    });
+    expect(report.ok).toBe(false);
+    expect(report.targets[0].issues).toContain(
+      'Claude Code permissions missing Bash(./node_modules/.bin/crew-wait:*) allowlist',
+    );
   });
 
   it('verify --scope project fails non-portable committed commands', async () => {

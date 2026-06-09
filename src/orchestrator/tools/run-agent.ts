@@ -52,6 +52,7 @@ import {
   mergeEnvelopeWarnings,
   nextStepSentence,
   progressNotifierFrom,
+  requiredNextActionForRun,
   renderDispatchMarkdown,
   structuredRunEnvelope,
 } from './shared.js';
@@ -105,7 +106,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. Optional peer_messages are prepended as untrusted context; optional confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults, working_directory changes the start path, and read_only skips worktree allocation for review. Returns an async dispatch envelope; spawn crew-wait on Claude Code or check status later. Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. Optional peer_messages are prepended as untrusted context; optional confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults, working_directory changes the start path, and read_only skips worktree allocation for review. Returns an async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -137,6 +138,11 @@ export async function runAgentToolHandler(
   const clientKind = deps.getClientKind();
   const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(clientKind)}`;
   const eventsLogPath = deps.runStateStore.eventsLogPath(dispatchResult.runId);
+  const requiredNextAction = requiredNextActionForRun(
+    clientKind,
+    deps.getCrewWaitCommand(),
+    dispatchResult.runId,
+  );
   const env: FullRunEnvelope = {
     run_id: dispatchResult.runId,
     agent_id: args.agent_id,
@@ -148,6 +154,7 @@ export async function runAgentToolHandler(
     status: 'running',
     summary,
     files_changed: [],
+    ...(requiredNextAction !== undefined ? { required_next_action: requiredNextAction } : {}),
     ...mergeEnvelopeWarnings(
       deps.runStateStore.read(dispatchResult.runId)?.warnings,
       dispatchResult.warnings,

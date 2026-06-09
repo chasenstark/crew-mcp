@@ -234,6 +234,7 @@ function normalizeProjectTargetEntry(value: unknown): ProjectInstalledTarget | n
     installedAt: typeof v.installedAt === 'string' ? v.installedAt : '',
     serverCommand: typeof v.serverCommand === 'string' ? v.serverCommand : '',
     serverArgs: stringArray(v.serverArgs),
+    crewWaitCommand: typeof v.crewWaitCommand === 'string' ? v.crewWaitCommand : 'crew-wait',
     ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
     ...(typeof v.permissionsPath === 'string' ? { permissionsPath: v.permissionsPath } : {}),
   };
