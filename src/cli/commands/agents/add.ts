@@ -28,6 +28,7 @@ export interface AgentsAddOptions {
   readonly command?: string;
   readonly args?: string | readonly string[];
   readonly strengths?: string | readonly string[];
+  readonly useWhen?: string | readonly string[];
   readonly nonInteractive?: boolean;
   readonly noVerify?: boolean;
   readonly allowVerifyFailure?: boolean;
@@ -57,6 +58,7 @@ interface ModelSelection {
   readonly model: string;
   readonly name: string;
   readonly strengths: readonly string[];
+  readonly useWhen?: string;
 }
 
 const PROVIDER_CHOICES: Array<{ label: string; value: AddProvider }> = [
@@ -297,7 +299,8 @@ async function resolveSelections(
     const name = normalizeSingle(opts.name)
       ?? await promptRequired(io, 'Agent name: ', nonInteractive, '--name is required');
     const strengths = parseStrengths(opts.strengths, provider.defaultStrengths);
-    return [{ model: name, name, strengths }];
+    const useWhen = normalizeUseWhen(opts.useWhen);
+    return [{ model: name, name, strengths, ...(useWhen ? { useWhen } : {}) }];
   }
 
   let models = normalizeList(opts.model);
@@ -335,15 +338,21 @@ async function resolveSelections(
       pickListValue(opts.strengths, i),
       provider.defaultStrengths,
     );
+    const useWhen = normalizeUseWhen(pickListValue(opts.useWhen, i));
     if (!nonInteractive && opts.strengths === undefined) {
       const rawStrengths = await promptWithDefault(
         io,
         `Strengths for ${name} (comma-separated)`,
         provider.defaultStrengths.join(', '),
       );
-      selections.push({ model, name, strengths: parseStrengths(rawStrengths, []) });
+      selections.push({
+        model,
+        name,
+        strengths: parseStrengths(rawStrengths, []),
+        ...(useWhen ? { useWhen } : {}),
+      });
     } else {
-      selections.push({ model, name, strengths });
+      selections.push({ model, name, strengths, ...(useWhen ? { useWhen } : {}) });
     }
   }
   return selections;
@@ -364,6 +373,7 @@ function buildEntries(
         command: provider.command,
         args: provider.args,
         strengths: selection.strengths,
+        ...(selection.useWhen ? { useWhen: selection.useWhen } : {}),
       };
       continue;
     }
@@ -373,6 +383,7 @@ function buildEntries(
       apiBase: provider.apiBase,
       apiKey: provider.apiKey,
       strengths: selection.strengths,
+      ...(selection.useWhen ? { useWhen: selection.useWhen } : {}),
     };
   }
   return entries;
@@ -468,6 +479,12 @@ function normalizeList(value: string | readonly string[] | undefined): string[] 
 
 function normalizeSingle(value: string | readonly string[] | undefined): string | undefined {
   return normalizeList(value)[0];
+}
+
+function normalizeUseWhen(value: string | readonly string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = raw?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
 function pickListValue(

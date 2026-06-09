@@ -1,12 +1,12 @@
 /**
  * list_agents — agent-inventory discovery for the captain.
  *
- * Output shape: `{ agents: [{ name, strengths, effort?, adapter,
+ * Output shape: `{ agents: [{ name, useWhen?, strengths, effort?, adapter,
  * available, version?, authenticated?, quota? }] }`. `quota` is optional
  * and M3 omits it entirely — M4 can wire a `quotaProbe` callback when it
  * defines what a probe actually looks like (plan §5 Open Q #3).
  *
- * `strengths` and `effort` come from `effectiveAgentPrefs(adapter, prefs)`
+ * `useWhen`, `strengths`, and `effort` come from `effectiveAgentPrefs(adapter, prefs)`
  * — the user's `~/.crew/agents.json` override merged on top of adapter
  * defaults. Caller passes `agentPrefs` in (read once at serve startup or
  * per-call, depending on how stale the captain is willing to tolerate).
@@ -41,7 +41,7 @@ export const listAgentsInputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, strengths, default effort/model, adapter, availability, health details, and optional quota. Unavailable agents are included with available:false and an error instead of throwing.';
+  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, useWhen routing guidance, strengths, default effort/model, adapter, availability, health details, and optional quota. Unavailable agents are included with available:false and an error instead of throwing.';
 
 export interface ListAgentsAgentEntry {
   readonly name: string;
@@ -52,6 +52,12 @@ export interface ListAgentsAgentEntry {
    * so the captain knows the shorthand exists.
    */
   readonly aliases?: readonly string[];
+  /**
+   * Primary routing guidance — adapter default merged with the user's
+   * `~/.crew/agents.json` override. Captain reads as the first nudge,
+   * not as an enforced eligibility filter.
+   */
+  readonly useWhen?: string;
   /**
    * Soft routing hints — adapter defaults merged with the user's
    * `~/.crew/agents.json` override. Captain reads as nudges (not
@@ -140,7 +146,11 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
     adapters.map(async (adapter): Promise<ListAgentsAgentEntry> => {
       const merged = effectiveAgentPrefs(
         adapter.name,
-        { strengths: adapter.strengths, effort: adapter.defaultEffort },
+        {
+          useWhen: adapter.useWhen,
+          strengths: adapter.strengths,
+          effort: adapter.defaultEffort,
+        },
         overrides,
       );
       const base = {
@@ -150,6 +160,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
         ...(adapter.aliases && adapter.aliases.length > 0
           ? { aliases: [...adapter.aliases] }
           : {}),
+        ...(merged.useWhen ? { useWhen: merged.useWhen } : {}),
         strengths: [...(merged.strengths ?? [])],
         // `effort` only present when defined — adapters with no native
         // knob and no user override stay omitted, signalling honestly.

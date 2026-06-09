@@ -634,7 +634,7 @@ describe('crew serve — list_agents tool', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await startHarness([
-      makeMockAdapter({ name: 'mock-coder', strengths: ['code-implementation'] }),
+      makeMockAdapter({ name: 'mock-coder', strengths: ['bulk-implementation'] }),
       makeMockAdapter({ name: 'mock-reviewer', strengths: ['code-review'] }),
     ]);
   });
@@ -702,6 +702,7 @@ describe('crew serve — list_agents tool', () => {
           apiBase: openAiMock.apiBase,
           apiKey: 'ollama',
           strengths: ['local', 'private', 'fast-iteration'],
+          useWhen: 'Use for private local inference.',
         },
       });
 
@@ -715,13 +716,14 @@ describe('crew serve — list_agents tool', () => {
         rmSync(emptyPath, { recursive: true, force: true });
       }
       const structured = list.structuredContent as {
-        agents: Array<{ name: string; available: boolean; strengths: string[] }>;
+        agents: Array<{ name: string; available: boolean; strengths: string[]; useWhen?: string }>;
       };
       const gemma4 = structured.agents.find((agent) => agent.name === 'gemma4');
       expect(gemma4).toMatchObject({
         name: 'gemma4',
         available: true,
         strengths: ['local', 'private', 'fast-iteration'],
+        useWhen: 'Use for private local inference.',
       });
 
       const run = await h.client.callTool({

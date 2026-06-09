@@ -579,12 +579,12 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   etc.); the `error` field tells you why. Tell the user the agent
   isn't available rather than dispatching to it and discovering
   the failure on a 30s timeout.
-- `list_agents` also returns `strengths[]` (soft routing hints —
-  what each agent is good at), an optional `effort` default, and an
-  optional `model` default. Use `strengths` as nudges when picking
-  between adapters, not as hard filters. The user tunes all three
-  per-machine in `~/.crew/agents.json`, so what you see is what
-  they want.
+- `list_agents` also returns optional `useWhen` routing prose,
+  `strengths[]` secondary tags, an optional `effort` default, and an
+  optional `model` default. Read `useWhen` first when picking between
+  adapters, then use `strengths` as tie-breaker nudges. Neither field
+  is a hard filter. The user tunes all four per-machine in
+  `~/.crew/agents.json`, so what you see is what they want.
 - **Model:** when `list_agents` shows a `model` for an agent,
   dispatches use it automatically — you don't have to pass
   `model:` unless the user names a specific model or alias to

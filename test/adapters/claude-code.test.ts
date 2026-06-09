@@ -77,10 +77,17 @@ describe('ClaudeCodeAdapter', () => {
 
     it('declares default strengths', () => {
       expect(adapter.strengths).toEqual([
-        'careful-reasoning',
+        'deep-reasoning',
         'code-review',
-        'documentation',
+        'refactoring',
+        'technical-writing',
       ]);
+    });
+
+    it('declares useWhen routing guidance', () => {
+      expect(adapter.useWhen).toBe(
+        'Prefer when correctness and judgment matter most — reviews, careful refactors, specs, and writing. The most rigorous, not the fastest.',
+      );
     });
 
     it('omits defaultEffort (no native reasoning-effort knob today)', () => {

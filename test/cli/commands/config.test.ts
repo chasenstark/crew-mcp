@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -217,16 +217,15 @@ describe('crew-mcp config subcommands', () => {
     });
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
-    expect(stdout.text.split('\n').slice(0, 9)).toEqual([
+    expect(stdout.text.split('\n').slice(0, 8)).toEqual([
       'crew-mcp config — toggle settings',
       '',
       '> [x] notifications.success   OS toast on successful runs',
       '  [x] notifications.error     OS toast on failed or partial runs',
       '  [x] confirmBeforeMerge      Ask before merging dispatched runs (off = auto-merge)',
       '      Agent defaults...       Configure default agents for iterate and panel workflows',
+      '      Agent strengths...      Tune per-agent routing prose and strength tags',
       '      Cleanup & retention...  Set GC retention windows and reclaim stale worktrees/run-dirs now',
-      '',
-      '↑/↓ or j/k: move    space: toggle    enter: save    q / esc: cancel',
     ]);
 
     stdin.press('space');
@@ -244,6 +243,44 @@ describe('crew-mcp config subcommands', () => {
     });
   });
 
+  it('surfaces corrupt agents.json errors from the agent strengths save path', async () => {
+    const stdin = new TtyStdin();
+    const stdout = new TtyStdout();
+    writeFileSync(join(crewHome, 'agents.json'), JSON.stringify([]), 'utf-8');
+    const run = configCommand({
+      cwd,
+      crewHome,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      listAgentInventory: async () => ({
+        agentIds: ['codex'],
+        knownIds: new Set(['codex']),
+        agents: [{ name: 'codex', strengths: ['fast-iteration'] }],
+      }),
+    });
+
+    await waitForOutput(stdout, 'crew-mcp config — toggle settings');
+    stdin.press('down'); // notifications.error
+    stdin.press('down'); // confirmBeforeMerge
+    stdin.press('down'); // Agent defaults
+    stdin.press('down'); // Agent strengths
+    stdin.press('return'); // push AgentStrengthsListScreen
+    stdin.press('return'); // push AgentStrengthEditScreen for codex
+    stdin.press('return'); // push StrengthsMultiSelectScreen
+    stdin.press('space'); // deselect fast-iteration
+    stdin.press('return'); // commit strengths: []
+    stdin.press('q'); // back to strengths list
+    stdin.press('q'); // back to root
+    stdin.press('up'); // Agent defaults
+    stdin.press('up'); // confirmBeforeMerge toggle
+    stdin.press('return'); // save
+
+    await expect(run).resolves.toBe(1);
+    expect(stdin.isRaw).toBe(false);
+    expect(stdout.text).toContain('could not save agent strengths');
+    expect(stdout.text).toContain('must be a JSON object');
+  });
+
   it('opens the cleanup submenu, persists a TTL change, and runs cleanup on "Run now"', async () => {
     const stdin = new TtyStdin();
     const stdout = new TtyStdout();
@@ -257,7 +294,8 @@ describe('crew-mcp config subcommands', () => {
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
     // Root rows: notifications.success(0), notifications.error(1),
-    // confirmBeforeMerge(2), Agent defaults(3), Cleanup(4).
+    // confirmBeforeMerge(2), Agent defaults(3), Agent strengths(4), Cleanup(5).
+    stdin.press('down');
     stdin.press('down');
     stdin.press('down');
     stdin.press('down');

@@ -12,6 +12,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { extractJson } from '../utils/json-parse.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
+import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 import {
   logBestEffortFailure,
   registerTempDirForCleanup,
@@ -317,11 +318,8 @@ export class CodexAdapter implements AgentAdapter {
   readonly name = AgentId.CODEX;
   // Soft routing hints; users override via ~/.crew/agents.json.
   // See AgentStrength docs in src/adapters/types.ts.
-  readonly strengths: AgentStrength[] = [
-    'fast-iteration',
-    'autonomous-loops',
-    'code-implementation',
-  ];
+  readonly strengths: AgentStrength[] = [...BUILTIN_AGENT_ROUTING.codex.strengths];
+  readonly useWhen = BUILTIN_AGENT_ROUTING.codex.useWhen;
   // Codex CLI takes `-c model_reasoning_effort=<low|medium|high|xhigh>`.
   // Default to medium — matches Codex's own default and gives the user a
   // knob in both directions. Per-call override comes via

@@ -45,7 +45,6 @@ describe('config path registry', () => {
       'agents.<name>.model',
       'agents.<name>.command',
       'agents.<name>.args',
-      'agents.<name>.strengths',
       'workflow.steps.<role>.agents',
       'workflow.reviewer.maxPasses',
       'errorHandling.default.retry',
@@ -198,6 +197,7 @@ describe('config path registry', () => {
 
   it('returns null for unsupported paths', () => {
     expect(resolveConfigPath('workflow.name')).toBeNull();
+    expect(resolveConfigPath('agents.local-gemma.strengths')).toBeNull();
   });
 
   describe('captain.model write semantics', () => {

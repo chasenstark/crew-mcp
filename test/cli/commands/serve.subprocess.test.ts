@@ -36,14 +36,18 @@ describe.skipIf(!hasBuild)('crew-mcp serve — subprocess wire protocol', () => 
       expect(names).toEqual([
         'aggregate_panel',
         'cancel_run',
+        'confirm_criteria',
         'continue_run',
+        'create_criteria',
         'discard_run',
         'get_crew_preferences',
+        'get_criteria',
         'get_panel_status',
         'get_run_status',
         'list_agents',
         'list_runs',
         'merge_run',
+        'revise_criteria',
         'run_agent',
         'run_panel',
       ]);

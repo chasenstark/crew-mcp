@@ -124,9 +124,17 @@ describe('CodexAdapter', () => {
     });
 
     it('declares default strengths', () => {
-      expect(adapter.strengths).toContain('fast-iteration');
-      expect(adapter.strengths).toContain('autonomous-loops');
-      expect(adapter.strengths).toContain('code-implementation');
+      expect(adapter.strengths).toEqual([
+        'fast-iteration',
+        'autonomous-loops',
+        'bulk-implementation',
+      ]);
+    });
+
+    it('declares useWhen routing guidance', () => {
+      expect(adapter.useWhen).toBe(
+        'Prefer for well-scoped implementation and long unattended loops — fast at churning through mechanical changes.',
+      );
     });
 
     it('declares defaultEffort = "medium" (mirrors codex CLI default)', () => {

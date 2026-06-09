@@ -41,6 +41,20 @@ describe('GeminiCliAdapter', () => {
     expect(adapter.captainCapabilities.supportsToolLoop).toBe(true);
   });
 
+  it('declares default strengths', () => {
+    expect(adapter.strengths).toEqual([
+      'long-context',
+      'codebase-triage',
+      'multimodal',
+    ]);
+  });
+
+  it('declares useWhen routing guidance', () => {
+    expect(adapter.useWhen).toBe(
+      'Prefer for orienting in large or unfamiliar codebases and tasks with screenshots or diagrams — the largest context window.',
+    );
+  });
+
   it('reports enforcesReadOnly=false because tool-policy denial is not an OS filesystem sandbox', () => {
     // Gemini enforces read-only at the tool level (a per-run --policy deny),
     // not via a kernel sandbox. enforcesReadOnly specifically means the

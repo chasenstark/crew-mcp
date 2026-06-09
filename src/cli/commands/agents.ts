@@ -11,6 +11,7 @@ import {
   type AdapterRegistry,
 } from '../../adapters/registry.js';
 import {
+  effectiveAgentPrefs,
   readAgentPrefsFile,
   resolveAgentPrefsPath,
   seedAgentPrefsFile,
@@ -55,6 +56,7 @@ export function registerAgentsCommand(program: Command, applyDebugFlag: () => vo
     .option('--command <command>', 'Shell command for --provider generic')
     .option('--args <args>', 'Args template for --provider generic')
     .option('--strengths <items>', 'Comma-separated strengths')
+    .option('--use-when <text>', 'Primary routing guidance surfaced in list_agents')
     .option('--non-interactive', 'Fail instead of prompting when required flags are missing')
     .option('--no-verify', 'Skip the verification chat completion')
     .option('--allow-verify-failure', 'Write the entry even if verification fails')
@@ -95,6 +97,10 @@ export async function agentsEditCommand(): Promise<number> {
   if (!existsSync(path)) {
     seedAgentPrefsFile(crewHome, collectAdapterDefaults());
     logger.info(`crew agents edit: created ${path} with adapter defaults`);
+  } else {
+    logger.info(
+      `crew agents edit: opening existing ${path}; pre-existing strengths/useWhen reflect prior defaults until edited.`,
+    );
   }
 
   const editor = process.env.VISUAL || process.env.EDITOR || 'vi';
@@ -132,9 +138,20 @@ export async function agentsListCommand(opts: AgentsListOptions = {}): Promise<v
       error: 'health check did not return a result',
     };
     const healthText = formatHealth(result);
-    const configured = prefs[adapter.name];
-    const strengths = configured?.strengths ?? adapter.strengths;
+    const effective = effectiveAgentPrefs(
+      adapter.name,
+      {
+        strengths: adapter.strengths,
+        useWhen: adapter.useWhen,
+        effort: adapter.defaultEffort,
+      },
+      prefs,
+    );
+    const strengths = effective.strengths ?? [];
     stdout.write(`${adapter.name.padEnd(16)} ${healthText.padEnd(28)} ${strengths.join(', ')}\n`);
+    if (effective.useWhen) {
+      stdout.write(`  ${chalk.dim('useWhen:')} ${effective.useWhen}\n`);
+    }
   }
   stdout.write('\nRun `crew-mcp agents add` to register more models, or `crew-mcp agents edit` to tweak this file directly.\n');
 }
@@ -188,6 +205,7 @@ function collectAdapterDefaults(): AgentPrefsMap {
   for (const adapter of registry.listAvailable()) {
     defaults[adapter.name] = {
       strengths: [...adapter.strengths],
+      ...(adapter.useWhen ? { useWhen: adapter.useWhen } : {}),
       ...(adapter.defaultEffort ? { effort: adapter.defaultEffort } : {}),
     };
   }

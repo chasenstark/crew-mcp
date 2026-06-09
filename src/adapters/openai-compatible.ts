@@ -41,11 +41,13 @@ export interface OpenAiCompatibleAdapterOptions {
   apiBase?: string;
   apiKey?: string;
   strengths?: AgentStrength[];
+  useWhen?: string;
 }
 
 export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly name: string;
   readonly strengths: AgentStrength[];
+  readonly useWhen?: string;
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
   // Chat completions do not provide an adapter-level filesystem change list.
@@ -68,8 +70,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? process.env.CREW_OPENAI_API_KEY;
     // Empty default — what an OpenAI-compatible endpoint is "good at"
     // depends entirely on the model wired up. Users declare strengths in
-    // their agent config or via ~/.crew/strengths.json.
+    // their agent config or via ~/.crew/agents.json.
     this.strengths = options.strengths ?? [];
+    this.useWhen = options.useWhen;
   }
 
   async execute(task: Task): Promise<TaskResult> {

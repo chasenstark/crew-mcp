@@ -37,20 +37,6 @@ export interface ResolvedConfigPath {
   params: Record<string, string>;
 }
 
-// Strengths are free-form, but a few common kebab-case tags surface
-// as completion suggestions in the wizard / `/config set` UI. The
-// list is purely advisory — users can write any string.
-const STRENGTH_PRESETS = [
-  'careful-reasoning',
-  'code-review',
-  'documentation',
-  'fast-iteration',
-  'autonomous-loops',
-  'long-context',
-  'broad-codebase-triage',
-  'multimodal-input',
-];
-
 function uniqueOrdered(values: string[]): string[] {
   const deduped = new Set<string>();
   const result: string[] = [];
@@ -585,33 +571,6 @@ export const CONFIG_PATH_REGISTRY: ConfigPathDescriptor[] = [
       config.agents[params.name].args = value as string[];
     },
     options: () => [],
-  },
-  {
-    path: 'agents.<name>.strengths',
-    examples: ['/config set agents.local-gemma.strengths code-review,fast-iteration'],
-    match: regexPath(/^agents\.(?<name>[^.]+)\.strengths$/),
-    read: (config, params) => config.agents[params.name]?.strengths,
-    parse: (raw, config, params, path) => {
-      if (!config.agents[params.name]) {
-        throw new Error(
-          `Invalid value for ${path}: unknown agent "${params.name}". Example: /config add-agent ${params.name} generic`,
-        );
-      }
-      return parseDelimitedStringList(
-        path,
-        raw,
-        `/config set agents.${params.name}.strengths code-review,documentation`,
-      );
-    },
-    write: (config, params, value) => {
-      config.agents[params.name].strengths = value as string[];
-    },
-    options: (config, params) => {
-      const agent = config.agents[params.name];
-      if (!agent) return [];
-      const current = (agent.strengths ?? []).join(',');
-      return withCurrentOption(STRENGTH_PRESETS, current);
-    },
   },
   {
     // Per-role candidate-agents list. The captain treats `agents:` as a hint

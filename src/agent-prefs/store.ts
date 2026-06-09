@@ -1,16 +1,17 @@
 /**
  * Per-machine agent preferences file at `<crewHome>/agents.json`.
  *
- * Each adapter ships defaults for `strengths` (soft routing hints) and
- * `effort` (reasoning depth: low|medium|high). The user overrides those
+ * Each adapter ships defaults for `useWhen` (primary routing prose),
+ * `strengths` (secondary routing tags), and `effort` (reasoning depth:
+ * low|medium|high|xhigh|max where supported). The user overrides those
  * defaults per-machine by editing this file. `crew-mcp install` seeds it on
- * first install with every registered adapter's defaults; `crew agents
- * edit` opens it in `$EDITOR`.
+ * first install with every registered adapter's defaults; `crew agents edit`
+ * opens it in `$EDITOR`.
  *
  * File shape (per agent name):
  *   {
- *     "claude-code": { "strengths": [...], "effort": "medium" },
- *     "codex":       { "strengths": [...], "effort": "high" }
+ *     "claude-code": { "useWhen": "...", "strengths": [...], "effort": "medium" },
+ *     "codex":       { "useWhen": "...", "strengths": [...], "effort": "high" }
  *   }
  *
  * Underscore-prefixed keys (`_readme`, `_comment`) are reserved as a
@@ -22,7 +23,7 @@
  *   - missing file               → `{}` (use adapter defaults)
  *   - invalid JSON               → `{}` + warning log
  *   - per-agent value not object → drop that key + warning log
- *   - bad strengths/effort field → drop the field, keep the entry
+ *   - bad useWhen/strengths/effort field → drop the field, keep the entry
  *
  * Write path is atomic (tmp + rename) so a crash mid-write can't leave
  * a half-written file.
@@ -71,6 +72,11 @@ export interface AgentPreferences {
    * declared." Captain reads as nudges, not constraints.
    */
   readonly strengths?: readonly string[];
+  /**
+   * Primary routing prose surfaced via list_agents. Captain reads this
+   * before strengths when choosing an agent, but it remains advisory.
+   */
+  readonly useWhen?: string;
   /** Default effort level for dispatches to this agent. */
   readonly effort?: EffortLevel;
   /**
@@ -166,6 +172,15 @@ function coerceEntry(agentName: string, value: unknown): AgentPreferences | unde
       );
     }
   }
+  if ('useWhen' in record) {
+    if (typeof record.useWhen === 'string' && record.useWhen.trim().length > 0) {
+      out.useWhen = record.useWhen.trim();
+    } else {
+      logger.warn(
+        `[agent-prefs] "${agentName}".useWhen must be a non-empty string; dropping field`,
+      );
+    }
+  }
   if ('effort' in record) {
     if (isEffortLevel(record.effort)) {
       out.effort = record.effort;
@@ -253,8 +268,9 @@ export function seedAgentPrefsFile(
   const seeded: Record<string, unknown> = {
     _readme: [
       'Per-machine agent preferences. Each adapter ships defaults; edit',
-      'an entry to override for this machine. Three tunable fields:',
-      '  - strengths: free-form soft routing hints surfaced via list_agents.',
+      'an entry to override for this machine. Four tunable fields:',
+      '  - useWhen: primary routing prose surfaced via list_agents.',
+      '  - strengths: free-form secondary routing tags surfaced via list_agents.',
       '  - effort: "low"|"medium"|"high"|"xhigh"|"max" — codex translates',
       '    to its model_reasoning_effort flag; other adapters log+ignore',
       '    and the captain restates the level in the prompt instead.',
@@ -262,6 +278,8 @@ export function seedAgentPrefsFile(
       '    Empty/missing = the adapter\'s CLI picks (we don\'t override',
       '    your ~/.claude.json or ~/.codex/config.toml).',
       'Per-call overrides via run_agent({model, effort}) always win.',
+      'Existing files are preserved on install; older strength defaults stay',
+      'as they were until you edit this file.',
       'Underscore-prefixed keys are ignored. Delete this file to reset.',
       'Run `crew-mcp agents add` to register a custom OpenAI-compatible',
       'or generic agent — it walks you through provider, model, and',
@@ -278,7 +296,7 @@ export function seedAgentPrefsFile(
 /**
  * Resolve the effective prefs for an agent: file override merged on
  * top of adapter defaults, field-by-field. A user who overrides only
- * `effort` keeps the adapter's default `strengths`. `model` is the
+ * `effort` keeps the adapter's default `useWhen` and `strengths`. `model` is the
  * exception — adapters intentionally don't ship a default for it
  * (they delegate to the CLI's own config), so the result's `model`
  * is just whatever the override specifies (or undefined).
@@ -292,6 +310,7 @@ export function effectiveAgentPrefs(
   if (!override) return adapterDefault;
   return {
     strengths: override.strengths !== undefined ? override.strengths : adapterDefault.strengths,
+    useWhen: override.useWhen !== undefined ? override.useWhen : adapterDefault.useWhen,
     effort: override.effort !== undefined ? override.effort : adapterDefault.effort,
     model: override.model !== undefined ? override.model : adapterDefault.model,
   };

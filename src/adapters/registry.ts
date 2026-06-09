@@ -7,6 +7,7 @@ import type {
 } from './types.js';
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
+import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 
 export interface RegistryHealthReport {
   [adapterName: string]: HealthCheckResult;
@@ -27,6 +28,7 @@ interface LazyAdapterMetadata {
   readonly name: string;
   readonly aliases?: readonly string[];
   readonly strengths: readonly AgentStrength[];
+  readonly useWhen?: string;
   readonly defaultEffort?: EffortLevel;
   readonly supportsJsonSchema: boolean;
   readonly enforcesReadOnly: boolean;
@@ -64,7 +66,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
   [AdapterId.CLAUDE_CODE]: {
     name: AdapterId.CLAUDE_CODE,
     aliases: ['claude'],
-    strengths: ['careful-reasoning', 'code-review', 'documentation'],
+    strengths: BUILTIN_AGENT_ROUTING[AdapterId.CLAUDE_CODE].strengths,
+    useWhen: BUILTIN_AGENT_ROUTING[AdapterId.CLAUDE_CODE].useWhen,
     supportsJsonSchema: true,
     enforcesReadOnly: false,
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
@@ -77,7 +80,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
   },
   [AdapterId.CODEX]: {
     name: AdapterId.CODEX,
-    strengths: ['fast-iteration', 'autonomous-loops', 'code-implementation'],
+    strengths: BUILTIN_AGENT_ROUTING[AdapterId.CODEX].strengths,
+    useWhen: BUILTIN_AGENT_ROUTING[AdapterId.CODEX].useWhen,
     defaultEffort: 'medium',
     supportsJsonSchema: true,
     enforcesReadOnly: true,
@@ -90,7 +94,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
   },
   [AdapterId.GEMINI_CLI]: {
     name: AdapterId.GEMINI_CLI,
-    strengths: ['long-context', 'broad-codebase-triage', 'multimodal-input'],
+    strengths: BUILTIN_AGENT_ROUTING[AdapterId.GEMINI_CLI].strengths,
+    useWhen: BUILTIN_AGENT_ROUTING[AdapterId.GEMINI_CLI].useWhen,
     supportsJsonSchema: false,
     enforcesReadOnly: false,
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
@@ -259,6 +264,7 @@ function createLazyAdapterProxy(
     name: metadata.name,
     aliases: metadata.aliases,
     strengths: [...metadata.strengths],
+    useWhen: metadata.useWhen,
     defaultEffort: metadata.defaultEffort,
     supportsJsonSchema: metadata.supportsJsonSchema,
     enforcesReadOnly: metadata.enforcesReadOnly,
@@ -302,7 +308,7 @@ function createLazyAdapterProxy(
  * Normalize strength strings from agent config: trim, lowercase, dedupe,
  * preserve input order. Strengths are always free-form — no enum gate.
  * Empty input → empty array (adapter ships its own defaults; users can
- * override via ~/.crew/strengths.json post-install, see strengths/store).
+ * override via ~/.crew/agents.json post-install).
  */
 function toStrengths(config: AgentConfig): AgentStrength[] {
   const candidates = config.strengths ?? [];
@@ -318,17 +324,26 @@ function toStrengths(config: AgentConfig): AgentStrength[] {
   return normalized;
 }
 
+function toUseWhen(config: AgentConfig): string | undefined {
+  const raw = (config as { readonly useWhen?: unknown }).useWhen;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function registerGenericAdapter(
   registry: AdapterRegistry,
   name: string,
   config: AgentConfig,
 ): void {
   const strengths = toStrengths(config);
+  const useWhen = toUseWhen(config);
 
   registry.registerLazy(
     {
       name,
       strengths,
+      useWhen,
       supportsJsonSchema: false,
       enforcesReadOnly: false,
       captainCapabilities: GENERIC_CAPABILITIES,
@@ -340,6 +355,7 @@ function registerGenericAdapter(
         command: config.command!,
         argsTemplate: config.args ?? ['{{prompt}}'],
         strengths,
+        useWhen,
       });
     },
   );
@@ -351,10 +367,12 @@ function registerOpenAiCompatibleAdapter(
   config: AgentConfig,
 ): void {
   const strengths = toStrengths(config);
+  const useWhen = toUseWhen(config);
   registry.registerLazy(
     {
       name,
       strengths,
+      useWhen,
       supportsJsonSchema: false,
       enforcesReadOnly: false,
       captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
@@ -369,6 +387,7 @@ function registerOpenAiCompatibleAdapter(
         apiBase: config.apiBase,
         apiKey: config.apiKey,
         strengths,
+        useWhen,
       });
     },
   );

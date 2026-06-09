@@ -332,7 +332,7 @@ bugs."
       roles, honor that — do NOT inject a different model for variety.
    c. **Fallback heuristic** — only for a role no preference covers.
       Mechanical-heavy criteria fit a fast-iteration implementer
-      profile; behavioral-heavy fit a careful-reasoning profile.
+      profile; behavioral-heavy fit a deep-reasoning profile.
       Heterogeneity (different product for implementer vs reviewer) is
       a tiebreaker among otherwise-equal candidates here — never a
       reason to override (a) or (b).
@@ -453,7 +453,7 @@ run_agent({
 - Use the implementer confirmed in Step 0.5. If that pick came from
   the fallback heuristic (no user default covered it), match the
   criteria profile: mechanical-heavy → fast-iteration profile;
-  behavioral-heavy → careful-reasoning profile. Heterogeneity between
+  behavioral-heavy → deep-reasoning profile. Heterogeneity between
   implementer and reviewer is only a tiebreaker for heuristic picks —
   never a reason to deviate from a confirmed Step 0.5 pick.
 - If dispatch rejects the criteria contract, the dispatch-time criteria

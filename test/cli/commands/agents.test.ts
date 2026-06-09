@@ -64,6 +64,7 @@ describe('agents add', () => {
       provider: 'ollama',
       model: 'gemma4:latest',
       name: 'gemma4',
+      useWhen: 'Use for private local inference.',
     });
 
     expect(result.added).toEqual(['gemma4']);
@@ -82,6 +83,7 @@ describe('agents add', () => {
         apiBase: 'http://localhost:11434/v1',
         apiKey: 'ollama',
         strengths: ['local', 'private'],
+        useWhen: 'Use for private local inference.',
       },
     });
   });
@@ -395,8 +397,8 @@ describe('agents list', () => {
       },
     });
     const registry = makeRegistry([
-      makeAdapter('claude-code', ['code-review']),
-      makeAdapter('custom', ['local'], 'ollama 0.9.0'),
+      makeAdapter('claude-code', ['code-review'], undefined, 'Use for review.'),
+      makeAdapter('custom', ['local'], 'ollama 0.9.0', 'Use for local inference.'),
     ]);
     let output = '';
 
@@ -411,6 +413,7 @@ describe('agents list', () => {
     expect(output).toContain('available');
     expect(output).toContain('custom');
     expect(output).toContain('available (ollama 0.9.0)');
+    expect(output).toContain('useWhen: Use for local inference.');
     expect(output).toContain(
       'Run `crew-mcp agents add` to register more models, or `crew-mcp agents edit` to tweak this file directly.',
     );
@@ -480,10 +483,16 @@ function promptIo(answers: readonly string[], output: string[] = []): PromptIO {
   };
 }
 
-function makeAdapter(name: string, strengths: readonly string[], version?: string): AgentAdapter {
+function makeAdapter(
+  name: string,
+  strengths: readonly string[],
+  version?: string,
+  useWhen?: string,
+): AgentAdapter {
   return {
     name,
     strengths,
+    useWhen,
     supportsJsonSchema: false,
     execute: async () => ({
       output: '',

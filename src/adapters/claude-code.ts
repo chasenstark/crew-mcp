@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
+import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 
 import type {
   AgentAdapter,
@@ -419,13 +420,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   // Captain-facing shorthand. `mcp__crew__run_agent({ agent_id: "claude" })`
   // resolves to this adapter the same as `agent_id: "claude-code"`.
   readonly aliases: readonly string[] = ['claude'];
-  // Soft routing hints; users override via ~/.crew/strengths.json.
+  // Soft routing hints; users override via ~/.crew/agents.json.
   // See AgentStrength docs in src/adapters/types.ts.
-  readonly strengths: AgentStrength[] = [
-    'careful-reasoning',
-    'code-review',
-    'documentation',
-  ];
+  readonly strengths: AgentStrength[] = [...BUILTIN_AGENT_ROUTING['claude-code'].strengths];
+  readonly useWhen = BUILTIN_AGENT_ROUTING['claude-code'].useWhen;
   readonly supportsJsonSchema = true;
   readonly enforcesReadOnly = false;
   // Current implementation extracts paths from final prose only. Claude tool

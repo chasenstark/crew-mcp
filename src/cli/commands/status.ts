@@ -1,5 +1,7 @@
 import chalk from 'chalk';
 import { createBuiltinRegistry } from '../../adapters/registry.js';
+import { effectiveAgentPrefs, readAgentPrefsFile } from '../../agent-prefs/store.js';
+import { resolveCrewHome } from '../../utils/crew-home.js';
 
 export async function statusCommand(): Promise<void> {
   console.log(chalk.bold('\nAgent Status\n'));
@@ -13,6 +15,7 @@ export async function statusCommand(): Promise<void> {
 
   console.log(chalk.dim(`Checking ${adapters.length} adapter(s)...\n`));
 
+  const prefs = readAgentPrefsFile(resolveCrewHome());
   const report = await registry.healthCheckAll();
 
   for (const [name, result] of Object.entries(report)) {
@@ -36,14 +39,28 @@ export async function statusCommand(): Promise<void> {
     }
 
     if (adapter) {
-      if (adapter.strengths.length > 0) {
+      const effective = effectiveAgentPrefs(
+        adapter.name,
+        {
+          strengths: adapter.strengths,
+          useWhen: adapter.useWhen,
+          effort: adapter.defaultEffort,
+        },
+        prefs,
+      );
+      if (effective.useWhen) {
         console.log(
-          `    ${chalk.dim('strengths:')} ${adapter.strengths.join(', ')}`,
+          `    ${chalk.dim('useWhen:')} ${effective.useWhen}`,
         );
       }
-      if (adapter.defaultEffort) {
+      if ((effective.strengths ?? []).length > 0) {
         console.log(
-          `    ${chalk.dim('default effort:')} ${adapter.defaultEffort}`,
+          `    ${chalk.dim('strengths:')} ${(effective.strengths ?? []).join(', ')}`,
+        );
+      }
+      if (effective.effort) {
+        console.log(
+          `    ${chalk.dim('default effort:')} ${effective.effort}`,
         );
       }
     }

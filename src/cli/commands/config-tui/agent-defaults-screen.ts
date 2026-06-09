@@ -6,11 +6,13 @@ import {
 } from './agent-defaults-state.js';
 import { MultiSelectScreen } from './multi-select-screen.js';
 import { SingleSelectScreen } from './single-select-screen.js';
+import type { AgentStrengthsEntry } from './agent-strengths-state.js';
 import type { KeyResult, Screen, TuiKey } from './screen.js';
 
 export interface AgentInventory {
   readonly agentIds: readonly string[];
   readonly knownIds: ReadonlySet<string>;
+  readonly agents?: readonly AgentStrengthsEntry[];
 }
 
 interface SingleFieldEntry {

@@ -28,6 +28,14 @@ import {
   AgentDefaultsState,
   applyAgentDefaultsState,
 } from './config-tui/agent-defaults-state.js';
+import {
+  AgentStrengthsListScreen,
+} from './config-tui/agent-strengths-screen.js';
+import {
+  AgentStrengthsState,
+  applyAgentStrengthsState,
+  type AgentStrengthsEntry,
+} from './config-tui/agent-strengths-state.js';
 import { CleanupScreen } from './config-tui/cleanup-screen.js';
 import {
   isPushResult,
@@ -167,6 +175,13 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults,
   );
   const agentDefaultsScreen = new AgentDefaultsScreen(agentDefaultsState, agentInventory);
+  const agentStrengthsState = new AgentStrengthsState(
+    agentInventory.agents ?? agentInventory.agentIds.map((name) => ({
+      name,
+      strengths: [],
+    })),
+  );
+  const agentStrengthsScreen = new AgentStrengthsListScreen(agentStrengthsState);
   const cleanupScreen = new CleanupScreen(state.cleanup);
   const rootScreen = createRootScreen({
     entries,
@@ -178,6 +193,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
         label: 'Agent defaults...',
         description: 'Configure default agents for iterate and panel workflows',
         onActivate: () => ({ push: agentDefaultsScreen }),
+      },
+      {
+        kind: 'action',
+        label: 'Agent strengths...',
+        description: 'Tune per-agent routing prose and strength tags',
+        onActivate: () => ({ push: agentStrengthsScreen }),
       },
       {
         kind: 'action',
@@ -206,15 +227,26 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays
     || current.cleanup.criteriaSetTtlDays !== state.cleanup.criteriaSetTtlDays;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
+  const agentStrengthsChanged = agentStrengthsState.hasChanges();
+  if (agentStrengthsChanged) {
+    try {
+      applyAgentStrengthsState(crewHome, agentStrengthsState);
+    } catch (err) {
+      stdout.write(
+        `\ncrew-mcp config: could not save agent strengths: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return 1;
+    }
+  }
   if (crewChanged) {
     writeConfigFile(crewHome, state);
   }
   if (agentDefaultsChanged) {
     applyAgentDefaultsState(cwd, agentDefaultsState);
   }
-  if (crewChanged && !agentDefaultsChanged) {
+  if (crewChanged && !agentDefaultsChanged && !agentStrengthsChanged) {
     stdout.write(`\ncrew-mcp config: saved to ${configPath}\n`);
-  } else if (crewChanged || agentDefaultsChanged) {
+  } else if (crewChanged || agentDefaultsChanged || agentStrengthsChanged) {
     stdout.write('\ncrew-mcp config: saved.\n');
   } else if (cleanupRequested === undefined) {
     stdout.write('\ncrew-mcp config: no changes.\n');
@@ -603,6 +635,11 @@ async function loadAgentInventory(args: {
       agent.name,
       ...(agent.aliases ?? []),
     ])),
+    agents: out.agents.map((agent) => ({
+      name: agent.name,
+      strengths: agent.strengths,
+      ...(agent.useWhen ? { useWhen: agent.useWhen } : {}),
+    })),
   });
 }
 
@@ -612,7 +649,11 @@ function normalizeInventory(inventory: AgentInventory): AgentInventory {
     ...agentIds,
     ...inventory.knownIds,
   ]));
-  return { agentIds, knownIds };
+  const agents = normalizeAgentStrengthEntries(inventory.agents ?? agentIds.map((name) => ({
+    name,
+    strengths: [],
+  })));
+  return { agentIds, knownIds, agents };
 }
 
 function isAgentDefaultsPath(path: string): boolean {
@@ -627,6 +668,26 @@ function uniqueStrings(values: Iterable<string>): string[] {
     if (trimmed.length === 0 || seen.has(trimmed)) continue;
     seen.add(trimmed);
     out.push(trimmed);
+  }
+  return out;
+}
+
+function normalizeAgentStrengthEntries(
+  entries: readonly AgentStrengthsEntry[],
+): AgentStrengthsEntry[] {
+  const seen = new Set<string>();
+  const out: AgentStrengthsEntry[] = [];
+  for (const entry of entries) {
+    const name = entry.name.trim();
+    if (name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    out.push({
+      name,
+      strengths: uniqueStrings(entry.strengths),
+      ...(entry.useWhen && entry.useWhen.trim().length > 0
+        ? { useWhen: entry.useWhen.trim() }
+        : {}),
+    });
   }
   return out;
 }

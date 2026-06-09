@@ -112,13 +112,20 @@ export interface AgentAdapter {
    * Soft routing hints surfaced via `list_agents`. NOT enforced anywhere
    * — the captain reads them as nudges ("good for code review", "fast
    * iteration") when picking between adapters. Free-form strings; users
-   * override per-machine via `~/.crew/strengths.json` (see
-   * src/strengths/store.ts), so adapter defaults are seeds, not contracts.
+   * override per-machine via `~/.crew/agents.json`, so adapter defaults
+   * are seeds, not contracts.
    *
    * Replaced the v1 `capabilities` enum (`implement|review|refactor|...`)
    * which every adapter declared identically and no code consumed.
    */
   readonly strengths: AgentStrength[];
+  /**
+   * Primary captain-facing routing hint surfaced via `list_agents`.
+   * `useWhen` is prose, not a filter: captains should prefer it over
+   * strengths when deciding which agent to dispatch, then use strengths
+   * as secondary tags. Users override per-machine via `~/.crew/agents.json`.
+   */
+  readonly useWhen?: string;
   /**
    * Default reasoning effort for dispatches to this adapter. Omitted when
    * the underlying CLI has no reasoning-effort knob (gemini-cli today,
@@ -203,8 +210,9 @@ export interface AgentAdapter {
  * supports — every modern coding agent can implement, review, refactor,
  * etc., so verb-tags carried no signal.
  *
- * No enum; any string is valid at runtime. Users tune per-machine via
- * `~/.crew/agents.json`.
+ * No enum; any string is valid at runtime. The curated vocabulary in
+ * `src/adapters/strengths.ts` is only the default picker/suggestion set.
+ * Users tune per-machine via `~/.crew/agents.json`.
  */
 export type AgentStrength = string;
 

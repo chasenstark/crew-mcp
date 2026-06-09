@@ -40,6 +40,7 @@ export interface GenericAdapterOptions {
   command: string;
   argsTemplate: string[];
   strengths: AgentStrength[];
+  useWhen?: string;
 }
 
 /**
@@ -62,6 +63,7 @@ export interface GenericAdapterOptions {
 export class GenericAdapter implements AgentAdapter {
   readonly name: string;
   readonly strengths: AgentStrength[];
+  readonly useWhen?: string;
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
   // Arbitrary CLI commands have no uniform terminal file-change reporting.
@@ -80,6 +82,7 @@ export class GenericAdapter implements AgentAdapter {
     this.command = options.command;
     this.argsTemplate = options.argsTemplate;
     this.strengths = options.strengths;
+    this.useWhen = options.useWhen;
   }
 
   /**

@@ -276,7 +276,11 @@ async function installGlobalCommand(opts: InstallOptions): Promise<InstallResult
     if (seeded) {
       logger.info(
         `crew install: seeded ${crewHome}/agents.json with adapter defaults. `
-        + 'Edit it (or run `crew agents edit`) to tune per-agent strengths/effort.',
+        + 'Edit it (or run `crew agents edit`) to tune per-agent useWhen/strengths/effort.',
+      );
+    } else {
+      logger.info(
+        `crew install: existing ${crewHome}/agents.json preserved; pre-existing strengths/useWhen reflect prior defaults until edited.`,
       );
     }
     logger.info(
@@ -359,7 +363,7 @@ async function installProjectCommand(opts: InstallOptions): Promise<InstallResul
 
 /**
  * Walk the built-in registry to capture each adapter's default
- * strengths + effort for the agents.json seed. The registry already
+ * useWhen + strengths + effort for the agents.json seed. The registry already
  * canonicalizes adapter names, so this is the right source for the
  * seeded keys (matches what list_agents emits).
  */
@@ -369,6 +373,7 @@ function collectAdapterDefaults(): AgentPrefsMap {
   for (const adapter of registry.listAvailable()) {
     defaults[adapter.name] = {
       strengths: [...adapter.strengths],
+      ...(adapter.useWhen ? { useWhen: adapter.useWhen } : {}),
       ...(adapter.defaultEffort ? { effort: adapter.defaultEffort } : {}),
     };
   }

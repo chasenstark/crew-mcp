@@ -228,7 +228,7 @@ crew-mcp uninstall --target all
 | `get_panel_status` | Check panel progress |
 | `get_run_status` | Check a single run's status |
 | `list_runs` | List all runs, optionally filtered by status |
-| `list_agents` | List available agents and their capabilities |
+| `list_agents` | List available agents with `useWhen`, strengths, defaults, and health |
 | `merge_run` | Apply a completed run's changes to your branch |
 | `continue_run` | Send follow-up instructions to a running agent |
 | `discard_run` | Discard a run's worktree and changes |
@@ -267,18 +267,25 @@ config for a given process.
 
 ## 👥 Managing agents
 
-Agents live in `~/.crew/agents.json`. Each carries `strengths`, a
-default `effort`, and a `model` — the captain reads these to route work
-when you don't name an agent explicitly.
+Agents live in `~/.crew/agents.json`. Each entry can carry `useWhen`
+primary routing prose, `strengths` secondary tags, a default `effort`,
+and a `model` — the captain reads these to route work when you don't
+name an agent explicitly.
 
 ```sh
-crew-mcp agents add      # register a model (interactive wizard)
-crew-mcp agents edit     # tune strengths / effort / model
+crew-mcp agents add      # register a model (interactive wizard, --use-when supported)
+crew-mcp agents edit     # tune useWhen / strengths / effort / model
 crew-mcp agents remove   # drop an agent
 ```
 
 The `add` wizard also discovers local models — see **🤖 Add local
 models** above.
+
+Built-in strength tags come from a curated vocabulary:
+`deep-reasoning`, `code-review`, `refactoring`, `technical-writing`,
+`fast-iteration`, `autonomous-loops`, `bulk-implementation`,
+`long-context`, `codebase-triage`, and `multimodal`. Custom tags remain
+valid; the curated list is only the default picker and seed set.
 
 ## 🔌 Supported hosts
 

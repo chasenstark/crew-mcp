@@ -157,6 +157,9 @@ describe('install / verify / uninstall — happy path', () => {
       expect(parsed.codex).toBeDefined();
       expect(parsed['gemini-cli']).toBeDefined();
       expect(parsed.codex.effort).toBe('medium');
+      expect(parsed.codex.useWhen).toBe(
+        'Prefer for well-scoped implementation and long unattended loops — fast at churning through mechanical changes.',
+      );
       // Comment field present for first-time users.
       expect(parsed._readme).toBeDefined();
     } finally {
@@ -184,6 +187,7 @@ describe('install / verify / uninstall — happy path', () => {
       });
       const parsed = JSON.parse(readFileSync(join(crewHome, 'agents.json'), 'utf-8'));
       expect(parsed.codex.strengths).toEqual(['user-edit']);
+      expect(parsed.codex.useWhen).toBeUndefined();
       // Other adapters NOT injected — install respects the user file shape.
       expect(parsed['claude-code']).toBeUndefined();
     } finally {

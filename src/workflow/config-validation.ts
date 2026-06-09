@@ -331,7 +331,7 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
           `agents.${name}.strengths`,
           'array of non-empty strings (free-form routing hints, e.g., code-review, fast-iteration)',
           agent.strengths,
-          `/config set agents.${name}.strengths code-review,documentation`,
+          `Edit agents.${name}.strengths in workflow.yaml or tune per-machine routing with crew-mcp agents edit`,
         ),
       );
     }

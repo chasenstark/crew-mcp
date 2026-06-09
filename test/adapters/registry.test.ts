@@ -5,6 +5,7 @@ import {
   createRegistryFromConfig,
   mergeCustomAgents,
 } from '../../src/adapters/registry.js';
+import { BUILTIN_AGENT_ROUTING } from '../../src/adapters/strengths.js';
 import { ModelId } from '../../src/workflow/models.js';
 import type { AgentAdapter } from '../../src/adapters/types.js';
 
@@ -19,6 +20,7 @@ describe('createRegistryFromConfig', () => {
         command: 'my-tool',
         args: ['--prompt', '{{prompt}}'],
         strengths: ['code-review', 'fast-iteration'],
+        useWhen: 'Use for shell-backed code review.',
       },
     });
 
@@ -30,6 +32,7 @@ describe('createRegistryFromConfig', () => {
     expect(custom?.name).toBe('custom');
     expect(custom?.strengths).toContain('code-review');
     expect(custom?.strengths).toContain('fast-iteration');
+    expect(custom?.useWhen).toBe('Use for shell-backed code review.');
   });
 
   it('omits built-in adapters that are not in the user config', () => {
@@ -61,6 +64,21 @@ describe('createRegistryFromConfig', () => {
     expect(local?.name).toBe('local');
   });
 
+  it('threads custom useWhen through lazy metadata and loaded concrete adapters', async () => {
+    const registry = createRegistryFromConfig({
+      custom: {
+        adapter: 'generic',
+        command: 'node',
+        strengths: ['scriptable'],
+        useWhen: 'Use for local scripted transforms.',
+      } as never,
+    });
+
+    expect(registry.get('custom')?.useWhen).toBe('Use for local scripted transforms.');
+    const [loaded] = await registry.loadAll();
+    expect(loaded.useWhen).toBe('Use for local scripted transforms.');
+  });
+
   it('throws when a generic adapter is missing command', () => {
     expect(() =>
       createRegistryFromConfig({
@@ -84,6 +102,20 @@ describe('createBuiltinRegistry', () => {
     expect(registry.get('claude-code')).toBeDefined();
     expect(registry.get('codex')).toBeDefined();
     expect(registry.get('gemini-cli')).toBeDefined();
+    expect(registry.get('claude-code')?.strengths).toEqual(
+      BUILTIN_AGENT_ROUTING['claude-code'].strengths,
+    );
+    expect(registry.get('claude-code')?.useWhen).toBe(
+      BUILTIN_AGENT_ROUTING['claude-code'].useWhen,
+    );
+    expect(registry.get('codex')?.strengths).toEqual(BUILTIN_AGENT_ROUTING.codex.strengths);
+    expect(registry.get('codex')?.useWhen).toBe(BUILTIN_AGENT_ROUTING.codex.useWhen);
+    expect(registry.get('gemini-cli')?.strengths).toEqual(
+      BUILTIN_AGENT_ROUTING['gemini-cli'].strengths,
+    );
+    expect(registry.get('gemini-cli')?.useWhen).toBe(
+      BUILTIN_AGENT_ROUTING['gemini-cli'].useWhen,
+    );
   });
 });
 
@@ -97,6 +129,7 @@ describe('mergeCustomAgents', () => {
         model: 'gemma4:latest',
         apiKey: 'ollama',
         strengths: ['local', 'private', 'fast-iteration'],
+        useWhen: 'Use for private local inference.',
       },
     });
 
@@ -104,6 +137,7 @@ describe('mergeCustomAgents', () => {
     const gemma4 = registry.get('gemma4');
     expect(gemma4).toBeDefined();
     expect(gemma4?.name).toBe('gemma4');
+    expect(gemma4?.useWhen).toBe('Use for private local inference.');
     expect(registry.listAvailable().map((adapter) => adapter.name)).toContain('gemma4');
   });
 

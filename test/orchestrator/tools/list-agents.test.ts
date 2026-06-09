@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { listAgents } from '../../../src/orchestrator/tools/list-agents.js';
+import { BUILTIN_AGENT_ROUTING } from '../../../src/adapters/strengths.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter } from '../../../src/adapters/types.js';
 
@@ -36,13 +37,18 @@ function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
 describe('listAgents', () => {
   it('surfaces every registered adapter with health info', async () => {
     const registry = makeRegistry([
-      makeAdapter({ name: 'codex', strengths: ['fast-iteration'] }),
+      makeAdapter({
+        name: 'codex',
+        strengths: [...BUILTIN_AGENT_ROUTING.codex.strengths],
+        useWhen: BUILTIN_AGENT_ROUTING.codex.useWhen,
+      }),
       makeAdapter({ name: 'claude-code', strengths: ['code-review'] }),
     ]);
     const out = await listAgents({ registry });
     expect(out.agents).toHaveLength(2);
     const byName = Object.fromEntries(out.agents.map((a) => [a.name, a]));
-    expect(byName.codex.strengths).toEqual(['fast-iteration']);
+    expect(byName.codex.strengths).toEqual(BUILTIN_AGENT_ROUTING.codex.strengths);
+    expect(byName.codex.useWhen).toBe(BUILTIN_AGENT_ROUTING.codex.useWhen);
     expect(byName.codex.available).toBe(true);
     expect(byName.codex.authenticated).toBe(true);
   });
@@ -163,6 +169,42 @@ describe('listAgents', () => {
       agentPrefs: { 'claude-code': { model: 'claude-opus-4-7' } },
     });
     expect(out.agents[0].model).toBe('claude-opus-4-7');
+  });
+
+  it('lets agents.json useWhen override adapter guidance', async () => {
+    const registry = makeRegistry([
+      makeAdapter({
+        name: 'codex',
+        strengths: ['fast-iteration'],
+        useWhen: 'Default routing guidance.',
+      }),
+    ]);
+    const out = await listAgents({
+      registry,
+      agentPrefs: {
+        codex: { useWhen: 'Use this Codex for quick implementation.' },
+      },
+    });
+    expect(out.agents[0].useWhen).toBe('Use this Codex for quick implementation.');
+  });
+
+  it('surfaces useWhen for a lazy-loaded custom agent', async () => {
+    const { createRegistryFromConfig } = await import('../../../src/adapters/registry.js');
+    const registry = createRegistryFromConfig({
+      shell: {
+        adapter: 'generic',
+        command: 'node',
+        strengths: ['scriptable'],
+        useWhen: 'Use for local scripted checks.',
+      } as never,
+    });
+
+    const out = await listAgents({ registry });
+    expect(out.agents[0]).toMatchObject({
+      name: 'shell',
+      strengths: ['scriptable'],
+      useWhen: 'Use for local scripted checks.',
+    });
   });
 
   it('omits model when no per-machine override exists', async () => {

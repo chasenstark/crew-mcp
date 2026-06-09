@@ -257,11 +257,12 @@ describe('config-service', () => {
     addAgent(cwd, 'local-gemma', { adapter: 'generic', command: 'ollama' });
 
     setConfigValue(cwd, 'agents.local-gemma.args', 'run,gemma4:latest,{{prompt}}');
-    setConfigValue(cwd, 'agents.local-gemma.strengths', 'code-review,fast-iteration');
 
     const projectConfig = loadConfigByScope('project', cwd);
     expect(projectConfig?.agents['local-gemma'].args).toEqual(['run', 'gemma4:latest', '{{prompt}}']);
-    expect(projectConfig?.agents['local-gemma'].strengths).toEqual(['code-review', 'fast-iteration']);
+    expect(() =>
+      setConfigValue(cwd, 'agents.local-gemma.strengths', 'code-review,fast-iteration'),
+    ).toThrow(/Unsupported config path/);
   });
 
   it('round-trips workflow agentDefaults through config set/show', () => {

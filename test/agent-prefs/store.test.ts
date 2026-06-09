@@ -42,13 +42,21 @@ describe('readAgentPrefsFile', () => {
       resolveAgentPrefsPath(crewHome),
       JSON.stringify({
         'claude-code': { strengths: ['code-review'], effort: 'medium' },
-        codex: { strengths: ['fast-iteration'], effort: 'high' },
+        codex: {
+          useWhen: 'Use for implementation.',
+          strengths: ['fast-iteration'],
+          effort: 'high',
+        },
       }),
       'utf-8',
     );
     expect(readAgentPrefsFile(crewHome)).toEqual({
       'claude-code': { strengths: ['code-review'], effort: 'medium' },
-      codex: { strengths: ['fast-iteration'], effort: 'high' },
+      codex: {
+        useWhen: 'Use for implementation.',
+        strengths: ['fast-iteration'],
+        effort: 'high',
+      },
     });
   });
 
@@ -119,6 +127,24 @@ describe('readAgentPrefsFile', () => {
       codex: { strengths: ['fast', 'autonomous'] },
     });
   });
+
+  it('drops an invalid useWhen value but keeps valid fields', () => {
+    writeFileSync(
+      resolveAgentPrefsPath(crewHome),
+      JSON.stringify({ codex: { useWhen: '   ', strengths: ['fast'] } }),
+      'utf-8',
+    );
+    expect(readAgentPrefsFile(crewHome)).toEqual({ codex: { strengths: ['fast'] } });
+  });
+
+  it('trims a valid useWhen value', () => {
+    writeFileSync(
+      resolveAgentPrefsPath(crewHome),
+      JSON.stringify({ codex: { useWhen: '  Use for edits.  ' } }),
+      'utf-8',
+    );
+    expect(readAgentPrefsFile(crewHome)).toEqual({ codex: { useWhen: 'Use for edits.' } });
+  });
 });
 
 describe('writeAgentPrefsFile', () => {
@@ -141,13 +167,21 @@ describe('writeAgentPrefsFile', () => {
 describe('seedAgentPrefsFile', () => {
   it('creates the file with defaults + a _readme on first install', () => {
     const wrote = seedAgentPrefsFile(crewHome, {
-      'claude-code': { strengths: ['careful-reasoning'], effort: 'medium' },
-      codex: { strengths: ['fast-iteration'], effort: 'medium' },
+      'claude-code': { strengths: ['deep-reasoning'], effort: 'medium' },
+      codex: {
+        useWhen: 'Use for implementation.',
+        strengths: ['fast-iteration'],
+        effort: 'medium',
+      },
     });
     expect(wrote).toBe(true);
     expect(readAgentPrefsFile(crewHome)).toEqual({
-      'claude-code': { strengths: ['careful-reasoning'], effort: 'medium' },
-      codex: { strengths: ['fast-iteration'], effort: 'medium' },
+      'claude-code': { strengths: ['deep-reasoning'], effort: 'medium' },
+      codex: {
+        useWhen: 'Use for implementation.',
+        strengths: ['fast-iteration'],
+        effort: 'medium',
+      },
     });
     // _readme should physically exist in the file (helps users editing it).
     const onDiskRaw = readFileSync(resolveAgentPrefsPath(crewHome), 'utf-8');
@@ -176,9 +210,9 @@ describe('effectiveAgentPrefs', () => {
       effectiveAgentPrefs(
         'codex',
         { strengths: ['default'], effort: 'medium' },
-        { codex: { strengths: ['user-pick'], effort: 'high' } },
+        { codex: { useWhen: 'Use for user work.', strengths: ['user-pick'], effort: 'high' } },
       ),
-    ).toEqual({ strengths: ['user-pick'], effort: 'high' });
+    ).toEqual({ useWhen: 'Use for user work.', strengths: ['user-pick'], effort: 'high' });
   });
 
   it('returns adapter defaults when no override exists', () => {
@@ -206,6 +240,20 @@ describe('effectiveAgentPrefs', () => {
         { codex: { strengths: [] } },
       ),
     ).toEqual({ strengths: [], effort: 'medium' });
+  });
+
+  it('merges per-field — override only useWhen, keep default strengths', () => {
+    expect(
+      effectiveAgentPrefs(
+        'codex',
+        {
+          useWhen: 'Adapter default.',
+          strengths: ['default'],
+          effort: 'medium',
+        },
+        { codex: { useWhen: 'User override.' } },
+      ),
+    ).toEqual({ useWhen: 'User override.', strengths: ['default'], effort: 'medium' });
   });
 });
 
