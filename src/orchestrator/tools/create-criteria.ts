@@ -10,7 +10,7 @@ import {
   type CriteriaSetStateV1,
   type CriterionV1,
 } from '../criteria/schema.js';
-import { renderCriteriaBlock } from '../criteria/render.js';
+import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock } from '../criteria/render.js';
 import {
   criteriaDir,
   ensureCriteriaRoot,
@@ -26,7 +26,7 @@ export const createCriteriaInputSchema = z.object({
 export type CreateCriteriaInput = z.infer<typeof createCriteriaInputSchema>;
 
 export const CREATE_CRITERIA_DESCRIPTION =
-  'Create a proposed acceptance-criteria set for this repo. Criteria get stable ids and render as a user-reviewable block; confirm_criteria must approve the set before dispatch can use criteria_set_id enforcement.';
+  'Create a proposed acceptance-criteria set for this repo. Criteria get stable ids and render as a user-reviewable markdown table (rendered_block) that you must reprint verbatim in chat — the user cannot see collapsed tool results. confirm_criteria must approve the set before dispatch can use criteria_set_id enforcement.';
 
 export interface CreateCriteriaOutput {
   readonly criteria_set_id: string;
@@ -34,6 +34,7 @@ export interface CreateCriteriaOutput {
   readonly epoch: number;
   readonly warnings?: readonly string[];
   readonly rendered_block: string;
+  readonly display_hint: string;
 }
 
 export interface CreateCriteriaContext {
@@ -96,6 +97,7 @@ export function createCriteriaHandler(
     epoch: state.epoch,
     ...(warnings.length > 0 ? { warnings } : {}),
     rendered_block: renderCriteriaBlock(state, { audience: 'user' }),
+    display_hint: CRITERIA_DISPLAY_HINT,
   };
 }
 

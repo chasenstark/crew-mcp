@@ -6,7 +6,7 @@ import {
   criteriaEditOpsSchema,
   type CriteriaSetStateV1,
 } from '../criteria/schema.js';
-import { renderCriteriaBlock } from '../criteria/render.js';
+import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock } from '../criteria/render.js';
 import { withCriteriaLock } from '../criteria/lock.js';
 import {
   criteriaDir,
@@ -26,13 +26,14 @@ export const reviseCriteriaInputSchema = z.object({
 export type ReviseCriteriaInput = z.infer<typeof reviseCriteriaInputSchema>;
 
 export const REVISE_CRITERIA_DESCRIPTION =
-  'Revise a criteria set with id-based edits. This snapshots the prior epoch, bumps epoch, returns the set to proposed, and clears Phase-2 review state until confirm_criteria reconfirms it.';
+  'Revise a criteria set with id-based edits. This snapshots the prior epoch, bumps epoch, returns the set to proposed, and clears Phase-2 review state until confirm_criteria reconfirms it. Reprint the returned rendered_block table verbatim in chat — the user cannot see collapsed tool results.';
 
 export interface ReviseCriteriaOutput {
   readonly criteria_set_id: string;
   readonly status: 'proposed';
   readonly epoch: number;
   readonly rendered_block: string;
+  readonly display_hint: string;
 }
 
 export interface ReviseCriteriaContext {
@@ -99,6 +100,7 @@ export async function reviseCriteriaHandler(
         status: 'proposed',
         epoch: next.epoch,
         rendered_block: renderCriteriaBlock(next, { audience: 'user' }),
+        display_hint: CRITERIA_DISPLAY_HINT,
       };
     },
   );

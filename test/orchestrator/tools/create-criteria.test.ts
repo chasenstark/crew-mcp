@@ -42,7 +42,8 @@ describe('createCriteriaHandler', () => {
         'criteria.mechanical_missing_signal: c1',
       ],
     });
-    expect(out.rendered_block).toContain('1. **Tests green** [M]');
+    expect(out.rendered_block).toContain('| 1 | **Tests green** | [M] |');
+    expect(out.display_hint).toContain('Reprint rendered_block verbatim');
     expect(readCriteriaState(criteriaDir(crewHome, 'criteria-1'))?.criteria).toMatchObject([
       { id: 'c1', title: 'Tests green' },
     ]);

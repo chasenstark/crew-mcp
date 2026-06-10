@@ -48,14 +48,11 @@ function state(): CriteriaSetStateV1 {
 describe('renderCriteriaBlock', () => {
   it('renders user and contract audiences with stable tags and sub-bullets', () => {
     expect(renderCriteriaBlock(state(), { audience: 'user' })).toMatchInlineSnapshot(`
-      "1. **Tests and lint green** [M]
-         npm run test:run and npm run lint exit 0
-      2. **Contract is non-droppable** [B]
-         - criteria contract is prepended before peer messages
-         - stored contract bypasses prompt truncation
-         Signal: run-state prompt record
-      3. **No umbrella regression** [N]
-         dispatch without criteria_set_id is unchanged"
+      "| # | Criterion | Type | Detail | Signal |
+      | --- | --- | --- | --- | --- |
+      | 1 | **Tests and lint green** | [M] | npm run test:run and npm run lint exit 0 | — |
+      | 2 | **Contract is non-droppable** | [B] | criteria contract is prepended before peer messages; stored contract bypasses prompt truncation | run-state prompt record |
+      | 3 | **No umbrella regression** | [N] | dispatch without criteria_set_id is unchanged | — |"
     `);
     expect(renderCriteriaBlock(state(), { audience: 'contract' })).toMatchInlineSnapshot(`
       "Acceptance Criteria Contract

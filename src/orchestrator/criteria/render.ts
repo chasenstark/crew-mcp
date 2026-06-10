@@ -1,14 +1,19 @@
 import type { CriteriaSetStateV1, CriterionType, CriterionV1 } from './schema.js';
 
+// Hosts (Claude Code included) render MCP tool results collapsed, so a
+// rendered_block that only lives in the tool result is invisible to the user.
+export const CRITERIA_DISPLAY_HINT =
+  'The user cannot see this tool result — hosts collapse MCP output. Reprint rendered_block verbatim as normal chat text (it is a GFM markdown table) before asking the user anything about these criteria.';
+
 export function renderCriteriaBlock(
   state: CriteriaSetStateV1,
   options: { readonly audience: 'user' | 'contract' },
 ): string {
+  if (options.audience === 'user') {
+    return renderUserTable(state.criteria);
+  }
   const body = state.criteria.map((criterion, index) =>
     renderCriterion(criterion, index + 1)).join('\n');
-  if (options.audience === 'user') {
-    return body;
-  }
   return [
     'Acceptance Criteria Contract',
     `criteria_set_id: ${state.criteriaSetId}`,
@@ -16,6 +21,29 @@ export function renderCriteriaBlock(
     '',
     body,
   ].join('\n');
+}
+
+function renderUserTable(criteria: readonly CriterionV1[]): string {
+  const rows = criteria.map((criterion, index) => {
+    const detail = criterion.detail ?? criterion.subCriteria?.join('; ') ?? '';
+    return [
+      String(index + 1),
+      `**${tableCell(criterion.title)}**`,
+      `[${tagForType(criterion.type)}]`,
+      tableCell(detail) || '—',
+      tableCell(criterion.signal ?? '') || '—',
+    ];
+  });
+  return [
+    '| # | Criterion | Type | Detail | Signal |',
+    '| --- | --- | --- | --- | --- |',
+    ...rows.map((cells) => `| ${cells.join(' | ')} |`),
+  ].join('\n');
+}
+
+// GFM table cells cannot hold raw pipes or newlines.
+function tableCell(text: string): string {
+  return text.replaceAll('|', '\\|').replaceAll(/\s*\n\s*/g, ' ').trim();
 }
 
 function renderCriterion(criterion: CriterionV1, number: number): string {

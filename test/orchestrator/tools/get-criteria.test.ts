@@ -36,7 +36,7 @@ describe('getCriteriaHandler', () => {
     expect(out.criteria_set_id).toBe('criteria-1');
     expect(out.state.criteriaSetId).toBe('criteria-1');
     expect(out.state.criteria[0].id).toBe('c1');
-    expect(out.rendered_block).toContain('**Tests green** [M]');
+    expect(out.rendered_block).toContain('| 1 | **Tests green** | [M] |');
   });
 
   it('returns criteria.unknown when absent', () => {

@@ -5,7 +5,7 @@ import {
   criteriaEditOpsSchema,
   type CriteriaSetStateV1,
 } from '../criteria/schema.js';
-import { renderCriteriaBlock } from '../criteria/render.js';
+import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock } from '../criteria/render.js';
 import { withCriteriaLock } from '../criteria/lock.js';
 import {
   criteriaDir,
@@ -31,6 +31,7 @@ export interface ConfirmCriteriaOutput {
   readonly status: 'confirmed';
   readonly epoch: number;
   readonly rendered_block: string;
+  readonly display_hint: string;
 }
 
 export interface ConfirmCriteriaContext {
@@ -89,6 +90,7 @@ function outputFor(state: CriteriaSetStateV1): ConfirmCriteriaOutput {
     status: 'confirmed',
     epoch: state.epoch,
     rendered_block: renderCriteriaBlock(state, { audience: 'user' }),
+    display_hint: CRITERIA_DISPLAY_HINT,
   };
 }
 
