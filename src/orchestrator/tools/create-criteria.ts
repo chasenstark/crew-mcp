@@ -10,14 +10,14 @@ import {
   type CriteriaSetStateV1,
   type CriterionV1,
 } from '../criteria/schema.js';
-import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock } from '../criteria/render.js';
+import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock, renderCriteriaToolText } from '../criteria/render.js';
 import {
   criteriaDir,
   ensureCriteriaRoot,
   writeCriteriaStateAtomic,
 } from '../criteria/store.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { errorContent, jsonContent } from './shared.js';
+import { errorContent, markdownContent } from './shared.js';
 
 export const createCriteriaInputSchema = z.object({
   criteria: z.array(criterionInputSchema).min(1),
@@ -26,7 +26,7 @@ export const createCriteriaInputSchema = z.object({
 export type CreateCriteriaInput = z.infer<typeof createCriteriaInputSchema>;
 
 export const CREATE_CRITERIA_DESCRIPTION =
-  'Create a proposed acceptance-criteria set for this repo. Criteria get stable ids and render as a user-reviewable markdown table (rendered_block) that you must reprint verbatim in chat — the user cannot see collapsed tool results. confirm_criteria must approve the set before dispatch can use criteria_set_id enforcement.';
+  'Create a proposed acceptance-criteria set for this repo. Criteria get stable ids and the tool result text is ready-to-reprint markdown: display hint, blank line, then the user-reviewable GFM table. Reprint that table verbatim in chat before asking the user anything. confirm_criteria must approve the set before dispatch can use criteria_set_id enforcement.';
 
 export interface CreateCriteriaOutput {
   readonly criteria_set_id: string;
@@ -53,7 +53,7 @@ export function createCriteriaToolHandler(
       crewHome: deps.crewHome,
       repoRoot: deps.runStateStore.repoRoot,
     });
-    return jsonContent(out);
+    return markdownContent(renderCriteriaToolText(out), out);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }

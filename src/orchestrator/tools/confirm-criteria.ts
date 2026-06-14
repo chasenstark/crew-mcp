@@ -5,7 +5,7 @@ import {
   criteriaEditOpsSchema,
   type CriteriaSetStateV1,
 } from '../criteria/schema.js';
-import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock } from '../criteria/render.js';
+import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock, renderCriteriaToolText } from '../criteria/render.js';
 import { withCriteriaLock } from '../criteria/lock.js';
 import {
   criteriaDir,
@@ -14,7 +14,7 @@ import {
   writeCriteriaStateAtomic,
 } from '../criteria/store.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { errorContent, jsonContent } from './shared.js';
+import { errorContent, markdownContent } from './shared.js';
 
 export const confirmCriteriaInputSchema = z.object({
   criteria_set_id: z.string().min(1),
@@ -24,7 +24,7 @@ export const confirmCriteriaInputSchema = z.object({
 export type ConfirmCriteriaInput = z.infer<typeof confirmCriteriaInputSchema>;
 
 export const CONFIRM_CRITERIA_DESCRIPTION =
-  'Confirm a proposed criteria set, optionally applying id-based edits first. Dispatch tools refuse criteria_set_id until the set is confirmed; repeated confirm with no edits is a no-op.';
+  'Confirm a proposed criteria set, optionally applying id-based edits first. The tool result text is ready-to-reprint markdown: display hint, blank line, then the GFM table. Dispatch tools refuse criteria_set_id until the set is confirmed; repeated confirm with no edits is a no-op.';
 
 export interface ConfirmCriteriaOutput {
   readonly criteria_set_id: string;
@@ -47,7 +47,7 @@ export async function confirmCriteriaToolHandler(
     const out = await confirmCriteriaHandler(args, {
       crewHome: deps.crewHome,
     });
-    return jsonContent(out);
+    return markdownContent(renderCriteriaToolText(out), out);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }

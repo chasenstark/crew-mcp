@@ -10,7 +10,20 @@ import {
 } from '../../../src/orchestrator/criteria/store.js';
 import { confirmCriteriaHandler } from '../../../src/orchestrator/tools/confirm-criteria.js';
 import { createCriteriaHandler } from '../../../src/orchestrator/tools/create-criteria.js';
-import { reviseCriteriaHandler } from '../../../src/orchestrator/tools/revise-criteria.js';
+import {
+  reviseCriteriaHandler,
+  reviseCriteriaToolHandler,
+} from '../../../src/orchestrator/tools/revise-criteria.js';
+import type { ToolCallReturn } from '../../../src/orchestrator/tools/shared.js';
+
+function expectCriteriaToolMarkdown(out: ToolCallReturn): void {
+  expect(out.content[0].text).toMatch(/^The user cannot see this tool result/);
+  expect(out.content[0].text).toContain('\n\n| # | Criterion | Type | Detail | Signal |');
+  expect(out.content[0].text).not.toMatch(/^\{/);
+  expect(() => JSON.parse(out.content[0].text)).toThrow();
+  expect(out.structuredContent.rendered_block).toContain('| # | Criterion | Type | Detail | Signal |');
+  expect(out.structuredContent.display_hint).toContain('Reprint rendered_block verbatim');
+}
 
 const initialCriteria = [
   {
@@ -104,6 +117,22 @@ describe('reviseCriteriaHandler', () => {
     ]);
     expect(state?.rounds).toBeUndefined();
     expect(state?.naDecisions).toBeUndefined();
+  });
+
+  it('returns markdown text while preserving structured fields for tool calls', async () => {
+    const out = await reviseCriteriaToolHandler({
+      criteria_set_id: 'criteria-1',
+      ops: {
+        update: [{ id: 'c2', title: 'Confirmed contract enforced' }],
+      },
+    }, {
+      crewHome,
+    });
+
+    expectCriteriaToolMarkdown(out);
+    expect(out.structuredContent.criteria_set_id).toBe('criteria-1');
+    expect(out.structuredContent.status).toBe('proposed');
+    expect(out.structuredContent.epoch).toBe(1);
   });
 
   it('rejects duplicate ids as criteria.invalid', async () => {

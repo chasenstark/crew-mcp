@@ -85,6 +85,25 @@ describe('crew-captain body — review panel agent picks', () => {
 });
 
 describe('crew-captain body — structured-question gates', () => {
+  it('describes criteria tool markdown results and the pre-question table reprint gate', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '## Criteria tool display',
+      '## Dispatch-vs-inline',
+    );
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'create_criteria');
+    expectContainsCI(flat, 'confirm_criteria');
+    expectContainsCI(flat, 'revise_criteria');
+    expectContainsCI(flat, 'return chat-readable markdown as the tool result text');
+    expectContainsCI(flat, 'display hint');
+    expectContainsCI(flat, 'GFM criteria table');
+    expectContainsCI(flat, 'Reprint that table verbatim as normal chat before invoking AskUserQuestion');
+    expectContainsCI(flat, 'Do not treat these results as raw JSON');
+  });
+
   it('routes dispatch-vs-inline and same-host decisions through structured questions', async () => {
     const body = await loadBody();
     const section = sliceBetween(

@@ -210,13 +210,14 @@ the source of truth. Use them in this order:
    structured item: `title`, `type` (`mechanical`, `behavioral`, or
    `negative`), exactly one of `detail` or `subCriteria`, and `signal`
    for `[M]` criteria when there is a concrete command or assertion.
-2. Reprint the returned `rendered_block` verbatim **as normal chat
-   text in your reply** — it is a GFM markdown table. Hosts collapse
-   MCP tool results (in Claude Code it sits folded under the MCP
-   line), so the user never sees the tool output itself; if you skip
-   the reprint, you are asking the user to confirm criteria they
-   cannot read. Print the table before invoking AskUserQuestion, and
-   do not hand-format a parallel criteria list.
+2. Reprint the criteria table from the returned tool-result text
+   verbatim **as normal chat text in your reply**. The result text
+   already leads with a display hint, then a blank line, then the GFM
+   markdown table. Hosts collapse MCP tool results (in Claude Code it
+   sits folded under the MCP line), so the user never sees the tool
+   output itself; if you skip the reprint, you are asking the user to
+   confirm criteria they cannot read. Print the table before invoking
+   AskUserQuestion, and do not hand-format a parallel criteria list.
 3. Use the host's structured-question tool (AskUserQuestion on Claude
    Code) to present Confirm / Edit / Add options and capture the choice
    when available; Edit and Add must allow free-text details. If the
@@ -283,8 +284,9 @@ reveals a criterion is malformed or impossible:
 3. After explicit approval, call
    `revise_criteria({criteria_set_id, ops, note})`. This bumps
    `epoch`, returns `status: "proposed"`, snapshots the old epoch, and
-   clears prior review state. Reprint the returned `rendered_block`
-   table as chat text (the user cannot see the collapsed tool result).
+   clears prior review state. Reprint the table from the returned
+   markdown tool-result text as chat before invoking AskUserQuestion
+   for reconfirmation (the user cannot see the collapsed tool result).
 4. Require explicit re-confirmation with `confirm_criteria` before any
    new dispatch. The next round re-scores the FULL revised list.
 5. **Start a new loop epoch.** The revised criteria define a fresh

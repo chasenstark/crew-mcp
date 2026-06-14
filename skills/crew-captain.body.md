@@ -33,6 +33,18 @@ worktree allocation and run-state tracking, leaving the user in a
 state where
 `merge_run` / `discard_run` can't find the run.
 
+## Criteria tool display
+
+When the criteria-store tools are present, `create_criteria`,
+`confirm_criteria`, and `revise_criteria` return chat-readable
+markdown as the tool result text: first a display hint, then a blank
+line, then the GFM criteria table. Reprint that table verbatim as
+normal chat before invoking AskUserQuestion or asking the user to
+confirm criteria. Do not treat these results as raw JSON hidden under
+the MCP fold. `get_criteria` is different: use its `rendered_block`
+field when you need to inline criteria into a host-native subagent
+prompt.
+
 ## Dispatch-vs-inline — the load-bearing decision
 
 Most asks should not be dispatched. A dispatch costs ~30–60s of

@@ -5,7 +5,11 @@ import {
   criteriaValidationWarnings,
   type CriteriaSetStateV1,
 } from '../../../src/orchestrator/criteria/schema.js';
-import { renderCriteriaBlock } from '../../../src/orchestrator/criteria/render.js';
+import {
+  CRITERIA_DISPLAY_HINT,
+  renderCriteriaBlock,
+  renderCriteriaToolText,
+} from '../../../src/orchestrator/criteria/render.js';
 
 function state(): CriteriaSetStateV1 {
   return {
@@ -74,5 +78,16 @@ describe('renderCriteriaBlock', () => {
     expect(criteriaValidationWarnings(state().criteria)).toEqual([
       'criteria.mechanical_missing_signal: c1',
     ]);
+  });
+});
+
+describe('renderCriteriaToolText', () => {
+  it('renders the display hint first, then a blank line, then the user table', () => {
+    const renderedBlock = renderCriteriaBlock(state(), { audience: 'user' });
+
+    expect(renderCriteriaToolText({
+      display_hint: CRITERIA_DISPLAY_HINT,
+      rendered_block: renderedBlock,
+    })).toBe(`${CRITERIA_DISPLAY_HINT}\n\n${renderedBlock}`);
   });
 });

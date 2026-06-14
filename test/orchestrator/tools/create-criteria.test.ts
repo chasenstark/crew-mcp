@@ -4,7 +4,20 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readCriteriaState, criteriaDir } from '../../../src/orchestrator/criteria/store.js';
-import { createCriteriaHandler } from '../../../src/orchestrator/tools/create-criteria.js';
+import {
+  createCriteriaHandler,
+  createCriteriaToolHandler,
+} from '../../../src/orchestrator/tools/create-criteria.js';
+import type { ToolHandlerDeps } from '../../../src/orchestrator/tools/shared.js';
+
+function expectCriteriaToolMarkdown(out: Awaited<ReturnType<typeof createCriteriaToolHandler>>): void {
+  expect(out.content[0].text).toMatch(/^The user cannot see this tool result/);
+  expect(out.content[0].text).toContain('\n\n| # | Criterion | Type | Detail | Signal |');
+  expect(out.content[0].text).not.toMatch(/^\{/);
+  expect(() => JSON.parse(out.content[0].text)).toThrow();
+  expect(out.structuredContent.rendered_block).toContain('| # | Criterion | Type | Detail | Signal |');
+  expect(out.structuredContent.display_hint).toContain('Reprint rendered_block verbatim');
+}
 
 describe('createCriteriaHandler', () => {
   let crewHome: string;
@@ -47,6 +60,26 @@ describe('createCriteriaHandler', () => {
     expect(readCriteriaState(criteriaDir(crewHome, 'criteria-1'))?.criteria).toMatchObject([
       { id: 'c1', title: 'Tests green' },
     ]);
+  });
+
+  it('returns markdown text while preserving structured fields for tool calls', () => {
+    const out = createCriteriaToolHandler({
+      criteria: [
+        {
+          title: 'Tests green',
+          type: 'mechanical',
+          detail: 'npm run test:run exits 0',
+          signal: 'test output',
+        },
+      ],
+    }, {
+      crewHome,
+      runStateStore: { repoRoot: '/repo' } as ToolHandlerDeps['runStateStore'],
+    });
+
+    expectCriteriaToolMarkdown(out);
+    expect(out.structuredContent.criteria_set_id).toMatch(/^criteria-/);
+    expect(out.structuredContent.status).toBe('proposed');
   });
 
   it('rejects criteria without detail or subCriteria', () => {

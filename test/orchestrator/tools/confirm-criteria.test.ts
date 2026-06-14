@@ -4,8 +4,21 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { criteriaDir, readCriteriaState } from '../../../src/orchestrator/criteria/store.js';
-import { confirmCriteriaHandler } from '../../../src/orchestrator/tools/confirm-criteria.js';
+import {
+  confirmCriteriaHandler,
+  confirmCriteriaToolHandler,
+} from '../../../src/orchestrator/tools/confirm-criteria.js';
 import { createCriteriaHandler } from '../../../src/orchestrator/tools/create-criteria.js';
+import type { ToolCallReturn } from '../../../src/orchestrator/tools/shared.js';
+
+function expectCriteriaToolMarkdown(out: ToolCallReturn): void {
+  expect(out.content[0].text).toMatch(/^The user cannot see this tool result/);
+  expect(out.content[0].text).toContain('\n\n| # | Criterion | Type | Detail | Signal |');
+  expect(out.content[0].text).not.toMatch(/^\{/);
+  expect(() => JSON.parse(out.content[0].text)).toThrow();
+  expect(out.structuredContent.rendered_block).toContain('| # | Criterion | Type | Detail | Signal |');
+  expect(out.structuredContent.display_hint).toContain('Reprint rendered_block verbatim');
+}
 
 const initialCriteria = [
   {
@@ -61,6 +74,18 @@ describe('confirmCriteriaHandler', () => {
     expect(first.status).toBe('confirmed');
     expect(second).toEqual(first);
     expect(readCriteriaState(criteriaDir(crewHome, 'criteria-1'))).toEqual(before);
+  });
+
+  it('returns markdown text while preserving structured fields for tool calls', async () => {
+    const out = await confirmCriteriaToolHandler({
+      criteria_set_id: 'criteria-1',
+    }, {
+      crewHome,
+    });
+
+    expectCriteriaToolMarkdown(out);
+    expect(out.structuredContent.criteria_set_id).toBe('criteria-1');
+    expect(out.structuredContent.status).toBe('confirmed');
   });
 
   it('applies add, update, removeIds, and order in id-aware sequence', async () => {

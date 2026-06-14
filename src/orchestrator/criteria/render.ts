@@ -5,6 +5,19 @@ import type { CriteriaSetStateV1, CriterionType, CriterionV1 } from './schema.js
 export const CRITERIA_DISPLAY_HINT =
   'The user cannot see this tool result — hosts collapse MCP output. Reprint rendered_block verbatim as normal chat text (it is a GFM markdown table) before asking the user anything about these criteria.';
 
+export interface CriteriaToolRenderable {
+  readonly rendered_block: string;
+  readonly display_hint: string;
+}
+
+export function renderCriteriaToolText(output: CriteriaToolRenderable): string {
+  return [
+    output.display_hint,
+    '',
+    output.rendered_block,
+  ].join('\n');
+}
+
 export function renderCriteriaBlock(
   state: CriteriaSetStateV1,
   options: { readonly audience: 'user' | 'contract' },

@@ -267,9 +267,12 @@ describe('crew-iterate body — criteria-store adoption', () => {
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const step0 = body.slice(start, end);
+    const flatStep0 = flattenWhitespace(step0);
 
     expect(step0).toContain('create_criteria({criteria})');
-    expect(step0).toContain('rendered_block');
+    expect(step0).toContain('returned tool-result text');
+    expectContainsCI(flatStep0, 'GFM markdown table');
+    expectContainsCI(flatStep0, 'Print the table before invoking AskUserQuestion');
     expect(step0).toContain('confirm_criteria({criteria_set_id})');
     expect(step0).toContain('confirm_criteria({criteria_set_id, ops})');
     expect(step0).toContain('CriteriaEditOps');

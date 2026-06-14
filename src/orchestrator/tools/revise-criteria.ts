@@ -6,7 +6,7 @@ import {
   criteriaEditOpsSchema,
   type CriteriaSetStateV1,
 } from '../criteria/schema.js';
-import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock } from '../criteria/render.js';
+import { CRITERIA_DISPLAY_HINT, renderCriteriaBlock, renderCriteriaToolText } from '../criteria/render.js';
 import { withCriteriaLock } from '../criteria/lock.js';
 import {
   criteriaDir,
@@ -15,7 +15,7 @@ import {
   writeCriteriaStateAtomic,
 } from '../criteria/store.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { errorContent, jsonContent } from './shared.js';
+import { errorContent, markdownContent } from './shared.js';
 
 export const reviseCriteriaInputSchema = z.object({
   criteria_set_id: z.string().min(1),
@@ -26,7 +26,7 @@ export const reviseCriteriaInputSchema = z.object({
 export type ReviseCriteriaInput = z.infer<typeof reviseCriteriaInputSchema>;
 
 export const REVISE_CRITERIA_DESCRIPTION =
-  'Revise a criteria set with id-based edits. This snapshots the prior epoch, bumps epoch, returns the set to proposed, and clears Phase-2 review state until confirm_criteria reconfirms it. Reprint the returned rendered_block table verbatim in chat — the user cannot see collapsed tool results.';
+  'Revise a criteria set with id-based edits. This snapshots the prior epoch, bumps epoch, returns the set to proposed, and clears Phase-2 review state until confirm_criteria reconfirms it. The tool result text is ready-to-reprint markdown: display hint, blank line, then the GFM table. Reprint that table verbatim in chat before asking the user anything.';
 
 export interface ReviseCriteriaOutput {
   readonly criteria_set_id: string;
@@ -49,7 +49,7 @@ export async function reviseCriteriaToolHandler(
     const out = await reviseCriteriaHandler(args, {
       crewHome: deps.crewHome,
     });
-    return jsonContent(out);
+    return markdownContent(renderCriteriaToolText(out), out);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
