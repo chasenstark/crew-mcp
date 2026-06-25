@@ -7,7 +7,7 @@ import type { ToolDispatcher } from './tool-dispatcher.js';
 
 export type DispatchTerminal =
   | { kind: 'complete'; result: TaskResult }
-  | { kind: 'failed'; error: string }
+  | { kind: 'failed'; error: string; result?: TaskResult }
   | { kind: 'cancelled'; reason: string };
 
 const pendingTerminalPersists = new Set<Promise<void>>();
@@ -79,7 +79,11 @@ export function installRunLifecycleListeners(args: {
       }),
       args.dispatcher.onEvent('run:failed', (info) => {
         if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'failed', error: info.error });
+        onTerminal({
+          kind: 'failed',
+          error: info.error,
+          result: info.result as TaskResult | undefined,
+        });
       }),
       args.dispatcher.onEvent('run:cancelled', (info) => {
         if (info.toolCallId !== args.toolCallId) return;
@@ -163,7 +167,8 @@ async function persistTerminal(
     state = await args.runStateStore.markTerminal(args.runId, {
       status: 'error',
       summary: terminal.error,
-      filesChanged: [],
+      filesChanged: terminal.result?.filesModified ?? [],
+      warnings: terminal.result?.warnings,
       lastError: terminal.error,
     });
   } else {

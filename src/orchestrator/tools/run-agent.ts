@@ -498,62 +498,84 @@ export function buildAdapterDispatchTask(args: {
         onOutput: taskCtx.onStream,
       });
 
-      if (result.status === 'error') return result;
-      const resultWithDispatchWarnings =
-        args.dispatchWarnings && args.dispatchWarnings.length > 0
-          ? { ...result, warnings: [...(result.warnings ?? []), ...args.dispatchWarnings] }
-          : result;
-
-      if (args.readOnly) {
-        // Best-effort: detect contract violations (the agent edited
-        // despite being told not to) and surface as a warning. Never
-        // fail the dispatch on probe errors — the run completed; the
-        // probe is purely advisory.
-        //
-        // Compares bounded content signatures against the pre-dispatch
-        // snapshot, so pre-existing host-repo dirt is ignored unless
-        // the agent changes that already-dirty file during the run.
-        try {
-          const dirtyAfter = await detectDirtyTree(args.effectiveWorkingDirectory);
-          const before = dirtyBefore ?? new Map<string, string>();
-          const after = await capturePathSignatureSnapshot(args.effectiveWorkingDirectory, dirtyAfter);
-          const changed = dirtyAfter.filter((path) => before.get(path) !== after.get(path));
-          if (changed.length === 0) return resultWithDispatchWarnings;
-          const warning =
-            `Read-only run produced uncommitted changes in ${args.effectiveWorkingDirectory}: ` +
-            `${changed.join(', ')}. Review with \`git status\` in that directory.`;
-          const existing = Array.isArray(resultWithDispatchWarnings.warnings)
-            ? resultWithDispatchWarnings.warnings
-            : [];
-          return { ...resultWithDispatchWarnings, warnings: [warning, ...existing] };
-        } catch {
-          return resultWithDispatchWarnings;
-        }
-      }
-
-      // v2: enrich filesModified from worktree status when the adapter ran
-      // inside its dedicated worktree AND the run didn't error, unless the
-      // adapter declares its terminal `filesModified` list authoritative. We
-      // do NOT merge — host CLI does that explicitly via merge_run.
-      if (args.effectiveWorkingDirectory !== args.worktreePath) {
-        return resultWithDispatchWarnings;
-      }
-      try {
-        const fromWorktree = await args.worktreeManager.getModifiedFilesByRun(args.runId);
-        const before = args.branchPointBefore ?? new Map<string, string>();
-        const after = await capturePathSignatureSnapshot(args.worktreePath, fromWorktree);
-        const changedSinceDispatch = fromWorktree.filter((path) => before.get(path) !== after.get(path));
-        if (changedSinceDispatch.length === 0) return resultWithDispatchWarnings;
-        const merged = Array.from(
-          new Set([...resultWithDispatchWarnings.filesModified, ...changedSinceDispatch].filter((f) => f.trim().length > 0)),
-        );
-        return { ...resultWithDispatchWarnings, filesModified: merged };
-      } catch {
-        // Probing the worktree shouldn't fail the dispatch.
-        return resultWithDispatchWarnings;
-      }
+      return finalizeAdapterResult({
+        result,
+        dirtyBefore,
+        readOnly: args.readOnly,
+        dispatchWarnings: args.dispatchWarnings,
+        effectiveWorkingDirectory: args.effectiveWorkingDirectory,
+        worktreePath: args.worktreePath,
+        branchPointBefore: args.branchPointBefore,
+        worktreeManager: args.worktreeManager,
+        runId: args.runId,
+      });
     },
   };
+}
+
+async function finalizeAdapterResult(args: {
+  readonly result: TaskResult;
+  readonly dirtyBefore: ReadonlyMap<string, string> | undefined;
+  readonly readOnly: boolean | undefined;
+  readonly dispatchWarnings: readonly string[] | undefined;
+  readonly effectiveWorkingDirectory: string;
+  readonly worktreePath: string;
+  readonly branchPointBefore: ReadonlyMap<string, string> | undefined;
+  readonly worktreeManager: WorktreeManager;
+  readonly runId: string;
+}): Promise<TaskResult> {
+  const resultWithDispatchWarnings =
+    args.dispatchWarnings && args.dispatchWarnings.length > 0
+      ? { ...args.result, warnings: [...(args.result.warnings ?? []), ...args.dispatchWarnings] }
+      : args.result;
+
+  if (args.readOnly) {
+    // Best-effort: detect contract violations (the agent edited
+    // despite being told not to) and surface as a warning. Never
+    // fail the dispatch on probe errors — the run completed; the
+    // probe is purely advisory.
+    //
+    // Compares bounded content signatures against the pre-dispatch
+    // snapshot, so pre-existing host-repo dirt is ignored unless
+    // the agent changes that already-dirty file during the run.
+    try {
+      const dirtyAfter = await detectDirtyTree(args.effectiveWorkingDirectory);
+      const before = args.dirtyBefore ?? new Map<string, string>();
+      const after = await capturePathSignatureSnapshot(args.effectiveWorkingDirectory, dirtyAfter);
+      const changed = dirtyAfter.filter((path) => before.get(path) !== after.get(path));
+      if (changed.length === 0) return resultWithDispatchWarnings;
+      const warning =
+        `Read-only run produced uncommitted changes in ${args.effectiveWorkingDirectory}: ` +
+        `${changed.join(', ')}. Review with \`git status\` in that directory.`;
+      const existing = Array.isArray(resultWithDispatchWarnings.warnings)
+        ? resultWithDispatchWarnings.warnings
+        : [];
+      return { ...resultWithDispatchWarnings, warnings: [warning, ...existing] };
+    } catch {
+      return resultWithDispatchWarnings;
+    }
+  }
+
+  // v2: enrich filesModified from worktree status when the adapter ran
+  // inside its dedicated worktree. We do NOT merge — host CLI does that
+  // explicitly via merge_run.
+  if (args.effectiveWorkingDirectory !== args.worktreePath) {
+    return resultWithDispatchWarnings;
+  }
+  try {
+    const fromWorktree = await args.worktreeManager.getModifiedFilesByRun(args.runId);
+    const before = args.branchPointBefore ?? new Map<string, string>();
+    const after = await capturePathSignatureSnapshot(args.worktreePath, fromWorktree);
+    const changedSinceDispatch = fromWorktree.filter((path) => before.get(path) !== after.get(path));
+    if (changedSinceDispatch.length === 0) return resultWithDispatchWarnings;
+    const merged = Array.from(
+      new Set([...resultWithDispatchWarnings.filesModified, ...changedSinceDispatch].filter((f) => f.trim().length > 0)),
+    );
+    return { ...resultWithDispatchWarnings, filesModified: merged };
+  } catch {
+    // Probing the worktree shouldn't fail the dispatch.
+    return resultWithDispatchWarnings;
+  }
 }
 
 export function readOnlyAdvisoryWarning(adapterName: string): string {

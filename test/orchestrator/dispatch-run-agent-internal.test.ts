@@ -382,6 +382,59 @@ describe('dispatchRunAgentInternal', () => {
     expect(state?.filesChanged).toEqual(['changed.ts']);
   });
 
+  it('persists enriched filesChanged for adapter-returned errors but not thrown failures', async () => {
+    const returnedErrorAdapter = makeMockAdapter({
+      name: 'returns-error',
+      execute: async (task) => {
+        writeFileSync(join(task.context.workingDirectory, 'adapter-reported.ts'), 'reported\n', 'utf-8');
+        writeFileSync(join(task.context.workingDirectory, 'worktree-discovered.ts'), 'discovered\n', 'utf-8');
+        return {
+          output: 'quota stopped',
+          filesModified: ['adapter-reported.ts'],
+          status: 'error',
+          warnings: ['adapter quota warning'],
+          metadata: {},
+        };
+      },
+    });
+    const thrownErrorAdapter = makeMockAdapter({
+      name: 'throws-error',
+      execute: async (task) => {
+        writeFileSync(join(task.context.workingDirectory, 'thrown-edited.ts'), 'edited\n', 'utf-8');
+        throw new Error('process crashed');
+      },
+    });
+    const h = makeHarness([returnedErrorAdapter, thrownErrorAdapter]);
+    cleanups.push(h.cleanup);
+
+    const returned = await dispatchRunAgentInternal({
+      input: { agent_id: 'returns-error', prompt: 'touch files then stop' },
+      ctx: h.ctx,
+    });
+    await waitFor(() => h.runStateStore.read(returned.runId)?.status === 'error');
+
+    const returnedState = h.runStateStore.read(returned.runId);
+    expect(returnedState?.lastError).toBe('quota stopped');
+    expect(returnedState?.prompts.at(-1)?.summary).toBe('quota stopped');
+    expect(returnedState?.filesChanged.slice().sort()).toEqual([
+      'adapter-reported.ts',
+      'worktree-discovered.ts',
+    ]);
+    expect(returnedState?.warnings).toEqual(['adapter quota warning']);
+
+    const thrown = await dispatchRunAgentInternal({
+      input: { agent_id: 'throws-error', prompt: 'throw after touching files' },
+      ctx: h.ctx,
+    });
+    await waitFor(() => h.runStateStore.read(thrown.runId)?.status === 'error');
+
+    const thrownState = h.runStateStore.read(thrown.runId);
+    expect(thrownState?.lastError).toBe('process crashed');
+    expect(thrownState?.prompts.at(-1)?.summary).toBe('process crashed');
+    expect(thrownState?.filesChanged).toEqual([]);
+    expect(thrownState?.warnings).toBeUndefined();
+  });
+
   it('injects confirmed criteria ahead of peer messages and stores contract metadata untruncated', async () => {
     const restore = withEnv({ CREW_PROMPT_STORAGE_CAP_CHARS: '24' });
     try {
