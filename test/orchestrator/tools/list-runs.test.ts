@@ -145,6 +145,32 @@ describe('listRuns', () => {
     ]);
   });
 
+  it('projects typed failure when present', () => {
+    writeState({
+      runId: 'run-failure',
+      status: 'error',
+      repoRoot,
+      completedAt: iso(4),
+      lastError: 'rate limited',
+      failure: {
+        kind: 'rate_limited',
+        confidence: 'high',
+        providerCode: '429',
+        recommendation: 'backoff',
+      },
+    });
+
+    const out = listRuns({}, { crewHome, repoRoot });
+
+    expect(out.runs[0]).toMatchObject({
+      run_id: 'run-failure',
+      failure: {
+        kind: 'rate_limited',
+        recommendation: 'backoff',
+      },
+    });
+  });
+
   it('resolves the current repoRoot once per call regardless of matching record count', () => {
     const resolvedRepoRoot = realpathSync(repoRoot);
     writeState({ runId: 'run-1', status: 'running', repoRoot: resolvedRepoRoot });
@@ -242,6 +268,7 @@ describe('listRuns', () => {
     completedAt?: string;
     lastError?: string;
     promptSummary?: string;
+    failure?: RunStateV1['failure'];
   }): void {
     const startedAt = args.startedAt ?? iso(0);
     const state: RunStateV1 = {
@@ -264,6 +291,7 @@ describe('listRuns', () => {
       ],
       filesChanged: [],
       ...(args.lastError ? { lastError: args.lastError } : {}),
+      ...(args.failure ? { failure: args.failure } : {}),
     };
     const dir = join(crewHome, 'runs', args.runId);
     mkdirSync(dir, { recursive: true });

@@ -521,6 +521,33 @@ describe('CodexAdapter', () => {
       expect(result.output).toContain('Authentication failed');
     });
 
+    it('classifies provider-coded parsed quota error events', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          JSON.stringify({
+            type: 'error',
+            message: 'Request failed with provider code insufficient_quota',
+            code: 'insufficient_quota',
+          }),
+        ].join('\n'),
+        stderr: '',
+        exitCode: 1,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.failure).toMatchObject({
+        kind: 'quota_exhausted',
+        confidence: 'high',
+        providerCode: 'insufficient_quota',
+        recommendation: 'reroute',
+      });
+    });
+
     it('treats non-object JSONL lines as dropped instead of events', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: [
@@ -560,6 +587,26 @@ describe('CodexAdapter', () => {
 
       expect(result.status).toBe('error');
       expect(result.output).toContain('Some error');
+    });
+
+    it('classifies stderr-only quota failures with low confidence', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: '',
+        stderr: 'insufficient_quota: monthly quota exhausted',
+        exitCode: 1,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.failure).toMatchObject({
+        kind: 'quota_exhausted',
+        confidence: 'low',
+        recommendation: 'reroute',
+      });
     });
 
     it('returns error when codex exits nonzero after emitting parseable JSONL', async () => {

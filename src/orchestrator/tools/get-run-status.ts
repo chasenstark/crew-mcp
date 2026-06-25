@@ -182,6 +182,7 @@ interface GetRunStatusResponse {
   readonly events_tail: readonly string[];
   readonly next_event_line: number;
   readonly timed_out?: true;
+  readonly failure?: RunStateV1['failure'];
   readonly [key: string]: unknown;
   readonly events_tail_skipped?: number;
   readonly log_tail?: readonly string[];
@@ -254,6 +255,7 @@ function buildGetRunStatusResponse(
     prompts: projectedPrompts,
     ...(lastSummary !== undefined ? { summary: lastSummary } : {}),
     ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
+    ...(state.failure !== undefined ? { failure: state.failure } : {}),
     ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
     ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
     ...(state.readOnly ? { readOnly: state.readOnly } : {}),

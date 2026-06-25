@@ -41,6 +41,7 @@ import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
+import type { TaskFailure } from '../adapters/types.js';
 import { filterEventsTailNoise } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
 import { writeRunReceipt } from './receipts.js';
@@ -132,6 +133,7 @@ export interface RunStateV1 {
   readonly prompts: readonly PromptRecord[];
   readonly filesChanged: readonly string[];
   readonly lastError?: string;
+  readonly failure?: TaskFailure;
   readonly mergeStatus?: MergeStatus;
   /**
    * Advisory messages from the dispatch layer that aren't part of the
@@ -519,6 +521,7 @@ export class RunStateStore {
         // get_run_status payload, list_runs summary, and run.json receipt, so
         // clearing it here is the single source-of-truth fix.
         lastError: undefined,
+        failure: undefined,
         serverPid: process.pid,
         ...(options.criteriaSetId !== undefined
           ? { criteriaSetId: options.criteriaSetId, criteriaEpoch: options.criteriaEpoch }
@@ -576,6 +579,7 @@ export class RunStateStore {
       summary: string;
       filesChanged: readonly string[];
       lastError?: string;
+      failure?: TaskFailure;
       /**
        * Advisory messages (e.g., read-only dirty-tree probe). Merged
        * with any pre-existing warnings on the state — warnings
@@ -612,6 +616,7 @@ export class RunStateStore {
         prompts,
         filesChanged: Array.from(new Set([...s.filesChanged, ...args.filesChanged])),
         lastError: args.lastError ?? s.lastError,
+        failure: args.failure,
         ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     });

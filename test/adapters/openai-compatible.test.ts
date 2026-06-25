@@ -35,6 +35,63 @@ describe('OpenAiCompatibleAdapter', () => {
     expect(body.messages).toEqual([{ role: 'user', content: composedPrompt }]);
   });
 
+  it('returns a typed rate-limit failure for HTTP 429', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null) },
+      text: async () => 'rate limit reached',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+
+    const result = await adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure).toMatchObject({
+      kind: 'rate_limited',
+      confidence: 'high',
+      providerCode: '429',
+      retryAfterSeconds: 30,
+      recommendation: 'backoff',
+    });
+  });
+
+  it('returns a typed transient failure for HTTP 503', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      headers: { get: () => null },
+      text: async () => 'service unavailable',
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+
+    const result = await adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure).toMatchObject({
+      kind: 'transient',
+      confidence: 'high',
+      providerCode: '503',
+      recommendation: 'backoff',
+    });
+  });
+
   it('adds a synthetic assistant tool_calls message before synthetic tool results', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({

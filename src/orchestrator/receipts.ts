@@ -18,9 +18,8 @@
  * receipt is an additive convenience, never load-bearing, so a write failure
  * is logged but never propagated into the run's terminal transition.
  *
- * A future error-taxonomy enum (see `docs/plans/active/competitive-analysis-mco-cao.md` §5.6)
- * will add an `error_kind` field here; today `run.json` carries the raw
- * `error` message and the semantic `status` only.
+ * `failure.kind`, when present, is the canonical machine-readable error
+ * taxonomy. `error` remains the raw terminal message for humans and logs.
  */
 
 import { mkdirSync } from 'node:fs';
@@ -29,6 +28,7 @@ import { join } from 'node:path';
 import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
+import type { TaskFailure } from '../adapters/types.js';
 import type { RunStateV1, RunStatus } from './run-state.js';
 
 export const RUN_RECEIPT_FILENAME = 'run.json';
@@ -66,6 +66,8 @@ export interface RunReceiptV1 {
     | null;
   /** Raw terminal error message, if the run failed. */
   readonly error: string | null;
+  /** Typed terminal failure classification, if the adapter provided one. */
+  readonly failure: TaskFailure | null;
   readonly warnings: readonly string[];
 }
 
@@ -108,6 +110,7 @@ export function buildRunReceipt(state: RunStateV1): RunReceiptV1 {
         }
       : null,
     error: state.lastError ?? null,
+    failure: state.failure ?? null,
     warnings: state.warnings ?? [],
   };
 }

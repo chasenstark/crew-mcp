@@ -11,6 +11,7 @@ import type {
   HealthCheckOptions,
   HealthCheckResult,
   Task,
+  TaskFailure,
   TaskResult,
   ToolCall,
   ToolLoopContext,
@@ -28,6 +29,11 @@ import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
 } from './process-group.js';
+import {
+  buildTaskFailure,
+  classifyHttpFailure,
+  classifyTextFailure,
+} from './failure-classifier.js';
 import {
   parseToolInput,
   ToolLoopDecisionSchema,
@@ -50,6 +56,10 @@ const ClaudeResponseSchema = z.object({
   duration_ms: z.number().optional(),
   num_turns: z.number().optional(),
   is_error: z.boolean().optional(),
+  terminal_reason: z.string().optional(),
+  api_error_status: z.union([z.number(), z.string()]).optional(),
+  api_error_message: z.string().optional(),
+  rate_limit_info: z.unknown().optional(),
 });
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
@@ -223,6 +233,94 @@ function extractStreamEnvelope(stdout: string): ClaudeResponse | undefined {
     session_id: sessionId,
     is_error: true,
   };
+}
+
+function classifyClaudeFailure(
+  parsed: ClaudeResponse | undefined,
+  stdoutText: string,
+  stderrText: string,
+): TaskFailure {
+  const apiStatus = numericStatus(parsed?.api_error_status);
+  const body = [
+    parsed?.terminal_reason,
+    parsed?.api_error_message,
+    parsed?.result,
+    stderrText,
+  ].filter((part): part is string => typeof part === 'string' && part.trim().length > 0).join('\n');
+  if (apiStatus !== undefined) {
+    return classifyHttpFailure({
+      status: apiStatus,
+      body,
+      providerCode: String(apiStatus),
+    });
+  }
+
+  const parsedRateLimit = classifyClaudeRateLimitPayload(parsed?.rate_limit_info);
+  if (parsedRateLimit) return parsedRateLimit;
+
+  const streamRateLimit = classifyClaudeRateLimitEvent(stdoutText);
+  if (streamRateLimit) return streamRateLimit;
+
+  return classifyTextFailure(body, { defaultKind: 'unknown' });
+}
+
+function classifyClaudeRateLimitEvent(stdoutText: string): TaskFailure | undefined {
+  if (!stdoutText) return undefined;
+  const lines = stdoutText.split('\n').map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.type !== 'rate_limit_event') continue;
+      const failure = classifyClaudeRateLimitPayload(event.rate_limit_info);
+      if (failure) return failure;
+    } catch {
+      // Ignore non-JSON progress lines.
+    }
+  }
+  return undefined;
+}
+
+function classifyClaudeRateLimitPayload(payload: unknown): TaskFailure | undefined {
+  const info = asObject(payload);
+  if (Object.keys(info).length === 0) return undefined;
+  const status = typeof info.status === 'string' ? info.status : undefined;
+  if (status && /^allowed$/i.test(status)) return undefined;
+  const rawSignal = compactJson(info);
+  const resetAt = resetAtFromEpochSeconds(
+    getNumericField(info, ['resetsAt', 'resetAt', 'reset_at', 'overageResetsAt']),
+  );
+  return buildTaskFailure({
+    kind: /quota|exhaust|exceed/i.test(rawSignal) ? 'quota_exhausted' : 'rate_limited',
+    confidence: 'high',
+    providerCode: [
+      typeof info.rateLimitType === 'string' ? info.rateLimitType : undefined,
+      status,
+    ].filter(Boolean).join(':') || 'rate_limit_event',
+    rawSignal,
+    resetAt,
+  });
+}
+
+function numericStatus(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+function resetAtFromEpochSeconds(value: number | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const ms = value > 10_000_000_000 ? value : value * 1000;
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function compactJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**
@@ -542,6 +640,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         filesModified: [],
         status: 'error',
         sessionId: partialEnvelope?.session_id,
+        failure: classifyTextFailure(
+          [message, partialStdout, partialStderr].filter(Boolean).join('\n'),
+          { defaultKind: 'process' },
+        ),
         metadata: {
           rawEvents: [{
             error: message,
@@ -570,6 +672,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         output: stderrText || 'Claude CLI exited with no output',
         filesModified: [],
         status: 'error',
+        failure: classifyTextFailure(
+          stderrText || `Claude CLI exited with code ${result.exitCode} and no output`,
+          { defaultKind: 'process' },
+        ),
         metadata: {
           rawEvents: [
             {
@@ -606,6 +712,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         output: stdoutText || 'Failed to parse Claude response',
         filesModified: [],
         status: 'error',
+        failure: classifyTextFailure(
+          [parseError, stdoutText, stderrText].filter(Boolean).join('\n'),
+          { defaultKind: 'unknown' },
+        ),
         metadata: {
           rawEvents: [
             {
@@ -624,6 +734,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       filesModified,
       status: parsed.is_error ? 'error' : 'success',
       sessionId: parsed.session_id,
+      ...(parsed.is_error
+        ? { failure: classifyClaudeFailure(parsed, stdoutText, stderrText) }
+        : {}),
       metadata: {
         costUsd: parsed.total_cost_usd ?? parsed.cost_usd,
         durationMs: parsed.duration_ms,

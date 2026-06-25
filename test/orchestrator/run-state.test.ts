@@ -363,24 +363,34 @@ describe('RunStateStore', () => {
       summary: 'boom',
       filesChanged: [],
       lastError: 'turn-1 failure',
+      failure: {
+        kind: 'rate_limited',
+        confidence: 'high',
+        providerCode: '429',
+        recommendation: 'backoff',
+      },
     });
     expect(store.read('r-recover')?.lastError).toBe('turn-1 failure');
+    expect(store.read('r-recover')?.failure).toMatchObject({ kind: 'rate_limited' });
 
     // Recover: continue the run, which succeeds with no new error.
     await store.appendPrompt('r-recover', { userPrompt: 'try again' });
     expect(store.read('r-recover')?.lastError).toBeUndefined();
+    expect(store.read('r-recover')?.failure).toBeUndefined();
     await store.markTerminal('r-recover', { status: 'success', summary: 'fixed', filesChanged: ['a.ts'] });
 
     const final = store.read('r-recover');
     expect(final?.status).toBe('success');
     expect(final?.lastError).toBeUndefined();
+    expect(final?.failure).toBeUndefined();
 
     // The receipt must not carry the stale error either.
     const receipt = JSON.parse(
       readFileSync(join(store.runDir('r-recover'), 'run.json'), 'utf-8'),
-    ) as { status: string; error: string | null };
+    ) as { status: string; error: string | null; failure: unknown };
     expect(receipt.status).toBe('success');
     expect(receipt.error).toBeNull();
+    expect(receipt.failure).toBeNull();
   });
 
   it('create() omits peer_messages_input when no initial peer messages are provided', async () => {

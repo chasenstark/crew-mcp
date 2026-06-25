@@ -46,6 +46,8 @@ import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
 } from './process-group.js';
+import { classifyTextFailure } from './failure-classifier.js';
+import type { TaskFailure } from './types.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -314,6 +316,30 @@ export function findError(events: CodexEvent[]): string | undefined {
   return undefined;
 }
 
+function classifyCodexFailure(events: CodexEvent[]): TaskFailure | undefined {
+  for (const event of events) {
+    if (event.type !== 'error' && event.type !== 'turn.failed') continue;
+    const message = event.type === 'error' ? event.message : event.reason;
+    const providerCode = codexProviderCode(event);
+    return classifyTextFailure(
+      [message, providerCode].filter((part): part is string => typeof part === 'string').join('\n'),
+      {
+        defaultKind: 'unknown',
+        ...(providerCode ? { providerCode, confidence: 'high' } : {}),
+      },
+    );
+  }
+  return undefined;
+}
+
+function codexProviderCode(event: CodexEvent): string | undefined {
+  for (const key of ['code', 'error_code', 'errorCode', 'reason_code', 'reasonCode']) {
+    const value = event[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
 export class CodexAdapter implements AgentAdapter {
   readonly name = AgentId.CODEX;
   // Soft routing hints; users override via ~/.crew/agents.json.
@@ -515,6 +541,7 @@ export class CodexAdapter implements AgentAdapter {
           output: '',
           filesModified: [],
           status: 'error',
+          failure: classifyTextFailure(message, { defaultKind: 'process' }),
           metadata: {
             rawEvents: [{ error: message }],
           },
@@ -538,6 +565,10 @@ export class CodexAdapter implements AgentAdapter {
             `Codex command failed with exit code ${result.exitCode} and no JSONL output`,
           filesModified: [],
           status: 'error',
+          failure: classifyTextFailure(
+            result.stderr || `Codex command failed with exit code ${result.exitCode} and no JSONL output`,
+            { defaultKind: 'process' },
+          ),
           metadata: {
             rawEvents: [
               {
@@ -564,6 +595,7 @@ export class CodexAdapter implements AgentAdapter {
           output: 'Failed to parse any events from Codex JSONL output',
           filesModified: [],
           status: 'error',
+          failure: classifyTextFailure(result.stdout, { defaultKind: 'unknown' }),
           metadata: {
             rawEvents: [],
             droppedLines,
@@ -582,6 +614,8 @@ export class CodexAdapter implements AgentAdapter {
           output: errorMessage,
           filesModified: [],
           status: 'error',
+          failure: classifyCodexFailure(events)
+            ?? classifyTextFailure(errorMessage, { defaultKind: 'unknown' }),
           metadata: {
             rawEvents: events,
             droppedLines,
@@ -622,6 +656,10 @@ export class CodexAdapter implements AgentAdapter {
             || `Codex command failed with exit code ${result.exitCode}`,
           filesModified,
           status: 'error',
+          failure: classifyTextFailure(
+            result.stderr || output || `Codex command failed with exit code ${result.exitCode}`,
+            { defaultKind: 'process' },
+          ),
           metadata: {
             rawEvents: events,
             droppedLines,

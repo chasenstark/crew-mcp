@@ -26,6 +26,7 @@ import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
 } from './process-group.js';
+import { classifyTextFailure } from './failure-classifier.js';
 import {
   assertArgvPromptWithinLimit,
 } from './prompt-transport.js';
@@ -475,6 +476,10 @@ export class GeminiCliAdapter implements AgentAdapter {
           output: renderProcessFailureOutput(stdoutText, stderrText, message),
           filesModified: [],
           status: 'error',
+          failure: classifyTextFailure(
+            [message, stdoutText, stderrText].filter(Boolean).join('\n'),
+            { defaultKind: 'process' },
+          ),
           metadata: {
             rawEvents: [
               {
@@ -497,6 +502,15 @@ export class GeminiCliAdapter implements AgentAdapter {
         output: output || stderrText,
         filesModified: [],
         status: result.exitCode === 0 ? 'success' : 'error',
+        ...(result.exitCode === 0
+          ? {}
+          : {
+              failure: classifyTextFailure(
+                [stdoutText, stderrText].filter(Boolean).join('\n')
+                  || `gemini exited with code ${result.exitCode}`,
+                { defaultKind: 'process' },
+              ),
+            }),
         metadata: {
           rawEvents: [{ stdout: stdoutText, stderr: stderrText }],
         },

@@ -78,6 +78,60 @@ describe('installRunLifecycleListeners', () => {
     expect(state?.lastError).toBeUndefined();
   });
 
+  it('persists typed failure from failed task results', async () => {
+    await store.create({
+      runId: 'r-failure',
+      agentId: 'mock',
+      worktreePath: '/wt',
+      initialPrompt: 'go',
+    });
+
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore: store,
+      runId: 'r-failure',
+      agentName: 'mock',
+      toolCallId: 'tc-failure',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+
+    emitter.emitter.emit('run:failed', {
+      toolCallId: 'tc-failure',
+      toolName: 'run_agent',
+      error: 'rate limited',
+      result: {
+        status: 'error',
+        output: 'rate limited',
+        filesModified: ['a.ts'],
+        failure: {
+          kind: 'rate_limited',
+          confidence: 'high',
+          providerCode: '429',
+          recommendation: 'backoff',
+        },
+        metadata: {},
+      },
+      runId: 'r-failure',
+    });
+
+    await expect(terminal).resolves.toMatchObject({ kind: 'failed' });
+    await waitFor(() => store.read('r-failure')?.status === 'error');
+
+    expect(store.read('r-failure')).toMatchObject({
+      status: 'error',
+      filesChanged: ['a.ts'],
+      lastError: 'rate limited',
+      failure: {
+        kind: 'rate_limited',
+        recommendation: 'backoff',
+      },
+    });
+  });
+
   it('tracks detached terminal persist promises until they settle', async () => {
     let resolvePersist!: () => void;
     const persistPromise = new Promise<void>((resolve) => {

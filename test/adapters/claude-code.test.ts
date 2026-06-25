@@ -199,6 +199,35 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.metadata.costUsd).toBe(0.003);
     });
 
+    it('classifies provider-coded rate-limit errors', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          subtype: 'error',
+          is_error: true,
+          result: 'too many requests',
+          session_id: 'session-rate-limit',
+          api_error_status: 429,
+          terminal_reason: 'rate_limited',
+        }),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.failure).toMatchObject({
+        kind: 'rate_limited',
+        confidence: 'high',
+        providerCode: '429',
+        recommendation: 'backoff',
+      });
+    });
+
     it('handles CLI crash with empty stdout and non-zero exit', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: '',

@@ -74,6 +74,12 @@ describe('buildRunReceipt', () => {
         status: 'merged',
         readOnly: true,
         lastError: 'boom',
+        failure: {
+          kind: 'auth',
+          confidence: 'high',
+          providerCode: '401',
+          recommendation: 'ask_user',
+        },
         warnings: ['edited despite read_only'],
         mergeStatus: { target: 'main', commitSha: 'abc123' },
       }),
@@ -81,6 +87,10 @@ describe('buildRunReceipt', () => {
     expect(receipt.status).toBe('merged');
     expect(receipt.readOnly).toBe(true);
     expect(receipt.error).toBe('boom');
+    expect(receipt.failure).toMatchObject({
+      kind: 'auth',
+      recommendation: 'ask_user',
+    });
     expect(receipt.warnings).toEqual(['edited despite read_only']);
     expect(receipt.merge).toEqual({ target: 'main', commitSha: 'abc123' });
   });

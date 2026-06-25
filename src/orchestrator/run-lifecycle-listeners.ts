@@ -162,6 +162,7 @@ async function persistTerminal(
       summary: terminal.result.output,
       filesChanged: terminal.result.filesModified,
       warnings: terminal.result.warnings,
+      failure: terminal.result.status === 'error' ? terminal.result.failure : undefined,
     });
   } else if (terminal.kind === 'failed') {
     state = await args.runStateStore.markTerminal(args.runId, {
@@ -170,6 +171,7 @@ async function persistTerminal(
       filesChanged: terminal.result?.filesModified ?? [],
       warnings: terminal.result?.warnings,
       lastError: terminal.error,
+      failure: terminal.result?.failure,
     });
   } else {
     state = await args.runStateStore.markTerminal(args.runId, {

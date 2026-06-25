@@ -467,6 +467,7 @@ export function renderGetRunStatusMarkdown(
     readonly next_event_line?: unknown;
     readonly filesChanged?: unknown;
     readonly summary?: unknown;
+    readonly failure?: unknown;
     readonly events_tail_skipped?: unknown;
   },
 ): string {
@@ -499,6 +500,10 @@ export function renderGetRunStatusMarkdown(
   if (typeof payload.summary === 'string') {
     lines.push(`> ${truncateMarkdownSummary(payload.summary, 200)}`);
   }
+  const failure = renderFailureSummary(payload.failure);
+  if (failure) {
+    lines.push(failure);
+  }
   if (
     typeof payload.events_tail_skipped === 'number'
     && payload.events_tail_skipped > 0
@@ -506,6 +511,16 @@ export function renderGetRunStatusMarkdown(
     lines.push(`${payload.events_tail_skipped} events skipped`);
   }
   return lines.join('\n');
+}
+
+function renderFailureSummary(failure: unknown): string | undefined {
+  if (!failure || typeof failure !== 'object') return undefined;
+  const record = failure as { kind?: unknown; recommendation?: unknown };
+  if (typeof record.kind !== 'string' || !record.kind) return undefined;
+  const recommendation = typeof record.recommendation === 'string' && record.recommendation
+    ? ` (${record.recommendation})`
+    : '';
+  return `Failure: \`${record.kind}\`${recommendation}`;
 }
 
 function truncateMarkdownSummary(summary: string, maxChars: number): string {

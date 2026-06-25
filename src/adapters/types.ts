@@ -358,6 +358,7 @@ export interface TaskResult {
   filesModified: string[];
   status: 'success' | 'error' | 'partial';
   sessionId?: string;
+  failure?: TaskFailure;
   /**
    * Advisory messages attached by the dispatch layer (not the
    * adapter itself). Today's only producer is the read-only run
@@ -373,6 +374,16 @@ export interface TaskResult {
     rawEvents?: unknown[];
     droppedLines?: number;
   };
+}
+
+export interface TaskFailure {
+  kind: 'quota_exhausted' | 'rate_limited' | 'auth' | 'transient' | 'process' | 'unknown';
+  confidence: 'high' | 'low';
+  providerCode?: string;
+  retryAfterSeconds?: number;
+  resetAt?: string;
+  rawSignal?: string;
+  recommendation?: 'reroute' | 'backoff' | 'downgrade' | 'ask_user';
 }
 
 export interface HealthCheckResult {

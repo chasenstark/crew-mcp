@@ -264,6 +264,64 @@ describe('GeminiCliAdapter', () => {
     expect(result.status).toBe('error');
   });
 
+  it('classifies quota failures from stdout or stderr', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: JSON.stringify({ type: 'result', content: 'RESOURCE_EXHAUSTED: quota exceeded' }),
+      stderr: '',
+      exitCode: 1,
+    } as any);
+
+    const result = await adapter.execute({
+      prompt: 'test',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure).toMatchObject({
+      kind: 'quota_exhausted',
+      confidence: 'low',
+      recommendation: 'reroute',
+    });
+  });
+
+  it('classifies IneligibleTierError as auth', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: '',
+      stderr: 'IneligibleTierError: This model is no longer supported in Antigravity.',
+      exitCode: 1,
+    } as any);
+
+    const result = await adapter.execute({
+      prompt: 'test',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure).toMatchObject({
+      kind: 'auth',
+      providerCode: 'IneligibleTierError',
+      recommendation: 'ask_user',
+    });
+  });
+
+  it('does not classify blank no-output failures as quota or rate limit', async () => {
+    mockExeca.mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exitCode: 1,
+    } as any);
+
+    const result = await adapter.execute({
+      prompt: 'test',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure?.kind).toBe('process');
+    expect(result.failure?.kind).not.toBe('quota_exhausted');
+    expect(result.failure?.kind).not.toBe('rate_limited');
+  });
+
   it('delivers the composed prompt via stdin, not argv', async () => {
     const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
     mockExeca.mockResolvedValueOnce({

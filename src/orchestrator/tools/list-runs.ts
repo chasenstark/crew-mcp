@@ -49,7 +49,7 @@ export const listRunsInputSchema = z.object({
 export type ListRunsInput = z.infer<typeof listRunsInputSchema>;
 
 export const LIST_RUNS_DESCRIPTION =
-  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, status, startedAt, completedAt, worktreePath, and latest summary/error.';
+  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, status, startedAt, completedAt, worktreePath, latest summary/error, and typed failure when present.';
 
 export interface ListRunsEntry {
   readonly run_id: string;
@@ -59,6 +59,7 @@ export interface ListRunsEntry {
   readonly completedAt?: string;
   readonly worktreePath: string;
   readonly summary?: string;
+  readonly failure?: RunStateV1['failure'];
 }
 
 export interface ListRunsOutput {
@@ -151,6 +152,7 @@ export function listRuns(
       ...(state.completedAt ? { completedAt: state.completedAt } : {}),
       worktreePath: state.worktreePath,
       ...summaryField(state),
+      ...(state.failure !== undefined ? { failure: state.failure } : {}),
     })),
   };
 }

@@ -5,6 +5,7 @@ import { ModelId } from '../workflow/models.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
 import { parseToolInput, ToolLoopDecisionSchema } from './tool-loop/decision.js';
 import { resolveTerminalOutput } from './tool-loop/result.js';
+import { classifyHttpFailure, classifyTextFailure } from './failure-classifier.js';
 import type {
   AgentAdapter,
   AgentStrength,
@@ -19,6 +20,16 @@ import type {
   ToolLoopResult,
   ToolResult,
 } from './types.js';
+
+class OpenAiCompatibleHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string,
+    readonly retryAfterSeconds?: number,
+  ) {
+    super(`OpenAI-compatible request failed (${status}): ${body}`);
+  }
+}
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -76,12 +87,36 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
-    const response = await this.chatCompletion({
-      model: task.constraints?.model ?? this.defaultModel,
-      messages: [{ role: 'user', content: task.prompt }],
-      timeoutMs: task.constraints?.timeout,
-      signal: task.constraints?.signal,
-    });
+    let response: any;
+    try {
+      response = await this.chatCompletion({
+        model: task.constraints?.model ?? this.defaultModel,
+        messages: [{ role: 'user', content: task.prompt }],
+        timeoutMs: task.constraints?.timeout,
+        signal: task.constraints?.signal,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        output: message,
+        filesModified: [],
+        status: 'error',
+        failure: error instanceof OpenAiCompatibleHttpError
+          ? classifyHttpFailure({
+              status: error.status,
+              body: error.body,
+              retryAfterSeconds: error.retryAfterSeconds,
+            })
+          : classifyTextFailure(message, { defaultKind: 'transient' }),
+        metadata: {
+          rawEvents: [
+            error instanceof OpenAiCompatibleHttpError
+              ? { status: error.status, body: error.body }
+              : { error: message },
+          ],
+        },
+      };
+    }
 
     const message = response?.choices?.[0]?.message;
     const content = typeof message?.content === 'string' ? message.content : '';
@@ -442,8 +477,10 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(
-          `OpenAI-compatible request failed (${response.status}): ${text}`,
+        throw new OpenAiCompatibleHttpError(
+          response.status,
+          text,
+          parseRetryAfterSeconds(response.headers?.get?.('retry-after') ?? undefined),
         );
       }
 
@@ -454,4 +491,13 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
       }
     }
   }
+}
+
+function parseRetryAfterSeconds(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds);
+  const dateMs = Date.parse(value);
+  if (Number.isNaN(dateMs)) return undefined;
+  return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
 }
