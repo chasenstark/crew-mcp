@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { TaskFailure } from '../../adapters/types.js';
+
 export const PANEL_SCHEMA_VERSION = 1 as const;
 
 export interface PanelReviewerTerminalSnapshot {
@@ -7,6 +9,7 @@ export interface PanelReviewerTerminalSnapshot {
   readonly summary?: string;
   readonly filesChanged: readonly string[];
   readonly completedAt?: string;
+  readonly failure?: TaskFailure;
 }
 
 export interface PanelReviewerDispatchedRecord {
@@ -51,6 +54,16 @@ export interface PanelStateV1 {
   readonly reviewers: ReadonlyArray<PanelReviewerRecord>;
 }
 
+const taskFailureSchema = z.object({
+  kind: z.enum(['quota_exhausted', 'rate_limited', 'auth', 'transient', 'process', 'unknown']),
+  confidence: z.enum(['high', 'low']),
+  providerCode: z.string().optional(),
+  retryAfterSeconds: z.number().optional(),
+  resetAt: z.string().optional(),
+  rawSignal: z.string().optional(),
+  recommendation: z.enum(['reroute', 'backoff', 'downgrade', 'ask_user']).optional(),
+}).strict() satisfies z.ZodType<TaskFailure>;
+
 const dispatchedReviewerSchema = z.object({
   runId: z.string().min(1),
   agentId: z.string().min(1),
@@ -62,6 +75,7 @@ const dispatchedReviewerSchema = z.object({
     summary: z.string().optional(),
     filesChanged: z.array(z.string()),
     completedAt: z.string().min(1).optional(),
+    failure: taskFailureSchema.optional(),
   }).strict().optional(),
 }).strict();
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { TaskFailure } from '../../adapters/types.js';
 import type { DispatchContext } from '../dispatch-run-agent-internal.js';
 import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
@@ -22,6 +23,7 @@ export type PanelReviewerStatus =
       readonly summary?: string;
       readonly files_changed?: readonly string[];
       readonly completedAt?: string;
+      readonly failure?: TaskFailure;
       readonly dispatch_warnings: readonly string[];
     }
   | {
@@ -111,6 +113,7 @@ export function getPanelStatusHandler(
         ...(summary !== undefined ? { summary } : {}),
         files_changed: state.filesChanged,
         ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
+        ...(state.failure !== undefined ? { failure: state.failure } : {}),
         dispatch_warnings: reviewer.dispatchWarnings,
       };
     });
@@ -172,6 +175,7 @@ function statusFromSnapshot(
     ...(snapshot.summary !== undefined ? { summary: snapshot.summary } : {}),
     files_changed: snapshot.filesChanged,
     ...(snapshot.completedAt !== undefined ? { completedAt: snapshot.completedAt } : {}),
+    ...(snapshot.failure !== undefined ? { failure: snapshot.failure } : {}),
     dispatch_warnings: reviewer.dispatchWarnings,
   };
 }

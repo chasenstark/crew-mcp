@@ -50,10 +50,12 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
       });
       const status = state.status;
       const agentId = isPanelReviewerTerminalSnapshot(state) ? reviewer.agentId : state.agentId;
+      const baseBody = summary && summary.length > 0
+        ? summary
+        : `(no summary; status=${status})`;
+      const failureLine = formatFailureLine(state.failure);
       return peerMessageInputSchema.parse({
-        body: summary && summary.length > 0
-          ? summary
-          : `(no summary; status=${status})`,
+        body: failureLine ? `${baseBody}\n\n${failureLine}` : baseBody,
         kind: 'review',
         from_label: sanitizeFromLabel(
           agentId,
@@ -74,6 +76,12 @@ function isPanelReviewerTerminalSnapshot(
   state: ReviewerStateForAggregation,
 ): state is PanelReviewerTerminalSnapshot {
   return !isUnavailableReviewerState(state) && !('prompts' in state);
+}
+
+function formatFailureLine(failure: RunStateV1['failure']): string | undefined {
+  if (!failure) return undefined;
+  const recommendation = failure.recommendation ? ` (${failure.recommendation})` : '';
+  return `failure: ${failure.kind}${recommendation}`;
 }
 
 export function isUnavailableReviewerState(

@@ -114,6 +114,35 @@ describe('aggregatePanelHandler', () => {
     }
   });
 
+  it('includes terminal reviewer failure details in peer messages', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    const failure = {
+      kind: 'quota_exhausted',
+      confidence: 'high',
+      recommendation: 'reroute',
+    } as const;
+    await createRunState(h, {
+      runId: 'r-quota',
+      agentId: 'reviewer',
+      status: 'error',
+      summary: 'review stopped',
+    });
+    await h.runStateStore.update('r-quota', (state) => ({
+      ...state,
+      failure,
+    }));
+    const state = panel(h, [dispatched('r-quota')]);
+    writePanel(h, state);
+
+    const out = aggregatePanelHandler({ panel_id: state.panelId }, h.ctx);
+    expect(out.peer_messages).toHaveLength(1);
+    expect(out.peer_messages[0].body).toBe(
+      'review stopped\n\nfailure: quota_exhausted (reroute)',
+    );
+    peerMessageInputSchema.parse(out.peer_messages[0]);
+  });
+
   it('includes failed-dispatch reviewers with inline error messages', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);

@@ -926,6 +926,56 @@ describe('runPanelHandler', () => {
     });
   });
 
+  it('copies terminal reviewer failure into panel snapshot and status', async () => {
+    const failure = {
+      kind: 'quota_exhausted',
+      confidence: 'high',
+      providerCode: 'codex',
+      rawSignal: 'quota exceeded',
+      recommendation: 'reroute',
+    } as const;
+    const adapter = makeMockAdapter({
+      name: 'reviewer',
+      execute: async () => ({
+        output: 'quota stopped',
+        filesModified: ['review.md'],
+        status: 'error',
+        failure,
+        metadata: {},
+      }),
+    });
+    const h = makeHarness([adapter]);
+    cleanupHarness(h);
+
+    const out = await runPanelHandler({
+      reviewers: [{ agent_id: 'reviewer', prompt: 'review' }],
+    }, h.ctx);
+
+    await waitFor(() => {
+      const record = readPanelState(panelDir(h.crewHome, out.panel_id))?.reviewers[0];
+      if (!record?.dispatched) return false;
+      return record.terminalSnapshot?.failure?.kind === 'quota_exhausted';
+    });
+
+    const state = h.runStateStore.read(out.reviewers[0].run_id);
+    expect(state?.failure).toEqual(failure);
+    const panelState = readPanelState(panelDir(h.crewHome, out.panel_id));
+    expect(panelState?.reviewers[0]).toMatchObject({
+      dispatched: true,
+      terminalSnapshot: {
+        status: 'error',
+        summary: 'quota stopped',
+        filesChanged: ['review.md'],
+        failure,
+      },
+    });
+    const status = getPanelStatusHandler({ panel_id: out.panel_id }, h.ctx);
+    expect(status.reviewers[0]).toMatchObject({
+      status: 'error',
+      failure,
+    });
+  });
+
   it('sets up reviewer dispatches concurrently while preserving output order', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);

@@ -8,6 +8,7 @@ import {
 } from '../../../src/orchestrator/panels/schema.js';
 import {
   panelDir,
+  readPanelState,
   writePanelStateAtomic,
 } from '../../../src/orchestrator/panels/store.js';
 import { getPanelStatusHandler } from '../../../src/orchestrator/tools/get-panel-status.js';
@@ -170,6 +171,53 @@ describe('getPanelStatusHandler', () => {
       summary: 'durable summary',
       files_changed: ['review.md'],
       completedAt: '2026-05-14T00:00:02.000Z',
+    });
+  });
+
+  it('round-trips terminal snapshot failure through strict panel state and status', () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    const failure = {
+      kind: 'quota_exhausted',
+      confidence: 'high',
+      providerCode: 'codex',
+      retryAfterSeconds: 60,
+      resetAt: '2026-05-14T00:05:00.000Z',
+      rawSignal: 'quota exceeded',
+      recommendation: 'reroute',
+    } as const;
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: 'r-quota',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:01.000Z',
+          dispatchWarnings: [],
+          terminalSnapshot: {
+            status: 'error',
+            summary: 'quota stopped',
+            filesChanged: ['review.md'],
+            completedAt: '2026-05-14T00:00:02.000Z',
+            failure,
+          },
+        },
+      ],
+    }));
+
+    const restored = readPanelState(panelDir(h.crewHome, 'panel-1'));
+    expect(restored?.reviewers[0]).toMatchObject({
+      dispatched: true,
+      terminalSnapshot: { failure },
+    });
+
+    const out = getPanelStatusHandler({ panel_id: 'panel-1' }, h.ctx);
+    expect(out.reviewers[0]).toMatchObject({
+      run_id: 'r-quota',
+      state_unavailable: false,
+      status: 'error',
+      failure,
     });
   });
 

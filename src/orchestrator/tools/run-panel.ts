@@ -375,6 +375,7 @@ function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalS
     ...(summary !== undefined ? { summary } : {}),
     filesChanged: state.filesChanged,
     ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
+    ...(state.failure !== undefined ? { failure: state.failure } : {}),
   };
 }
 
