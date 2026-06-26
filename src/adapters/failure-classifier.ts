@@ -152,17 +152,20 @@ function isAuthSignal(text: string): boolean {
 }
 
 function isTransientSignal(text: string): boolean {
-  return /\b(5\d\d|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)\b/i.test(text)
+  return hasHttp5xxStatus(text)
+    || /\b(ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN)\b/i.test(text)
     || /\b(timeout|timed out|temporarily unavailable|service unavailable|network error)\b/i.test(text);
 }
 
 function isRateLimitSignal(text: string): boolean {
   return /\b429\b/.test(text)
-    || /\b(rate[\s_-]?limit|usage[\s_-]?limit|quota|insufficient_quota|RESOURCE_EXHAUSTED|exceeded)\b/i.test(text);
+    || /\b(rate[\s_-]?limit|usage[\s_-]?limit|quota|insufficient_quota|RESOURCE_EXHAUSTED)\b/i.test(text)
+    || hasExceededLimitContext(text);
 }
 
 function hasQuotaExhaustionToken(text: string): boolean {
-  return /\b(insufficient_quota|usage[\s_-]?limit|quota|RESOURCE_EXHAUSTED|exceeded|exhausted)\b/i.test(text);
+  return /\b(insufficient_quota|usage[\s_-]?limit|quota|RESOURCE_EXHAUSTED|exhausted)\b/i.test(text)
+    || hasExceededQuotaContext(text);
 }
 
 function limitFailureKind(text: string): Extract<FailureKind, 'quota_exhausted' | 'rate_limited'> {
@@ -179,4 +182,19 @@ function compactSignal(text: string): string | undefined {
   const compacted = text.replace(/\s+/g, ' ').trim();
   if (!compacted) return undefined;
   return compacted.length <= 240 ? compacted : `${compacted.slice(0, 239).trimEnd()}...`;
+}
+
+function hasExceededLimitContext(text: string): boolean {
+  return /\b(?:quota|resources?|resource[\s_-]?limit|usage[\s_-]?limit|rate[\s_-]?limit|limit)[\s_-]+exceeded\b/i.test(text)
+    || /\bexceeded[\s_-]+(?:quota|resources?|resource[\s_-]?limit|usage[\s_-]?limit|rate[\s_-]?limit|limit)\b/i.test(text);
+}
+
+function hasExceededQuotaContext(text: string): boolean {
+  return /\b(?:quota|resources?|resource[\s_-]?limit|usage[\s_-]?limit)[\s_-]+exceeded\b/i.test(text)
+    || /\bexceeded[\s_-]+(?:quota|resources?|resource[\s_-]?limit|usage[\s_-]?limit)\b/i.test(text);
+}
+
+function hasHttp5xxStatus(text: string): boolean {
+  return /\b(?:http(?:\/\d(?:\.\d)?)?|http[\s_-]?status|status(?:[\s_-]?code)?|response[\s_-]?status|server[\s_-]+returned|returned[\s_-]+status)[\s:=#-]*5\d\d\b/i.test(text)
+    || /\b5\d\d[\s_-]+(?:http[\s_-]?status|status(?:[\s_-]?code)?|response[\s_-]?status)\b/i.test(text);
 }

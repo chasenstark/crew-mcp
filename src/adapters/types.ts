@@ -376,6 +376,10 @@ export interface TaskResult {
   };
 }
 
+// Keep this interface in lockstep with the strict taskFailureSchema in
+// src/orchestrator/panels/schema.ts. Adding a field, especially an optional
+// one that still satisfies z.ZodType<TaskFailure>, requires updating that
+// schema or readPanelState will reject persisted panel snapshots at .strict().
 export interface TaskFailure {
   kind: 'quota_exhausted' | 'rate_limited' | 'auth' | 'transient' | 'process' | 'unknown';
   confidence: 'high' | 'low';

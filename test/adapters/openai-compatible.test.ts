@@ -92,6 +92,41 @@ describe('OpenAiCompatibleAdapter', () => {
     });
   });
 
+  it('rethrows an already-aborted caller signal instead of returning failure:transient', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+    const controller = new AbortController();
+    controller.abort('Cancelled by test');
+
+    await expect(adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+      constraints: { signal: controller.signal },
+    })).rejects.toBe('Cancelled by test');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rethrows AbortError instead of returning failure:transient', async () => {
+    const abortError = new Error('The operation was aborted.');
+    abortError.name = 'AbortError';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(abortError));
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+
+    await expect(adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+    })).rejects.toBe(abortError);
+  });
+
   it('adds a synthetic assistant tool_calls message before synthetic tool results', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({

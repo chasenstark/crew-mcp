@@ -96,6 +96,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
         signal: task.constraints?.signal,
       });
     } catch (error: unknown) {
+      if (task.constraints?.signal?.aborted || isAbortError(error)) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       return {
         output: message,
@@ -500,4 +503,8 @@ function parseRetryAfterSeconds(value: string | undefined): number | undefined {
   const dateMs = Date.parse(value);
   if (Number.isNaN(dateMs)) return undefined;
   return Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
