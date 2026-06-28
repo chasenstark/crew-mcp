@@ -3,6 +3,7 @@ import { listAgents } from '../../../src/orchestrator/tools/list-agents.js';
 import { BUILTIN_AGENT_ROUTING } from '../../../src/adapters/strengths.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter } from '../../../src/adapters/types.js';
+import type { QuotaSnapshot } from '../../../src/orchestrator/tools/list-agents.js';
 
 function makeAdapter(overrides: Partial<AgentAdapter> & { name: string }): AgentAdapter {
   return {
@@ -71,13 +72,42 @@ describe('listAgents', () => {
     const registry = makeRegistry([makeAdapter({ name: 'codex' })]);
     const out = await listAgents({ registry });
     expect(out.agents[0].quota).toBeUndefined();
+    expect('quota' in out.agents[0]).toBe(false);
   });
 
   it('includes quota when the probe returns one', async () => {
     const registry = makeRegistry([makeAdapter({ name: 'codex' })]);
-    const probe = vi.fn(async () => ({ remainingTokens: 42, resetAt: '2026-05-01' }));
+    const snapshot: QuotaSnapshot = {
+      state: 'near_limit',
+      confidence: 'medium',
+      source: 'stream-cache',
+      checkedAt: '2026-06-26T00:00:00Z',
+      usedPercent: 80,
+      resetAt: '2026-05-01',
+    };
+    const probe = vi.fn(async () => snapshot);
     const out = await listAgents({ registry, quotaProbe: probe });
-    expect(out.agents[0].quota).toEqual({ remainingTokens: 42, resetAt: '2026-05-01' });
+    expect(out.agents[0].quota).toBe(snapshot);
+  });
+
+  it('passes through full quota snapshots unchanged', async () => {
+    const registry = makeRegistry([makeAdapter({ name: 'codex' })]);
+    const snapshot: QuotaSnapshot = {
+      state: 'limited',
+      confidence: 'high',
+      source: 'provider',
+      checkedAt: '2026-06-26T00:00:00Z',
+      staleAfter: '2026-06-26T00:01:00Z',
+      usedPercent: 100,
+      remainingTokens: 0,
+      remainingRequests: 0,
+      resetAt: '2026-06-26T01:00:00Z',
+      retryAfterSeconds: 3600,
+      message: 'Quota exhausted until reset.',
+    };
+    const probe = vi.fn(async () => snapshot);
+    const out = await listAgents({ registry, quotaProbe: probe });
+    expect(out.agents[0].quota).toBe(snapshot);
   });
 
   it('swallows quota probe errors and omits quota on that agent', async () => {
@@ -87,6 +117,7 @@ describe('listAgents', () => {
     });
     const out = await listAgents({ registry, quotaProbe: probe });
     expect(out.agents[0].quota).toBeUndefined();
+    expect('quota' in out.agents[0]).toBe(false);
   });
 
   it('runs health probes concurrently (slow adapter does not block fast one)', async () => {

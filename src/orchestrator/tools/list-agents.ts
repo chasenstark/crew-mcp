@@ -3,8 +3,9 @@
  *
  * Output shape: `{ agents: [{ name, useWhen?, strengths, effort?, adapter,
  * available, version?, authenticated?, quota? }] }`. `quota` is optional
- * and M3 omits it entirely — M4 can wire a `quotaProbe` callback when it
- * defines what a probe actually looks like (plan §5 Open Q #3).
+ * and omitted entirely when no `quotaProbe` is wired or the probe cannot
+ * return a snapshot. When present, quota is a snapshot with state,
+ * confidence, source, checkedAt, and optional provider-specific details.
  *
  * `useWhen`, `strengths`, and `effort` come from `effectiveAgentPrefs(adapter, prefs)`
  * — the user's `~/.crew/agents.json` override merged on top of adapter
@@ -41,7 +42,33 @@ export const listAgentsInputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, useWhen routing guidance, strengths, default effort/model, adapter, availability, health details, and optional quota. Unavailable agents are included with available:false and an error instead of throwing.';
+  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, useWhen routing guidance, strengths, default effort/model, adapter, availability, health details, and optional quota snapshots with state, confidence, and source when a quotaProbe is wired. Quota is omitted entirely when no probe is wired or no snapshot is available. Unavailable agents are included with available:false and an error instead of throwing.';
+
+export type QuotaState =
+  | 'ok'
+  | 'near_limit'
+  | 'limited'
+  | 'unknown'
+  | 'local_unmetered';
+
+export interface QuotaSnapshot {
+  readonly state: QuotaState;
+  readonly confidence: 'high' | 'medium' | 'low';
+  readonly source:
+    | 'provider'
+    | 'stream-cache'
+    | 'statusline-cache'
+    | 'local-ledger'
+    | 'health-only';
+  readonly checkedAt: string; // ISO timestamp
+  readonly staleAfter?: string;
+  readonly usedPercent?: number;
+  readonly remainingTokens?: number;
+  readonly remainingRequests?: number;
+  readonly resetAt?: string;
+  readonly retryAfterSeconds?: number;
+  readonly message?: string;
+}
 
 export interface ListAgentsAgentEntry {
   readonly name: string;
@@ -83,10 +110,7 @@ export interface ListAgentsAgentEntry {
   readonly version?: string;
   readonly authenticated?: boolean;
   readonly error?: string;
-  readonly quota?: {
-    readonly remainingTokens?: number;
-    readonly resetAt?: string;
-  };
+  readonly quota?: QuotaSnapshot;
 }
 
 export interface ListAgentsOutput {
@@ -108,15 +132,12 @@ export interface ListAgentsContext {
    */
   readonly agentPrefs?: AgentPrefsMap;
   /**
-   * Optional per-agent quota probe. M3 ships without a probe (returns
-   * undefined for every agent); M4 can wire a real implementation. When
-   * absent, the `quota` field is omitted entirely (not a zero-valued
-   * object), matching the plan's "quota omitted when no probe is given".
+   * Optional per-agent quota probe. When present, it may return a
+   * QuotaSnapshot with state, confidence, source, checkedAt, and optional
+   * limit details. When absent, undefined, or failing, the `quota` field is
+   * omitted entirely (not a zero-valued object).
    */
-  readonly quotaProbe?: (agentName: string) => Promise<{
-    remainingTokens?: number;
-    resetAt?: string;
-  } | undefined>;
+  readonly quotaProbe?: (agentName: string) => Promise<QuotaSnapshot | undefined>;
 }
 
 export async function listAgentsToolHandler(
@@ -180,7 +201,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
           error: err instanceof Error ? err.message : String(err),
         };
       }
-      let quota: { remainingTokens?: number; resetAt?: string } | undefined;
+      let quota: QuotaSnapshot | undefined;
       if (ctx.quotaProbe) {
         try {
           quota = await ctx.quotaProbe(adapter.name);
@@ -194,7 +215,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
         version: health.version,
         authenticated: health.authenticated,
         error: health.error,
-        quota,
+        ...(quota !== undefined ? { quota } : {}),
       };
     }),
   );
