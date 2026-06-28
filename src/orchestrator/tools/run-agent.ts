@@ -128,6 +128,7 @@ export async function runAgentToolHandler(
         crewHome: deps.crewHome,
         repoRoot: deps.runStateStore.repoRoot,
         projectRoot: deps.projectRoot,
+        onTerminalPersisted: deps.onTerminalPersisted,
       },
       progress,
     });

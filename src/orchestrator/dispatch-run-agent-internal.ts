@@ -29,6 +29,7 @@ export interface DispatchContext {
   readonly crewHome: string;
   readonly repoRoot: string;
   readonly projectRoot: string;
+  readonly onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
 }
 
 export interface DispatchRunAgentInternalArgs {
@@ -144,7 +145,10 @@ export async function dispatchRunAgentInternal(
     agentName: input.agent_id,
     toolCallId: plan.toolCallId,
     progress: args.progress,
-    onTerminalPersisted: args.onTerminalPersisted,
+    onTerminalPersisted: composeTerminalPersistedHooks(
+      ctx.onTerminalPersisted,
+      args.onTerminalPersisted,
+    ),
   });
 
   try {
@@ -213,6 +217,25 @@ async function cleanupAllocatedWorktree(
       `run_agent cleanup after ${reason} failed: ${errorMessage(err)}`,
     );
   }
+}
+
+function composeTerminalPersistedHooks(
+  first: ((state: RunStateV1) => void | Promise<void>) | undefined,
+  second: ((state: RunStateV1) => void | Promise<void>) | undefined,
+): ((state: RunStateV1) => Promise<void>) | undefined {
+  if (first === undefined && second === undefined) return undefined;
+  return async (state) => {
+    let failure: unknown;
+    for (const hook of [first, second]) {
+      if (hook === undefined) continue;
+      try {
+        await hook(state);
+      } catch (err) {
+        failure ??= err;
+      }
+    }
+    if (failure !== undefined) throw failure;
+  };
 }
 
 function errorMessage(err: unknown): string {

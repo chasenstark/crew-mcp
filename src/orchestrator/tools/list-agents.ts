@@ -22,6 +22,7 @@ import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel } from '../../adapters/types.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
+import { logBestEffortFailure } from '../../utils/best-effort.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { jsonContent } from './shared.js';
 
@@ -142,10 +143,22 @@ export interface ListAgentsContext {
 
 export async function listAgentsToolHandler(
   args: ListAgentsInput,
-  deps: Pick<ToolHandlerDeps, 'registry' | 'readAgentPrefs'>,
+  deps: Pick<ToolHandlerDeps, 'registry' | 'readAgentPrefs' | 'quotaProbe' | 'clearQuotaCache'>,
 ): Promise<ToolCallReturn> {
+  if (args.refresh === true && deps.clearQuotaCache) {
+    try {
+      deps.clearQuotaCache();
+    } catch (err) {
+      logBestEffortFailure('quota-cache.clear', err);
+    }
+  }
   const agentPrefs = deps.readAgentPrefs();
-  const out = await listAgents({ registry: deps.registry, agentPrefs, refresh: args.refresh });
+  const out = await listAgents({
+    registry: deps.registry,
+    agentPrefs,
+    refresh: args.refresh,
+    quotaProbe: deps.quotaProbe,
+  });
   return jsonContent(out);
 }
 

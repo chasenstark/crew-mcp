@@ -42,6 +42,10 @@ import { ToolDispatcher } from '../../orchestrator/tool-dispatcher.js';
 import {
   drainPendingTerminalPersists,
 } from '../../orchestrator/run-lifecycle-listeners.js';
+import {
+  QuotaCache,
+  recordQuotaObservation,
+} from '../../orchestrator/quota-cache.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRunsAndCriteriaSets, type RunGcArgs } from '../../orchestrator/run-gc.js';
 import {
@@ -451,6 +455,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     ?? new WorktreeManager({ projectRoot, crewHome });
   const dispatcher = new ToolDispatcher({ stallTimeoutMs: resolveDispatchStallTimeoutMs() });
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
+  const quotaCache = new QuotaCache();
   void scheduleStaleRunSweep(
     { crewHome, projectRoot, runStateStore, dispatcher },
     options.staleRunSweeper,
@@ -526,6 +531,11 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     getCrewWaitCommand,
     progressTokenSeen,
     readAgentPrefs: () => readAgentPrefsFile(crewHome),
+    quotaProbe: async (agentName) => quotaCache.get(agentName),
+    clearQuotaCache: () => quotaCache.clear(),
+    onTerminalPersisted: (state) => recordQuotaObservation(quotaCache, state, {
+      resolveCanonicalAgentId: (agentId) => registry.get(agentId)?.name ?? agentId,
+    }),
   };
 
   // ---- list_agents -----------------------------------------------------

@@ -118,6 +118,7 @@ export async function runPanelToolHandler(
       crewHome: deps.crewHome,
       repoRoot: deps.runStateStore.repoRoot,
       projectRoot: deps.projectRoot,
+      onTerminalPersisted: deps.onTerminalPersisted,
       sameHostAgentId: agentIdForClientKind(clientKind),
       clientKind,
       crewWaitCommand: deps.getCrewWaitCommand(),

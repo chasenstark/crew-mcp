@@ -8,9 +8,10 @@ import { logger } from '../../utils/logger.js';
 import {
   installRunLifecycleListeners,
 } from '../run-lifecycle-listeners.js';
-import type { RunStateStore } from '../run-state.js';
+import type { RunStateStore, RunStateV1 } from '../run-state.js';
 import type { DispatchTask, ToolDispatcher } from '../tool-dispatcher.js';
 import type { ProgressNotifier } from '../progress.js';
+import type { QuotaSnapshot } from './list-agents.js';
 
 /**
  * Server-side cap on the long-poll wait that `get_run_status` honors
@@ -162,6 +163,9 @@ export interface ToolHandlerDeps {
   readonly getCrewWaitCommand: () => string;
   readonly progressTokenSeen: ProgressTokenSeen;
   readonly readAgentPrefs: () => AgentPrefsMap;
+  readonly quotaProbe?: (agentName: string) => Promise<QuotaSnapshot | undefined>;
+  readonly clearQuotaCache?: () => void;
+  readonly onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
 }
 
 interface DispatchAndRespondArgs {
@@ -175,6 +179,7 @@ interface DispatchAndRespondArgs {
   warnings?: readonly string[];
   progress?: ProgressNotifier;
   onStartFailure?: (err: unknown) => Promise<Error>;
+  onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
   clientKind: ClientKind;
   crewWaitCommand: string;
 }
@@ -189,6 +194,7 @@ export async function runDispatchAndRespond(
     agentName: args.agentName,
     toolCallId: args.toolCallId,
     progress: args.progress,
+    onTerminalPersisted: args.onTerminalPersisted,
   });
   try {
     args.dispatcher.start(args.task);

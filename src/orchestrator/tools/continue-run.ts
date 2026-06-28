@@ -208,6 +208,7 @@ export async function continueRunToolHandler(
       runStateStore: deps.runStateStore,
       warnings: [...dispatchWarnings, ...warnings],
       progress: progressNotifierFrom(continueExtra, state.agentId, deps.progressTokenSeen),
+      onTerminalPersisted: deps.onTerminalPersisted,
       clientKind: deps.getClientKind(),
       crewWaitCommand: deps.getCrewWaitCommand(),
       onStartFailure: rollbackContinuation,
