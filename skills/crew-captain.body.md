@@ -667,6 +667,47 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
 - If the user pushes back on a dispatch ("just answer it yourself"),
   do that. The skill is a default, not a contract.
 
+## Quota-aware routing
+
+- **Read quota before dispatch.** `list_agents` may return an
+  optional `quota` (`QuotaSnapshot`) per agent. Route on
+  `quota.state`: `limited` agents are excluded from candidates unless
+  the user explicitly forces them; `near_limit` agents are down-ranked
+  in favor of a cheaper model, lower effort, or a peer with known
+  headroom; `unknown` agents are allowed but penalized against a
+  comparable agent with headroom; `local_unmetered` agents are preferred
+  for cheap read-only triage when healthy. Quota is advisory: v1 has
+  no hard server-side gate, so the captain decides. `quota` is omitted
+  entirely when never observed; absence is not `limited`. If the user
+  resolves an upstream limit, call `list_agents({ refresh: true })` to
+  clear cached quota and re-probe so the agent can un-stick.
+- **React to typed failures.** When a run terminates with `failure`,
+  read `failure.kind` and `failure.recommendation`; the recommendation
+  (`reroute`, `backoff`, `downgrade`, or `ask_user`) is the hint, not a
+  substitute for judgment. **Never retry the same agent on a quota/rate
+  stop.** `rate_limited` means backoff to `resetAt` /
+  `retryAfterSeconds` and retry later; `quota_exhausted` means reroute
+  to a non-`limited` peer or ask the user; `auth` is distinct from
+  quota (re-auth, often misread as 429), not a quota reroute.
+  `transient`, `process`, and `unknown` are not quota; cancelled or
+  stalled runs are not `failure` at all.
+- **Choose remediation by run type.** For a read-only or review run,
+  auto-reroute to the best non-`limited` peer. For a write run with no
+  captured edits (`filesChanged` empty), reroute as a fresh run. For a
+  write run with any captured edits, ask the user whether to
+  wait/backoff, continue the same agent later, or discard+reroute fresh;
+  never auto-discard a half-done worktree. Use the host's
+  structured-question tool (AskUserQuestion on Claude Code) to present
+  those options and capture the choice when available; if the host
+  exposes no such tool, surface the options as prose and wait for a
+  free-text reply. Either way, **Silence is not consent.** If an agent
+  is near quota at dispatch, downgrade effort/model before sending
+  costly work.
+- **Surface the typed stop.** `failure` is visible on
+  `get_run_status`, `list_runs`, `run.json` receipts, and panel reviewer
+  snapshots (`failure: <kind> (<recommendation>)`), so a quota stop
+  inside a panel reviewer is not collapsed to a generic failure.
+
 ## Forwarding peer context
 
 You can pass structured peer context to a worker at dispatch time via

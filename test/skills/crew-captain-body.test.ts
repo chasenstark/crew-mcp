@@ -201,6 +201,32 @@ describe('crew-captain body — general dispatch-order rule', () => {
   });
 });
 
+describe('crew-captain body — quota-aware routing', () => {
+  it('pins preemptive quota routing and reactive remediation guidance', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(
+      body,
+      '## Quota-aware routing',
+      '## Forwarding peer context',
+    );
+    const flat = flattenWhitespace(section);
+
+    expectStructuredQuestionGuidance(section);
+    expectContainsCI(flat, '`limited` agents are excluded');
+    expectContainsCI(flat, '`near_limit` agents are down-ranked');
+    expectContainsCI(flat, '`unknown` agents are allowed but penalized');
+    expectContainsCI(flat, '`local_unmetered` agents are preferred');
+    expectContainsCI(flat, 'refresh: true');
+    expectContainsCI(flat, 'un-stick');
+    expectContainsCI(flat, 'quota_exhausted');
+    expectContainsCI(flat, 'rate_limited');
+    expectContainsCI(flat, 'auth');
+    expectContainsCI(flat, 'Never retry the same agent');
+    expectContainsCI(flat, 'write run with any captured edits');
+    expectContainsCI(flat, 'never auto-discard a half-done worktree');
+  });
+});
+
 describe('crew-captain body — watcher checklist', () => {
   it('requires one watcher per crew run and distinguishes native subagents', async () => {
     const body = await loadBody();
