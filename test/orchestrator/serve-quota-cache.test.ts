@@ -154,6 +154,7 @@ describe('serve quota cache wiring', () => {
       message: 'Claude usage limit reached',
     });
     expect(byName['claude-code'].quota?.checkedAt).toEqual(expect.any(String));
+    expect(byName['claude-code'].quota?.staleAfter).toEqual(expect.any(String));
     expect(byName.codex.quota).toBeUndefined();
     expect('quota' in byName.codex).toBe(false);
 

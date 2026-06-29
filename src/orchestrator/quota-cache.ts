@@ -3,6 +3,13 @@ import { logBestEffortFailure } from '../utils/best-effort.js';
 import type { RunStateV1 } from './run-state.js';
 import type { QuotaSnapshot, QuotaState } from './tools/index.js';
 
+// Snapshots without an authoritative reset time are treated as stale after 1 hour.
+export const QUOTA_SNAPSHOT_MAX_AGE_MS = 3_600_000;
+
+interface QuotaCacheGetOptions {
+  readonly now?: string | number;
+}
+
 export class QuotaCache {
   private readonly snapshots = new Map<string, QuotaSnapshot>();
 
@@ -10,8 +17,28 @@ export class QuotaCache {
     this.snapshots.set(agentId, snapshot);
   }
 
-  get(agentId: string): QuotaSnapshot | undefined {
-    return this.snapshots.get(agentId);
+  get(agentId: string, opts: QuotaCacheGetOptions = {}): QuotaSnapshot | undefined {
+    const snapshot = this.snapshots.get(agentId);
+    if (snapshot === undefined) return undefined;
+
+    if (snapshot.staleAfter === undefined) return snapshot;
+
+    const staleAfterMs = Date.parse(snapshot.staleAfter);
+    if (Number.isNaN(staleAfterMs)) return snapshot;
+
+    const nowMs = opts.now === undefined
+      ? Date.now()
+      : typeof opts.now === 'number'
+        ? opts.now
+        : Date.parse(opts.now);
+    if (Number.isNaN(nowMs)) return snapshot;
+
+    if (nowMs >= staleAfterMs) {
+      this.snapshots.delete(agentId);
+      return undefined;
+    }
+
+    return snapshot;
   }
 
   clear(): void {
@@ -47,6 +74,7 @@ export function quotaSnapshotFromTerminalState(
       confidence: 'low',
       source,
       checkedAt,
+      staleAfter: staleAfterFor({ checkedAt }),
     };
   }
 
@@ -58,6 +86,7 @@ export function quotaSnapshotFromTerminalState(
     confidence: failure.confidence,
     source,
     checkedAt,
+    staleAfter: staleAfterFor({ checkedAt, resetAt: failure.resetAt }),
     ...(failure.resetAt !== undefined ? { resetAt: failure.resetAt } : {}),
     ...(failure.retryAfterSeconds !== undefined
       ? { retryAfterSeconds: failure.retryAfterSeconds }
@@ -110,6 +139,11 @@ function quotaStateForFailure(kind: TaskFailure['kind']): QuotaState | undefined
     case 'unknown':
       return undefined;
   }
+}
+
+function staleAfterFor(args: { checkedAt: string; resetAt?: string }): string {
+  if (args.resetAt !== undefined) return args.resetAt;
+  return new Date(Date.parse(args.checkedAt) + QUOTA_SNAPSHOT_MAX_AGE_MS).toISOString();
 }
 
 function sourceForAgent(agentId: string): QuotaSnapshot['source'] {

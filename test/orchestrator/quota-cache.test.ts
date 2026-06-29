@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { RunStateV1, RunStatus } from '../../src/orchestrator/run-state.js';
 import {
   QuotaCache,
+  QUOTA_SNAPSHOT_MAX_AGE_MS,
   quotaSnapshotFromTerminalState,
   recordQuotaObservation,
 } from '../../src/orchestrator/quota-cache.js';
@@ -46,6 +47,80 @@ describe('QuotaCache', () => {
     cache.clear();
     expect(cache.get('codex')).toBeUndefined();
   });
+
+  it('returns non-expired snapshots before staleAfter and expires at the boundary', () => {
+    const cache = new QuotaCache();
+    const snapshot: QuotaSnapshot = {
+      state: 'limited',
+      confidence: 'high',
+      source: 'local-ledger',
+      checkedAt: '2026-06-28T00:00:00.000Z',
+      staleAfter: '2026-06-28T01:00:00.000Z',
+    };
+
+    cache.record('codex', snapshot);
+    expect(cache.get('codex', { now: '2026-06-28T00:59:59.999Z' })).toBe(snapshot);
+    expect(cache.get('codex', { now: '2026-06-28T01:00:00.000Z' })).toBeUndefined();
+  });
+
+  it('expires after staleAfter and removes the entry from the map', () => {
+    const cache = new QuotaCache();
+    const snapshot: QuotaSnapshot = {
+      state: 'near_limit',
+      confidence: 'low',
+      source: 'local-ledger',
+      checkedAt: '2026-06-28T00:00:00.000Z',
+      staleAfter: '2026-06-28T01:00:00.000Z',
+    };
+
+    cache.record('codex', snapshot);
+    expect(cache.get('codex', { now: '2026-06-28T01:00:00.001Z' })).toBeUndefined();
+    expect(cache.get('codex', { now: '2026-06-28T00:30:00.000Z' })).toBeUndefined();
+  });
+
+  it('honors a future resetAt instead of expiring at the generic max age', () => {
+    const cache = new QuotaCache();
+    const checkedAtMs = Date.parse('2026-06-28T00:00:00.000Z');
+    const snapshot = quotaSnapshotFromTerminalState(makeState({
+      agentId: 'claude-code',
+      failure: {
+        kind: 'quota_exhausted',
+        confidence: 'high',
+        resetAt: new Date(checkedAtMs + 5 * QUOTA_SNAPSHOT_MAX_AGE_MS).toISOString(),
+      },
+    }), { now: new Date(checkedAtMs).toISOString() });
+
+    expect(snapshot).toMatchObject({
+      state: 'limited',
+      staleAfter: '2026-06-28T05:00:00.000Z',
+      resetAt: '2026-06-28T05:00:00.000Z',
+    });
+    cache.record('claude-code', snapshot!);
+
+    expect(cache.get('claude-code', {
+      now: new Date(checkedAtMs + 2 * QUOTA_SNAPSHOT_MAX_AGE_MS).toISOString(),
+    })).toBe(snapshot);
+    expect(cache.get('claude-code', { now: '2026-06-28T05:00:01.000Z' })).toBeUndefined();
+  });
+
+  it('expires resetAt-less limited snapshots after the generic max age', () => {
+    const cache = new QuotaCache();
+    const checkedAt = '2026-06-28T00:00:00.000Z';
+    const snapshot = quotaSnapshotFromTerminalState(makeState({
+      failure: {
+        kind: 'quota_exhausted',
+        confidence: 'high',
+      },
+    }), { now: checkedAt });
+
+    expect(snapshot).toMatchObject({
+      state: 'limited',
+      staleAfter: '2026-06-28T01:00:00.000Z',
+    });
+    cache.record('codex', snapshot!);
+
+    expect(cache.get('codex', { now: '2026-06-28T01:00:00.001Z' })).toBeUndefined();
+  });
 });
 
 describe('quotaSnapshotFromTerminalState', () => {
@@ -67,6 +142,7 @@ describe('quotaSnapshotFromTerminalState', () => {
       source: 'stream-cache',
       checkedAt: '2026-06-28T00:30:00.000Z',
       resetAt: '2026-06-28T01:00:00.000Z',
+      staleAfter: '2026-06-28T01:00:00.000Z',
       retryAfterSeconds: 3600,
       message: 'quota exhausted until reset',
     });
@@ -89,7 +165,24 @@ describe('quotaSnapshotFromTerminalState', () => {
       source: 'local-ledger',
       checkedAt: '2026-06-28T00:30:00.000Z',
       resetAt: '2026-06-28T02:00:00.000Z',
+      staleAfter: '2026-06-28T02:00:00.000Z',
       retryAfterSeconds: 120,
+    });
+  });
+
+  it('sets staleAfter from checkedAt plus max age when failures have no resetAt', () => {
+    const snapshot = quotaSnapshotFromTerminalState(makeState({
+      agentId: 'codex',
+      failure: {
+        kind: 'quota_exhausted',
+        confidence: 'high',
+      },
+    }), { now: '2026-06-28T00:30:00.000Z' });
+
+    expect(snapshot).toMatchObject({
+      state: 'limited',
+      checkedAt: '2026-06-28T00:30:00.000Z',
+      staleAfter: '2026-06-28T01:30:00.000Z',
     });
   });
 
@@ -105,6 +198,7 @@ describe('quotaSnapshotFromTerminalState', () => {
       confidence: 'low',
       source: 'stream-cache',
       checkedAt: '2026-06-28T00:30:00.000Z',
+      staleAfter: '2026-06-28T01:30:00.000Z',
     });
   });
 
@@ -180,7 +274,7 @@ describe('recordQuotaObservation', () => {
     });
 
     expect(cache.get('claude')).toBeUndefined();
-    expect(cache.get('claude-code')).toMatchObject({
+    expect(cache.get('claude-code', { now: '2026-06-28T00:45:00.000Z' })).toMatchObject({
       state: 'limited',
       confidence: 'high',
       source: 'stream-cache',
@@ -204,7 +298,7 @@ describe('recordQuotaObservation', () => {
     });
 
     expect(cache.get('claude-code')).toBeUndefined();
-    expect(cache.get('claude')).toMatchObject({
+    expect(cache.get('claude', { now: '2026-06-28T00:45:00.000Z' })).toMatchObject({
       state: 'limited',
       confidence: 'high',
       source: 'local-ledger',

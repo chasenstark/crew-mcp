@@ -73,7 +73,9 @@ describe('listAgentsToolHandler quota cache wiring', () => {
         makeAdapter({ name: 'claude-code' }),
       ]),
       readAgentPrefs: () => ({}),
-      quotaProbe: async (agentName) => cache.get(agentName),
+      quotaProbe: async (agentName) => cache.get(agentName, {
+        now: '2026-06-28T00:45:00.000Z',
+      }),
     });
     const structured = out.structuredContent as unknown as ListAgentsOutput;
     const byName = Object.fromEntries(structured.agents.map((agent) => [agent.name, agent]));
