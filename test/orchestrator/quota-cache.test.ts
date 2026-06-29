@@ -4,6 +4,7 @@ import type { RunStateV1, RunStatus } from '../../src/orchestrator/run-state.js'
 import {
   QuotaCache,
   QUOTA_SNAPSHOT_MAX_AGE_MS,
+  probeQuota,
   quotaSnapshotFromTerminalState,
   recordQuotaObservation,
 } from '../../src/orchestrator/quota-cache.js';
@@ -304,5 +305,89 @@ describe('recordQuotaObservation', () => {
       source: 'local-ledger',
       checkedAt: '2026-06-28T00:30:00.000Z',
     });
+  });
+});
+
+describe('probeQuota', () => {
+  it('synthesizes local_unmetered for unmetered agents with an empty cache', () => {
+    const cache = new QuotaCache();
+
+    expect(probeQuota(cache, 'local', {
+      unmetered: true,
+      now: '2026-06-28T00:30:00.000Z',
+    })).toEqual({
+      state: 'local_unmetered',
+      confidence: 'high',
+      source: 'health-only',
+      checkedAt: '2026-06-28T00:30:00.000Z',
+    });
+  });
+
+  it('returns real limited or near-limit signals over local_unmetered synthesis', () => {
+    const cache = new QuotaCache();
+    const limited: QuotaSnapshot = {
+      state: 'limited',
+      confidence: 'high',
+      source: 'local-ledger',
+      checkedAt: '2026-06-28T00:00:00.000Z',
+    };
+    cache.record('local', limited);
+
+    expect(probeQuota(cache, 'local', {
+      unmetered: true,
+      now: '2026-06-28T00:30:00.000Z',
+    })).toBe(limited);
+
+    const nearLimit: QuotaSnapshot = {
+      state: 'near_limit',
+      confidence: 'low',
+      source: 'local-ledger',
+      checkedAt: '2026-06-28T00:10:00.000Z',
+    };
+    cache.record('local', nearLimit);
+    expect(probeQuota(cache, 'local', {
+      unmetered: true,
+      now: '2026-06-28T00:30:00.000Z',
+    })).toBe(nearLimit);
+  });
+
+  it('overrides cached ok snapshots for unmetered agents', () => {
+    const cache = new QuotaCache();
+    cache.record('local', {
+      state: 'ok',
+      confidence: 'low',
+      source: 'local-ledger',
+      checkedAt: '2026-06-28T00:00:00.000Z',
+    });
+
+    expect(probeQuota(cache, 'local', {
+      unmetered: true,
+      now: '2026-06-28T00:30:00.000Z',
+    })).toEqual({
+      state: 'local_unmetered',
+      confidence: 'high',
+      source: 'health-only',
+      checkedAt: '2026-06-28T00:30:00.000Z',
+    });
+  });
+
+  it('passes metered agents through without local_unmetered synthesis', () => {
+    const cache = new QuotaCache();
+    expect(probeQuota(cache, 'codex', {
+      unmetered: false,
+      now: '2026-06-28T00:30:00.000Z',
+    })).toBeUndefined();
+
+    const ok: QuotaSnapshot = {
+      state: 'ok',
+      confidence: 'low',
+      source: 'local-ledger',
+      checkedAt: '2026-06-28T00:00:00.000Z',
+    };
+    cache.record('codex', ok);
+    expect(probeQuota(cache, 'codex', {
+      unmetered: false,
+      now: '2026-06-28T00:30:00.000Z',
+    })).toBe(ok);
   });
 });

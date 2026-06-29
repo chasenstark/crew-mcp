@@ -8,6 +8,7 @@ import type {
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
+import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
 
 export interface RegistryHealthReport {
   [adapterName: string]: HealthCheckResult;
@@ -32,6 +33,7 @@ interface LazyAdapterMetadata {
   readonly defaultEffort?: EffortLevel;
   readonly supportsJsonSchema: boolean;
   readonly enforcesReadOnly: boolean;
+  readonly unmetered?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   readonly recognizesModel?: (modelId: string) => boolean;
   readonly hasExecuteWithSchema?: boolean;
@@ -268,6 +270,7 @@ function createLazyAdapterProxy(
     defaultEffort: metadata.defaultEffort,
     supportsJsonSchema: metadata.supportsJsonSchema,
     enforcesReadOnly: metadata.enforcesReadOnly,
+    unmetered: metadata.unmetered,
     captainCapabilities: metadata.captainCapabilities,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),
@@ -346,6 +349,7 @@ function registerGenericAdapter(
       useWhen,
       supportsJsonSchema: false,
       enforcesReadOnly: false,
+      unmetered: true,
       captainCapabilities: GENERIC_CAPABILITIES,
     },
     async () => {
@@ -368,6 +372,8 @@ function registerOpenAiCompatibleAdapter(
 ): void {
   const strengths = toStrengths(config);
   const useWhen = toUseWhen(config);
+  const resolvedApiBase = resolveOpenAiApiBase(config.apiBase);
+  const unmetered = isLoopbackApiBase(resolvedApiBase);
   registry.registerLazy(
     {
       name,
@@ -375,6 +381,7 @@ function registerOpenAiCompatibleAdapter(
       useWhen,
       supportsJsonSchema: false,
       enforcesReadOnly: false,
+      unmetered,
       captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
       hasExecuteWithSchema: true,
       hasExecuteWithTools: true,
@@ -384,7 +391,7 @@ function registerOpenAiCompatibleAdapter(
       return new OpenAiCompatibleAdapter({
         name,
         model: config.model,
-        apiBase: config.apiBase,
+        apiBase: resolvedApiBase,
         apiKey: config.apiKey,
         strengths,
         useWhen,

@@ -114,6 +114,26 @@ export function recordQuotaObservation(
   }
 }
 
+export function localUnmeteredSnapshot(checkedAt: string): QuotaSnapshot {
+  return {
+    state: 'local_unmetered',
+    confidence: 'high',
+    source: 'health-only',
+    checkedAt,
+  };
+}
+
+export function probeQuota(
+  cache: Pick<QuotaCache, 'get'>,
+  agentId: string,
+  opts: { unmetered?: boolean; now?: string } = {},
+): QuotaSnapshot | undefined {
+  const cached = cache.get(agentId, opts.now !== undefined ? { now: opts.now } : {});
+  if (cached?.state === 'limited' || cached?.state === 'near_limit') return cached;
+  if (opts.unmetered) return localUnmeteredSnapshot(opts.now ?? new Date().toISOString());
+  return cached;
+}
+
 function resolveQuotaAgentId(
   agentId: string,
   resolveCanonicalAgentId?: (agentId: string) => string,

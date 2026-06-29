@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter } from '../../../src/adapters/types.js';
 import type { RunStateV1 } from '../../../src/orchestrator/run-state.js';
-import { QuotaCache, quotaSnapshotFromTerminalState } from '../../../src/orchestrator/quota-cache.js';
+import { QuotaCache, probeQuota, quotaSnapshotFromTerminalState } from '../../../src/orchestrator/quota-cache.js';
 import {
   listAgentsToolHandler,
   type ListAgentsOutput,
@@ -106,6 +106,29 @@ describe('listAgentsToolHandler quota cache wiring', () => {
     expect(clear).toHaveBeenCalledTimes(1);
     expect(structured.agents[0].quota).toBeUndefined();
     expect('quota' in structured.agents[0]).toBe(false);
+  });
+
+  it('surfaces synthesized local_unmetered quota for unmetered agents without observations', async () => {
+    const cache = new QuotaCache();
+
+    const out = await listAgentsToolHandler({}, {
+      registry: makeRegistry([
+        makeAdapter({ name: 'local', unmetered: true }),
+      ]),
+      readAgentPrefs: () => ({}),
+      quotaProbe: async (agentName) => probeQuota(cache, agentName, {
+        unmetered: true,
+        now: '2026-06-28T00:30:00.000Z',
+      }),
+    });
+    const structured = out.structuredContent as unknown as ListAgentsOutput;
+
+    expect(structured.agents[0].quota).toEqual({
+      state: 'local_unmetered',
+      confidence: 'high',
+      source: 'health-only',
+      checkedAt: '2026-06-28T00:30:00.000Z',
+    });
   });
 
   it('swallows refresh clear failures and still returns list_agents output', async () => {

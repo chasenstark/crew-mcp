@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
 import { logger } from '../utils/logger.js';
 import { ModelId } from '../workflow/models.js';
+import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
 import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
 import { parseToolInput, ToolLoopDecisionSchema } from './tool-loop/decision.js';
 import { resolveTerminalOutput } from './tool-loop/result.js';
@@ -61,6 +62,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly useWhen?: string;
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
+  readonly unmetered: boolean;
   // Chat completions do not provide an adapter-level filesystem change list.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
@@ -76,8 +78,8 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.name = options.name;
     this.defaultModel = options.model ?? ModelId.QWEN;
-    this.apiBase = (options.apiBase ?? process.env.CREW_OPENAI_BASE_URL ?? 'http://127.0.0.1:11434/v1')
-      .replace(/\/+$/, '');
+    this.apiBase = resolveOpenAiApiBase(options.apiBase);
+    this.unmetered = isLoopbackApiBase(this.apiBase);
     this.apiKey = options.apiKey ?? process.env.OPENAI_API_KEY ?? process.env.CREW_OPENAI_API_KEY;
     // Empty default — what an OpenAI-compatible endpoint is "good at"
     // depends entirely on the model wired up. Users declare strengths in

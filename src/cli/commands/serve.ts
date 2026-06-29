@@ -44,6 +44,7 @@ import {
 } from '../../orchestrator/run-lifecycle-listeners.js';
 import {
   QuotaCache,
+  probeQuota,
   recordQuotaObservation,
 } from '../../orchestrator/quota-cache.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
@@ -531,7 +532,8 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     getCrewWaitCommand,
     progressTokenSeen,
     readAgentPrefs: () => readAgentPrefsFile(crewHome),
-    quotaProbe: async (agentName) => quotaCache.get(agentName),
+    quotaProbe: async (agentName) =>
+      probeQuota(quotaCache, agentName, { unmetered: registry.get(agentName)?.unmetered === true }),
     clearQuotaCache: () => quotaCache.clear(),
     onTerminalPersisted: (state) => recordQuotaObservation(quotaCache, state, {
       resolveCanonicalAgentId: (agentId) => registry.get(agentId)?.name ?? agentId,

@@ -11,6 +11,21 @@ describe('OpenAiCompatibleAdapter', () => {
     vi.unstubAllGlobals();
   });
 
+  it('classifies loopback api bases as unmetered and cloud or malformed bases as metered', () => {
+    expect(new OpenAiCompatibleAdapter({
+      name: 'local-test',
+      apiBase: 'http://localhost:11434/v1',
+    }).unmetered).toBe(true);
+    expect(new OpenAiCompatibleAdapter({
+      name: 'cloud-test',
+      apiBase: 'https://api.openai.com/v1',
+    }).unmetered).toBe(false);
+    expect(new OpenAiCompatibleAdapter({
+      name: 'malformed-test',
+      apiBase: 'not a url',
+    }).unmetered).toBe(false);
+  });
+
   it('passes the composed prompt as the user chat message', async () => {
     const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
     const fetchMock = vi.fn().mockResolvedValueOnce({

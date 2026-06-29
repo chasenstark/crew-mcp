@@ -168,6 +168,13 @@ export interface AgentAdapter {
    */
   readonly enforcesReadOnly?: boolean;
   /**
+   * True when this adapter targets a genuinely-local, unmetered backend
+   * (no cloud usage quota). Drives list_agents `local_unmetered` synthesis.
+   * Conservative: a metered cloud adapter MUST be falsy. generic => true;
+   * openai-compatible => true only for a loopback apiBase; cloud builtins => undefined.
+   */
+  readonly unmetered?: boolean;
+  /**
    * True when `TaskResult.filesModified` is authoritative for this adapter,
    * so the dispatch layer can skip its post-run git status fallback. A
    * reliable adapter returning `[]` means "no files changed", not "unknown".

@@ -64,6 +64,68 @@ describe('createRegistryFromConfig', () => {
     expect(local?.name).toBe('local');
   });
 
+  it('keeps unmetered metadata consistent before and after lazy load', async () => {
+    const registry = createRegistryFromConfig({
+      generic: {
+        adapter: 'generic',
+        command: 'echo',
+      },
+      local: {
+        adapter: 'openai-compatible',
+        apiBase: 'http://127.0.0.1:11434/v1',
+        model: ModelId.QWEN,
+      },
+      cloud: {
+        adapter: 'openai-compatible',
+        apiBase: 'https://api.openai.com/v1',
+        model: 'gpt-4.1',
+      },
+    });
+
+    expect(registry.get('generic')?.unmetered).toBe(true);
+    expect((await registry.load('generic'))?.unmetered).toBe(true);
+
+    expect(registry.get('local')?.unmetered).toBe(true);
+    expect((await registry.load('local'))?.unmetered).toBe(true);
+
+    expect(registry.get('cloud')?.unmetered).toBe(false);
+    expect((await registry.load('cloud'))?.unmetered).toBe(false);
+  });
+
+  it('keeps env-resolved openai-compatible unmetered metadata stable after lazy load', async () => {
+    const originalBaseUrl = process.env.CREW_OPENAI_BASE_URL;
+    process.env.CREW_OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1';
+
+    try {
+      const registry = createRegistryFromConfig({
+        local: {
+          adapter: 'openai-compatible',
+          model: ModelId.QWEN,
+        },
+      });
+
+      const proxyUnmetered = registry.get('local')?.unmetered;
+      process.env.CREW_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+
+      expect(proxyUnmetered).toBe(true);
+      expect((await registry.load('local'))?.unmetered).toBe(proxyUnmetered);
+    } finally {
+      if (originalBaseUrl === undefined) {
+        delete process.env.CREW_OPENAI_BASE_URL;
+      } else {
+        process.env.CREW_OPENAI_BASE_URL = originalBaseUrl;
+      }
+    }
+  });
+
+  it('leaves built-in cloud adapters falsy for unmetered', () => {
+    const registry = createBuiltinRegistry();
+
+    expect(registry.get('claude-code')?.unmetered).toBeFalsy();
+    expect(registry.get('codex')?.unmetered).toBeFalsy();
+    expect(registry.get('gemini-cli')?.unmetered).toBeFalsy();
+  });
+
   it('threads custom useWhen through lazy metadata and loaded concrete adapters', async () => {
     const registry = createRegistryFromConfig({
       custom: {
@@ -172,6 +234,21 @@ describe('mergeCustomAgents', () => {
     expect(result.warnings[0]).toMatch(/bad.*apiBase/);
     expect(registry.get('bad')).toBeUndefined();
     expect(registry.get('good')).toBeDefined();
+  });
+
+  it('classifies openai-compatible custom agents conservatively for cloud bases', async () => {
+    const registry = createBuiltinRegistry();
+    const result = mergeCustomAgents(registry, {
+      cloud: {
+        adapter: 'openai-compatible',
+        apiBase: 'https://api.openai.com/v1',
+        model: 'gpt-4.1',
+      },
+    });
+
+    expect(result.warnings).toEqual([]);
+    expect(registry.get('cloud')?.unmetered).toBe(false);
+    expect((await registry.load('cloud'))?.unmetered).toBe(false);
   });
 
   it('registers generic custom agents using the shared generic adapter factory', () => {
