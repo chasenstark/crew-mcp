@@ -80,6 +80,15 @@ export const BUILTIN_AGENT_ROUTING = {
     useWhen:
       'Prefer for orienting in large or unfamiliar codebases and tasks with screenshots or diagrams — the largest context window.',
   },
+  agy: {
+    strengths: [
+      'bulk-implementation',
+      'fast-iteration',
+      'long-context',
+    ],
+    useWhen:
+      'A Gemini/Antigravity model for WRITE-MODE implementation in an isolated worktree — large context, fast. NOT a reviewer: agy cannot run read-only, so never use it for review or triage (route those to codex or claude).',
+  },
 } as const satisfies Record<string, {
   readonly strengths: readonly AgentStrength[];
   readonly useWhen: string;

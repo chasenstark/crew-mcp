@@ -256,6 +256,23 @@ export async function planRunAgent(
 
   const runId = makeRunId(input.agent_id, input.prompt);
   const readOnly = input.read_only === true;
+
+  // Fail-closed read-only reject. Adapters that cannot enforce read-only by any
+  // means (rejectsReadOnly) are refused at the plan layer BEFORE allocation or
+  // dispatch, so the run never starts and the generic read-only advisory below
+  // is never emitted (it would contradict the reject). Review/triage routes to
+  // an adapter that can sandbox (codex) or to the host.
+  if (readOnly && adapter.rejectsReadOnly === true) {
+    return { kind: 'error', message: readOnlyRejectMessage(adapter.name) };
+  }
+  // Crew-owned-worktree enforcement (write mode). An adapter that an untrusted
+  // prompt can steer to write outside its working directory (requiresCrewWorktree)
+  // must run in its OWN crew-allocated worktree; refuse a caller-supplied
+  // working_directory override, which is the redirect vector.
+  if (!readOnly && adapter.requiresCrewWorktree === true && input.working_directory !== undefined) {
+    return { kind: 'error', message: crewWorktreeRejectMessage(adapter.name, input.working_directory) };
+  }
+
   const dispatchWarnings = readOnly && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
@@ -428,6 +445,13 @@ export function buildAdapterDispatchTask(args: {
    * the adapter.
    */
   readonly effectiveEffort?: EffortLevel;
+  /**
+   * Provider conversation/session id to RESUME on this dispatch. Threaded by
+   * continue_run from the prior run's persisted sessionId so a stateful adapter
+   * (agy) continues server-side context. Undefined for a fresh run_agent
+   * dispatch (no prior session) and for adapters that don't resume.
+   */
+  readonly resumeSessionId?: string;
   readonly worktreeManager: WorktreeManager;
   readonly input: Record<string, unknown>;
 }): DispatchTask {
@@ -476,6 +500,7 @@ export function buildAdapterDispatchTask(args: {
           signal: taskCtx.signal,
           model: args.effectiveModel,
           effort: args.effectiveEffort,
+          resumeSessionId: args.resumeSessionId,
           sandbox: args.readOnly ? 'read-only' : 'workspace-write',
           // Only auto-trust the workspace (gemini headless trust gate) when the
           // dir is crew-controlled — the host repo or a crew worktree, i.e. the
@@ -577,6 +602,32 @@ async function finalizeAdapterResult(args: {
     // Probing the worktree shouldn't fail the dispatch.
     return resultWithDispatchWarnings;
   }
+}
+
+/**
+ * Message for a fail-closed read-only reject (adapter.rejectsReadOnly). Used by
+ * planRunAgent / continue_run when an adapter that cannot enforce read-only is
+ * dispatched read-only. This is a terminal config refusal — the run never
+ * starts — NOT the advisory below (which means "we'll run it anyway").
+ */
+export function readOnlyRejectMessage(adapterName: string): string {
+  return `Agent "${adapterName}" cannot run read-only and crew refuses to dispatch it read-only: `
+    + 'it has no enforceable read-only sandbox (no OS sandbox, no tool-deny policy), so a review/triage '
+    + 'prompt carrying untrusted content could make it write outside any boundary. Route read-only '
+    + 'review/triage to an agent with a real sandbox (codex) or to the host. This is a configuration '
+    + 'refusal, not a transient error — it will not be retried.';
+}
+
+/**
+ * Message for a write-mode crew-worktree reject (adapter.requiresCrewWorktree).
+ * Used when a write dispatch supplies a working_directory override for an
+ * adapter that must stay inside its own allocated worktree.
+ */
+export function crewWorktreeRejectMessage(adapterName: string, workingDirectory: string): string {
+  return `Agent "${adapterName}" runs write-mode dispatches only inside its own crew-allocated worktree; `
+    + `refusing the working_directory override "${workingDirectory}". Write dispatches always get a fresh `
+    + 'isolated worktree — omit working_directory. (Use read_only with working_directory to point a '
+    + 'reviewer at another run, but this agent does not support read-only.)';
 }
 
 export function readOnlyAdvisoryWarning(adapterName: string): string {

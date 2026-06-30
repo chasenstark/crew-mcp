@@ -8,6 +8,7 @@ import type {
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
+import { AGY_MODEL_LABEL_SET } from './agy-models.js';
 import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
 
 export interface RegistryHealthReport {
@@ -17,12 +18,14 @@ export interface RegistryHealthReport {
 type BuiltinAdapterId =
   | AdapterId.CLAUDE_CODE
   | AdapterId.CODEX
-  | AdapterId.GEMINI_CLI;
+  | AdapterId.GEMINI_CLI
+  | AdapterId.AGY;
 
 export const BUILTIN_ADAPTER_NAMES: readonly BuiltinAdapterId[] = [
   AdapterId.CLAUDE_CODE,
   AdapterId.CODEX,
   AdapterId.GEMINI_CLI,
+  AdapterId.AGY,
 ];
 
 interface LazyAdapterMetadata {
@@ -33,6 +36,8 @@ interface LazyAdapterMetadata {
   readonly defaultEffort?: EffortLevel;
   readonly supportsJsonSchema: boolean;
   readonly enforcesReadOnly: boolean;
+  readonly rejectsReadOnly?: boolean;
+  readonly requiresCrewWorktree?: boolean;
   readonly unmetered?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   readonly recognizesModel?: (modelId: string) => boolean;
@@ -101,10 +106,43 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsJsonSchema: false,
     enforcesReadOnly: false,
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    // KNOWN COLLISION: this prefix regex also matches agy's "Gemini 3.1 Pro
+    // (High)" labels (AgyAdapter pins exact labels instead). It is harmless
+    // today because recognizesModel has NO production routing consumer —
+    // routing is by agent id/alias, not model string — but it would mis-route
+    // if model-string routing is ever added. The standing mitigation is
+    // "select agy by agent id/alias". Do not widen this without also
+    // disambiguating agy. See docs/plans/active/agy-adapter.md (criterion 7).
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId),
     hasExecuteWithSchema: true,
     hasExecuteWithTools: true,
+    hasGetCliVersionTag: true,
+  },
+  [AdapterId.AGY]: {
+    name: AdapterId.AGY,
+    strengths: BUILTIN_AGENT_ROUTING[AdapterId.AGY].strengths,
+    useWhen: BUILTIN_AGENT_ROUTING[AdapterId.AGY].useWhen,
+    // No native JSON-schema flag (post-validate via executeWithSchema/Zod).
+    supportsJsonSchema: false,
+    // agy has no enforceable read-only sandbox; it is REFUSED read-only rather
+    // than weakly enforced. enforcesReadOnly stays false; rejectsReadOnly drives
+    // the plan-layer fail-closed reject. requiresCrewWorktree confines write
+    // dispatches to their allocated worktree. Keep these in lockstep with the
+    // AgyAdapter class flags (proxy/instance parity — registry.get reads the
+    // proxy before load).
+    enforcesReadOnly: false,
+    rejectsReadOnly: true,
+    requiresCrewWorktree: true,
+    // No native captain tool-loop in v1 (executeWithTools deferred), so use the
+    // generic structured-decision capabilities, not the tool-loop set.
+    captainCapabilities: GENERIC_CAPABILITIES,
+    // EXACT-label match against the pinned agy label set, never a substring —
+    // agy labels contain "Claude…"/"GPT-OSS…" which a loose test would claim.
+    recognizesModel: (modelId) =>
+      typeof modelId === 'string' && AGY_MODEL_LABEL_SET.has(modelId),
+    hasExecuteWithSchema: true,
+    hasExecuteWithTools: false,
     hasGetCliVersionTag: true,
   },
 };
@@ -270,6 +308,8 @@ function createLazyAdapterProxy(
     defaultEffort: metadata.defaultEffort,
     supportsJsonSchema: metadata.supportsJsonSchema,
     enforcesReadOnly: metadata.enforcesReadOnly,
+    rejectsReadOnly: metadata.rejectsReadOnly,
+    requiresCrewWorktree: metadata.requiresCrewWorktree,
     unmetered: metadata.unmetered,
     captainCapabilities: metadata.captainCapabilities,
     execute: async (task) => (await load()).execute(task),
@@ -505,6 +545,7 @@ export function createRegistryFromConfig(
       adapterType === AdapterId.CLAUDE_CODE
       || adapterType === AdapterId.CODEX
       || adapterType === AdapterId.GEMINI_CLI
+      || adapterType === AdapterId.AGY
     ) {
       if (name !== adapterType) {
         throw new Error(
@@ -543,6 +584,11 @@ function createBuiltinAdapterLoader(adapterType: BuiltinAdapterId): LazyAdapterL
         const { GeminiCliAdapter } = await import('./gemini-cli.js');
         return new GeminiCliAdapter();
       };
+    case AdapterId.AGY:
+      return async () => {
+        const { AgyAdapter } = await import('./agy.js');
+        return new AgyAdapter();
+      };
   }
 }
 
@@ -559,6 +605,10 @@ export function createBuiltinRegistry(): AdapterRegistry {
   registry.registerLazy(
     BUILTIN_ADAPTER_METADATA[AdapterId.GEMINI_CLI],
     createBuiltinAdapterLoader(AdapterId.GEMINI_CLI),
+  );
+  registry.registerLazy(
+    BUILTIN_ADAPTER_METADATA[AdapterId.AGY],
+    createBuiltinAdapterLoader(AdapterId.AGY),
   );
   return registry;
 }

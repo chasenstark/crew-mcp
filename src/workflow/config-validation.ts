@@ -262,7 +262,10 @@ export function validateConfig(config: FullConfig): ConfigDiagnostic[] {
     }
 
     if (
-      (adapterType === AdapterId.CLAUDE_CODE || adapterType === AdapterId.CODEX || adapterType === AdapterId.GEMINI_CLI)
+      (adapterType === AdapterId.CLAUDE_CODE
+        || adapterType === AdapterId.CODEX
+        || adapterType === AdapterId.GEMINI_CLI
+        || adapterType === AdapterId.AGY)
       && name !== adapterType
     ) {
       diagnostics.push(

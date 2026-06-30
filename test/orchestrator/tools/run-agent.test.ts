@@ -6,6 +6,8 @@ import { execSync } from 'child_process';
 import {
   planRunAgent,
   readOnlyAdvisoryWarning,
+  readOnlyRejectMessage,
+  crewWorktreeRejectMessage,
   resolveEffectiveEffort,
   resolveEffectiveModel,
   type RunAgentHandlerContext,
@@ -865,6 +867,88 @@ describe('resolveEffectiveEffort', () => {
   it('does not clamp when adapter omits supportedEfforts (no constraint)', () => {
     const a = adapterWith('medium');
     expect(resolveEffectiveEffort(a, 'max', undefined)).toBe('max');
+  });
+});
+
+describe('planRunAgent fail-closed capability rejects (agy)', () => {
+  let root: string;
+  let crewHome: string;
+  let worktreeManager: WorktreeManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'crew-run-agent-reject-'));
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-run-agent-reject-home-'));
+    execSync('git init -q', { cwd: root });
+    execSync('git config user.email test@crew.local', { cwd: root });
+    execSync('git config user.name test', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
+    execSync('git commit -q -m init', { cwd: root });
+    worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
+  });
+
+  function ctxWith(adapter: AgentAdapter): RunAgentHandlerContext {
+    return { registry: makeRegistry([adapter]), worktreeManager };
+  }
+
+  it('hard-rejects a read-only dispatch for a rejectsReadOnly adapter — fail-closed, no advisory', async () => {
+    const execute = vi.fn();
+    const agy = makeMockAdapter({
+      name: 'agy',
+      enforcesReadOnly: false,
+      rejectsReadOnly: true,
+      execute: execute as never,
+    });
+    const plan = await planRunAgent(
+      { agent_id: 'agy', prompt: 'review this', read_only: true },
+      ctxWith(agy),
+    );
+    expect(plan.kind).toBe('error');
+    if (plan.kind === 'error') {
+      expect(plan.message).toBe(readOnlyRejectMessage('agy'));
+      // The contradictory "Crew will run it anyway" advisory must NOT appear.
+      expect(plan.message).not.toContain('run it anyway');
+    }
+    // Refused before any dispatch — the adapter never executed.
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('still emits the advisory (not a reject) for a non-rejecting read-only adapter', async () => {
+    const generic = makeMockAdapter({ name: 'gen', enforcesReadOnly: false });
+    const plan = await planRunAgent(
+      { agent_id: 'gen', prompt: 'review', read_only: true },
+      ctxWith(generic),
+    );
+    expect(plan.kind).toBe('dispatched');
+    if (plan.kind === 'dispatched') {
+      expect(plan.dispatchWarnings).toContain(readOnlyAdvisoryWarning('gen'));
+    }
+  });
+
+  it('refuses a write-mode working_directory override for a requiresCrewWorktree adapter', async () => {
+    const agy = makeMockAdapter({ name: 'agy', requiresCrewWorktree: true });
+    const plan = await planRunAgent(
+      { agent_id: 'agy', prompt: 'implement', working_directory: '/somewhere/else' },
+      ctxWith(agy),
+    );
+    expect(plan.kind).toBe('error');
+    if (plan.kind === 'error') {
+      expect(plan.message).toBe(crewWorktreeRejectMessage('agy', '/somewhere/else'));
+    }
+  });
+
+  it('allows a write-mode dispatch with no working_directory override (fresh worktree)', async () => {
+    const agy = makeMockAdapter({ name: 'agy', requiresCrewWorktree: true });
+    const plan = await planRunAgent(
+      { agent_id: 'agy', prompt: 'implement' },
+      ctxWith(agy),
+    );
+    expect(plan.kind).toBe('dispatched');
   });
 });
 

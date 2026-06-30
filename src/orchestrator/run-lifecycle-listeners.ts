@@ -162,6 +162,7 @@ async function persistTerminal(
       summary: terminal.result.output,
       filesChanged: terminal.result.filesModified,
       warnings: terminal.result.warnings,
+      sessionId: terminal.result.sessionId,
       failure: terminal.result.status === 'error' ? terminal.result.failure : undefined,
     });
   } else if (terminal.kind === 'failed') {
@@ -170,6 +171,7 @@ async function persistTerminal(
       summary: terminal.error,
       filesChanged: terminal.result?.filesModified ?? [],
       warnings: terminal.result?.warnings,
+      sessionId: terminal.result?.sessionId,
       lastError: terminal.error,
       failure: terminal.result?.failure,
     });

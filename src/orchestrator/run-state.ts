@@ -132,6 +132,16 @@ export interface RunStateV1 {
   readonly criteriaEpoch?: number;
   readonly prompts: readonly PromptRecord[];
   readonly filesChanged: readonly string[];
+  /**
+   * Provider conversation/session id from the latest terminal turn's
+   * `TaskResult.sessionId`. Persisted so `continue_run` can resume a stateful
+   * adapter (agy `--conversation <id>`) instead of starting a fresh
+   * conversation — without this the id is dropped at terminal persistence and
+   * resume silently loses context. Carried across `continue_run` turns
+   * (markTerminal preserves it when a turn returns no new id). Optional +
+   * additive so older state.json files load without migration.
+   */
+  readonly sessionId?: string;
   readonly lastError?: string;
   readonly failure?: TaskFailure;
   readonly mergeStatus?: MergeStatus;
@@ -581,6 +591,13 @@ export class RunStateStore {
       lastError?: string;
       failure?: TaskFailure;
       /**
+       * Provider conversation/session id from this turn's TaskResult. Persisted
+       * for resume (agy `--conversation <id>`). When omitted/undefined, the
+       * existing persisted id is preserved (a resume turn that returns no new
+       * id, or an adapter that doesn't resume, must not erase a good id).
+       */
+      sessionId?: string;
+      /**
        * Advisory messages (e.g., read-only dirty-tree probe). Merged
        * with any pre-existing warnings on the state — warnings
        * accumulate across continue_run turns rather than being
@@ -615,6 +632,7 @@ export class RunStateStore {
         completedAt: now,
         prompts,
         filesChanged: Array.from(new Set([...s.filesChanged, ...args.filesChanged])),
+        sessionId: args.sessionId ?? s.sessionId,
         lastError: args.lastError ?? s.lastError,
         failure: args.failure,
         ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),

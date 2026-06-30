@@ -32,6 +32,7 @@ import {
   buildAdapterDispatchTask,
   captureRunBranchPointSnapshot,
   readOnlyAdvisoryWarning,
+  readOnlyRejectMessage,
   resolveEffectiveEffort,
   resolveEffectiveModel,
 } from './run-agent.js';
@@ -111,6 +112,14 @@ export async function continueRunToolHandler(
     return errorContent(
       `Agent "${preState.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
     );
+  }
+  // Defense in depth: a read-only run for a reject-read-only adapter should
+  // never exist (planRunAgent refuses to create one), but if one is encountered
+  // (e.g. a future adapter gained rejectsReadOnly after read-only runs existed),
+  // refuse the continuation fail-closed rather than emit the "run it anyway"
+  // advisory below.
+  if (preState.readOnly === true && adapter.rejectsReadOnly === true) {
+    return errorContent(readOnlyRejectMessage(adapter.name));
   }
   const continueExtra = extra;
   let criteriaContract: CriteriaContractResolution | undefined;
@@ -193,6 +202,10 @@ export async function continueRunToolHandler(
     branchPointBefore,
     effectiveModel,
     effectiveEffort,
+    // Resume the prior turn's provider conversation so a stateful adapter (agy)
+    // continues server-side context instead of starting fresh. Read from the
+    // persisted run state; undefined for adapters that don't return a sessionId.
+    resumeSessionId: preState.sessionId,
     worktreeManager: deps.worktreeManager,
     input: { ...args },
   });

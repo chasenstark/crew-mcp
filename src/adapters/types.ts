@@ -168,6 +168,27 @@ export interface AgentAdapter {
    */
   readonly enforcesReadOnly?: boolean;
   /**
+   * True when this adapter must refuse a read-only dispatch outright rather
+   * than run it. Set by adapters whose read-only contract cannot be enforced
+   * by any means (neither an OS sandbox like `enforcesReadOnly`, nor tool-level
+   * denial like gemini's `--policy`) — running them read-only would be
+   * fail-open. The dispatch PLAN layer (`planRunAgent` / `continue_run`)
+   * short-circuits to an error before allocating or running anything, and the
+   * generic read-only advisory is NOT emitted (the run never starts). agy is
+   * the first such adapter; review/triage routes to codex/claude instead.
+   */
+  readonly rejectsReadOnly?: boolean;
+  /**
+   * True when a WRITE dispatch for this adapter must run inside its own
+   * crew-allocated run worktree, so the planner refuses a caller-supplied
+   * `working_directory` override in write mode. Set by adapters that can be
+   * steered to write outside their working directory by an untrusted prompt
+   * (agy: absolute paths escape `--add-dir`), where the worktree boundary is
+   * the only containment. No effect on read-only dispatches (those are handled
+   * by `rejectsReadOnly` / the dirty-tree probe).
+   */
+  readonly requiresCrewWorktree?: boolean;
+  /**
    * True when this adapter targets a genuinely-local, unmetered backend
    * (no cloud usage quota). Drives list_agents `local_unmetered` synthesis.
    * Conservative: a metered cloud adapter MUST be falsy. generic => true;
@@ -355,6 +376,14 @@ export interface Task {
      * opening the parent repository's entire `.git/` directory.
      */
     writablePaths?: readonly string[];
+    /**
+     * Provider conversation/session id to RESUME on this dispatch. Threaded by
+     * `continue_run` from the prior turn's persisted `TaskResult.sessionId` so
+     * a stateful adapter (agy `--conversation <id>`) continues server-side
+     * context instead of starting fresh. Adapters that don't resume via
+     * execute() ignore it. Undefined on a fresh `run_agent` dispatch.
+     */
+    resumeSessionId?: string;
     signal?: AbortSignal;
   };
   onOutput?: (chunk: string) => void;

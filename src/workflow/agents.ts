@@ -4,6 +4,7 @@ export enum AgentId {
   CLAUDE_CODE = 'claude-code',
   CODEX = 'codex',
   GEMINI_CLI = 'gemini-cli',
+  AGY = 'agy',
   CAPTAIN = 'captain',
 }
 
@@ -11,6 +12,7 @@ export enum AdapterId {
   CLAUDE_CODE = 'claude-code',
   CODEX = 'codex',
   GEMINI_CLI = 'gemini-cli',
+  AGY = 'agy',
   GENERIC = 'generic',
   OPENAI_COMPATIBLE = 'openai-compatible',
 }
@@ -25,6 +27,7 @@ export const ADAPTER_PRESETS: readonly AdapterId[] = [
   AdapterId.CLAUDE_CODE,
   AdapterId.CODEX,
   AdapterId.GEMINI_CLI,
+  AdapterId.AGY,
   AdapterId.GENERIC,
   AdapterId.OPENAI_COMPATIBLE,
 ];
@@ -33,6 +36,7 @@ const AGENT_ALIASES: Record<string, AgentId> = {
   CLAUDE_CODE: AgentId.CLAUDE_CODE,
   CODEX: AgentId.CODEX,
   GEMINI_CLI: AgentId.GEMINI_CLI,
+  AGY: AgentId.AGY,
   CAPTAIN: AgentId.CAPTAIN,
 };
 
@@ -40,6 +44,7 @@ const ADAPTER_ALIASES: Record<string, AdapterId> = {
   CLAUDE_CODE: AdapterId.CLAUDE_CODE,
   CODEX: AdapterId.CODEX,
   GEMINI_CLI: AdapterId.GEMINI_CLI,
+  AGY: AdapterId.AGY,
   GENERIC: AdapterId.GENERIC,
   OPENAI_COMPATIBLE: AdapterId.OPENAI_COMPATIBLE,
 };
