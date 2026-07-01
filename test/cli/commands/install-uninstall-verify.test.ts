@@ -1150,7 +1150,7 @@ describe('project-scope install / verify / uninstall', () => {
       repoRoot,
       skipRunningCheck: true,
     });
-    expect(allResult.installed).toEqual(['claude-code', 'codex']);
+    expect(allResult.installed).toEqual(['claude-code', 'codex', 'agy']);
 
     rmSync(repoRoot, { recursive: true, force: true });
     repoRoot = mkdtempSync(join(tmpdir(), 'crew-project-repo-'));
@@ -1161,7 +1161,7 @@ describe('project-scope install / verify / uninstall', () => {
       skipRunningCheck: true,
       isInteractive: false,
     });
-    expect(omittedResult.installed).toEqual(['claude-code', 'codex']);
+    expect(omittedResult.installed).toEqual(['claude-code', 'codex', 'agy']);
     expect(claudeDetect).not.toHaveBeenCalled();
     expect(codexDetect).not.toHaveBeenCalled();
     expect(geminiDetect).not.toHaveBeenCalled();
@@ -1182,8 +1182,68 @@ describe('project-scope install / verify / uninstall', () => {
       },
     });
 
-    expect(receivedIds).toEqual(['claude-code', 'codex']);
+    expect(receivedIds).toEqual(['claude-code', 'codex', 'agy']);
     expect(result.installed).toEqual(['codex']);
+  });
+
+  it('install --scope project --target agy writes .agents MCP config + skills, verifies, uninstalls', async () => {
+    const installed = await installCommand({
+      scope: 'project',
+      target: 'agy',
+      home,
+      repoRoot,
+      skipRunningCheck: true,
+    });
+    expect(installed.installed).toEqual(['agy']);
+    expect(installed.skipped).toEqual([]);
+
+    // MCP config: JSON mcpServers.crew at <repo>/.agents/mcp_config.json.
+    const mcpConfigPath = join(repoRoot, '.agents', 'mcp_config.json');
+    expect(existsSync(mcpConfigPath)).toBe(true);
+    const mcpConfig = JSON.parse(readFileSync(mcpConfigPath, 'utf-8')) as {
+      mcpServers: { crew: { command: string; args: string[] } };
+    };
+    expect(mcpConfig.mcpServers.crew).toEqual({
+      command: './node_modules/.bin/crew-mcp',
+      args: ['serve'],
+    });
+
+    // Skills: project-local under .agents/skills/.
+    expect(existsSync(join(repoRoot, '.agents', 'skills', 'crew', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(repoRoot, '.agents', 'skills', 'crew-iterate', 'SKILL.md'))).toBe(true);
+
+    // verify --scope project passes for agy.
+    const report = await verifyCommand({ scope: 'project', home, repoRoot, target: 'agy' });
+    expect(report.ok).toBe(true);
+    expect(report.targets.map((t) => t.host)).toEqual(['agy']);
+    expect(report.targets[0].issues).toEqual([]);
+
+    // uninstall removes the crew block + skills; preserves unrelated .agents config.
+    writeFileSync(
+      join(repoRoot, '.agents', 'unrelated.json'),
+      JSON.stringify({ keep: true }),
+      'utf-8',
+    );
+    const removed = await uninstallCommand({ scope: 'project', target: 'agy', home, repoRoot });
+    expect(removed.removed).toEqual(['agy']);
+    const strippedConfig = existsSync(mcpConfigPath)
+      ? readFileSync(mcpConfigPath, 'utf-8')
+      : '';
+    expect(strippedConfig.includes('crew')).toBe(false);
+    expect(existsSync(join(repoRoot, '.agents', 'skills', 'crew', 'SKILL.md'))).toBe(false);
+    expect(existsSync(join(repoRoot, '.agents', 'unrelated.json'))).toBe(true);
+  });
+
+  it('rejects agy at global scope with a use-project-scope message', async () => {
+    await expect(
+      installCommand({
+        target: 'agy',
+        home,
+        skipRunningCheck: true,
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      }),
+    ).rejects.toThrow(/does not support global scope|project-scope only/i);
   });
 
   it('verify --scope project passes after install and warns for missing Codex trust', async () => {
@@ -1393,6 +1453,58 @@ describe('resolveTargets', () => {
         resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
       }),
     ).rejects.toThrow(/unknown target/);
+  });
+
+  it('rejects agy at global scope', async () => {
+    await expect(
+      installCommand({
+        target: 'agy',
+        home: '/tmp',
+        forceWithoutBinary: true,
+        resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      }),
+    ).rejects.toThrow(/does not support global scope|project-scope only/i);
+  });
+});
+
+describe('global verify ignores a project-only host in a stale manifest', () => {
+  it('skips agy when it appears in ~/.crew/install.json (no --target)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'crew-stale-manifest-'));
+    try {
+      // Hand-write a global manifest that lists agy — a state the
+      // normal install path never produces (agy is project-only), but
+      // a stale/hand-edited install.json could. Global verify must not
+      // evaluate it in global scope (agy's configPath would throw).
+      mkdirSync(join(home, '.crew'), { recursive: true });
+      writeFileSync(
+        manifestPath(home),
+        JSON.stringify({
+          schemaVersion: 2,
+          targets: {
+            agy: {
+              configPath: join(home, '.agents', 'mcp_config.json'),
+              skillPath: join(home, '.agents', 'skills', 'crew', 'SKILL.md'),
+              skills: {},
+              writtenPaths: [],
+              version: '0.0.0-test',
+              installedAt: new Date(0).toISOString(),
+              serverCommand: 'crew-mcp',
+              serverArgs: ['serve'],
+              crewWaitCommand: 'crew-wait',
+              autoApproved: true,
+            },
+          },
+        }),
+        'utf-8',
+      );
+
+      // Must not throw (agy.configPath would throw if evaluated) and
+      // must not report agy as a global target.
+      const report = await verifyCommand({ home });
+      expect(report.targets.some((t) => t.host === 'agy')).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

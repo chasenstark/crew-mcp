@@ -131,7 +131,7 @@ export function buildProgram(): Command {
     .description('Install the crew MCP server + skill into a host CLI')
     .option(
       '-t, --target <host>',
-      'Target host: claude-code | codex | gemini | all. '
+      'Target host: claude-code | codex | gemini | all (agy is project-scope only). '
       + 'Omit to detect installed CLIs and pick interactively.',
     )
     .option('--scope <scope>', 'Install scope: global | project', 'global')
@@ -192,7 +192,7 @@ export function buildProgram(): Command {
   program
     .command('verify')
     .description('Check installed skill ↔ MCP tool catalog parity')
-    .option('-t, --target <host>', 'Target host: claude-code | codex | gemini | all')
+    .option('-t, --target <host>', 'Target host: claude-code | codex | gemini | all (agy: --scope project)')
     .option('--scope <scope>', 'Install scope: global | project', 'global')
     .option('--project', 'Alias for --scope project')
     .action(async (opts: { target?: string; scope: string; project?: boolean }) => {
@@ -214,7 +214,7 @@ export function buildProgram(): Command {
     .description('Remove the crew MCP server + skill from a host CLI')
     .requiredOption(
       '-t, --target <host>',
-      'Target host: claude-code | codex | gemini | all',
+      'Target host: claude-code | codex | gemini | all (agy: --scope project)',
     )
     .option('--scope <scope>', 'Install scope: global | project', 'global')
     .option('--project', 'Alias for --scope project')

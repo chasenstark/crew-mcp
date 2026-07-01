@@ -20,7 +20,7 @@ import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 
-import { HOST_ADAPTERS, type HostId } from '../../install/hosts/index.js';
+import { HOST_ADAPTERS, isGlobalHostId, type HostId } from '../../install/hosts/index.js';
 import { readInstallManifest } from '../../install/install-manifest.js';
 import {
   absolutizeProjectTarget,
@@ -91,9 +91,20 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
     ?? (opts.home ? join(opts.home, '.crew') : resolveCrewHome());
   const probes = await runRuntimeProbes({ crewHome, env: opts.env ?? process.env });
   const manifest = await readInstallManifest(home);
+  // No-target global verify walks the manifest directly. Filter out
+  // project-only hosts (e.g. agy) that a stale or hand-edited
+  // install.json might list: they have no global config to verify and
+  // must never be evaluated in global scope. They're covered by
+  // `verify --scope project`.
   const installedTargets = opts.target
     ? resolveTargets(opts.target, 'global')
-    : Object.keys(manifest.targets) as HostId[];
+    : (Object.keys(manifest.targets) as HostId[]).filter((id) => {
+        if (isGlobalHostId(id)) return true;
+        logger.info(
+          `crew verify: skipping project-only host "${id}" in global scope; run \`crew-mcp verify --scope project\` to check it.`,
+        );
+        return false;
+      });
 
   if (installedTargets.length === 0) {
     const note = 'No installed targets. Run `crew install --target <host>` first.';
@@ -402,7 +413,10 @@ function extractProjectServerConfig(
   targetId: HostId,
   config: string,
 ): ProjectServerConfig | null {
-  if (targetId === 'claude-code') {
+  // Claude Code and agy both store the crew server as JSON
+  // (mcpServers.crew) — Claude at .mcp.json, agy at
+  // .agents/mcp_config.json. Same extraction.
+  if (targetId === 'claude-code' || targetId === 'agy') {
     try {
       const parsed = JSON.parse(config) as {
         mcpServers?: { crew?: { command?: unknown; args?: unknown } };

@@ -156,6 +156,18 @@ npx crew-mcp install --scope project --target claude-code,codex
 git add .mcp.json .claude .codex .crew/install.project.json package.json package-lock.json
 ```
 
+Antigravity CLI (`agy`) is **project-scope only** — it loads MCP servers
+solely from `<repo>/.agents/mcp_config.json`, so there is no global
+`--target agy`. Install it per repo:
+
+```sh
+npx crew-mcp install --scope project --target agy
+git add .agents .crew/install.project.json package.json package-lock.json
+```
+
+agy has no config-level tool-approval flag; launch it with
+`--dangerously-skip-permissions` so crew tool calls don't prompt.
+
 Project scope writes `./node_modules/.bin/crew-mcp serve` into the
 host config, not a machine-specific `dist/index.js` or home-directory
 path. It also writes `.crew/install.project.json` with repo-relative
@@ -294,6 +306,7 @@ valid; the curated list is only the default picker and seed set.
 | Claude Code | `claude-code` | `--target claude-code` |
 | Codex CLI | `codex` | `--target codex` |
 | Gemini CLI | `gemini-cli` | `--target gemini` |
+| Antigravity CLI (`agy`) | `agy` | `--scope project --target agy` |
 | Ollama / LM Studio / vLLM | `openai-compatible` | `crew-mcp agents add` |
 | Any CLI with a command interface | `generic` | `crew-mcp agents add` |
 

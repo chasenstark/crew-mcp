@@ -41,8 +41,10 @@ import {
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   ALL_HOST_IDS,
+  GLOBAL_HOST_IDS,
   HOST_ADAPTERS,
   PROJECT_HOST_IDS,
+  isGlobalHostId,
   isProjectHostId,
   type HostAdapter,
   type HostId,
@@ -947,7 +949,7 @@ function getObjectField(parent: Record<string, unknown>, key: string): Record<st
  */
 export function resolveTargets(input: string, scope: InstallScope = 'global'): HostId[] {
   const trimmed = input.trim();
-  const allowed = scope === 'project' ? PROJECT_HOST_IDS : ALL_HOST_IDS;
+  const allowed = scope === 'project' ? PROJECT_HOST_IDS : GLOBAL_HOST_IDS;
   if (trimmed.length === 0) {
     throw new Error('crew install: --target is required (e.g., codex, claude-code, gemini, all)');
   }
@@ -968,6 +970,13 @@ export function resolveTargets(input: string, scope: InstallScope = 'global'): H
       throw new Error(
         `crew install: target "${part}" does not support project scope. `
         + `Project-scope targets: ${PROJECT_HOST_IDS.join(', ')}, all`,
+      );
+    }
+    if (scope === 'global' && !isGlobalHostId(part)) {
+      throw new Error(
+        `crew install: target "${part}" does not support global scope. `
+        + `Global-scope targets: ${GLOBAL_HOST_IDS.join(', ')}, all. `
+        + `(agy is project-scope only — use \`--scope project --target ${part}\`.)`,
       );
     }
     if (!seen.has(part)) {
@@ -1009,7 +1018,7 @@ async function resolveTargetsInteractively(
     if (detectedCount === 0) {
       logger.info(
         'crew install: no host CLIs detected on PATH and no --target given; nothing to install. '
-        + `Try \`crew install --target <${ALL_HOST_IDS.join(' | ')}>\`.`,
+        + `Try \`crew install --target <${GLOBAL_HOST_IDS.join(' | ')}>\`.`,
       );
       return [];
     }
@@ -1023,7 +1032,7 @@ async function resolveTargetsInteractively(
   if (detectedCount === 0) {
     logger.info(
       'crew install: no host CLIs detected on PATH. '
-      + `Force-install one with \`crew install --target <${ALL_HOST_IDS.join(' | ')}>\`.`,
+      + `Force-install one with \`crew install --target <${GLOBAL_HOST_IDS.join(' | ')}>\`.`,
     );
     return [];
   }
@@ -1065,7 +1074,10 @@ async function resolveProjectTargetsInteractively(opts: InstallOptions): Promise
  */
 async function detectAllHosts(): Promise<DetectedHost[]> {
   const results = await Promise.all(
-    ALL_HOST_IDS.map(async (id): Promise<DetectedHost> => {
+    // Global scope only: agy (project-only) is excluded — it has no
+    // global MCP config to install into, so the global picker must not
+    // offer it.
+    GLOBAL_HOST_IDS.map(async (id): Promise<DetectedHost> => {
       const adapter = HOST_ADAPTERS[id];
       try {
         const detection = await adapter.detectInstalled();

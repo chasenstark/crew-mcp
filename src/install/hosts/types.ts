@@ -22,12 +22,17 @@ import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js'
 
 export interface HostAdapter {
   /** Stable id used in CLI args (--target=<id>) and install.json. */
-  readonly id: 'claude-code' | 'codex' | 'gemini';
+  readonly id: 'claude-code' | 'codex' | 'gemini' | 'agy';
 
   /** Human-readable name for log output. */
   readonly displayName: string;
 
-  /** Path to host's MCP config file, e.g. ~/.codex/config.toml. */
+  /**
+   * Path to host's MCP config file, e.g. ~/.codex/config.toml.
+   * Project-only hosts (not in GLOBAL_HOST_IDS, e.g. agy) have no global
+   * MCP config and throw here; they are excluded from every global
+   * target-resolution path, so this is never reached in normal flow.
+   */
   configPath(home: string): string;
 
   /**
