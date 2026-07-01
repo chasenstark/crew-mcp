@@ -436,6 +436,121 @@ describe('planRunAgent', () => {
   });
 });
 
+describe('planRunAgent — agy scratch-escape guard', () => {
+  let root: string;
+  let crewHome: string;
+  let worktreeManager: WorktreeManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'crew-agy-escape-'));
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-agy-escape-home-'));
+    execSync('git init -q', { cwd: root });
+    execSync('git config user.email test@crew.local', { cwd: root });
+    execSync('git config user.name test', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
+    execSync('git commit -q -m init', { cwd: root });
+    worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
+  });
+
+  it('warns when agy reports a write but the worktree has no changes (scratch escape)', async () => {
+    // agy claims it wrote a file, but nothing landed in the worktree — the
+    // classic silent escape to agy's scratch dir. The guard must surface it
+    // rather than let the empty diff read as a clean success.
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
+      output: 'I have successfully created the file config.txt with the requested content.',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({ name: 'agy', execute: executeMock, filesModifiedReliable: false });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent({ agent_id: 'agy', prompt: 'create config.txt' }, ctx);
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('create config.txt').run({ signal: makeAbortSignal() });
+
+    expect(result.status).toBe('success');
+    expect(result.filesModified).toEqual([]);
+    expect(result.warnings?.some((w) => /scratch/i.test(w))).toBe(true);
+  });
+
+  it('does NOT warn when agy actually wrote into the worktree', async () => {
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
+      const typedTask = task as { context: { workingDirectory: string } };
+      writeFileSync(join(typedTask.context.workingDirectory, 'config.txt'), 'landed\n', 'utf-8');
+      return {
+        output: 'I have successfully created config.txt.',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      };
+    });
+    const adapter = makeMockAdapter({ name: 'agy', execute: executeMock, filesModifiedReliable: false });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent({ agent_id: 'agy', prompt: 'create config.txt' }, ctx);
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('create config.txt').run({ signal: makeAbortSignal() });
+
+    expect(result.filesModified).toEqual(['config.txt']);
+    expect(result.warnings?.some((w) => /scratch/i.test(w))).toBeFalsy();
+  });
+
+  it('does NOT warn on an honest no-op agy run whose output claims no writes', async () => {
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
+      output: 'The code already handles this case; no changes were necessary.',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({ name: 'agy', execute: executeMock, filesModifiedReliable: false });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent({ agent_id: 'agy', prompt: 'check if a fix is needed' }, ctx);
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('check if a fix is needed').run({ signal: makeAbortSignal() });
+
+    expect(result.warnings?.some((w) => /scratch/i.test(w))).toBeFalsy();
+  });
+
+  it('does NOT warn for a non-agy adapter with a write-like empty result', async () => {
+    // The guard is agy-scoped: another adapter's honest no-op must not be
+    // second-guessed just because its prose contains a write verb.
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
+      output: 'I updated my understanding but made no file changes.',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({ name: 'codex', execute: executeMock, filesModifiedReliable: false });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent({ agent_id: 'codex', prompt: 'inspect' }, ctx);
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('inspect').run({ signal: makeAbortSignal() });
+
+    expect(result.warnings?.some((w) => /scratch/i.test(w))).toBeFalsy();
+  });
+});
+
 describe('planRunAgent — read_only path', () => {
   let root: string;
   let crewHome: string;

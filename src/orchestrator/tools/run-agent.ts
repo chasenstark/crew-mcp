@@ -534,6 +534,7 @@ export function buildAdapterDispatchTask(args: {
         branchPointBefore: args.branchPointBefore,
         worktreeManager: args.worktreeManager,
         runId: args.runId,
+        adapterName: args.adapter.name,
       });
     },
   };
@@ -549,6 +550,7 @@ async function finalizeAdapterResult(args: {
   readonly branchPointBefore: ReadonlyMap<string, string> | undefined;
   readonly worktreeManager: WorktreeManager;
   readonly runId: string;
+  readonly adapterName: string;
 }): Promise<TaskResult> {
   const resultWithDispatchWarnings =
     args.dispatchWarnings && args.dispatchWarnings.length > 0
@@ -593,7 +595,9 @@ async function finalizeAdapterResult(args: {
     const before = args.branchPointBefore ?? new Map<string, string>();
     const after = await capturePathSignatureSnapshot(args.worktreePath, fromWorktree);
     const changedSinceDispatch = fromWorktree.filter((path) => before.get(path) !== after.get(path));
-    if (changedSinceDispatch.length === 0) return resultWithDispatchWarnings;
+    if (changedSinceDispatch.length === 0) {
+      return maybeWarnAgyScratchEscape(resultWithDispatchWarnings, args.adapterName);
+    }
     const merged = Array.from(
       new Set([...resultWithDispatchWarnings.filesModified, ...changedSinceDispatch].filter((f) => f.trim().length > 0)),
     );
@@ -602,6 +606,39 @@ async function finalizeAdapterResult(args: {
     // Probing the worktree shouldn't fail the dispatch.
     return resultWithDispatchWarnings;
   }
+}
+
+/**
+ * Past-tense write verbs an agy response uses when it believes it edited files.
+ * Deliberately past/participle forms ("created", not "create") to avoid firing
+ * on prose that merely describes an intended-but-skipped action.
+ */
+const AGY_WRITE_CLAIM_REGEX =
+  /\b(created|wrote|modified|edited|updated|saved|added|deleted|removed|appended|generated)\b/i;
+
+/**
+ * agy-only backstop for the scratch-escape failure mode: agy can silently write
+ * to its internal scratch dir instead of the crew worktree (see
+ * withAgyWorkspacePreamble). The workspace-contract preamble makes that rare,
+ * but it is prompt-level mitigation, not a sandbox — so when a WRITE-mode agy
+ * run reports success, its output claims it wrote files, yet the worktree shows
+ * ZERO changes, warn that the writes may have escaped to scratch rather than
+ * letting the empty diff read as a clean no-op. Warning-only (not a failure):
+ * a legitimately no-op run — inspection, "nothing to change" — must still
+ * succeed, and false positives here cost only a cautionary note. Scoped to agy
+ * so no other adapter's honest no-op run is second-guessed; the scratch dir is
+ * deliberately NOT scanned (global, concurrent, weak attribution).
+ */
+function maybeWarnAgyScratchEscape(result: TaskResult, adapterName: string): TaskResult {
+  if (adapterName !== AgentId.AGY) return result;
+  if (result.status !== 'success') return result;
+  if (!AGY_WRITE_CLAIM_REGEX.test(result.output ?? '')) return result;
+  const warning =
+    'agy reported a successful write task, but crew detected no changes in the run worktree. '
+    + 'agy may have written to its internal scratch project instead of the worktree (this happens '
+    + 'when it uses relative paths). Inspect ~/.gemini/antigravity-cli/scratch and re-run before '
+    + 'trusting this result.';
+  return { ...result, warnings: [warning, ...(result.warnings ?? [])] };
 }
 
 /**

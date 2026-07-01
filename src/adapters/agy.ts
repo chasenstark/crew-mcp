@@ -129,6 +129,45 @@ function renderProcessFailureOutput(stdout: string, stderr: string, message: str
   return message;
 }
 
+/**
+ * agy's file-write tool does NOT reliably resolve RELATIVE paths against the
+ * process cwd (or `--add-dir`). In a crew-allocated *linked git worktree* it
+ * silently diverts relative writes to agy's internal scratch project
+ * (~/.gemini/antigravity-cli/scratch), so the deliverable escapes the worktree
+ * and crew's git-status probe sees a clean tree — a false SUCCESS. Empirically
+ * (agy 1.0.14, macOS): against a real crew worktree, relative-path writes
+ * escaped every trial (scratch or the process's own cwd), while ABSOLUTE-path
+ * writes under the worktree landed 3/3. `--add-dir` only grants write
+ * permission; `--new-project` did NOT help (3/3 scratch in a linked worktree).
+ * Absolute paths are the ONLY reliable channel.
+ *
+ * So we prepend a workspace contract that pins the worktree root and instructs
+ * agy to use absolute paths under it for every file/shell operation. This is
+ * prompt-level mitigation, not a sandbox (a model can still name an absolute
+ * path elsewhere — accepted by the write-mode-only design); the run-agent
+ * post-run "write-like success with an empty worktree" warning backstops a
+ * slip. Injected in execute() so it applies to fresh dispatch, --conversation
+ * resume, and executeWithSchema (which layers its JSON-schema instruction after
+ * the user prompt — the contract stays first as operational policy).
+ */
+export function withAgyWorkspacePreamble(prompt: string, worktreeRoot: string): string {
+  return [
+    'Crew workspace contract for this agy run (read first):',
+    `- The ONLY writable workspace root for this task is: ${worktreeRoot}`,
+    '- Perform EVERY file read, edit, create, or delete, and every shell command,'
+      + ' using ABSOLUTE paths under that workspace root.',
+    '- Do NOT use relative paths for file operations — even when the task says'
+      + ' "current directory", "the repo", "here", or ".". agy silently diverts'
+      + ' relative writes to a scratch directory outside the workspace, where they'
+      + ' are lost.',
+    `- Treat "the current working directory" as exactly this absolute path: ${worktreeRoot}`,
+    '- Do NOT create or modify anything outside that workspace root (including any'
+      + ' agy scratch or project directory).',
+    '',
+    prompt,
+  ].join('\n');
+}
+
 export class AgyAdapter implements AgentAdapter {
   readonly name = AgentId.AGY;
   // Soft routing hints; users override via ~/.crew/agents.json. These MUST NOT
@@ -252,8 +291,11 @@ export class AgyAdapter implements AgentAdapter {
         // peer_messages/file excerpts, can exceed the argv byte limit, and a
         // leading-dash prompt would be parsed as a flag. `--output-format json`
         // alone triggers headless print mode (no -p needed); passing both -p
-        // and stdin would concatenate them.
-        input: task.prompt,
+        // and stdin would concatenate them. The workspace-contract preamble
+        // pins the worktree root so agy writes with absolute paths instead of
+        // silently escaping relative writes to its scratch dir (see
+        // withAgyWorkspacePreamble).
+        input: withAgyWorkspacePreamble(task.prompt, task.context.workingDirectory),
       });
       const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
         subprocess,

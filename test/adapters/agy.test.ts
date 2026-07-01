@@ -8,7 +8,7 @@ vi.mock('execa', () => ({
 const { execa } = await import('execa');
 const mockExeca = vi.mocked(execa);
 
-const { AgyAdapter, AGY_MIN_VERSION, parseAgyEnvelope, isAgyVersionBelowFloor } =
+const { AgyAdapter, AGY_MIN_VERSION, parseAgyEnvelope, isAgyVersionBelowFloor, withAgyWorkspacePreamble } =
   await import('../../src/adapters/agy.js');
 const { AGY_MODEL_LABELS } = await import('../../src/adapters/agy-models.js');
 
@@ -95,10 +95,34 @@ describe('AgyAdapter', () => {
       ]);
       expect(args).not.toContain('-p');
       expect(args).not.toContain('--print-timeout');
-      expect(options.input).toBe('implement the thing');
+      // Prompt is delivered on stdin, wrapped in the workspace-contract preamble
+      // (never argv). The raw prompt survives verbatim; the preamble pins the
+      // worktree root so agy writes with absolute paths instead of escaping.
+      expect(options.input).toContain('implement the thing');
+      expect(options.input).toContain('/crew/wt');
+      expect(options.input?.startsWith('Crew workspace contract')).toBe(true);
+      expect(args).not.toContain('implement the thing');
       expect(options.cwd).toBe('/crew/wt');
       expect(options.reject).toBe(false);
       expect(options.timeout).toBeUndefined();
+    });
+
+    it('wraps the prompt in a workspace-contract preamble pinning the worktree root', async () => {
+      mockOnce(successEnvelope());
+      await adapter.execute({
+        prompt: 'do the work',
+        context: { workingDirectory: '/crew/wt-abc' },
+      });
+      const [, , options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
+      const input = options.input ?? '';
+      // Pins the exact worktree root and forbids relative paths / scratch escape.
+      expect(input).toContain('/crew/wt-abc');
+      expect(input).toMatch(/ABSOLUTE paths/);
+      expect(input).toMatch(/relative paths/i);
+      // Contract comes first; the user prompt follows it (operational policy
+      // before the task) so executeWithSchema can still append its JSON
+      // instruction after the user prompt.
+      expect(input.indexOf('Crew workspace contract')).toBeLessThan(input.indexOf('do the work'));
     });
 
     it('returns sessionId = conversation_id and surfaces the response + metadata', async () => {
@@ -121,7 +145,7 @@ describe('AgyAdapter', () => {
       });
       const [, args, options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
       expect(args).not.toContain('--not-a-flag do it');
-      expect(options.input).toBe('--not-a-flag do it');
+      expect(options.input).toContain('--not-a-flag do it');
     });
 
     it('passes a valid --model label', async () => {
@@ -321,6 +345,18 @@ describe('AgyAdapter', () => {
       expect(isAgyVersionBelowFloor({ major: 1, minor: 0, patch: 13 })).toBe(true);
       expect(isAgyVersionBelowFloor({ ...AGY_MIN_VERSION })).toBe(false);
       expect(isAgyVersionBelowFloor({ major: 1, minor: 1, patch: 0 })).toBe(false);
+    });
+
+    it('withAgyWorkspacePreamble pins the root, forbids relative paths, and keeps the prompt last', () => {
+      const out = withAgyWorkspacePreamble('build the feature', '/crew/runs/abc/worktree');
+      // Root appears (twice: as the writable root and the "current directory" alias).
+      expect(out.match(/\/crew\/runs\/abc\/worktree/g)?.length).toBeGreaterThanOrEqual(2);
+      expect(out).toMatch(/ABSOLUTE paths/);
+      expect(out).toMatch(/Do NOT use relative paths/);
+      // Original prompt survives verbatim and comes AFTER the contract.
+      expect(out).toContain('build the feature');
+      expect(out.indexOf('Crew workspace contract')).toBe(0);
+      expect(out.indexOf('build the feature')).toBeGreaterThan(out.indexOf('Crew workspace contract'));
     });
   });
 });
