@@ -148,6 +148,10 @@ When the user dispatches an implementation:
    `run_mode: "ephemeral_review"` and NO `working_directory` — agy
    rejects `read_only` outright, so crew gives it its own disposable
    snapshot worktree instead (see Ephemeral review dispatches).
+   A solo ephemeral dispatch snapshots the HOST repo; to point agy
+   at an implementer run's worktree instead, use a bound
+   `run_panel` (it snapshots that worktree per reviewer — the
+   solo path can't).
    Apply reviewer findings via `continue_run` on the implementer's
    run.
 4. **Surface to the user.** Once you're satisfied (or once you have
@@ -662,10 +666,14 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
   read-only (no OS sandbox, no tool-deny; absolute paths escape any
   boundary), so `read_only: true` on agy is REJECTED, not weakly run.
   To use agy as a reviewer, dispatch
-  `run_agent({ agent_id: "agy", run_mode: "ephemeral_review", prompt: "<review prompt>" })`:
+  `run_agent({ agent_id: "agy", run_mode: "ephemeral_review", prompt: "<review prompt>" })`,
+  or put it on a `run_panel` (the panel auto-routes it — see Review
+  panels):
   - Crew allocates a **disposable snapshot worktree** (host HEAD +
-    your uncommitted changes copied in) and lets agy run
-    write-capable inside it. Only its TEXT findings are the output.
+    your uncommitted changes copied in; on a bound panel, the
+    implementer worktree's HEAD + dirty state instead) and lets agy
+    run write-capable inside it. Only its TEXT findings are the
+    output.
   - **Never mergeable.** `merge_run` refuses permanently;
     `filesChanged` is always empty; any files agy touched are
     discarded with the worktree. Review-capable ≠ read-only — treat
@@ -951,12 +959,16 @@ carrying A's summary + files_changed. The reviewers can READ A's
 edits directly. If you explicitly set `read_only: false` on a
 reviewer, you take responsibility for that reviewer's
 `working_directory` — the panel won't auto-point at A's worktree
-(prevents accidental mutation). Do NOT put agy on a `run_panel`
-yet: the panel's auto `read_only` dispatch is rejected for agy
-(panel routing to its ephemeral-worktree mode is not wired up).
-For an agy perspective alongside a panel, dispatch a separate solo
-`run_agent` with `run_mode: "ephemeral_review"` and fold its
-findings in by hand.
+(prevents accidental mutation). Exception: an **agy reviewer is
+auto-routed to `run_mode: "ephemeral_review"`** — the panel snapshots
+A's worktree (its commits AND uncommitted state) into a disposable
+per-reviewer worktree, so agy reviews the same diff the in-place
+reviewers see without being able to mutate A's keeper work. Give an
+agy panelist just `agent_id` + `prompt`: an explicit `read_only` or
+`working_directory` on it is rejected (that reviewer fails with the
+fix named; the rest of the panel proceeds). Its findings consolidate
+like any other reviewer's; its run is never a merge candidate, and
+panel cleanup / `discard_run` disposes its snapshot.
 
 Standalone (no implementer):
 

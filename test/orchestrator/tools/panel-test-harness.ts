@@ -168,7 +168,10 @@ export function createDeferred<T>(): {
 
 export async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  // Upper bound only — polls every 5ms, so passing tests return as soon as
+  // the predicate flips. Generous because the full suite runs these files
+  // in parallel with real git worktree churn; 2s flaked under contention.
+  timeoutMs = 20_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

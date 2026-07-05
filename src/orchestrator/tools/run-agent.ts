@@ -47,7 +47,7 @@ import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
 import type { DispatchTaskContext } from '../tool-dispatcher.js';
 import type { DispatchTask } from '../tool-dispatcher.js';
-import type { WorktreeManager } from '../../git/worktree.js';
+import type { EphemeralSnapshotSource, WorktreeManager } from '../../git/worktree.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
 import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
@@ -207,6 +207,16 @@ export interface RunAgentHandlerContext {
   readonly onStart?: (
     info: { agentName: string; runId: string; worktreePath: string },
   ) => void | Promise<void>;
+  /**
+   * INTERNAL (run_panel only, never part of the public run_agent input):
+   * snapshot an ephemeral_review worktree from this source worktree
+   * (implementer HEAD + dirty state) instead of the host repo. Only valid
+   * with `run_mode: 'ephemeral_review'` — supplying it for any other mode
+   * is a plan-layer error, so a stray source can never redirect a write
+   * run. See WorktreeManager.createRunWorktreeFromSource for the
+   * source-mutation guard semantics.
+   */
+  readonly ephemeralReviewSnapshot?: EphemeralSnapshotSource;
 }
 
 export interface RunAgentDispatchPlan {
@@ -301,6 +311,17 @@ export async function planRunAgent(
   if (readOnly && adapter.rejectsReadOnly === true) {
     return { kind: 'error', message: readOnlyRejectMessage(adapter.name, adapter) };
   }
+  // A snapshot source is panel-internal plumbing for ephemeral reviews; on
+  // any other mode it would silently redirect the run's checkout, so fail
+  // loudly instead of ignoring it.
+  if (ctx.ephemeralReviewSnapshot !== undefined && runMode !== 'ephemeral_review') {
+    return {
+      kind: 'error',
+      message:
+        `run_agent internal: an ephemeral review snapshot source was supplied for run_mode:"${runMode}". `
+        + "Snapshot sources are only valid with run_mode:'ephemeral_review'.",
+    };
+  }
   if (runMode === 'ephemeral_review') {
     // Only adapters that opted into the disposable-worktree review route may
     // be dispatched ephemeral — for everyone else the cheap in-place
@@ -339,7 +360,14 @@ export async function planRunAgent(
     worktreePath = input.working_directory ?? ctx.worktreeManager.getProjectRoot();
   } else {
     try {
-      worktreePath = await ctx.worktreeManager.createRunWorktree(runId);
+      // An ephemeral review with a panel-supplied snapshot source copies the
+      // IMPLEMENTER's worktree (its HEAD + dirty state, mutation-guarded);
+      // everything else — write runs and solo ephemeral reviews — snapshots
+      // the host repo via the standard allocation path.
+      worktreePath =
+        runMode === 'ephemeral_review' && ctx.ephemeralReviewSnapshot !== undefined
+          ? await ctx.worktreeManager.createRunWorktreeFromSource(runId, ctx.ephemeralReviewSnapshot)
+          : await ctx.worktreeManager.createRunWorktree(runId);
     } catch (err: unknown) {
       return {
         kind: 'error',

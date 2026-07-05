@@ -257,7 +257,10 @@ describe('crew-captain body — ephemeral review dispatches (agy)', () => {
     expectContainsCI(flat, 'Never mergeable');
     expectContainsCI(flat, 'frozen snapshot');
     expectContainsCI(flat, 'trusted diffs');
-    // read_only on agy stays a reject, and the panel path is explicitly not wired.
-    expectContainsCI(flat, 'Do NOT put agy on a `run_panel`');
+    // Phase 2: panels auto-route agy to its ephemeral-worktree mode; the
+    // old "Do NOT put agy on a run_panel" warning must be gone.
+    expectContainsCI(flat, 'auto-routed to `run_mode: "ephemeral_review"`');
+    expectContainsCI(flat, 'snapshots A\'s worktree');
+    expect(flat).not.toMatch(/Do NOT put agy on a `run_panel`/i);
   });
 });

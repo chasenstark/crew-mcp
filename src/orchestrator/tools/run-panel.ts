@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { z } from 'zod';
 
+import { resolveReviewDispatchMode, type ReviewDispatchMode } from '../../adapters/types.js';
+import type { EphemeralSnapshotSource } from '../../git/worktree.js';
 import {
   DispatchError,
   dispatchRunAgentInternal,
@@ -99,7 +101,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Returns panel_id, successful reviewer run_ids, and failed_reviewers. For Claude Code reviewer runs, spawn one crew-wait watcher per run. Do not block the turn long-polling get_run_status.';
+  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Ephemeral-worktree reviewers (agy) auto-route to run_mode:"ephemeral_review" on a disposable snapshot worktree; omit read_only/working_directory for them. Returns panel_id, successful reviewer run_ids, and failed_reviewers. For Claude Code reviewer runs, spawn one crew-wait watcher per run. Do not block the turn long-polling get_run_status.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -194,14 +196,24 @@ export async function runPanelHandler(
 
   await mapBounded(reviewers, PANEL_REVIEWER_SETUP_CONCURRENCY, async (reviewer, index) => {
     const composed = composePeerMessages(implementerMessage, reviewer.peer_messages);
+    // Reviewer placement is derived from the ADAPTER's reviewDispatchMode,
+    // not from a panel-wide read_only: an ephemeral-worktree adapter (agy)
+    // is auto-routed to run_mode:'ephemeral_review' with its own disposable
+    // snapshot of the implementer worktree, 'unsupported' adapters are
+    // refused outright, and everyone else stays on the cheap in-place
+    // read-only binding.
+    const dispatchMode = reviewerDispatchMode(ctx.registry, reviewer.agent_id);
+    const ephemeralReviewer = dispatchMode === 'ephemeral-worktree';
     const reviewerHasExplicitReadOnly = reviewer.read_only !== undefined;
     const effectiveReadOnly = reviewer.read_only ?? (implementerState !== undefined);
     const suppressWorkingDirDefault =
       reviewerHasExplicitReadOnly
       && !effectiveReadOnly
       && implementerState !== undefined;
-    const effectiveWorkingDirectory = reviewer.working_directory
-      ?? (suppressWorkingDirDefault ? undefined : implementerState?.worktreePath);
+    const effectiveWorkingDirectory = ephemeralReviewer
+      ? undefined
+      : reviewer.working_directory
+        ?? (suppressWorkingDirDefault ? undefined : implementerState?.worktreePath);
 
     try {
       validatePeerMessagesPreflight(composed, ctx.runStateStore.caps);
@@ -210,7 +222,31 @@ export async function runPanelHandler(
       return;
     }
 
-    if (effectiveWorkingDirectory && !existsSync(effectiveWorkingDirectory)) {
+    if (dispatchMode === 'unsupported') {
+      await replaceReviewer(
+        index,
+        failedReviewerRecord(
+          reviewer.agent_id,
+          `run_panel.reviewer_dispatch_unsupported: agent "${reviewer.agent_id}" declares `
+          + "reviewDispatchMode:'unsupported' — it cannot be dispatched as a panel reviewer. "
+          + 'Route this review to another agent.',
+          [],
+        ),
+      );
+      return;
+    }
+
+    if (ephemeralReviewer) {
+      // Validate, don't silently downgrade: an explicit read_only or
+      // working_directory on an adapter that can ONLY review via an
+      // ephemeral worktree contradicts the routing — fail this reviewer
+      // with the fix instead of guessing which input wins.
+      const rejection = ephemeralPanelReviewerRejection(reviewer, implementerState);
+      if (rejection !== undefined) {
+        await replaceReviewer(index, failedReviewerRecord(reviewer.agent_id, rejection, []));
+        return;
+      }
+    } else if (effectiveWorkingDirectory && !existsSync(effectiveWorkingDirectory)) {
       await replaceReviewer(
         index,
         failedReviewerRecord(
@@ -232,13 +268,20 @@ export async function runPanelHandler(
           ...(input.criteria_set_id !== undefined ? { criteria_set_id: input.criteria_set_id } : {}),
           ...(reviewer.model !== undefined ? { model: reviewer.model } : {}),
           ...(reviewer.effort !== undefined ? { effort: reviewer.effort } : {}),
-          ...(effectiveWorkingDirectory !== undefined
-            ? { working_directory: effectiveWorkingDirectory }
-            : {}),
-          read_only: effectiveReadOnly,
+          ...(ephemeralReviewer
+            ? { run_mode: 'ephemeral_review' as const }
+            : {
+                ...(effectiveWorkingDirectory !== undefined
+                  ? { working_directory: effectiveWorkingDirectory }
+                  : {}),
+                read_only: effectiveReadOnly,
+              }),
           ...(composed.length > 0 ? { peer_messages: composed } : {}),
         },
         ctx,
+        ...(ephemeralReviewer && implementerState !== undefined
+          ? { ephemeralReviewSnapshot: implementerSnapshotSource(implementerState, ctx) }
+          : {}),
         progress: ctx.progress,
         ...(criteriaContract !== undefined ? { criteriaContract } : {}),
         linkCriteriaImplementerRun: false,
@@ -380,6 +423,96 @@ function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalS
   };
 }
 
+/**
+ * The reviewer's resolved `reviewDispatchMode` — how its adapter is placed
+ * as a reviewer ('read-only-dispatch' in place, 'ephemeral-worktree' via a
+ * disposable snapshot, 'unsupported' not dispatchable as a reviewer).
+ * Reads the lazy registry proxy — the capability is declared on registry
+ * metadata in parity with the adapter class, so no adapter load is needed.
+ * Unknown agent ids resolve undefined and fall through to the standard
+ * path (the dispatch itself reports them).
+ */
+function reviewerDispatchMode(
+  registry: RunPanelHandlerContext['registry'],
+  agentId: string,
+): ReviewDispatchMode | undefined {
+  const adapter = registry.get(agentId);
+  return adapter === undefined ? undefined : resolveReviewDispatchMode(adapter);
+}
+
+function reviewerUsesEphemeralWorktree(
+  registry: RunPanelHandlerContext['registry'],
+  agentId: string,
+): boolean {
+  return reviewerDispatchMode(registry, agentId) === 'ephemeral-worktree';
+}
+
+/**
+ * Validation for an ephemeral-worktree panel reviewer. Explicit
+ * read_only / working_directory inputs contradict the derived placement;
+ * per the reviewer-schema rule they are rejected, never silently
+ * overridden. Also fails fast when the bound implementer worktree is gone.
+ */
+function ephemeralPanelReviewerRejection(
+  reviewer: RunPanelReviewerInput,
+  implementerState: RunStateV1 | undefined,
+): string | undefined {
+  if (reviewer.read_only !== undefined) {
+    return `run_panel.ephemeral_reviewer_read_only: agent "${reviewer.agent_id}" reviews via `
+      + "run_mode:'ephemeral_review' (a disposable snapshot worktree) and the panel routes it "
+      + `there automatically; read_only:${reviewer.read_only} conflicts with that placement. `
+      + 'Omit read_only for this reviewer.';
+  }
+  if (reviewer.working_directory !== undefined) {
+    return `run_panel.ephemeral_reviewer_working_directory: agent "${reviewer.agent_id}" runs `
+      + 'ephemeral reviews only inside a crew-allocated disposable snapshot worktree; refusing '
+      + `the working_directory override "${reviewer.working_directory}". Omit working_directory — `
+      + 'the panel snapshots the implementer worktree (or host repo when unbound) automatically.';
+  }
+  if (implementerState !== undefined && !existsSync(implementerState.worktreePath)) {
+    return `snapshot source does not exist: ${implementerState.worktreePath} `
+      + '(implementer worktree may have been removed)';
+  }
+  return undefined;
+}
+
+/**
+ * Snapshot source for a bound ephemeral reviewer: the implementer's
+ * worktree, guarded by a re-read of the implementer's run state after the
+ * copy. A continue_run / merge / manual mutation landing mid-copy moves
+ * status, prompts.length, or completedAt — the snapshot is then torn, so
+ * the reviewer fails and its worktree is discarded rather than reviewing
+ * a moved target.
+ */
+function implementerSnapshotSource(
+  implementerState: RunStateV1,
+  ctx: RunPanelHandlerContext,
+): EphemeralSnapshotSource {
+  const baseline = {
+    status: implementerState.status,
+    promptCount: implementerState.prompts.length,
+    completedAt: implementerState.completedAt,
+  };
+  return {
+    sourcePath: implementerState.worktreePath,
+    assertSourceStableAfterSync: () => {
+      const latest = ctx.runStateStore.read(implementerState.runId);
+      if (
+        !latest
+        || latest.status !== baseline.status
+        || latest.prompts.length !== baseline.promptCount
+        || latest.completedAt !== baseline.completedAt
+      ) {
+        throw new Error(
+          `run_panel.implementer_mutated_during_snapshot: run ${implementerState.runId} changed `
+          + 'while its worktree was being snapshotted for an ephemeral reviewer. The reviewer '
+          + 'worktree was discarded; re-dispatch the panel when the implementer run is stable.',
+        );
+      }
+    },
+  };
+}
+
 function resolvePanelReviewers(
   reviewers: readonly RunPanelReviewerInput[] | undefined,
   ctx: RunPanelHandlerContext,
@@ -406,10 +539,14 @@ function resolvePanelReviewers(
     );
   }
 
+  // Preference-filled ephemeral-worktree reviewers must NOT carry
+  // read_only:true — the dispatch loop derives their run_mode from the
+  // adapter capability, and an explicit read_only is a validation error
+  // there (agy hard-rejects in-place read-only).
   return selected.map((agentId) => ({
     agent_id: agentId,
     prompt: DEFAULT_PANEL_REVIEW_PROMPT,
-    read_only: true,
+    ...(reviewerUsesEphemeralWorktree(ctx.registry, agentId) ? {} : { read_only: true }),
   }));
 }
 

@@ -2,12 +2,15 @@ import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { createHash, randomUUID } from 'crypto';
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readlinkSync,
+  readSync,
   realpathSync,
   rmdirSync,
   rmSync,
@@ -25,6 +28,24 @@ interface RunWorktreeRecord {
   branchName: string;
   worktreePath: string;
   createdAt: string;
+}
+
+/**
+ * Source description for an ephemeral-review snapshot worktree
+ * (`createRunWorktreeFromSource`). The snapshot mirrors what an in-place
+ * reviewer bound to `sourcePath` would see: the source worktree's HEAD
+ * (committed run work) plus its uncommitted state copied on top.
+ */
+export interface EphemeralSnapshotSource {
+  /** Absolute path of the worktree to snapshot (e.g. an implementer run's worktree). */
+  readonly sourcePath: string;
+  /**
+   * Invoked after the snapshot copy completes, before the source is
+   * re-signed and the worktree is handed out. Throw to fail the snapshot —
+   * e.g. when the implementer run's state (status / prompts / completedAt)
+   * moved while the copy ran. The snapshot worktree is discarded on throw.
+   */
+  readonly assertSourceStableAfterSync?: () => void | Promise<void>;
 }
 
 export interface WorktreeCleanupResult {
@@ -140,7 +161,7 @@ export class WorktreeManager {
     // run base that points OUTSIDE — e.g. `<repo>/vendor/link -> /tmp/untrusted`
     // — letting Gemini load the external tree's `.gemini` config outside the
     // policy. realpathSync collapses the link to its real target so the escape
-    // is rejected (mirrors isSafeProjectSymlinkTarget below). A path that can't
+    // is rejected (mirrors isSafeSymlinkTarget below). A path that can't
     // be resolved (nonexistent / broken link) fails closed to false — it isn't
     // a usable working directory anyway.
     let realTarget: string;
@@ -281,6 +302,122 @@ export class WorktreeManager {
     });
   }
 
+  /**
+   * Create a run worktree that snapshots ANOTHER worktree instead of the
+   * host repo: checked out at the source's current HEAD (so committed run
+   * work is included — a dirty-only copy would silently drop it), then the
+   * source's uncommitted state is copied on top. Used by run_panel to give
+   * an ephemeral-review reviewer (agy) its own disposable copy of the
+   * implementer's worktree.
+   *
+   * Source-mutation guard: the source is signed (HEAD sha + content hashes
+   * of its dirty set) before the worktree is created and again after the
+   * copy. If the signature moved — a concurrent continue_run, merge_run, or
+   * manual edit landed mid-copy — the snapshot is torn: the worktree is
+   * discarded and the call throws. `assertSourceStableAfterSync` runs TWICE
+   * in the same window — once right after the copy (early fail) and again
+   * after the signature comparison as the final gate — so a caller's drift
+   * check (e.g. re-reading the implementer's run state) is the last thing
+   * that can veto the snapshot before it is recorded.
+   *
+   * The guard DETECTS mid-copy mutation; it does not prevent it. The copy
+   * itself is file-by-file, so it assumes no concurrent writer is racing
+   * the window (the plan's trusted-diff threat model) — a writer that
+   * mutates and reverts a file around its individual copy read can evade
+   * the bracketing signatures. Do not lean on this as a hostile-race
+   * defense.
+   *
+   * Unlike `createRunWorktree`, a failed uncommitted-state sync here is
+   * FATAL, not best-effort: a reviewer must see exactly what an in-place
+   * reviewer would, so a partial snapshot (failed copies/removals, skipped
+   * unsafe symlinks) is discarded rather than handed out.
+   */
+  async createRunWorktreeFromSource(
+    runId: string,
+    source: EphemeralSnapshotSource,
+  ): Promise<string> {
+    return this.withRunLock(runId, async () => {
+      const existing = await this.resolveExistingRunWorktree(runId);
+      if (existing) {
+        return existing.worktreePath;
+      }
+
+      const sourceGit = simpleGit(source.sourcePath);
+      const before = await this.captureSourceSnapshotSignature(sourceGit, source.sourcePath);
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const record = this.buildRunWorktreeRecord(runId);
+        try {
+          mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
+          await this.git.raw([
+            'worktree', 'add', '-b', record.branchName, record.worktreePath, before.headSha,
+          ]);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!this.isRecoverableCreateCollision(message)) {
+            throw err;
+          }
+          logger.warn(`Run worktree name collision for ${runId}; retrying with a new suffix.`);
+          continue;
+        }
+        // The worktree exists from here on; any failure below must discard
+        // it — a torn snapshot must never be handed to a reviewer.
+        try {
+          await this.syncUncommittedFromTo(
+            source.sourcePath,
+            sourceGit,
+            record.worktreePath,
+            { strict: true },
+          );
+          await source.assertSourceStableAfterSync?.();
+          const after = await this.captureSourceSnapshotSignature(sourceGit, source.sourcePath);
+          if (after.signature !== before.signature) {
+            throw new Error(
+              `ephemeral_snapshot.source_mutated: ${source.sourcePath} changed while its `
+              + 'snapshot was being copied (HEAD moved or the dirty state changed). The '
+              + 'snapshot worktree was discarded; re-dispatch once the source is stable.',
+            );
+          }
+          // Final gate: drift that moved the caller's state WITHOUT touching
+          // worktree content yet (e.g. a continue_run accepted after the
+          // first assert but before it writes) still vetoes the snapshot.
+          await source.assertSourceStableAfterSync?.();
+          this.writeRunWorktreeRecord(record);
+          return record.worktreePath;
+        } catch (err) {
+          const cleanup = await this.cleanupRunRecordedWorktree(record);
+          const message = err instanceof Error ? err.message : String(err);
+          if (!cleanup.success) {
+            throw new Error(`${message}; snapshot worktree rollback failed: ${cleanup.errors.join('; ')}`);
+          }
+          throw err;
+        }
+      }
+
+      throw new Error(`Failed to create a unique run worktree for ${runId} after multiple attempts.`);
+    });
+  }
+
+  /**
+   * Sign a source worktree for the snapshot-copy guard: its HEAD sha plus a
+   * content signature per dirty path (tracked modifications, untracked
+   * non-ignored files, deletions, renames). Content hashes — not just the
+   * path set — so mutating an already-dirty file mid-copy is still caught.
+   */
+  private async captureSourceSnapshotSignature(
+    sourceGit: SimpleGit,
+    sourcePath: string,
+  ): Promise<{ readonly headSha: string; readonly signature: string }> {
+    const headSha = (await sourceGit.revparse(['HEAD'])).trim();
+    const status = await sourceGit.status();
+    // status.files-based collection (see collectStatusCandidatePaths) so
+    // compound index/worktree states (e.g. `MD`) are signed too, in
+    // lockstep with what syncUncommittedFromTo mirrors.
+    const entries = collectStatusCandidatePaths(status).map((relPath) =>
+      `${relPath} ${dirtyFileSignature(join(sourcePath, relPath))}`);
+    return { headSha, signature: [headSha, ...entries].join('\n') };
+  }
+
   getRunWorktreePath(runId: string): string {
     return this.requireRunWorktreeRecord(runId).worktreePath;
   }
@@ -310,6 +447,25 @@ export class WorktreeManager {
   }
 
   /**
+   * Mirror an arbitrary SOURCE worktree's uncommitted state into a target
+   * worktree — the generalized form of the host-repo sync above, used by
+   * ephemeral-review snapshots (run_panel routes agy reviewers to a
+   * disposable copy of the implementer's worktree). Same semantics:
+   * tracked-modified + untracked-non-ignored copied, deletions applied,
+   * renames both, gitignored excluded, symlink targets confined to the
+   * source root.
+   */
+  async syncUncommittedFromPathToWorktree(
+    sourcePath: string,
+    targetWorktreePath: string,
+  ): Promise<{
+    readonly copied: number;
+    readonly removed: number;
+  }> {
+    return this.syncUncommittedFromTo(sourcePath, simpleGit(sourcePath), targetWorktreePath);
+  }
+
+  /**
    * Internal — called by createRunWorktree + syncUncommittedToRunWorktree.
    * Reads `git status` against the host repo and applies the deltas to
    * `worktreePath`. See the public-method docblock for semantics.
@@ -318,39 +474,71 @@ export class WorktreeManager {
     readonly copied: number;
     readonly removed: number;
   }> {
-    const status = await this.git.status();
-    const renames = (status.renamed ?? []) as ReadonlyArray<{ from: string; to: string }>;
-    const toCopy = new Set<string>([
-      ...status.modified,
-      ...status.created,
-      ...status.not_added,
-      ...renames.map((r) => r.to),
-    ]);
-    const toRemove = new Set<string>([
-      ...(status.deleted ?? []),
-      ...renames.map((r) => r.from),
-    ]);
+    return this.syncUncommittedFromTo(this.projectRoot, this.git, worktreePath);
+  }
+
+  /**
+   * Internal core of both sync entry points: read `git status` against
+   * `sourceRoot` and apply the deltas to `worktreePath`.
+   *
+   * `strict` selects the failure posture. Best-effort (default, host-repo
+   * sync): per-path copy/remove failures and unsafe-symlink skips are
+   * warn-logged and the sync continues — a partially seeded write worktree
+   * is still useful. Strict (ephemeral snapshots): those same events are
+   * collected and thrown as one error, because a partial snapshot would
+   * pass the source-signature guard (the SOURCE didn't change) while
+   * silently differing from what an in-place reviewer sees. An ENOENT on
+   * a source path stays non-fatal in both modes: it means the source
+   * mutated after `git status`, which the snapshot signature guard
+   * catches on its own.
+   */
+  private async syncUncommittedFromTo(
+    sourceRoot: string,
+    sourceGit: SimpleGit,
+    worktreePath: string,
+    options: { readonly strict?: boolean } = {},
+  ): Promise<{
+    readonly copied: number;
+    readonly removed: number;
+  }> {
+    const strict = options.strict === true;
+    const failures: string[] = [];
+    const status = await sourceGit.status();
     let copied = 0;
     let removed = 0;
-    for (const relPath of toCopy) {
-      const src = join(this.projectRoot, relPath);
+    // For every path git reports as differing from HEAD, mirror the SOURCE
+    // WORKING TREE state: present → copy, absent → remove. Classifying by
+    // lstat instead of by porcelain code matrix is deliberate — simple-git's
+    // convenience arrays (modified/deleted/created/not_added) drop compound
+    // states entirely (an `MD` staged-modified-then-deleted file appears in
+    // NONE of them), which previously left the target holding the stale
+    // HEAD version of a file the source deleted.
+    for (const relPath of collectStatusCandidatePaths(status)) {
+      const src = join(sourceRoot, relPath);
       const dst = join(worktreePath, relPath);
       try {
         let st: ReturnType<typeof lstatSync>;
         try {
           st = lstatSync(src);
         } catch (err) {
-          if (isEnoent(err)) continue;
-          throw err;
+          if (!isEnoent(err)) throw err;
+          // Deleted in the source working tree (working-tree deletion,
+          // staged deletion, or staged-then-deleted) → mirror the deletion.
+          if (existsSync(dst)) {
+            rmSync(dst, { force: true });
+            removed++;
+          }
+          continue;
         }
         mkdirSync(dirname(dst), { recursive: true });
         if (st.isSymbolicLink()) {
           const target = readlinkSync(src);
-          if (!this.isSafeProjectSymlinkTarget(src, target)) {
+          if (!this.isSafeSymlinkTarget(src, target, sourceRoot)) {
             rmSync(dst, { recursive: true, force: true });
             logger.warn(
-              `syncUncommitted: skipped unsafe symlink ${relPath} -> ${target}; target escapes project root`,
+              `syncUncommitted: skipped unsafe symlink ${relPath} -> ${target}; target escapes the sync source root`,
             );
+            if (strict) failures.push(`unsafe symlink skipped: ${relPath} -> ${target}`);
             continue;
           }
           rmSync(dst, { recursive: true, force: true });
@@ -365,34 +553,32 @@ export class WorktreeManager {
         }
         copied++;
       } catch (err) {
-        logger.warn(
-          `syncUncommitted: failed to copy ${relPath} into worktree: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`syncUncommitted: failed to mirror ${relPath} into worktree: ${message}`);
+        if (strict) failures.push(`${relPath}: ${message}`);
       }
     }
-    for (const relPath of toRemove) {
-      if (toCopy.has(relPath)) continue;
-      const dst = join(worktreePath, relPath);
-      try {
-        if (existsSync(dst)) {
-          rmSync(dst, { force: true });
-          removed++;
-        }
-      } catch (err) {
-        logger.warn(
-          `syncUncommitted: failed to remove ${relPath} from worktree: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    if (strict && failures.length > 0) {
+      throw new Error(
+        `ephemeral_snapshot.sync_incomplete: ${failures.length} path(s) failed to mirror from `
+        + `${sourceRoot}: ${failures.join('; ')}`,
+      );
     }
     return { copied, removed };
   }
 
-  private isSafeProjectSymlinkTarget(linkPath: string, target: string): boolean {
-    const lexicalProjectRoot = resolve(this.projectRoot);
+  /**
+   * True when a symlink inside a sync source may be replicated into the
+   * target worktree: its target must stay inside `sourceRoot` (the host
+   * repo for the default sync, the source worktree for a snapshot sync)
+   * both lexically and after realpath resolution.
+   */
+  private isSafeSymlinkTarget(linkPath: string, target: string, sourceRoot: string): boolean {
+    const lexicalProjectRoot = resolve(sourceRoot);
     const lexicalRoots = [lexicalProjectRoot];
     let resolvedProjectRoot = lexicalProjectRoot;
     try {
-      resolvedProjectRoot = realpathSync(this.projectRoot);
+      resolvedProjectRoot = realpathSync(sourceRoot);
       lexicalRoots.push(resolvedProjectRoot);
     } catch {
       // If the root itself disappears, fall back to the normalized path
@@ -1402,6 +1588,74 @@ export function buildMergeCommitMessage(args: {
 function isPathInside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Every path a `git status` reports as differing from HEAD, sorted. The
+ * load-bearing source is `status.files` (raw index/working_dir entries):
+ * simple-git's convenience arrays silently drop compound states — e.g. an
+ * `MD` staged-modified-then-deleted file appears in NONE of
+ * modified/deleted/created/not_added. The convenience arrays are still
+ * unioned in defensively (they are a subset of files[] on real git, and
+ * some callers/tests construct status objects without files[]). Rename
+ * entries encode "from -> to" in `path`; both sides come from
+ * `status.renamed` instead. Gitignored paths never appear in status
+ * output, so they are excluded for free.
+ */
+function collectStatusCandidatePaths(status: StatusResult): string[] {
+  const renames = (status.renamed ?? []) as ReadonlyArray<{ from: string; to: string }>;
+  const paths = new Set<string>([
+    ...status.modified,
+    ...status.created,
+    ...status.not_added,
+    ...(status.deleted ?? []),
+  ]);
+  for (const file of status.files ?? []) {
+    if (typeof file.path === 'string' && !file.path.includes(' -> ')) {
+      paths.add(file.path);
+    }
+  }
+  for (const rename of renames) {
+    paths.add(rename.from);
+    paths.add(rename.to);
+  }
+  return Array.from(paths).sort();
+}
+
+/**
+ * Content signature of one dirty path for the snapshot source-mutation
+ * guard. Regular files are ALWAYS content-hashed (streamed in chunks, so a
+ * large file neither loads into memory nor degrades to a size+mtime proxy
+ * that a same-size in-place edit could evade); a missing path (deletion)
+ * signs as 'missing'.
+ */
+function dirtyFileSignature(absPath: string): string {
+  try {
+    const st = lstatSync(absPath);
+    if (st.isSymbolicLink()) return `symlink:${readlinkSync(absPath)}`;
+    if (!st.isFile()) return `non-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
+    return `sha256:${hashFileContentSync(absPath)}`;
+  } catch (err) {
+    if (isEnoent(err)) return 'missing';
+    return `error:${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+const HASH_CHUNK_BYTES = 64 * 1024;
+
+function hashFileContentSync(absPath: string): string {
+  const hash = createHash('sha256');
+  const fd = openSync(absPath, 'r');
+  try {
+    const buffer = Buffer.alloc(HASH_CHUNK_BYTES);
+    let bytesRead: number;
+    while ((bytesRead = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest('hex');
 }
 
 function isEnoent(err: unknown): boolean {

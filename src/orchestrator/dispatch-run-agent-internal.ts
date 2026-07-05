@@ -1,6 +1,6 @@
 import type { AdapterRegistry } from '../adapters/registry.js';
 import type { AgentPrefsMap } from '../agent-prefs/store.js';
-import type { WorktreeManager } from '../git/worktree.js';
+import type { EphemeralSnapshotSource, WorktreeManager } from '../git/worktree.js';
 import { crewTailUrl } from '../cli/commands/tail-url.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -39,6 +39,13 @@ export interface DispatchRunAgentInternalArgs {
   readonly progress?: ProgressNotifier;
   readonly criteriaContract?: CriteriaContractResolution;
   readonly linkCriteriaImplementerRun?: boolean;
+  /**
+   * INTERNAL (run_panel): snapshot an `ephemeral_review` reviewer's
+   * disposable worktree from this source worktree (implementer HEAD +
+   * dirty state) instead of the host repo. Rejected at plan time for any
+   * other run_mode. See RunAgentHandlerContext.ephemeralReviewSnapshot.
+   */
+  readonly ephemeralReviewSnapshot?: EphemeralSnapshotSource;
   readonly onStart?: (
     info: { agentName: string; runId: string; worktreePath: string },
   ) => void | Promise<void>;
@@ -98,6 +105,9 @@ export async function dispatchRunAgentInternal(
     plan = await planRunAgent(input, {
       ...ctx,
       ...(args.onStart !== undefined ? { onStart: args.onStart } : {}),
+      ...(args.ephemeralReviewSnapshot !== undefined
+        ? { ephemeralReviewSnapshot: args.ephemeralReviewSnapshot }
+        : {}),
     });
   } catch (err) {
     throw new DispatchError(errorMessage(err));

@@ -88,7 +88,7 @@ export const BUILTIN_AGENT_ROUTING = {
       'code-review',
     ],
     useWhen:
-      'A Gemini/Antigravity model — large context, fast. Implementation runs write-mode in an isolated worktree. As a reviewer it CANNOT run read_only (no enforceable sandbox); dispatch reviews with run_mode: "ephemeral_review" — a disposable worktree, findings only, never mergeable. Trusted diffs only.',
+      'A Gemini/Antigravity model — large context, fast. Implementation runs write-mode in an isolated worktree. As a reviewer it CANNOT run read_only (no enforceable sandbox); dispatch reviews with run_mode: "ephemeral_review" (run_panel auto-routes it there) — a disposable worktree, findings only, never mergeable. Trusted diffs only.',
   },
 } as const satisfies Record<string, {
   readonly strengths: readonly AgentStrength[];
