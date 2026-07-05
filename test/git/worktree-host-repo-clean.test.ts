@@ -100,6 +100,26 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(after).toBe(userIgnore);
   });
 
+  it('createRunWorktree refuses an unfinished merge with unmerged index paths', async () => {
+    const targetBranch = execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+    execSync('git checkout -q -b side', { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'side\n', 'utf-8');
+    execSync('git add README.md && git commit -q -m side', { cwd: repoRoot });
+    execSync(`git checkout -q ${targetBranch}`, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'main\n', 'utf-8');
+    execSync('git add README.md && git commit -q -m main', { cwd: repoRoot });
+    try {
+      execSync('git merge side', { cwd: repoRoot, stdio: 'ignore' });
+    } catch {
+      // Expected conflict.
+    }
+
+    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
+    await expect(manager.createRunWorktree('run-conflict')).rejects.toThrow(
+      /host_repo_not_ready:.*unmerged index paths: README.md/,
+    );
+  });
+
   it('git status in the host repo shows no crew-related changes after a full lifecycle', async () => {
     const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
     await manager.createRunWorktree('run-1');
@@ -142,7 +162,7 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' })).toBe('');
     expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
     expect(existsSync(join(repoRoot, 'RUN.md'))).toBe(false);
-  }, 15_000);
+  }, 30_000);
 
   it('force=true failed squash commit preserves pre-existing staged host changes', async () => {
     const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });

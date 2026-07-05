@@ -34,6 +34,7 @@ import { z } from 'zod';
 import { filterEventsTailNoise } from '../events-filter.js';
 import { formatProgressLines } from '../progress.js';
 import { runModeFromState } from '../run-mode.js';
+import { isTerminalPersistPending } from '../run-lifecycle-listeners.js';
 import type { RunStateStore, RunStateV1 } from '../run-state.js';
 import type { ToolDispatcher } from '../tool-dispatcher.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
@@ -158,16 +159,18 @@ export async function getRunStatusToolHandler(
   const waitMs = Math.min(args.wait_for_change_ms ?? 0, MAX_LONG_POLL_MS);
   const timedOut = await waitForRunChange({
     dispatcher: deps.dispatcher,
+    runStateStore: deps.runStateStore,
     agentName: state.agentId,
     runId: args.run_id,
+    cursor,
     waitMs,
     terminalOnly,
   });
 
-  if (terminalOnly && timedOut && !isTerminalRunStatus(state.status)) {
+  const fresh = deps.runStateStore.read(args.run_id) ?? state;
+  if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
     return getRunStatusContent(args.run_id, { status: 'running', timed_out: true });
   }
-  const fresh = deps.runStateStore.read(args.run_id) ?? state;
   return buildGetRunStatusResponse(
     fresh,
     deps.runStateStore,
@@ -272,8 +275,10 @@ function buildGetRunStatusResponse(
 
 async function waitForRunChange(args: {
   dispatcher: ToolDispatcher;
+  runStateStore: RunStateStore;
   agentName: string;
   runId: string;
+  cursor: number;
   waitMs: number;
   terminalOnly: boolean;
 }): Promise<boolean> {
@@ -308,6 +313,22 @@ async function waitForRunChange(args: {
         if (matches(info)) finish(false);
       }),
     );
+    const fresh = args.runStateStore.read(args.runId);
+    if (
+      (fresh && isTerminalRunStatus(fresh.status))
+      || isTerminalPersistPending(args.runId)
+    ) {
+      finish(false);
+      return;
+    }
+    if (!args.terminalOnly) {
+      const head = args.runStateStore.readSignalEventsSince(args.runId, args.cursor);
+      if (head.lines.length > 0) {
+        finish(false);
+        return;
+      }
+    }
     timer = setTimeout(() => finish(true), args.waitMs);
+    timer.unref?.();
   });
 }

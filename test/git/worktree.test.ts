@@ -410,9 +410,7 @@ describe('WorktreeManager', () => {
     });
 
     it('syncs uncommitted symlinks as symlinks and preserves regular file mode', async () => {
-      mockRandomUUID
-        .mockReturnValueOnce('owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
       const { root, manager, rootGit } = createManager();
       writeFileSync(join(root, 'script.sh'), '#!/bin/sh\necho hi\n', 'utf-8');
@@ -437,9 +435,7 @@ describe('WorktreeManager', () => {
     });
 
     it('skips uncommitted symlinks that point outside the project root', async () => {
-      mockRandomUUID
-        .mockReturnValueOnce('owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
       const { root, manager, rootGit } = createManager();
@@ -477,9 +473,7 @@ describe('WorktreeManager', () => {
     });
 
     it('skips chained symlinks that resolve outside the project root and preserves in-repo chains', async () => {
-      mockRandomUUID
-        .mockReturnValueOnce('owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
       const { root, manager, rootGit } = createManager();
@@ -522,7 +516,7 @@ describe('WorktreeManager', () => {
     });
 
     it('times out instead of reclaiming a run lock held by a live process', async () => {
-      mockRandomUUID.mockReturnValueOnce('owner-waiting');
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
       const { crewHome, manager } = createManager();
       const lockDir = join(crewHome, 'runs', '.locks', 'run-1');
@@ -539,6 +533,7 @@ describe('WorktreeManager', () => {
 
       const now = vi.spyOn(Date, 'now');
       now
+        .mockReturnValueOnce(1_000)
         .mockReturnValueOnce(1_000)
         .mockReturnValueOnce(21_001);
       try {
@@ -573,7 +568,6 @@ describe('WorktreeManager', () => {
 
     it('.meta/<runId>.json is written and removed in lockstep with the worktree', async () => {
       mockRandomUUID
-        .mockReturnValueOnce('owner-1')
         .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
         .mockReturnValueOnce('cleanup-owner-1');
 
@@ -850,9 +844,7 @@ describe('WorktreeManager', () => {
       // branch ref persists locally after cleanup. Warn so the user
       // knows.
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-      mockRandomUUID
-        .mockReturnValueOnce('owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
       const wPath = await manager.createRunWorktree('run-1');
       const wGit = getGitClient(wPath);
@@ -880,9 +872,7 @@ describe('WorktreeManager', () => {
 
     it('mergeRunWorktree does NOT warn when worktree HEAD is on the recorded branch', async () => {
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-      mockRandomUUID
-        .mockReturnValueOnce('owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
       const wPath = await manager.createRunWorktree('run-1');
       const wGit = getGitClient(wPath);

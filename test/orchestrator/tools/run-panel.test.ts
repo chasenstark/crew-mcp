@@ -18,6 +18,7 @@ import {
   dispatchRunAgentInternal,
   type DispatchRunAgentInternalResult,
 } from '../../../src/orchestrator/dispatch-run-agent-internal.js';
+import { drainPendingTerminalPersists } from '../../../src/orchestrator/run-lifecycle-listeners.js';
 import { buildImplementerPeerMessage } from '../../../src/orchestrator/panels/implementer-message.js';
 import { panelDir, readPanelState } from '../../../src/orchestrator/panels/store.js';
 import { buildPrependBlock } from '../../../src/orchestrator/peer-messages/prepend.js';
@@ -51,7 +52,8 @@ beforeEach(() => {
   mockedHomedir.mockReturnValue(isolatedHome);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await drainPendingTerminalPersists();
   vi.restoreAllMocks();
   rmSync(isolatedHome, { recursive: true, force: true });
   while (cleanups.length > 0) {
@@ -703,7 +705,7 @@ describe('runPanelHandler', () => {
             warnings: ['peer_messages.body_truncated: item[0]'],
           });
         }
-        return dispatchRunAgentInternal(args);
+        return fakeDispatchResult(args.input.agent_id, call);
       },
     });
 

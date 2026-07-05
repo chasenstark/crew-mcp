@@ -361,14 +361,17 @@ export function progressNotifierFrom(
   return {
     send(message: string): void {
       counter += 1;
-      void extra
-        .sendNotification({
+      try {
+        void extra.sendNotification({
           method: 'notifications/progress',
           params: { progressToken: token, progress: counter, message },
         })
-        .catch(() => {
-          // Swallow: progress notification failures must not fail dispatch.
-        });
+          .catch(() => {
+            // Swallow: progress notification failures must not fail dispatch.
+          });
+      } catch {
+        // Swallow: progress notification failures must not fail dispatch.
+      }
     },
   };
 }

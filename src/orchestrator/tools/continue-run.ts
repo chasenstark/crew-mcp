@@ -45,6 +45,7 @@ import {
   progressNotifierFrom,
   runDispatchAndRespond,
 } from './shared.js';
+import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
 
 export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
@@ -106,6 +107,15 @@ export async function continueRunToolHandler(
       `Cannot continue run "${args.run_id}" with status "${preState.status}".`,
     );
   }
+  try {
+    assertNoBusyWorktreeBlockers({
+      targetRun: preState,
+      runStateStore: deps.runStateStore,
+      dispatcher: deps.dispatcher,
+    });
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
   const adapter = typeof deps.registry.load === 'function'
     ? await deps.registry.load(preState.agentId)
     : deps.registry.get(preState.agentId);
@@ -151,49 +161,60 @@ export async function continueRunToolHandler(
     args.model,
     continueAgentPrefs,
   );
+  const appendPrompt = () => deps.runStateStore.appendPrompt(args.run_id, {
+    userPrompt,
+    peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
+    ...(criteriaContract !== undefined
+      ? {
+          contractPrefix: criteriaContract.contractPrefix,
+          criteriaSetId: criteriaContract.criteriaSetId,
+          criteriaEpoch: criteriaContract.criteriaEpoch,
+        }
+      : {}),
+  });
+  const dispatchWarnings = runMode === 'read_only' && adapter.enforcesReadOnly !== true
+    ? [readOnlyAdvisoryWarning(adapter.name)]
+    : [];
+  const criteriaWarnings = criteriaPeerMessageBypassWarnings(
+    args.criteria_set_id,
+    validatedInput,
+    criteriaContract,
+  );
+
+  const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
+    const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
+    await markContinueDispatchFailed(deps, args.run_id, message);
+    return new DispatchError(message, { warnings: [...dispatchWarnings, ...criteriaWarnings] });
+  };
+
   let appendResult: Awaited<ReturnType<typeof deps.runStateStore.appendPrompt>>;
+  // Source re-sync runs ONLY for write continues: an ephemeral_review
+  // continue keeps a FROZEN snapshot, so the follow-up reasons about exactly
+  // what was reviewed rather than a moved target (read_only has no worktree
+  // to sync at all).
   try {
-    appendResult = await deps.runStateStore.appendPrompt(args.run_id, {
-      userPrompt,
-      peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
-      ...(criteriaContract !== undefined
-        ? {
-            contractPrefix: criteriaContract.contractPrefix,
-            criteriaSetId: criteriaContract.criteriaSetId,
-            criteriaEpoch: criteriaContract.criteriaEpoch,
-          }
-        : {}),
-    });
+    if (runMode === 'write') {
+      appendResult = await deps.worktreeManager.appendAndSyncUncommittedToRunWorktree(
+        args.run_id,
+        appendPrompt,
+      );
+    } else if (ownsWorktree(runMode)) {
+      appendResult = await deps.worktreeManager.withRunWorktreeLock(args.run_id, appendPrompt);
+    } else {
+      appendResult = await appendPrompt();
+    }
   } catch (err) {
+    if (runMode === 'write' && deps.runStateStore.read(args.run_id)?.status === 'running') {
+      const dispatchErr = await rollbackContinuation(err);
+      return errorContent(dispatchErr.message);
+    }
     return errorContent(err instanceof Error ? err.message : String(err));
   }
   const { state, composedPrompt } = appendResult;
   const warnings = [
     ...appendResult.warnings,
-    ...criteriaPeerMessageBypassWarnings(args.criteria_set_id, validatedInput, criteriaContract),
+    ...criteriaWarnings,
   ];
-  const dispatchWarnings = runMode === 'read_only' && adapter.enforcesReadOnly !== true
-    ? [readOnlyAdvisoryWarning(adapter.name)]
-    : [];
-
-  const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
-    const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
-    await markContinueDispatchFailed(deps, args.run_id, message);
-    return new DispatchError(message, { warnings: [...dispatchWarnings, ...warnings] });
-  };
-
-  // Source re-sync runs ONLY for write continues: an ephemeral_review
-  // continue keeps a FROZEN snapshot, so the follow-up reasons about exactly
-  // what was reviewed rather than a moved target (read_only has no worktree
-  // to sync at all).
-  if (runMode === 'write') {
-    try {
-      await deps.worktreeManager.syncUncommittedToRunWorktree(args.run_id);
-    } catch (err) {
-      const dispatchErr = await rollbackContinuation(err);
-      return errorContent(dispatchErr.message);
-    }
-  }
   const branchPointBefore =
     ownsWorktree(runMode)
       ? await captureRunBranchPointSnapshot(deps.worktreeManager, args.run_id, state.worktreePath)

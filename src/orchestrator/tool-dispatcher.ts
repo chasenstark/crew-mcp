@@ -147,7 +147,11 @@ export class ToolDispatcher {
           clearWatchdog();
           this.handleFailedOrCancelled(task, err);
         },
-      );
+      )
+      .catch((err) => {
+        clearWatchdog();
+        this.handleFailedOrCancelled(task, err);
+      });
   }
 
   cancel(toolCallId: string, reason = 'cancelled'): boolean {

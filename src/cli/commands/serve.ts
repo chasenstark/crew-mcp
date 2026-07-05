@@ -33,6 +33,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import {
+  drainProcessGroupTerminations,
+  resolveProcessGroupForceKillAfterMs,
+} from '../../adapters/process-group.js';
+import {
   BUILTIN_ADAPTER_NAMES,
   createBuiltinRegistry,
   mergeCustomAgents,
@@ -225,7 +229,7 @@ export interface ServeOptions {
   logFile?: string;
 }
 
-export const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
+export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 
 /**
  * The pieces a test or alternative entry point needs to drive the server
@@ -730,9 +734,10 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
   }
 
   const { server, dispatcher } = buildCrewMcpServer(options);
+  warnIfShutdownGraceCannotReachForceKill();
 
   let shuttingDown = false;
-  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+  const shutdown = async (signal: NodeJS.Signals | 'uncaughtException', exitCode = 0): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     const inFlight = dispatcher.inFlightCount();
@@ -754,8 +759,27 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
         'crew serve shutdown grace expired before all terminal run state writes finished',
       );
     }
-    process.exit(0);
+    if (!drained.processGroupsDrained) {
+      logger.warn(
+        'crew serve shutdown grace expired before all adapter process groups exited',
+      );
+    }
+    process.exit(exitCode);
   };
+  process.on('unhandledRejection', (reason) => {
+    logger.error(
+      `crew serve unhandledRejection (surviving): ${
+        reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)
+      }`,
+    );
+  });
+  process.on('uncaughtExceptionMonitor', (err) => {
+    logger.error(`crew serve uncaughtExceptionMonitor: ${err.stack ?? err.message}`);
+  });
+  process.once('uncaughtException', (err) => {
+    logger.error(`crew serve uncaughtException: ${err.stack ?? err.message}`);
+    void shutdown('uncaughtException', 1);
+  });
   process.once('SIGINT', () => {
     void shutdown('SIGINT');
   });
@@ -795,6 +819,17 @@ function resolveShutdownGraceMs(): number {
   return Math.floor(parsed);
 }
 
+function warnIfShutdownGraceCannotReachForceKill(): void {
+  const shutdownGraceMs = resolveShutdownGraceMs();
+  const forceKillAfterMs = resolveProcessGroupForceKillAfterMs();
+  if (shutdownGraceMs <= forceKillAfterMs) {
+    logger.warn(
+      `CREW_SHUTDOWN_GRACE_MS (${shutdownGraceMs}) is <= CREW_PROCESS_GROUP_FORCE_KILL_AFTER_MS `
+      + `(${forceKillAfterMs}); shutdown may exit before stubborn adapter process groups are force-killed.`,
+    );
+  }
+}
+
 export async function waitForInFlightDrain(
   dispatcher: Pick<ToolDispatcher, 'listInFlight'>,
   options: {
@@ -822,16 +857,20 @@ export async function waitForShutdownDrain(
 ): Promise<{
   readonly inFlightDrained: boolean;
   readonly terminalPersistsDrained: boolean;
+  readonly processGroupsDrained: boolean;
 }> {
   const maxWaitMs = options.maxWaitMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
   const startedAt = Date.now();
-  const inFlightDrained = await waitForInFlightDrain(dispatcher, options);
+  const [inFlightDrained, processGroupsDrained] = await Promise.all([
+    waitForInFlightDrain(dispatcher, options),
+    drainProcessGroupTerminations({ maxWaitMs }),
+  ]);
   const elapsed = Date.now() - startedAt;
-  const remaining = Math.max(0, maxWaitMs - elapsed);
+  const terminalPersistRemaining = Math.max(0, maxWaitMs - elapsed);
   const terminalPersistsDrained = await drainPendingTerminalPersists({
-    maxWaitMs: remaining,
+    maxWaitMs: terminalPersistRemaining,
   });
-  return { inFlightDrained, terminalPersistsDrained };
+  return { inFlightDrained, terminalPersistsDrained, processGroupsDrained };
 }
 
 /**

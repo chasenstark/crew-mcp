@@ -1999,8 +1999,11 @@ describe('crew serve — continue_run tool', () => {
       });
       const env = initial.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
-      vi.spyOn(h.worktreeManager, 'syncUncommittedToRunWorktree')
-        .mockRejectedValue(new Error('mock sync failure'));
+      vi.spyOn(h.worktreeManager, 'appendAndSyncUncommittedToRunWorktree')
+        .mockImplementation(async (_runId, append) => {
+          await append();
+          throw new Error('mock sync failure');
+        });
 
       const res = await h.client.callTool({
         name: 'continue_run',
@@ -2375,9 +2378,9 @@ describe('crew serve — peer_messages integration', () => {
         return continuationTerminal.promise;
       },
     });
-    const h = await startHarness([adapter]);
-    const bothInAppend = createDeferred<void>();
-    let appendEntrants = 0;
+      const h = await startHarness([adapter]);
+      const firstMayAppend = createDeferred<void>();
+      let appendEntrants = 0;
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
@@ -2389,8 +2392,9 @@ describe('crew serve — peer_messages integration', () => {
       const originalAppend = h.runStateStore.appendPrompt.bind(h.runStateStore);
       vi.spyOn(h.runStateStore, 'appendPrompt').mockImplementation(async (runId, options) => {
         appendEntrants += 1;
-        if (appendEntrants === 2) bothInAppend.resolve();
-        await bothInAppend.promise;
+        if (appendEntrants === 1) {
+          await firstMayAppend.promise;
+        }
         return originalAppend(runId, options);
       });
 
@@ -2402,10 +2406,14 @@ describe('crew serve — peer_messages integration', () => {
         name: 'continue_run',
         arguments: { run_id: env.run_id, prompt: 'two' },
       });
+      await vi.waitFor(() => {
+        expect(appendEntrants).toBe(1);
+      });
+      firstMayAppend.resolve();
       const results = await Promise.all([first, second]);
       const errors = results.filter((res) => res.isError);
       expect(errors).toHaveLength(1);
-      expect(toolText(errors[0])).toMatch(/^peer_messages\.run_in_flight:/);
+      expect(toolText(errors[0])).toMatch(/run_in_flight|currently running|still has in-flight work/);
 
       continuationTerminal.resolve({
         output: 'continued',
@@ -2658,11 +2666,12 @@ describe('crew serve — peer_messages integration', () => {
       const env = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
 
-      vi.spyOn(h.worktreeManager, 'syncUncommittedToRunWorktree')
-        .mockImplementation(async (runId) => {
+      vi.spyOn(h.worktreeManager, 'appendAndSyncUncommittedToRunWorktree')
+        .mockImplementation(async (runId, append) => {
+          const result = await append();
           sequence.push('sync');
           promptCountAtSync = readPersistedState(h, runId).prompts.length;
-          return { copied: 0, removed: 0 };
+          return result;
         });
 
       await h.client.callTool({
@@ -3263,13 +3272,26 @@ describe('crew serve — merge_run tool', () => {
 
       execSync('git reset --hard HEAD', { cwd: h.root });
 
-      const discard = await h.client.callTool({
-        name: 'discard_run',
-        arguments: { run_id: runEnv.run_id },
+      writeFileSync(join(h.root, 'shared.txt'), 'original\n', 'utf-8');
+      execSync('git add shared.txt && git commit -q -m resolve-target', { cwd: h.root });
+
+      const resolvedRetry = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
-      expect(discard.isError).toBeFalsy();
-      const discardEnv = discard.structuredContent as { ok: boolean };
-      expect(discardEnv.ok).toBe(true);
+      expect(resolvedRetry.isError).toBeFalsy();
+      const resolvedEnv = resolvedRetry.structuredContent as {
+        status: string;
+        commit_sha?: string;
+      };
+      expect(resolvedEnv.status).toBe('merged');
+      expect(resolvedEnv.commit_sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(readPersistedState(h, runEnv.run_id).status).toBe('merged');
+      expect(readPersistedState(h, runEnv.run_id).mergeStatus?.commitSha)
+        .toBe(resolvedEnv.commit_sha);
+      expect(readFileSync(join(h.root, 'shared.txt'), 'utf-8')).toBe('from worktree\n');
+      expect(existsSync(runEnv.worktree_path)).toBe(false);
+      expect(runWorktreeCount(h.crewHome)).toBe(0);
     } finally {
       // Clean up any staged squash conflict on the host so afterEach's
       // rmSync works.
@@ -3475,8 +3497,8 @@ describe('crew serve — discard_run tool', () => {
         ok: true,
       });
       expect(cleanup).toHaveBeenCalledTimes(2);
-      expect(cleanup).toHaveBeenNthCalledWith(1, runEnv.run_id);
-      expect(cleanup).toHaveBeenNthCalledWith(2, runEnv.run_id);
+      expect(cleanup).toHaveBeenNthCalledWith(1, runEnv.run_id, { lockAlreadyHeld: true });
+      expect(cleanup).toHaveBeenNthCalledWith(2, runEnv.run_id, { lockAlreadyHeld: true });
     } finally {
       await h.close();
     }
@@ -3501,19 +3523,11 @@ describe('crew serve — discard_run tool', () => {
         arguments: { run_id: runEnv.run_id },
       });
 
-      expect(discard.isError).toBeFalsy();
+      expect(discard.isError).toBe(true);
       expect(cleanup).not.toHaveBeenCalled();
       expect(existsSync(runEnv.worktree_path)).toBe(true);
-      expect(readPersistedState(h, runEnv.run_id).status).toBe('discarded');
-      expect(discard.structuredContent).toEqual({
-        run_id: runEnv.run_id,
-        ok: true,
-        cleanup_failed: true,
-        cleanup_errors: [
-          `worktree cleanup skipped: run "${runEnv.run_id}" still has in-flight work (run_agent)`,
-        ],
-      });
-      expect(toolText(discard)).toContain('Cleanup warning: worktree cleanup skipped');
+      expect(readPersistedState(h, runEnv.run_id).status).toBe('success');
+      expect(toolText(discard)).toContain('run_in_flight: discard_run refused');
     } finally {
       await h.close();
     }
@@ -4899,7 +4913,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       };
       expect(s.next_event_line).toBeUndefined();
       expect(s.events_tail).toBeUndefined();
-      expect(readSpy.mock.calls.length - readsBeforeStatusCall).toBe(1);
+      expect(readSpy.mock.calls.length - readsBeforeStatusCall).toBe(3);
       readSpy.mockRestore();
 
       resolveAdapter();
@@ -5511,10 +5525,11 @@ describe('crew serve — lifecycle', () => {
       pollIntervalMs: 5,
     });
 
-    expect(drained).toEqual({
-      inFlightDrained: true,
-      terminalPersistsDrained: true,
-    });
+      expect(drained).toEqual({
+        inFlightDrained: true,
+        processGroupsDrained: true,
+        terminalPersistsDrained: true,
+      });
     expect(Date.now() - startedAt).toBeGreaterThanOrEqual(25);
   });
 

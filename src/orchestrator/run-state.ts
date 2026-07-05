@@ -67,6 +67,22 @@ export type RunStatus =
   | 'merge_conflict'
   | 'discarded';
 
+const MERGEABLE_TERMINAL_STATUSES: readonly RunStatus[] = [
+  'success',
+  'partial',
+  'error',
+  'cancelled',
+  'merge_conflict',
+];
+
+const DISCARDABLE_STATUSES: readonly RunStatus[] = [
+  'success',
+  'partial',
+  'error',
+  'cancelled',
+  'merge_conflict',
+];
+
 export interface PromptRecord {
   readonly turn: number;
   readonly prompt: string;
@@ -212,6 +228,40 @@ export function truncatePromptForStorage(prompt: string): string {
 
 function isEnoent(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
+}
+
+function assertCanMarkMerged(runId: string, status: RunStatus): void {
+  if (MERGEABLE_TERMINAL_STATUSES.includes(status)) return;
+  if (status === 'running') {
+    throw new Error(`run_in_flight: cannot mark run ${runId} merged while it is running`);
+  }
+  if (status === 'merged') {
+    throw new Error(`run_already_merged: run ${runId} is already merged`);
+  }
+  if (status === 'discarded') {
+    throw new Error(`run_already_discarded: cannot mark run ${runId} merged after discard`);
+  }
+  throw new Error(`run_not_mergeable: cannot mark run ${runId} merged from status ${status}`);
+}
+
+function assertCanMarkMergeConflict(runId: string, status: RunStatus): void {
+  if (status === 'merge_conflict') return;
+  if (MERGEABLE_TERMINAL_STATUSES.includes(status)) return;
+  if (status === 'running') {
+    throw new Error(`run_in_flight: cannot mark run ${runId} merge_conflict while it is running`);
+  }
+  throw new Error(`run_not_mergeable: cannot mark run ${runId} merge_conflict from status ${status}`);
+}
+
+function assertCanMarkDiscarded(runId: string, status: RunStatus): void {
+  if (DISCARDABLE_STATUSES.includes(status)) return;
+  if (status === 'running') {
+    throw new Error(`run_in_flight: cannot discard run ${runId} while it is running`);
+  }
+  if (status === 'merged') {
+    throw new Error(`run_already_merged: cannot discard run ${runId} after merge`);
+  }
+  throw new Error(`run_not_discardable: cannot discard run ${runId} from status ${status}`);
 }
 
 export interface CreateRunStateInit {
@@ -674,12 +724,15 @@ export class RunStateStore {
     runId: string,
     args: { target: string; commitSha: string },
   ): Promise<RunStateV1> {
-    const next = await this.update(runId, (s) => ({
-      ...s,
-      status: 'merged',
-      completedAt: new Date().toISOString(),
-      mergeStatus: { target: args.target, commitSha: args.commitSha },
-    }));
+    const next = await this.update(runId, (s) => {
+      assertCanMarkMerged(runId, s.status);
+      return {
+        ...s,
+        status: 'merged',
+        completedAt: new Date().toISOString(),
+        mergeStatus: { target: args.target, commitSha: args.commitSha },
+      };
+    });
     writeRunReceipt(this.runDir(runId), next);
     return next;
   }
@@ -688,14 +741,17 @@ export class RunStateStore {
     runId: string,
     args: { target: string; conflicts: readonly string[] },
   ): Promise<RunStateV1> {
-    const next = await this.update(runId, (s) => ({
-      ...s,
-      status: 'merge_conflict',
-      // Stamp the disposition time like markMerged/markDiscarded so conflict
-      // receipts don't carry the prior agent-completion time (or null).
-      completedAt: new Date().toISOString(),
-      mergeStatus: { target: args.target, conflicts: args.conflicts },
-    }));
+    const next = await this.update(runId, (s) => {
+      assertCanMarkMergeConflict(runId, s.status);
+      return {
+        ...s,
+        status: 'merge_conflict',
+        // Stamp the disposition time like markMerged/markDiscarded so conflict
+        // receipts don't carry the prior agent-completion time (or null).
+        completedAt: new Date().toISOString(),
+        mergeStatus: { target: args.target, conflicts: args.conflicts },
+      };
+    });
     writeRunReceipt(this.runDir(runId), next);
     return next;
   }
@@ -704,11 +760,15 @@ export class RunStateStore {
     return withStateLock({ crewHome: this.crewHome, runId }, async () => {
       const current = this.read(runId);
       if (!current) return undefined;
-      const next = this.updateLocked(runId, (s) => ({
-        ...s,
-        status: 'discarded',
-        completedAt: new Date().toISOString(),
-      }));
+      if (current.status === 'discarded') return current;
+      const next = this.updateLocked(runId, (s) => {
+        assertCanMarkDiscarded(runId, s.status);
+        return {
+          ...s,
+          status: 'discarded',
+          completedAt: new Date().toISOString(),
+        };
+      });
       writeRunReceipt(this.runDir(runId), next);
       return next;
     });

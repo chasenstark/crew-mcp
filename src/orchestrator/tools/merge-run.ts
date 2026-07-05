@@ -54,9 +54,11 @@ import type { ToolCallReturn, ToolHandlerDeps, MergeEnvelope } from './shared.js
 import {
   checkoutEnvelope,
   errorContent,
+  inFlightForRun,
   markdownContent,
   renderMergeMarkdown,
 } from './shared.js';
+import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
 
 export const mergeRunInputSchema = z.object({
   run_id: z.string().min(1),
@@ -105,7 +107,7 @@ const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
 
 export async function mergeRunToolHandler(
   args: MergeRunInput,
-  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore' | 'worktreeManager'>,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore' | 'worktreeManager' | 'dispatcher'>,
 ): Promise<ToolCallReturn> {
   const state = deps.runStateStore.read(args.run_id);
   if (!state) {
@@ -144,6 +146,24 @@ export async function mergeRunToolHandler(
       }.`,
     );
   }
+  const existingInFlight = inFlightForRun(deps.dispatcher, args.run_id);
+  if (existingInFlight) {
+    return errorContent(
+      `run_in_flight: merge_run refused for "${args.run_id}" because it still has in-flight work ` +
+      `(${existingInFlight.toolName}); retry after it finishes or call cancel_run first.`,
+    );
+  }
+  try {
+    assertNoBusyWorktreeBlockers({
+      targetRun: state,
+      runStateStore: deps.runStateStore,
+      dispatcher: deps.dispatcher,
+      includeHostCheckout: true,
+      force: args.force,
+    });
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
   const confirmationGate = resolveMergeConfirmationGate(deps.crewHome);
   if (confirmationGate.error) {
     return errorContent(confirmationGate.error);
@@ -158,12 +178,42 @@ export async function mergeRunToolHandler(
       mergeStrategy: args.merge_strategy,
       commitTitle: args.commit_title,
       commitBody: args.commit_body,
+      assertCanMutateInsideLock: () => {
+        const fresh = deps.runStateStore.read(args.run_id);
+        if (!fresh) {
+          throw new Error(`Unknown run_id "${args.run_id}".`);
+        }
+        if (fresh.status === 'running') {
+          throw new Error('run_in_flight: merge_run refused because the run is currently running.');
+        }
+        if (fresh.status === 'discarded') {
+          throw new Error(`run_already_discarded: cannot merge run "${args.run_id}" after discard.`);
+        }
+        if (fresh.status === 'merged') {
+          throw new Error(`run_already_merged: run "${args.run_id}" was already merged.`);
+        }
+      },
+      updateStatusInsideLock: async (lockedResult) => {
+        if (lockedResult.status === 'merged') {
+          await deps.runStateStore.markMerged(args.run_id, {
+            target: lockedResult.targetBranch,
+            commitSha: lockedResult.commitSha,
+          });
+        } else if (lockedResult.status === 'conflict') {
+          await deps.runStateStore.markMergeConflict(args.run_id, {
+            target: lockedResult.targetBranch,
+            conflicts: lockedResult.conflicts,
+          });
+        }
+      },
     });
     if (result.status === 'merged') {
-      await deps.runStateStore.markMerged(args.run_id, {
-        target: result.targetBranch,
-        commitSha: result.commitSha,
-      });
+      if (deps.runStateStore.read(args.run_id)?.status !== 'merged') {
+        await deps.runStateStore.markMerged(args.run_id, {
+          target: result.targetBranch,
+          commitSha: result.commitSha,
+        });
+      }
       try {
         const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id);
         if (!cleanup.success) {
@@ -189,10 +239,12 @@ export async function mergeRunToolHandler(
       return markdownContent(renderMergeMarkdown(env), env);
     }
     if (result.status === 'conflict') {
-      await deps.runStateStore.markMergeConflict(args.run_id, {
-        target: result.targetBranch,
-        conflicts: result.conflicts,
-      });
+      if (deps.runStateStore.read(args.run_id)?.status !== 'merge_conflict') {
+        await deps.runStateStore.markMergeConflict(args.run_id, {
+          target: result.targetBranch,
+          conflicts: result.conflicts,
+        });
+      }
       const env: MergeEnvelope = {
         run_id: args.run_id,
         status: 'conflict',

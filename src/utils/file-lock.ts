@@ -17,6 +17,18 @@ export interface FileLockRecord {
   readonly acquiredAt: string;
 }
 
+export class FileLockTimeoutError extends Error {
+  readonly lockDir: string;
+  readonly holder?: FileLockRecord;
+
+  constructor(message: string, args: { lockDir: string; holder?: FileLockRecord }) {
+    super(message);
+    this.name = 'FileLockTimeoutError';
+    this.lockDir = args.lockDir;
+    this.holder = args.holder;
+  }
+}
+
 export interface WithFileLockOptions {
   readonly lockDir: string;
   readonly timeoutMs: number;
@@ -38,7 +50,7 @@ export async function withFileLock<T>(
   options: WithFileLockOptions,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const ownerId = randomUUID();
+  const ownerId = tempRandomUUID();
   const lockRecord: FileLockRecord = {
     ownerId,
     pid: process.pid,
@@ -67,7 +79,16 @@ export async function withFileLock<T>(
         continue;
       }
       if (Date.now() >= timeoutAt) {
-        throw new Error(options.timeoutMessage);
+        const holder = readFileLockRecord(options.lockDir);
+        throw new FileLockTimeoutError(
+          holder
+            ? `${options.timeoutMessage} Holder pid=${holder.pid}, owner=${holder.ownerId}, acquiredAt=${holder.acquiredAt}.`
+            : options.timeoutMessage,
+          {
+            lockDir: options.lockDir,
+            ...(holder !== undefined ? { holder } : {}),
+          },
+        );
       }
       await sleep(options.waitMs ?? DEFAULT_WAIT_MS);
     }

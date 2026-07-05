@@ -11,6 +11,7 @@ export type DispatchTerminal =
   | { kind: 'cancelled'; reason: string };
 
 const pendingTerminalPersists = new Set<Promise<void>>();
+const terminalPersistPendingRunIds = new Set<string>();
 
 export async function drainPendingTerminalPersists(
   options: {
@@ -40,6 +41,10 @@ export async function drainPendingTerminalPersists(
 
 export function pendingTerminalPersistCount(): number {
   return pendingTerminalPersists.size;
+}
+
+export function isTerminalPersistPending(runId: string): boolean {
+  return terminalPersistPendingRunIds.has(runId);
 }
 
 export function installRunLifecycleListeners(args: {
@@ -101,8 +106,12 @@ export function installRunLifecycleListeners(args: {
           // Log writes are best-effort; never let a write failure break dispatch.
         }
         if (args.progress) {
-          for (const line of progressLines) {
-            args.progress.send(line);
+          try {
+            for (const line of progressLines) {
+              args.progress.send(line);
+            }
+          } catch (err) {
+            logBestEffortFailure('run-lifecycle.progress-send', err);
           }
         }
       }),
@@ -126,8 +135,10 @@ function trackTerminalPersist(
     })
     .finally(() => {
       pendingTerminalPersists.delete(persist);
+      terminalPersistPendingRunIds.delete(args.runId);
     });
   pendingTerminalPersists.add(persist);
+  terminalPersistPendingRunIds.add(args.runId);
 }
 
 async function waitForPersistsOrTimeout(

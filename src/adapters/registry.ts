@@ -287,15 +287,20 @@ export class AdapterRegistry {
   private loadEntry(entry: AdapterEntry): Promise<AgentAdapter> {
     if (entry.adapter) return Promise.resolve(entry.adapter);
     if (!entry.loader) return Promise.resolve(entry.proxy);
-    entry.loadPromise ??= entry.loader().then((adapter) => {
-      if (adapter.name !== entry.name) {
-        throw new Error(
-          `Lazy adapter "${entry.name}" loaded adapter "${adapter.name}".`,
-        );
-      }
-      entry.adapter = adapter;
-      return adapter;
-    });
+    entry.loadPromise ??= entry.loader()
+      .then((adapter) => {
+        if (adapter.name !== entry.name) {
+          throw new Error(
+            `Lazy adapter "${entry.name}" loaded adapter "${adapter.name}".`,
+          );
+        }
+        entry.adapter = adapter;
+        return adapter;
+      })
+      .catch((err) => {
+        entry.loadPromise = undefined;
+        throw err;
+      });
     return entry.loadPromise;
   }
 

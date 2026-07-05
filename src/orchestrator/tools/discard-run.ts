@@ -18,6 +18,7 @@ import {
   markdownContent,
   renderDiscardMarkdown,
 } from './shared.js';
+import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
 
 export const discardRunInputSchema = z.object({
   run_id: z.string().min(1),
@@ -37,22 +38,35 @@ export async function discardRunToolHandler(
     return errorContent('discard_run: run is currently running; call cancel_run first.');
   }
   const existingInFlight = inFlightForRun(deps.dispatcher, args.run_id);
+  if (existingInFlight) {
+    return errorContent(
+      `run_in_flight: discard_run refused for "${args.run_id}" because it still has in-flight work ` +
+      `(${existingInFlight.toolName}); retry after it finishes or call cancel_run first.`,
+    );
+  }
   const cleanupErrors: string[] = [];
   try {
     if (state) {
-      // Worktree removal for every mode that OWNS one (write and
-      // ephemeral_review — discarding an ephemeral review is what actually
-      // throws its disposable snapshot away); read_only runs have no
-      // worktree, so discard is metadata-only.
-      if (ownsWorktree(runModeFromState(state))) {
-        if (existingInFlight) {
-          cleanupErrors.push(
-            `worktree cleanup skipped: run "${args.run_id}" still has in-flight work ` +
-            `(${existingInFlight.toolName})`,
-          );
-        } else {
+      assertNoBusyWorktreeBlockers({
+        targetRun: state,
+        runStateStore: deps.runStateStore,
+        dispatcher: deps.dispatcher,
+      });
+      await deps.worktreeManager.withRunWorktreeLock(args.run_id, async () => {
+        const fresh = deps.runStateStore.read(args.run_id);
+        if (!fresh) return;
+        if (fresh.status !== 'discarded') {
+          await deps.runStateStore.markDiscarded(args.run_id);
+        }
+        // Worktree removal for every mode that OWNS one (write and
+        // ephemeral_review — discarding an ephemeral review is what actually
+        // throws its disposable snapshot away); read_only runs have no
+        // worktree, so discard is metadata-only.
+        if (ownsWorktree(runModeFromState(fresh))) {
           try {
-            const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id);
+            const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id, {
+              lockAlreadyHeld: true,
+            });
             if (!cleanup.success) {
               cleanupErrors.push(...cleanup.errors);
             }
@@ -60,10 +74,7 @@ export async function discardRunToolHandler(
             cleanupErrors.push(err instanceof Error ? err.message : String(err));
           }
         }
-      }
-      if (state.status !== 'discarded') {
-        await deps.runStateStore.markDiscarded(args.run_id);
-      }
+      });
     }
   } catch (err) {
     return errorContent(

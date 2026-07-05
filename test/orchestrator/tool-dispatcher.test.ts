@@ -59,6 +59,19 @@ describe('ToolDispatcher', () => {
     expect(d.inFlightCount()).toBe(0);
   });
 
+  it('turns a throwing terminal listener into a failed event instead of an unhandled task rejection', async () => {
+    const d = new ToolDispatcher();
+    d.onEvent('run:complete', () => {
+      throw new Error('terminal listener exploded');
+    });
+
+    d.start(makeTask('c-listener-throw', async () => ({ ok: true })));
+
+    const info = (await waitForEvent(d, 'run:failed')) as { error: string };
+    expect(info.error).toBe('terminal listener exploded');
+    expect(d.inFlightCount()).toBe(0);
+  });
+
   it('emits run:failed when a resolved task result has status=error', async () => {
     const d = new ToolDispatcher();
     d.start(makeTask('c1', async () => ({

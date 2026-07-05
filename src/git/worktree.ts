@@ -20,7 +20,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
-import { withFileLock } from '../utils/file-lock.js';
+import { FileLockTimeoutError, withFileLock } from '../utils/file-lock.js';
 import { logger } from '../utils/logger.js';
 
 interface RunWorktreeRecord {
@@ -85,6 +85,8 @@ export interface MergeRunCheckoutInfo {
   readonly restoreFailed?: boolean;
   readonly restoreWarning?: string;
 }
+
+export type MergeRunStatusUpdater = (result: MergeRunResult) => void | Promise<void>;
 
 export interface RunGitCommitWritablePaths {
   readonly worktreeGitDir: string;
@@ -253,7 +255,8 @@ export class WorktreeManager {
   // -------------------------------------------------------------------------
 
   async createRunWorktree(runId: string): Promise<string> {
-    return this.withRunLock(runId, async () => {
+    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+      await this.assertHostRepoReadyForSnapshot(runId, 'dispatch');
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
         return existing.worktreePath;
@@ -299,7 +302,7 @@ export class WorktreeManager {
       }
 
       throw new Error(`Failed to create a unique run worktree for ${runId} after multiple attempts.`);
-    });
+    }));
   }
 
   /**
@@ -336,7 +339,7 @@ export class WorktreeManager {
     runId: string,
     source: EphemeralSnapshotSource,
   ): Promise<string> {
-    return this.withRunLock(runId, async () => {
+    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
         return existing.worktreePath;
@@ -395,7 +398,7 @@ export class WorktreeManager {
       }
 
       throw new Error(`Failed to create a unique run worktree for ${runId} after multiple attempts.`);
-    });
+    }));
   }
 
   /**
@@ -422,6 +425,12 @@ export class WorktreeManager {
     return this.requireRunWorktreeRecord(runId).worktreePath;
   }
 
+  async assertHostRepoReadyForDispatch(runId: string): Promise<void> {
+    await this.withRepoLock(async () => {
+      await this.assertHostRepoReadyForSnapshot(runId, 'dispatch');
+    });
+  }
+
   /**
    * Mirror the host repo's uncommitted state into a run worktree.
    * Untracked-non-gitignored + tracked-modified files get copied;
@@ -442,8 +451,28 @@ export class WorktreeManager {
     readonly copied: number;
     readonly removed: number;
   }> {
-    const record = this.requireRunWorktreeRecord(runId);
-    return this.syncUncommittedToWorktree(record.worktreePath);
+    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+      await this.assertHostRepoReadyForSnapshot(runId, 'continue_run');
+      const record = this.requireRunWorktreeRecord(runId);
+      return this.syncUncommittedToWorktree(record.worktreePath);
+    }));
+  }
+
+  async appendAndSyncUncommittedToRunWorktree<T>(
+    runId: string,
+    append: () => Promise<T>,
+  ): Promise<T> {
+    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+      await this.assertHostRepoReadyForSnapshot(runId, 'continue_run');
+      const result = await append();
+      const record = this.requireRunWorktreeRecord(runId);
+      await this.syncUncommittedToWorktree(record.worktreePath);
+      return result;
+    }));
+  }
+
+  async withRunWorktreeLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    return this.withRunLock(runId, operation);
   }
 
   /**
@@ -652,10 +681,16 @@ export class WorktreeManager {
        * Extra body paragraphs for the squashed commit (squash only).
        */
       commitBody?: string;
+      assertCanMutateInsideLock?: () => void | Promise<void>;
+      updateStatusInsideLock?: MergeRunStatusUpdater;
     } = {},
   ): Promise<MergeRunResult> {
     return this.withRepoLock(async () => (
-      this.withRunLock(runId, async () => this.mergeRunWorktreeLocked(runId, options))
+      this.withRunLock(runId, async () => {
+        const result = await this.mergeRunWorktreeLocked(runId, options);
+        await options.updateStatusInsideLock?.(result);
+        return result;
+      })
     ));
   }
 
@@ -667,9 +702,12 @@ export class WorktreeManager {
       mergeStrategy?: 'squash' | 'preserve';
       commitTitle?: string;
       commitBody?: string;
+      assertCanMutateInsideLock?: () => void | Promise<void>;
+      updateStatusInsideLock?: MergeRunStatusUpdater;
     },
   ): Promise<MergeRunResult> {
     await this.assertHostRepoReadyForMerge(runId);
+    await options.assertCanMutateInsideLock?.();
 
     const record = this.requireRunWorktreeRecord(runId);
     const target = await this.resolveMergeTargetBranch(options.targetBranch);
@@ -965,6 +1003,32 @@ export class WorktreeManager {
     throw new Error(
       `Cannot merge run ${runId}: host repository has an unfinished git operation `
       + `(${details.join('; ')}). Resolve or abort it before calling merge_run.`,
+    );
+  }
+
+  private async assertHostRepoReadyForSnapshot(
+    runId: string,
+    operation: 'dispatch' | 'continue_run',
+  ): Promise<void> {
+    const [unmergedPaths, operations] = await Promise.all([
+      this.detectConflicts(),
+      this.detectHostGitOperationsInProgress(),
+    ]);
+    if (unmergedPaths.length === 0 && operations.length === 0) {
+      return;
+    }
+
+    const details: string[] = [];
+    if (unmergedPaths.length > 0) {
+      details.push(`unmerged index paths: ${unmergedPaths.join(', ')}`);
+    }
+    if (operations.length > 0) {
+      details.push(`in-progress git operation markers: ${operations.join(', ')}`);
+    }
+
+    throw new Error(
+      `host_repo_not_ready: cannot ${operation} run ${runId}: host repository has an unfinished git operation `
+      + `(${details.join('; ')}). Resolve or abort it before retrying.`,
     );
   }
 
@@ -1267,7 +1331,7 @@ export class WorktreeManager {
    */
   async cleanupByRunId(
     runId: string,
-    options: { keepBranch?: boolean } = {},
+    options: { keepBranch?: boolean; lockAlreadyHeld?: boolean } = {},
   ): Promise<WorktreeCleanupResult> {
     let result: WorktreeCleanupResult = {
       success: true,
@@ -1277,7 +1341,7 @@ export class WorktreeManager {
       branchDeleted: false,
       recordDeleted: false,
     };
-    await this.withRunLock(runId, async () => {
+    const cleanup = async () => {
       const record = this.readRunWorktreeRecord(runId);
       if (!record) return;
       const cleanup = await this.cleanupRunRecordedWorktree(record, options);
@@ -1300,7 +1364,12 @@ export class WorktreeManager {
           }
         }
       }
-    });
+    };
+    if (options.lockAlreadyHeld) {
+      await cleanup();
+    } else {
+      await this.withRunLock(runId, cleanup);
+    }
     return result;
   }
 
@@ -1339,6 +1408,7 @@ export class WorktreeManager {
       message.includes('already exists')
       || message.includes('already checked out')
       || message.includes('is a missing but already registered worktree')
+      || message.includes('.lock')
     );
   }
 
@@ -1525,11 +1595,18 @@ export class WorktreeManager {
       .digest('hex')
       .slice(0, 32);
     const lockDir = join(lockRoot, lockName);
-    return this.withLock(
-      lockDir,
-      `Timed out waiting for repository lock on ${commonDirRealpath}.`,
-      operation,
-    );
+    try {
+      return await this.withLock(
+        lockDir,
+        `Timed out waiting for repository lock on ${commonDirRealpath}.`,
+        operation,
+      );
+    } catch (err) {
+      if (err instanceof FileLockTimeoutError) {
+        throw new Error(`repo_lock_timeout: ${err.message}`);
+      }
+      throw err;
+    }
   }
 
   private async resolveRepoCommonDirRealpath(): Promise<string> {

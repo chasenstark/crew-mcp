@@ -210,6 +210,12 @@ If `merge_run` rejects with
 `requires explicit user confirmation`, re-ask the user with a concrete
 merge prompt, wait for an affirmative answer, then retry
 `merge_run` with `confirmed: true`. Do not retry automatically.
+If `merge_run`, `discard_run`, or `continue_run` rejects with
+`run_in_flight` or `busy_worktree`, another live run is still using
+the run worktree or host checkout. Tell the user which run is blocking
+and wait for it to finish or ask whether to cancel it. For `merge_run`
+only, use `force: true` solely after explicit user approval and only
+when the blocker is safe to ignore.
 
 After a successful `merge_run`, check the structured output. If it
 includes `landed_off_current_branch: true`, explicitly tell the user

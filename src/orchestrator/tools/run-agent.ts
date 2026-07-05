@@ -358,6 +358,16 @@ export async function planRunAgent(
     // RunStateV1 mirrors that — it is informational, not a worktree
     // we own.
     worktreePath = input.working_directory ?? ctx.worktreeManager.getProjectRoot();
+    if (input.working_directory === undefined) {
+      try {
+        await ctx.worktreeManager.assertHostRepoReadyForDispatch(runId);
+      } catch (err: unknown) {
+        return {
+          kind: 'error',
+          message: `Failed to prepare host checkout for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
   } else {
     try {
       // An ephemeral review with a panel-supplied snapshot source copies the

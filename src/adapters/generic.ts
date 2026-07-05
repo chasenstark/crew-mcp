@@ -165,7 +165,15 @@ export class GenericAdapter implements AgentAdapter {
       );
       if (task.onOutput && subprocess.stdout) {
         subprocess.stdout.on('data', (buf: Buffer) => {
-          task.onOutput!(buf.toString('utf-8'));
+          try {
+            task.onOutput!(buf.toString('utf-8'));
+          } catch (err) {
+            logger.warn(
+              `[adapter:${this.name}] onOutput listener failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
         });
       }
       try {

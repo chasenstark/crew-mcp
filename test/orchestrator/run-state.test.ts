@@ -811,6 +811,7 @@ describe('RunStateStore', () => {
     expect(merged.mergeStatus).toEqual({ target: 'main', commitSha: 'abc123' });
 
     await createRun({ runId: 'r-2', agentId: 'a', worktreePath: '/y', initialPrompt: 'q' });
+    await store.markTerminal('r-2', { status: 'error', summary: 'needs manual merge', filesChanged: [] });
     const conflict = await store.markMergeConflict('r-2', {
       target: 'main',
       conflicts: ['src/a.ts'],
@@ -818,43 +819,41 @@ describe('RunStateStore', () => {
     expect(conflict.status).toBe('merge_conflict');
     expect(conflict.mergeStatus?.conflicts).toEqual(['src/a.ts']);
 
-    const discarded = await store.markDiscarded('r-2');
-    expect(discarded?.status).toBe('discarded');
+    const retryMerged = await store.markMerged('r-2', { target: 'main', commitSha: 'def456' });
+    expect(retryMerged.status).toBe('merged');
+    expect(retryMerged.mergeStatus).toEqual({ target: 'main', commitSha: 'def456' });
+
+    await createRun({ runId: 'r-3', agentId: 'a', worktreePath: '/z', initialPrompt: 'r' });
+    await store.markTerminal('r-3', { status: 'error', summary: 'needs manual merge', filesChanged: [] });
+    await store.markMergeConflict('r-3', {
+      target: 'main',
+      conflicts: ['src/b.ts'],
+    });
+    const conflictDiscarded = await store.markDiscarded('r-3');
+    expect(conflictDiscarded?.status).toBe('discarded');
   });
 
-  it('locked updates preserve terminal and continuation fields across merge races', async () => {
-    await createRun({ runId: 'r-terminal-merge', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
-    await Promise.all([
-      store.markTerminal('r-terminal-merge', {
-        status: 'success',
-        summary: 'terminal summary',
-        filesChanged: ['src/a.ts'],
-      }),
-      store.markMerged('r-terminal-merge', { target: 'main', commitSha: 'abc123' }),
-    ]);
-
-    const terminalMerged = store.read('r-terminal-merge');
-    expect(terminalMerged?.status).toBe('merged');
-    expect(terminalMerged?.filesChanged).toEqual(['src/a.ts']);
-    expect(terminalMerged?.prompts[0].summary).toBe('terminal summary');
-    expect(terminalMerged?.mergeStatus).toEqual({ target: 'main', commitSha: 'abc123' });
-
+  it('lifecycle marks refuse to overwrite a running continuation', async () => {
     await createRun({ runId: 'r-append-merge', agentId: 'a', worktreePath: '/y', initialPrompt: 'first' });
     await store.markTerminal('r-append-merge', {
       status: 'success',
       summary: 'first summary',
       filesChanged: ['src/first.ts'],
     });
-    await Promise.all([
-      store.appendPrompt('r-append-merge', { userPrompt: 'second' }),
+    await store.appendPrompt('r-append-merge', { userPrompt: 'second' });
+    await expect(
       store.markMerged('r-append-merge', { target: 'main', commitSha: 'def456' }),
-    ]);
+    ).rejects.toThrow(/^run_in_flight:/);
+    await expect(store.markDiscarded('r-append-merge')).rejects.toThrow(/^run_in_flight:/);
+    await expect(
+      store.markMergeConflict('r-append-merge', { target: 'main', conflicts: ['x.ts'] }),
+    ).rejects.toThrow(/^run_in_flight:/);
 
     const appendMerged = store.read('r-append-merge');
-    expect(appendMerged?.status).toBe('merged');
+    expect(appendMerged?.status).toBe('running');
     expect(appendMerged?.prompts.map((p) => p.turn)).toEqual([1, 2]);
     expect(appendMerged?.filesChanged).toEqual(['src/first.ts']);
-    expect(appendMerged?.mergeStatus).toEqual({ target: 'main', commitSha: 'def456' });
+    expect(appendMerged?.mergeStatus).toBeUndefined();
   });
 
   it('late markTerminal() after markMerged() is a no-op', async () => {

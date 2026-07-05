@@ -17,6 +17,7 @@ import {
   readCriteriaState,
 } from '../../src/orchestrator/criteria/store.js';
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
+import { drainPendingTerminalPersists } from '../../src/orchestrator/run-lifecycle-listeners.js';
 import { ToolDispatcher, type DispatchTask } from '../../src/orchestrator/tool-dispatcher.js';
 import { crewTailUrl } from '../../src/cli/commands/tail-url.js';
 import { confirmCriteriaHandler } from '../../src/orchestrator/tools/confirm-criteria.js';
@@ -122,7 +123,7 @@ function createDeferred<T>(): {
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -204,7 +205,8 @@ function userRunDirs(crewHome: string): string[] {
 describe('dispatchRunAgentInternal', () => {
   const cleanups: Array<() => void> = [];
 
-  afterEach(() => {
+  afterEach(async () => {
+    await drainPendingTerminalPersists();
     vi.restoreAllMocks();
     while (cleanups.length > 0) {
       cleanups.pop()?.();

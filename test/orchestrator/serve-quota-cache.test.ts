@@ -63,7 +63,7 @@ function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

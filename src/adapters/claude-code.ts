@@ -613,7 +613,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             buffer = buffer.slice(newlineIdx + 1);
             if (!line) continue;
             for (const chunk of formatClaudeStreamLineForStream(line)) {
-              task.onOutput!(chunk);
+              try {
+                task.onOutput!(chunk);
+              } catch (err) {
+                logger.warn(
+                  `[adapter:claude-code] onOutput listener failed: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              }
             }
           }
         });

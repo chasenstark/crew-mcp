@@ -93,4 +93,39 @@ describe('AdapterRegistry lazy loading', () => {
       'gemini-cli': 1,
     });
   });
+
+  it('retries a lazy adapter load after a failed import', async () => {
+    vi.resetModules();
+    const { AdapterRegistry } = await import('../../src/adapters/registry.js');
+    const registry = new AdapterRegistry();
+    let attempts = 0;
+    const adapter = {
+      name: 'retrying',
+      strengths: [],
+      supportsJsonSchema: true,
+      enforcesReadOnly: true,
+      execute: async () => ({
+        output: 'ok',
+        filesModified: [],
+        status: 'success' as const,
+        metadata: {},
+      }),
+      healthCheck: async () => ({ available: true, authenticated: true }),
+    };
+
+    registry.registerLazy({
+      name: 'retrying',
+      strengths: [],
+      supportsJsonSchema: true,
+      enforcesReadOnly: true,
+    }, async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('transient import failure');
+      return adapter;
+    });
+
+    await expect(registry.load('retrying')).rejects.toThrow('transient import failure');
+    await expect(registry.load('retrying')).resolves.toBe(adapter);
+    expect(attempts).toBe(2);
+  });
 });
