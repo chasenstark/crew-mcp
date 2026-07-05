@@ -38,7 +38,6 @@ describe('GeminiCliAdapter', () => {
   });
 
   it('does not advertise the retired tool-loop path', () => {
-    expect(adapter.captainCapabilities.supportsToolLoop).toBe(false);
     expect(adapter.captainCapabilities.supportsStructuredDecisions).toBe(true);
     expect(adapter.captainCapabilities.supportsPauseForUserInput).toBe(false);
   });

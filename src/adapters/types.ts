@@ -1,7 +1,6 @@
 import type { z } from 'zod';
 
 export interface CaptainCapabilities {
-  supportsToolLoop: boolean;
   supportsStructuredDecisions: boolean;
   supportsPauseForUserInput: boolean;
 }

@@ -243,6 +243,12 @@ export interface CrewMcpServerInstance {
   readonly dispatcher: ToolDispatcher;
   readonly worktreeManager: WorktreeManager;
   readonly runStateStore: RunStateStore;
+  /**
+   * Stops the periodic run-GC timer. The timer is unref'd so it never keeps
+   * the process alive, but embedded/test builders that create multiple
+   * servers in one process should call this to avoid accumulating timers.
+   */
+  readonly stopPeriodicRunGc: () => void;
 }
 
 export type StaleRunSweepArgs = {
@@ -499,10 +505,13 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     { crewHome, projectRoot, runStateStore, worktreeManager },
     options.runGc,
   );
-  startPeriodicRunGc(
+  const periodicRunGcTimer = startPeriodicRunGc(
     { crewHome, projectRoot, runStateStore, worktreeManager },
     options.runGc,
   );
+  const stopPeriodicRunGc = (): void => {
+    if (periodicRunGcTimer) clearInterval(periodicRunGcTimer);
+  };
   // Per-server one-shot loud-log state for progressToken presence/absence.
   // Crew's stdio MCP server is normally 1:1 with a single host client, so
   // per-server is effectively per-client today. If crew grows SSE or another
@@ -738,7 +747,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     async (args) => cancelRunToolHandler(args, toolDeps),
   );
 
-  return { server, dispatcher, worktreeManager, runStateStore };
+  return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
 }
 
 /**
@@ -767,7 +776,7 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
     }
   }
 
-  const { server, dispatcher, runStateStore } = buildCrewMcpServer(options);
+  const { server, dispatcher, runStateStore, stopPeriodicRunGc } = buildCrewMcpServer(options);
   warnIfShutdownGraceCannotReachForceKill();
 
   let shuttingDown = false;
@@ -798,6 +807,7 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
         'crew serve shutdown grace expired before all adapter process groups exited',
       );
     }
+    stopPeriodicRunGc();
     runStateStore.closeEventAppendHandles();
     process.exit(exitCode);
   };

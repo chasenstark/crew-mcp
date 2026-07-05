@@ -61,7 +61,6 @@ interface AdapterEntry {
 }
 
 const GENERIC_CAPABILITIES: CaptainCapabilities = {
-  supportsToolLoop: false,
   supportsStructuredDecisions: true,
   supportsPauseForUserInput: false,
 };

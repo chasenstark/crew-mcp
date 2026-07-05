@@ -940,8 +940,24 @@ export class WorktreeManager {
       // update-ref moves the checked-out branch ref but does not update the
       // index/worktree. We refused dirty target checkouts earlier, so a hard
       // reset is the narrow, deliberate mutation that advances the live
-      // checkout to the commit we just created.
-      await this.git.reset(['--hard', commitSha]);
+      // checkout to the commit we just created. The ref is already landed at
+      // this point, so a reset failure (filesystem error) must not fail the
+      // merge — report merged with a warning naming the divergence instead.
+      try {
+        await this.git.reset(['--hard', commitSha]);
+      } catch (err) {
+        const warning =
+          `merge landed: refs/heads/${args.target} advanced to ${commitSha}, but `
+          + `'git reset --hard' failed to advance the checked-out working tree: ${
+            err instanceof Error ? err.message : String(err)
+          }. Run 'git reset --hard ${commitSha}' in the host repo to catch up.`;
+        logger.warn(`merge_run ${args.runId}: ${warning}`);
+        return this.withMergeCheckoutInfo(
+          { status: 'merged', commitSha, restoreFailed: true, restoreWarning: warning },
+          args.target,
+          args.originalCheckout,
+        );
+      }
     }
 
     return this.withMergeCheckoutInfo(

@@ -10,14 +10,14 @@ import { describe, expect, it } from 'vitest';
 const { GenericAdapter } = await import('../../src/adapters/generic.js');
 
 describe('GenericAdapter resume portability (M1.5-13)', () => {
-  it('advertises supportsToolLoop=false — cannot act as captain', () => {
+  it('cannot pause for user input — cannot act as captain', () => {
     const adapter = new GenericAdapter({
       name: 'local-cli',
       command: 'echo',
       argsTemplate: ['{{prompt}}'],
       strengths: [],
     });
-    expect(adapter.captainCapabilities.supportsToolLoop).toBe(false);
+    expect(adapter.captainCapabilities.supportsPauseForUserInput).toBe(false);
   });
 
   it('has no getCliVersionTag method (adapter does not participate in resume)', () => {

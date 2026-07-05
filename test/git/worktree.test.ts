@@ -1182,6 +1182,38 @@ describe('WorktreeManager', () => {
       expect(rootGit.checkout).not.toHaveBeenCalled();
     });
 
+    it('mergeRunWorktree reports merged with a warning when the post-landing reset fails', async () => {
+      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      installHostCheckoutState(rootGit, {
+        branch: 'main',
+        head: 'target-head',
+        targetHead: 'target-head',
+      });
+      wGit.revparse.mockImplementation(async (args: string[]) => (
+        args[0] === 'HEAD' ? 'work-head' : 'crew-run/run-1-aaaaaaaa'
+      ));
+      rootGit.reset.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+
+      const result = await manager.mergeRunWorktree('run-1', { targetBranch: 'main' });
+
+      // The ref is already landed when the reset runs, so a reset failure
+      // must not undo or fail the merge — it degrades to a warning.
+      expect(result).toMatchObject({
+        status: 'merged',
+        commitSha: 'merged-sha',
+        targetBranch: 'main',
+        restoreFailed: true,
+      });
+      expect(result.status === 'merged' && result.restoreWarning).toContain(
+        "'git reset --hard' failed to advance the checked-out working tree",
+      );
+      expect(result.status === 'merged' && result.restoreWarning).toContain('EACCES');
+      expect(rootGit.raw).toHaveBeenCalledWith(['update-ref', 'refs/heads/main', 'merged-sha', 'target-head']);
+    });
+
     it('mergeRunWorktree leaves the host untouched after a conflict result', async () => {
       mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();

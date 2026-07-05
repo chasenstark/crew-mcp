@@ -49,7 +49,6 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   // Chat completions do not provide an adapter-level filesystem change list.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
-    supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,
   };

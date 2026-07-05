@@ -328,7 +328,6 @@ export class GeminiCliAdapter implements AgentAdapter {
   // Gemini terminal execution does not currently parse a file-change stream.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
-    supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,
   };

@@ -71,7 +71,6 @@ export class GenericAdapter implements AgentAdapter {
   // Arbitrary CLI commands have no uniform terminal file-change reporting.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
-    supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,
   };

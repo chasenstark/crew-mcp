@@ -1528,6 +1528,43 @@ describe('crew serve — stale-run sweeper', () => {
     }
   });
 
+  it('buildCrewMcpServer exposes stopPeriodicRunGc, which halts the re-armed GC', async () => {
+    await getRunGc();
+    vi.stubEnv('CREW_RUN_GC_INTERVAL_MS', '10');
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-stop-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-stop-home-'));
+    let calls = 0;
+    const built = buildCrewMcpServer({
+      cwd: root,
+      crewHome,
+      registry: makeRegistry([]),
+      worktreeManager: {} as WorktreeManager,
+      staleRunSweeper: async () => undefined,
+      runGc: async () => {
+        calls += 1;
+      },
+    });
+    try {
+      // Boot GC accounts for the first call; a second proves the interval fired.
+      const startedAt = Date.now();
+      while (calls < 2 && Date.now() - startedAt < 500) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(calls).toBeGreaterThanOrEqual(2);
+      built.stopPeriodicRunGc();
+      await getRunGc();
+      const after = calls;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(calls).toBe(after);
+    } finally {
+      built.stopPeriodicRunGc();
+      vi.unstubAllEnvs();
+      await getRunGc();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
   it('allows CREW_RUN_GC_INTERVAL_MS=0 to disable periodic run GC', () => {
     expect(resolveRunGcIntervalMs({ CREW_RUN_GC_INTERVAL_MS: '0' } as NodeJS.ProcessEnv)).toBe(0);
     const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-disabled-'));

@@ -564,7 +564,6 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly streamsIncrementally = true;
   readonly supportsResume = true;
   readonly captainCapabilities = {
-    supportsToolLoop: false,
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,
   };
