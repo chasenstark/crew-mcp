@@ -6,11 +6,13 @@ function makeTask(
   run: (signal: AbortSignal, onStream: (chunk: string) => void) => Promise<unknown>,
   toolName = 'run_agent',
   runId?: string,
+  streamsIncrementally?: boolean,
 ): DispatchTask {
   return {
     toolCallId: id,
     toolName,
     runId,
+    streamsIncrementally,
     run: (ctx) => run(ctx.signal, ctx.onStream ?? (() => undefined)),
   };
 }
@@ -271,15 +273,20 @@ describe('ToolDispatcher', () => {
     it('aborts a run that emits no output past the stall timeout', async () => {
       vi.useFakeTimers();
       try {
-        const d = new ToolDispatcher({ stallTimeoutMs: 4000 });
+        const d = new ToolDispatcher({ streamingIdleTimeoutMs: 4000, bufferedAbsoluteTimeoutMs: 0 });
         let abortReason: unknown;
-        d.start(makeTask('c-stall', (signal) =>
-          new Promise((_resolve, reject) => {
-            signal.addEventListener('abort', () => {
-              abortReason = signal.reason;
-              reject(signal.reason);
-            });
-          }),
+        d.start(makeTask(
+          'c-stall',
+          (signal) =>
+            new Promise((_resolve, reject) => {
+              signal.addEventListener('abort', () => {
+                abortReason = signal.reason;
+                reject(signal.reason);
+              });
+            }),
+          'run_agent',
+          undefined,
+          true,
         ));
 
         const cancelledP = waitForEvent(d, 'run:cancelled');
@@ -287,7 +294,7 @@ describe('ToolDispatcher', () => {
         await vi.advanceTimersByTimeAsync(5000);
 
         const info = (await cancelledP) as { reason: string };
-        expect(info.reason).toContain('stalled');
+        expect(info.reason).toContain('stall watchdog');
         expect((abortReason as Error).name).toBe('StallTimeoutError');
         expect(d.inFlightCount()).toBe(0);
       } finally {
@@ -298,25 +305,30 @@ describe('ToolDispatcher', () => {
     it('does not abort while stream activity keeps arriving', async () => {
       vi.useFakeTimers();
       try {
-        const d = new ToolDispatcher({ stallTimeoutMs: 4000 });
+        const d = new ToolDispatcher({ streamingIdleTimeoutMs: 4000, bufferedAbsoluteTimeoutMs: 0 });
         let cancelled = false;
         d.onEvent('run:cancelled', () => {
           cancelled = true;
         });
 
-        d.start(makeTask('c-live', (signal, onStream) =>
-          new Promise((resolve, reject) => {
-            signal.addEventListener('abort', () => reject(signal.reason));
-            let n = 0;
-            const iv = setInterval(() => {
-              n += 1;
-              onStream(`tick ${n}`);
-              if (n >= 6) {
-                clearInterval(iv);
-                resolve({ ok: true });
-              }
-            }, 1000);
-          }),
+        d.start(makeTask(
+          'c-live',
+          (signal, onStream) =>
+            new Promise((resolve, reject) => {
+              signal.addEventListener('abort', () => reject(signal.reason));
+              let n = 0;
+              const iv = setInterval(() => {
+                n += 1;
+                onStream(`tick ${n}`);
+                if (n >= 6) {
+                  clearInterval(iv);
+                  resolve({ ok: true });
+                }
+              }, 1000);
+            }),
+          'run_agent',
+          undefined,
+          true,
         ));
 
         const completeP = waitForEvent(d, 'run:complete');
@@ -332,7 +344,7 @@ describe('ToolDispatcher', () => {
     it('clears the watchdog after the run completes (no fire-after-terminal)', async () => {
       vi.useFakeTimers();
       try {
-        const d = new ToolDispatcher({ stallTimeoutMs: 4000 });
+        const d = new ToolDispatcher({ streamingIdleTimeoutMs: 4000, bufferedAbsoluteTimeoutMs: 0 });
         let cancelled = false;
         d.onEvent('run:cancelled', () => {
           cancelled = true;
@@ -340,7 +352,7 @@ describe('ToolDispatcher', () => {
         // Completes quickly (well under the threshold), then we keep the fake
         // clock running far past another stall window. If the watchdog leaked,
         // a stray tick would abort an already-terminal run.
-        d.start(makeTask('c-clear', async () => ({ ok: true })));
+        d.start(makeTask('c-clear', async () => ({ ok: true }), 'run_agent', undefined, true));
         await waitForEvent(d, 'run:complete');
 
         await vi.advanceTimersByTimeAsync(20_000);
@@ -351,24 +363,63 @@ describe('ToolDispatcher', () => {
       }
     });
 
-    it('default constructor leaves the watchdog disabled', async () => {
+    it('uses an absolute cap for buffering tasks by default', async () => {
       vi.useFakeTimers();
       try {
-        const d = new ToolDispatcher();
+        const d = new ToolDispatcher({ streamingIdleTimeoutMs: 0, bufferedAbsoluteTimeoutMs: 4000 });
+        let abortReason: unknown;
+        d.start(makeTask('c-buffered-cap', (signal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => {
+              abortReason = signal.reason;
+              reject(signal.reason);
+            });
+          }),
+        ));
+
+        const cancelledP = waitForEvent(d, 'run:cancelled');
+        await vi.advanceTimersByTimeAsync(4000);
+        const info = (await cancelledP) as { reason: string };
+        expect(info.reason).toContain('absolute cap');
+        expect((abortReason as Error).name).toBe('BufferedAbsoluteTimeoutError');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('honors off switches for both watchdog modes', async () => {
+      vi.useFakeTimers();
+      try {
+        const d = new ToolDispatcher({ streamingIdleTimeoutMs: 0, bufferedAbsoluteTimeoutMs: 0 });
         let cancelled = false;
         d.onEvent('run:cancelled', () => {
           cancelled = true;
         });
-        d.start(makeTask('c-off', (signal) =>
+        const streamingCompleteP = waitForEvent(d, 'run:complete', (info) =>
+          (info as { toolCallId?: string }).toolCallId === 'c-off-streaming');
+        const bufferedCompleteP = waitForEvent(d, 'run:complete', (info) =>
+          (info as { toolCallId?: string }).toolCallId === 'c-off-buffered');
+        d.start(makeTask(
+          'c-off-streaming',
+          (signal) =>
+            new Promise((resolve, reject) => {
+              signal.addEventListener('abort', () => reject(signal.reason));
+              setTimeout(() => resolve({ ok: true }), 60_000);
+            }),
+          'run_agent',
+          undefined,
+          true,
+        ));
+        d.start(makeTask('c-off-buffered', (signal) =>
           new Promise((resolve, reject) => {
             signal.addEventListener('abort', () => reject(signal.reason));
             setTimeout(() => resolve({ ok: true }), 60_000);
           }),
         ));
 
-        const completeP = waitForEvent(d, 'run:complete');
         await vi.advanceTimersByTimeAsync(60_000);
-        await completeP;
+        await streamingCompleteP;
+        await bufferedCompleteP;
         expect(cancelled).toBe(false);
       } finally {
         vi.useRealTimers();

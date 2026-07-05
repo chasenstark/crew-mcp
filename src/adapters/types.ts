@@ -227,6 +227,18 @@ export interface AgentAdapter {
    * has another complete source of truth.
    */
   readonly filesModifiedReliable?: boolean;
+  /**
+   * True when the adapter emits useful stdout progress during long-running
+   * dispatches. The dispatcher uses this to choose idle-stall protection.
+   * Buffering adapters look idle until completion and must use an absolute cap
+   * instead. Must be static enough for lazy registry proxy/loaded parity.
+   */
+  readonly streamsIncrementally?: boolean;
+  /**
+   * True when `execute()` consumes `constraints.resumeSessionId` and is
+   * expected to return a provider session id for every requested resume turn.
+   */
+  readonly supportsResume?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
   executeWithSchema?<T extends z.ZodType>(

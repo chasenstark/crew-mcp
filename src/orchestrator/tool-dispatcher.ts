@@ -27,6 +27,7 @@ export interface DispatchTask {
   readonly toolName: string;
   readonly input?: Record<string, unknown>;
   readonly runId?: string;
+  readonly streamsIncrementally?: boolean;
   run(ctx: DispatchTaskContext): Promise<unknown>;
 }
 
@@ -49,19 +50,12 @@ export interface Disposable {
 }
 
 export interface ToolDispatcherOptions {
-  /**
-   * Idle-stall watchdog. If a run emits no stream activity for this many
-   * milliseconds it is aborted via its AbortSignal — surfacing as a
-   * cancelled run whose reason names the stall, so a wedged subprocess
-   * doesn't linger forever. `0` (the default) disables the watchdog.
-   * Tuned at the serve layer via `CREW_DISPATCH_STALL_TIMEOUT_MS`.
-   *
-   * Caveat: the activity signal is `onStream` output. Adapters that emit
-   * output only at completion (no incremental streaming) look idle for
-   * their entire run, so enabling this can kill in-progress work on such
-   * adapters — which is why it ships off by default.
-   */
+  /** Compatibility alias for `streamingIdleTimeoutMs`. */
   readonly stallTimeoutMs?: number;
+  /** Idle-stall timeout for incrementally streaming adapters. `0` disables. */
+  readonly streamingIdleTimeoutMs?: number;
+  /** Absolute wall-clock cap for buffering adapters. `0` disables. */
+  readonly bufferedAbsoluteTimeoutMs?: number;
 }
 
 type InFlight = {
@@ -75,14 +69,23 @@ function watchdogIntervalMs(stallTimeoutMs: number): number {
   return Math.min(10_000, Math.max(1_000, Math.floor(stallTimeoutMs / 4)));
 }
 
+const DEFAULT_STREAMING_IDLE_TIMEOUT_MS = 12 * 60 * 1000;
+const DEFAULT_BUFFERED_ABSOLUTE_TIMEOUT_MS = 60 * 60 * 1000;
+
 export class ToolDispatcher {
   private readonly emitter = new EventEmitter<DispatcherEvents>();
   private readonly inFlight = new Map<string, InFlight>();
-  private readonly stallTimeoutMs: number;
+  private readonly streamingIdleTimeoutMs: number;
+  private readonly bufferedAbsoluteTimeoutMs: number;
 
   constructor(options: ToolDispatcherOptions = {}) {
-    const raw = options.stallTimeoutMs ?? 0;
-    this.stallTimeoutMs = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+    const rawStreaming = options.streamingIdleTimeoutMs
+      ?? options.stallTimeoutMs
+      ?? DEFAULT_STREAMING_IDLE_TIMEOUT_MS;
+    this.streamingIdleTimeoutMs = normalizeTimeout(rawStreaming);
+    this.bufferedAbsoluteTimeoutMs = normalizeTimeout(
+      options.bufferedAbsoluteTimeoutMs ?? DEFAULT_BUFFERED_ABSOLUTE_TIMEOUT_MS,
+    );
   }
 
   start(task: DispatchTask): void {
@@ -101,29 +104,37 @@ export class ToolDispatcher {
       runId: task.runId,
     });
 
-    // Idle-stall watchdog: arm only when enabled. `lastActivity` advances on
-    // every stream chunk; if the gap since the last chunk crosses the
-    // threshold we abort, which routes through the existing cancellation path.
+    // Streaming adapters get idle-stall protection. Buffering adapters emit
+    // nothing until completion, so they get an absolute cap instead.
     let lastActivity = Date.now();
-    let watchdog: ReturnType<typeof setInterval> | undefined;
+    let watchdog: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout> | undefined;
     const clearWatchdog = () => {
-      if (watchdog !== undefined) {
+      if (watchdog === undefined) return;
+      if (task.streamsIncrementally === true) {
         clearInterval(watchdog);
-        watchdog = undefined;
+      } else {
+        clearTimeout(watchdog);
       }
+      watchdog = undefined;
     };
-    if (this.stallTimeoutMs > 0) {
+    if (task.streamsIncrementally === true && this.streamingIdleTimeoutMs > 0) {
       watchdog = setInterval(() => {
         if (controller.signal.aborted) {
           clearWatchdog();
           return;
         }
-        if (Date.now() - lastActivity >= this.stallTimeoutMs) {
+        if (Date.now() - lastActivity >= this.streamingIdleTimeoutMs) {
           clearWatchdog();
-          controller.abort(new StallTimeoutError(this.stallTimeoutMs));
+          controller.abort(new StallTimeoutError(this.streamingIdleTimeoutMs));
         }
-      }, watchdogIntervalMs(this.stallTimeoutMs));
-      // Don't let the watchdog alone keep the process alive.
+      }, watchdogIntervalMs(this.streamingIdleTimeoutMs));
+      watchdog.unref?.();
+    } else if (task.streamsIncrementally !== true && this.bufferedAbsoluteTimeoutMs > 0) {
+      watchdog = setTimeout(() => {
+        if (controller.signal.aborted) return;
+        clearWatchdog();
+        controller.abort(new BufferedAbsoluteTimeoutError(this.bufferedAbsoluteTimeoutMs));
+      }, this.bufferedAbsoluteTimeoutMs);
       watchdog.unref?.();
     }
 
@@ -263,8 +274,28 @@ class DispatcherCancelError extends Error {
 export class StallTimeoutError extends Error {
   readonly name = 'StallTimeoutError';
   constructor(stallTimeoutMs: number) {
-    super(`stalled: no agent output for ${Math.round(stallTimeoutMs / 1000)}s`);
+    super(`stall watchdog: no output for ${formatDuration(stallTimeoutMs)} - cancelled`);
   }
+}
+
+export class BufferedAbsoluteTimeoutError extends Error {
+  readonly name = 'BufferedAbsoluteTimeoutError';
+  constructor(timeoutMs: number) {
+    super(`absolute cap: buffering adapter ran for ${formatDuration(timeoutMs)} - cancelled`);
+  }
+}
+
+function normalizeTimeout(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0 && seconds > 0) return `${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
 }
 
 function readAbortReason(reason: unknown): string {

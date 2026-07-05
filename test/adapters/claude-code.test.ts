@@ -45,6 +45,56 @@ class ErroringWritable extends Writable {
   }
 }
 
+function createStreamingClaudeProcess({
+  stdoutChunks,
+  stderrChunks = [],
+  exitCode = 0,
+  rejectWith,
+}: {
+  stdoutChunks: string[];
+  stderrChunks?: string[];
+  exitCode?: number;
+  rejectWith?: Error;
+}) {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const subprocess = new Promise((resolve, reject) => {
+    let stdoutEnded = false;
+    let stderrEnded = false;
+    const settleIfDone = () => {
+      if (!stdoutEnded || !stderrEnded) return;
+      if (rejectWith) {
+        reject(rejectWith);
+        return;
+      }
+      resolve({
+        stdout: undefined,
+        stderr: undefined,
+        exitCode,
+      });
+    };
+    stdout.once('end', () => {
+      stdoutEnded = true;
+      settleIfDone();
+    });
+    stderr.once('end', () => {
+      stderrEnded = true;
+      settleIfDone();
+    });
+
+    queueMicrotask(() => {
+      for (const chunk of stdoutChunks) stdout.write(chunk);
+      stdout.end();
+      for (const chunk of stderrChunks) stderr.write(chunk);
+      stderr.end();
+    });
+  }) as Promise<any> & { stdout: PassThrough; stderr: PassThrough };
+
+  subprocess.stdout = stdout;
+  subprocess.stderr = stderr;
+  return subprocess;
+}
+
 describe('ClaudeCodeAdapter', () => {
   let adapter: InstanceType<typeof ClaudeCodeAdapter>;
 
@@ -131,8 +181,35 @@ describe('ClaudeCodeAdapter', () => {
       expect(args[1]).toBe('-');
       expect(args).not.toContain(composedPrompt);
       expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+        buffer: false,
         input: composedPrompt,
       }));
+    });
+
+    it('passes --resume and returns the rotated session id without an equality guard', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: 'result',
+          result: 'continued',
+          session_id: 'rotated-session',
+        }),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Continue',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { resumeSessionId: 'prior-session' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 2)).toEqual([
+        '--resume',
+        'prior-session',
+      ]);
+      expect(result.status).toBe('success');
+      expect(result.sessionId).toBe('rotated-session');
     });
 
     it('handles a large prompt over stdin without argv byte-guard failure', async () => {
@@ -229,11 +306,11 @@ describe('ClaudeCodeAdapter', () => {
     });
 
     it('handles CLI crash with empty stdout and non-zero exit', async () => {
-      mockExeca.mockResolvedValueOnce({
-        stdout: '',
-        stderr: 'Segmentation fault',
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [],
+        stderrChunks: ['rate limit exceeded: Segmentation fault'],
         exitCode: 139,
-      } as any);
+      }) as any);
 
       const result = await adapter.execute({
         prompt: 'Do something',
@@ -242,6 +319,10 @@ describe('ClaudeCodeAdapter', () => {
 
       expect(result.status).toBe('error');
       expect(result.output).toContain('Segmentation fault');
+      expect(result.failure).toMatchObject({
+        kind: 'rate_limited',
+        recommendation: 'backoff',
+      });
       expect(result.filesModified).toEqual([]);
     });
 
@@ -261,16 +342,18 @@ describe('ClaudeCodeAdapter', () => {
     });
 
     it('preserves partial streaming output when the process throws after emitting stdout', async () => {
-      const streamingError = Object.assign(new Error('Timed out'), {
-        stdout: JSON.stringify({
-          type: 'assistant',
-          message: {
-            content: [{ type: 'text', text: 'Partial assistant output' }],
-          },
-        }),
-        stderr: 'deadline exceeded',
-      });
-      mockExeca.mockRejectedValueOnce(streamingError);
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Partial assistant output' }],
+            },
+          })}\n`,
+        ],
+        stderrChunks: ['deadline exceeded'],
+        rejectWith: new Error('Timed out'),
+      }) as any);
 
       const result = await adapter.execute({
         prompt: 'Long running task',
@@ -283,6 +366,61 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.metadata.rawEvents?.[0]).toMatchObject({
         error: 'Timed out',
         rawStderr: 'deadline exceeded',
+      });
+    });
+
+    it('preserves partial streaming output from the incremental buffer under buffer:false', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Buffered partial output' }],
+            },
+            session_id: 'partial-session',
+          })}\n`,
+        ],
+        stderrChunks: ['cancelled by test'],
+        rejectWith: new Error('cancelled'),
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Long running task',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('Buffered partial output');
+      expect(result.sessionId).toBe('partial-session');
+      expect(result.metadata.rawEvents?.[0]).toMatchObject({
+        rawStderr: 'cancelled by test',
+      });
+    });
+
+    it('prefers stream-captured stderr when a thrown execa error has empty stderr', async () => {
+      const error = new Error('process failed') as Error & { stderr: string };
+      error.stderr = '';
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [],
+        stderrChunks: ['stream-captured tail rate limit exceeded'],
+        rejectWith: error,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Long running task',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toBe('stream-captured tail rate limit exceeded');
+      expect(result.failure).toMatchObject({
+        kind: 'rate_limited',
+        recommendation: 'backoff',
+      });
+      expect(result.metadata.rawEvents?.[0]).toMatchObject({
+        rawStderr: 'stream-captured tail rate limit exceeded',
       });
     });
 

@@ -61,6 +61,9 @@ export const AGY_MIN_VERSION = { major: 1, minor: 0, patch: 14 } as const;
  * only the backstop if agy ignores its own limit.
  */
 const PRINT_TIMEOUT_EXECA_BUFFER_MS = 15_000;
+// agy returns a single JSON envelope, so this adapter intentionally buffers
+// stdout. Keep the cap explicit instead of inheriting execa's default.
+const AGY_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 /**
  * The JSON object `agy --output-format json` prints (undocumented in --help
@@ -131,6 +134,11 @@ function renderProcessFailureOutput(stdout: string, stderr: string, message: str
   if (stderr) return stderr;
   if (stdout) return stdout;
   return message;
+}
+
+function isMaxBufferError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === 'MaxBufferError' || /maxBuffer|buffer/i.test(error.message);
 }
 
 /**
@@ -245,6 +253,7 @@ export class AgyAdapter implements AgentAdapter {
   // agy terminal execution has no file-change stream → run-agent's worktree
   // git-status fallback is the source of truth for filesModified.
   readonly filesModifiedReliable = false;
+  readonly supportsResume = true;
   private readonly healthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
@@ -337,6 +346,7 @@ export class AgyAdapter implements AgentAdapter {
       const subprocess = execa('agy', args, {
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout: timeout + PRINT_TIMEOUT_EXECA_BUFFER_MS } : {}),
+        maxBuffer: AGY_MAX_BUFFER_BYTES,
         ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
         reject: false,
@@ -367,21 +377,24 @@ export class AgyAdapter implements AgentAdapter {
         ? String((error as { stderr?: string }).stderr ?? '')
         : '';
       const message = error instanceof Error ? error.message : 'Unknown execution error';
+      const capMessage = isMaxBufferError(error)
+        ? `agy output exceeded the configured ${AGY_MAX_BUFFER_BYTES} byte maxBuffer cap`
+        : undefined;
       logger.error('[adapter:agy] process execution threw', {
         cwd: task.context.workingDirectory,
         timeoutMs: timeout,
         model,
-        error: message,
+        error: capMessage ?? message,
       });
       return {
-        output: renderProcessFailureOutput(stdoutText, stderrText, message),
+        output: capMessage ?? renderProcessFailureOutput(stdoutText, stderrText, message),
         filesModified: [],
         status: 'error',
         failure: classifyTextFailure(
-          [message, stdoutText, stderrText].filter(Boolean).join('\n'),
+          [capMessage ?? message, stdoutText, stderrText].filter(Boolean).join('\n'),
           { defaultKind: 'process' },
         ),
-        metadata: { rawEvents: [{ error: message, stdout: stdoutText, stderr: stderrText }] },
+        metadata: { rawEvents: [{ error: capMessage ?? message, stdout: stdoutText, stderr: stderrText }] },
       };
     }
 

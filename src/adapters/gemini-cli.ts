@@ -195,6 +195,11 @@ function renderProcessFailureOutput(stdout: string, stderr: string, message: str
   return message;
 }
 
+function isMaxBufferError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === 'MaxBufferError' || /maxBuffer|buffer/i.test(error.message);
+}
+
 /**
  * Minimum Gemini CLI version eligible for the captain role. Resume-by-UUID
  * is flaky in < 0.20 per upstream issues #24808/#24532/#24535; healthCheck
@@ -202,6 +207,9 @@ function renderProcessFailureOutput(stdout: string, stderr: string, message: str
  * mid-run failure.
  */
 export const GEMINI_MIN_VERSION = { major: 0, minor: 20, patch: 0 } as const;
+// Gemini terminal dispatch returns a single JSON envelope, so this adapter
+// intentionally buffers stdout. Keep the cap explicit and diagnosable.
+const GEMINI_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 /**
  * Gemini built-in tools that can mutate the working tree or VCS state.
@@ -356,6 +364,8 @@ export class GeminiCliAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
+    // Resume is deliberately unwired here: this gemini-cli dispatch path is
+    // auth-dead in production and should not silently pretend to continue.
     const args = ['--output-format', 'json'];
     if (task.constraints?.model) {
       args.push('--model', task.constraints.model);
@@ -428,6 +438,7 @@ export class GeminiCliAdapter implements AgentAdapter {
         const subprocess = execa('gemini', args, {
           cwd: task.context.workingDirectory,
           ...(timeout ? { timeout } : {}),
+          maxBuffer: GEMINI_MAX_BUFFER_BYTES,
           ...processGroupSpawnOptions(),
           cancelSignal: task.constraints?.signal,
           reject: false,
@@ -470,24 +481,27 @@ export class GeminiCliAdapter implements AgentAdapter {
           : '';
         const message =
           error instanceof Error ? error.message : 'Unknown execution error';
+        const capMessage = isMaxBufferError(error)
+          ? `gemini-cli output exceeded the configured ${GEMINI_MAX_BUFFER_BYTES} byte maxBuffer cap`
+          : undefined;
         logger.error('[adapter:gemini-cli] process execution threw', {
           cwd: task.context.workingDirectory,
           timeoutMs: timeout,
           model: task.constraints?.model,
-          error: message,
+          error: capMessage ?? message,
         });
         return {
-          output: renderProcessFailureOutput(stdoutText, stderrText, message),
+          output: capMessage ?? renderProcessFailureOutput(stdoutText, stderrText, message),
           filesModified: [],
           status: 'error',
           failure: classifyTextFailure(
-            [message, stdoutText, stderrText].filter(Boolean).join('\n'),
+            [capMessage ?? message, stdoutText, stderrText].filter(Boolean).join('\n'),
             { defaultKind: 'process' },
           ),
           metadata: {
             rawEvents: [
               {
-                error: message,
+                error: capMessage ?? message,
                 stdout: stdoutText,
                 stderr: stderrText,
               },

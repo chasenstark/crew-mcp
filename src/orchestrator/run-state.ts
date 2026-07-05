@@ -26,11 +26,11 @@ import {
   readFileSync,
   realpathSync,
   writeFileSync,
-  appendFileSync,
   chmodSync,
   openSync,
   fstatSync,
   readSync,
+  writeSync,
   closeSync,
   rmSync,
 } from 'node:fs';
@@ -349,6 +349,8 @@ export class RunStateStore {
   private readonly runsBasePath: string;
   private readonly repoRootPath: string;
   private readonly resolvedCaps: ResolvedCaps;
+  private readonly eventAppendFds = new Map<string, number>();
+  private readonly eventReadCursors = new Map<string, { lineCount: number; byteOffset: number }>();
   private overridesInvalidPending: boolean;
 
   constructor(options: RunStateStoreOptions) {
@@ -716,6 +718,7 @@ export class RunStateStore {
         status: args.status,
       });
     }
+    this.closeEventAppendFd(runId);
     writeRunReceipt(this.runDir(runId), next);
     return next;
   }
@@ -782,7 +785,33 @@ export class RunStateStore {
    */
   appendEvent(runId: string, line: string): void {
     const path = this.eventsLogPath(runId);
-    appendFileSync(path, line.endsWith('\n') ? line : `${line}\n`, 'utf-8');
+    const fd = this.eventAppendFd(runId, path);
+    writeSync(fd, line.endsWith('\n') ? line : `${line}\n`, undefined, 'utf-8');
+  }
+
+  private eventAppendFd(runId: string, path: string): number {
+    const existing = this.eventAppendFds.get(runId);
+    if (existing !== undefined) return existing;
+    const fd = openSync(path, 'a');
+    this.eventAppendFds.set(runId, fd);
+    return fd;
+  }
+
+  private closeEventAppendFd(runId: string): void {
+    const fd = this.eventAppendFds.get(runId);
+    if (fd === undefined) return;
+    this.eventAppendFds.delete(runId);
+    try {
+      closeSync(fd);
+    } catch (err) {
+      logBestEffortFailure('run-state.close-event-append-fd', err);
+    }
+  }
+
+  closeEventAppendHandles(): void {
+    for (const runId of Array.from(this.eventAppendFds.keys())) {
+      this.closeEventAppendFd(runId);
+    }
   }
 
   /**
@@ -907,16 +936,74 @@ export class RunStateStore {
     readonly nextLine: number;
   } {
     const path = this.eventsLogPath(runId);
+    const start = Math.max(0, sinceLine);
+    const cursor = this.eventReadCursors.get(runId);
+    if (cursor && cursor.lineCount === start) {
+      const incremental = this.readEventsFromCursor(runId, path, cursor);
+      if (incremental) return incremental;
+    }
     let content: string;
     try {
       content = readFileSync(path, 'utf-8');
     } catch (err) {
-      if (isEnoent(err)) return { lines: [], nextLine: 0 };
+      if (isEnoent(err)) {
+        this.eventReadCursors.delete(runId);
+        return { lines: [], nextLine: 0 };
+      }
       throw err;
     }
     const all = content.split('\n').filter((l) => l.length > 0);
-    const start = Math.max(0, sinceLine);
+    this.eventReadCursors.set(runId, {
+      lineCount: all.length,
+      byteOffset: Buffer.byteLength(content),
+    });
     return { lines: all.slice(start), nextLine: all.length };
+  }
+
+  private readEventsFromCursor(
+    runId: string,
+    path: string,
+    cursor: { lineCount: number; byteOffset: number },
+  ): { readonly lines: string[]; readonly nextLine: number } | undefined {
+    let fd: number;
+    try {
+      fd = openSync(path, 'r');
+    } catch (err) {
+      if (isEnoent(err)) {
+        this.eventReadCursors.delete(runId);
+        return { lines: [], nextLine: 0 };
+      }
+      throw err;
+    }
+    try {
+      const size = fstatSync(fd).size;
+      if (size < cursor.byteOffset) {
+        this.eventReadCursors.delete(runId);
+        return undefined;
+      }
+      if (size === cursor.byteOffset) {
+        return { lines: [], nextLine: cursor.lineCount };
+      }
+
+      const decoder = new StringDecoder('utf8');
+      const buffer = Buffer.allocUnsafe(Math.min(EVENT_LOG_SCAN_CHUNK_BYTES, size - cursor.byteOffset));
+      let offset = cursor.byteOffset;
+      let text = '';
+      while (offset < size) {
+        const length = Math.min(buffer.length, size - offset);
+        const bytesRead = readSync(fd, buffer, 0, length, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+        text += decoder.write(buffer.subarray(0, bytesRead));
+      }
+      text += decoder.end();
+      const lines = text.split('\n').filter((l) => l.length > 0);
+      const nextLine = cursor.lineCount + lines.length;
+      this.eventReadCursors.set(runId, { lineCount: nextLine, byteOffset: size });
+      return { lines, nextLine };
+    } finally {
+      closeSync(fd);
+    }
   }
 
   /**

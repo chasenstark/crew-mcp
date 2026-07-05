@@ -920,6 +920,40 @@ describe('RunStateStore', () => {
     expect(store.readEventsSince('r-1')).toEqual({ lines: [], nextLine: 0 });
   });
 
+  it('readEventsSince() advances from a byte-offset cursor and matches line-count semantics', async () => {
+    await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    store.appendEvent('r-1', 'line one');
+    store.appendEvent('r-1', 'line two');
+
+    expect(store.readEventsSince('r-1', 0)).toEqual({
+      lines: ['line one', 'line two'],
+      nextLine: 2,
+    });
+
+    store.appendEvent('r-1', 'line three');
+    expect(store.readEventsSince('r-1', 2)).toEqual({
+      lines: ['line three'],
+      nextLine: 3,
+    });
+    expect(store.readEventsSince('r-1', 3)).toEqual({ lines: [], nextLine: 3 });
+  });
+
+  it('readEventsSince() invalidates the byte cursor when events.log shrinks', async () => {
+    await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    store.appendEvent('r-1', 'old one');
+    store.appendEvent('r-1', 'old two');
+    expect(store.readEventsSince('r-1', 0).nextLine).toBe(2);
+
+    store.closeEventAppendHandles();
+    writeFileSync(store.eventsLogPath('r-1'), 'new one\n', 'utf-8');
+
+    expect(store.readEventsSince('r-1', 2)).toEqual({ lines: [], nextLine: 1 });
+    expect(store.readEventsSince('r-1', 0)).toEqual({
+      lines: ['new one'],
+      nextLine: 1,
+    });
+  });
+
   it('event readers propagate non-ENOENT read errors', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     store.appendEvent('r-1', 'line one');

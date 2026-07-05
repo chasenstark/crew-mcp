@@ -29,7 +29,8 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { existsSync, readFileSync, statSync } from 'fs';
+import { createReadStream } from 'fs';
+import { access, stat } from 'fs/promises';
 import { resolve, sep } from 'path';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
@@ -556,6 +557,7 @@ export function buildAdapterDispatchTask(args: {
     toolCallId: args.toolCallId,
     toolName: 'run_agent' as const,
     runId: args.runId,
+    streamsIncrementally: args.adapter.streamsIncrementally === true,
     input: args.input,
     run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
       const readOnly = args.runMode === 'read_only';
@@ -628,8 +630,14 @@ export function buildAdapterDispatchTask(args: {
         onOutput: taskCtx.onStream,
       });
 
-      return finalizeAdapterResult({
+      const resumeChecked = enforceRequestedResumeSessionId({
         result,
+        adapter: args.adapter,
+        requestedSessionId: args.resumeSessionId,
+      });
+
+      return finalizeAdapterResult({
+        result: resumeChecked,
         dirtyBefore,
         runMode: args.runMode,
         dispatchWarnings: args.dispatchWarnings,
@@ -640,6 +648,36 @@ export function buildAdapterDispatchTask(args: {
         runId: args.runId,
         adapterName: args.adapter.name,
       });
+    },
+  };
+}
+
+function enforceRequestedResumeSessionId(args: {
+  readonly result: TaskResult;
+  readonly adapter: AgentAdapter;
+  readonly requestedSessionId: string | undefined;
+}): TaskResult {
+  if (!args.requestedSessionId || args.adapter.supportsResume !== true) {
+    return args.result;
+  }
+  if (typeof args.result.sessionId === 'string' && args.result.sessionId.trim().length > 0) {
+    return args.result;
+  }
+  const message =
+    `resume_id_missing: ${args.adapter.name} was asked to resume provider session `
+    + `${args.requestedSessionId} but returned no session id for this turn. Refusing `
+    + 'to treat this as a successful continuation because it may be a cold start.';
+  return {
+    ...args.result,
+    output: message,
+    filesModified: args.result.filesModified,
+    status: 'error',
+    failure: {
+      kind: 'unknown',
+      confidence: 'high',
+      providerCode: 'resume_id_missing',
+      recommendation: 'ask_user',
+      rawSignal: message,
     },
   };
 }
@@ -942,28 +980,58 @@ async function capturePathSignatureSnapshot(
   const unique = Array.from(new Set(paths.filter((p) => p.trim().length > 0)))
     .sort()
     .slice(0, SNAPSHOT_PATH_LIMIT);
-  for (const path of unique) {
-    snapshot.set(path, pathSignature(workingDirectory, path));
-  }
+  const entries = await mapWithConcurrency(unique, 8, async (path) =>
+    [path, await pathSignature(workingDirectory, path)] as const,
+  );
+  for (const [path, signature] of entries) snapshot.set(path, signature);
   return snapshot;
 }
 
-function pathSignature(workingDirectory: string, relativePath: string): string {
+async function pathSignature(workingDirectory: string, relativePath: string): Promise<string> {
   const root = resolve(workingDirectory);
   const abs = resolve(root, relativePath);
   if (abs !== root && !abs.startsWith(`${root}${sep}`)) {
     return 'outside-worktree';
   }
   try {
-    if (!existsSync(abs)) return 'missing';
-    const st = statSync(abs);
+    await access(abs);
+    const st = await stat(abs);
     if (!st.isFile()) return `non-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
     if (st.size > HASH_FILE_MAX_BYTES) {
       return `large-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
     }
-    const digest = createHash('sha256').update(readFileSync(abs)).digest('hex');
+    const digest = await hashFileContent(abs);
     return `sha256:${digest}`;
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
     return `error:${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+function hashFileContent(path: string): Promise<string> {
+  return new Promise((resolveHash, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolveHash(hash.digest('hex')));
+  });
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await mapper(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }

@@ -47,6 +47,8 @@ interface ChatMessage {
   }>;
 }
 
+const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 10 * 60 * 1000;
+
 export interface OpenAiCompatibleAdapterOptions {
   name: string;
   model?: string;
@@ -452,16 +454,21 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
       throw params.signal.reason ?? new Error('OpenAI-compatible request aborted');
     }
 
-    const controller = params.timeoutMs ? new AbortController() : undefined;
+    const timeoutMs = resolveOpenAiCompatibleTimeoutMs(params.timeoutMs);
+    const controller = timeoutMs > 0 ? new AbortController() : undefined;
     let timeoutHandle: NodeJS.Timeout | undefined;
+    let removeAbortListener: (() => void) | undefined;
     if (controller && params.signal) {
-      params.signal.addEventListener('abort', () => controller.abort(params.signal?.reason), { once: true });
+      const onAbort = () => controller.abort(params.signal?.reason);
+      params.signal.addEventListener('abort', onAbort, { once: true });
+      removeAbortListener = () => params.signal?.removeEventListener('abort', onAbort);
     }
-    if (controller && params.timeoutMs) {
+    if (controller) {
       timeoutHandle = setTimeout(
         () => controller.abort('OpenAI-compatible request timed out'),
-        params.timeoutMs,
+        timeoutMs,
       );
+      timeoutHandle.unref?.();
     }
 
     try {
@@ -494,8 +501,19 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+      removeAbortListener?.();
     }
   }
+}
+
+function resolveOpenAiCompatibleTimeoutMs(requested: number | undefined): number {
+  if (requested !== undefined) {
+    return Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : 0;
+  }
+  const raw = process.env.CREW_OPENAI_COMPATIBLE_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
 function parseRetryAfterSeconds(value: string | undefined): number | undefined {

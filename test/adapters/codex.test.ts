@@ -57,38 +57,46 @@ const errorFixture = realReadFileSync(
 
 function createStreamingCodexProcess({
   chunks,
-  stderr = '',
+  stderrChunks = [],
   exitCode = 0,
 }: {
   chunks: string[];
-  stderr?: string;
+  stderrChunks?: string[];
   exitCode?: number;
 }) {
   const stdout = new PassThrough();
+  const stderr = new PassThrough();
   const fullStdout = chunks.join('');
   const subprocess = new Promise((resolve) => {
-    stdout.once('end', () => {
+    let stdoutEnded = false;
+    let stderrEnded = false;
+    const resolveIfDone = () => {
+      if (!stdoutEnded || !stderrEnded) return;
       resolve({
-        stdout: fullStdout,
-        stderr,
+        stdout: undefined,
+        stderr: undefined,
         exitCode,
       });
+    };
+    stdout.once('end', () => {
+      stdoutEnded = true;
+      resolveIfDone();
+    });
+    stderr.once('end', () => {
+      stderrEnded = true;
+      resolveIfDone();
     });
 
     queueMicrotask(() => {
-      if (chunks.length === 0) {
-        stdout.end();
-        return;
-      }
-
-      for (const chunk of chunks.slice(0, -1)) {
-        stdout.write(chunk);
-      }
-      stdout.end(chunks[chunks.length - 1]);
+      for (const chunk of chunks) stdout.write(chunk);
+      stdout.end();
+      for (const chunk of stderrChunks) stderr.write(chunk);
+      stderr.end();
     });
-  }) as Promise<any> & { stdout: PassThrough };
+  }) as Promise<any> & { stdout: PassThrough; stderr: PassThrough };
 
   subprocess.stdout = stdout;
+  subprocess.stderr = stderr;
   return subprocess;
 }
 
@@ -457,8 +465,56 @@ describe('CodexAdapter', () => {
       expect(args[0]).toBe('exec');
       expect(args).not.toContain(composedPrompt);
       expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+        buffer: false,
         input: composedPrompt,
       }));
+    });
+
+    it('captures thread id and resumes with codex exec resume', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"thread-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"continued"}}',
+          '{"type":"turn.completed","turn_id":"turn-1"}',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Continue',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { resumeSessionId: 'thread-1' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args.slice(0, 2)).toEqual(['exec', 'resume']);
+      expect(args.slice(-2)).toEqual(['thread-1', '-']);
+      expect(result.status).toBe('success');
+      expect(result.output).toBe('continued');
+      expect(result.sessionId).toBe('thread-1');
+    });
+
+    it('treats a different resumed codex thread id as context loss', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"fresh-thread"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"fresh"}}',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      const result = await adapter.execute({
+        prompt: 'Continue',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { resumeSessionId: 'thread-1' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('codex resume invalidated');
+      expect(result.failure?.providerCode).toBe('resume_invalidated');
+      expect(result.sessionId).toBe('fresh-thread');
     });
 
     it('parses JSONL output successfully', async () => {
@@ -503,6 +559,29 @@ describe('CodexAdapter', () => {
 
       // action="none" should be excluded
       expect(result.filesModified).toEqual(['src/foo.ts', 'src/bar.ts']);
+    });
+
+    it('computes terminal output from the incremental stream reducer under buffer:false', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingCodexProcess({
+        chunks: [
+          '{"type":"thread.started","thread_id":"thread-123"}\n{"type":"item.completed","item":{"type":"file_change","path":"src/foo.ts","action":"modified"}}\n',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"streamed final"}}\n',
+        ],
+      }) as any);
+
+      const progress: string[] = [];
+      const result = await adapter.execute({
+        prompt: 'Modify files',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: (chunk) => progress.push(chunk),
+      });
+
+      expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ buffer: false }));
+      expect(result.status).toBe('success');
+      expect(result.output).toBe('streamed final');
+      expect(result.filesModified).toEqual(['src/foo.ts']);
+      expect(result.sessionId).toBe('thread-123');
+      expect(progress.some((line) => line.includes('file: modified src/foo.ts'))).toBe(true);
     });
 
     it('handles error events', async () => {
@@ -590,11 +669,11 @@ describe('CodexAdapter', () => {
     });
 
     it('classifies stderr-only quota failures with low confidence', async () => {
-      mockExeca.mockResolvedValueOnce({
-        stdout: '',
-        stderr: 'insufficient_quota: monthly quota exhausted',
+      mockExeca.mockReturnValueOnce(createStreamingCodexProcess({
+        chunks: [],
+        stderrChunks: ['insufficient_quota: monthly quota exhausted'],
         exitCode: 1,
-      } as any);
+      }) as any);
 
       const result = await adapter.execute({
         prompt: 'Do something',
@@ -602,6 +681,7 @@ describe('CodexAdapter', () => {
       });
 
       expect(result.status).toBe('error');
+      expect(result.output).toContain('insufficient_quota');
       expect(result.failure).toMatchObject({
         kind: 'quota_exhausted',
         confidence: 'low',
@@ -610,11 +690,11 @@ describe('CodexAdapter', () => {
     });
 
     it('returns error when codex exits nonzero after emitting parseable JSONL', async () => {
-      mockExeca.mockResolvedValueOnce({
-        stdout: successFixture,
-        stderr: 'process failed after partial work',
+      mockExeca.mockReturnValueOnce(createStreamingCodexProcess({
+        chunks: [successFixture],
+        stderrChunks: ['process failed after partial work'],
         exitCode: 17,
-      } as any);
+      }) as any);
 
       const result = await adapter.execute({
         prompt: 'Do something that partially succeeds then fails',

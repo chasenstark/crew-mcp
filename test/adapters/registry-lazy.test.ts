@@ -41,6 +41,25 @@ describe('AdapterRegistry lazy loading', () => {
     vi.resetModules();
   });
 
+  it('keeps streamsIncrementally identical for lazy proxies and loaded instances', async () => {
+    vi.resetModules();
+    const { createBuiltinRegistry } = await import('../../src/adapters/registry.js');
+    const registry = createBuiltinRegistry();
+    const proxyValues = new Map(
+      registry.listAvailable().map((adapter) => [adapter.name, adapter.streamsIncrementally]),
+    );
+
+    const loaded = await registry.loadAll();
+    const loadedValues = new Map(
+      loaded.map((adapter) => [adapter.name, adapter.streamsIncrementally]),
+    );
+
+    expect(proxyValues.get('claude-code')).toBe(true);
+    expect(proxyValues.get('codex')).toBe(true);
+    expect(proxyValues.get('gemini-cli')).toBeUndefined();
+    expect(loadedValues).toEqual(proxyValues);
+  });
+
   it('does not construct built-in adapter classes until they are loaded', async () => {
     vi.resetModules();
     const constructed = {

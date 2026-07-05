@@ -458,7 +458,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   }
   const worktreeManager = options.worktreeManager
     ?? new WorktreeManager({ projectRoot, crewHome });
-  const dispatcher = new ToolDispatcher({ stallTimeoutMs: resolveDispatchStallTimeoutMs() });
+  const dispatcher = new ToolDispatcher({
+    streamingIdleTimeoutMs: resolveDispatchStallTimeoutMs(),
+    bufferedAbsoluteTimeoutMs: resolveDispatchAbsoluteTimeoutMs(),
+  });
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
   const quotaCache = new QuotaCache();
   void scheduleStaleRunSweep(
@@ -733,7 +736,7 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
     }
   }
 
-  const { server, dispatcher } = buildCrewMcpServer(options);
+  const { server, dispatcher, runStateStore } = buildCrewMcpServer(options);
   warnIfShutdownGraceCannotReachForceKill();
 
   let shuttingDown = false;
@@ -764,6 +767,7 @@ export async function serveCommand(options: ServeOptions = {}): Promise<void> {
         'crew serve shutdown grace expired before all adapter process groups exited',
       );
     }
+    runStateStore.closeEventAppendHandles();
     process.exit(exitCode);
   };
   process.on('unhandledRejection', (reason) => {
@@ -874,21 +878,25 @@ export async function waitForShutdownDrain(
 }
 
 /**
- * Cross-adapter idle-stall watchdog threshold for dispatched runs, in ms. A
- * run whose stream emits nothing for this long is aborted (surfacing as
- * cancelled with a stall reason), so a wedged subprocess can't linger forever.
- *
- * Distinct from the adapter-level `CREW_STREAM_IDLE_TIMEOUT_MS` (claude-code
- * only today, default-on at 120s), which keys off the CLI's own stream-json
- * events and throws → run:failed. This one is the dispatcher-level net that
- * covers every adapter and stalls outside an adapter's stream loop. It is OFF
- * by default — only adapters that stream incrementally are safe to auto-kill
- * on idle. Opt in via `CREW_DISPATCH_STALL_TIMEOUT_MS`. Values below ~1s
- * round up to the watchdog's 1s minimum sampling cadence.
+ * Dispatcher idle-stall watchdog threshold for incrementally streaming runs,
+ * in ms. Default is generous (12m) so quiet-but-healthy phases have room; set
+ * `CREW_DISPATCH_STALL_TIMEOUT_MS=0` to disable.
  */
 function resolveDispatchStallTimeoutMs(): number {
   const raw = process.env.CREW_DISPATCH_STALL_TIMEOUT_MS;
-  if (raw === undefined) return 0;
+  if (raw === undefined) return 12 * 60 * 1000;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+}
+
+/**
+ * Dispatcher absolute wall-clock cap for buffering adapters, in ms. Default is
+ * 60m; set `CREW_DISPATCH_ABSOLUTE_TIMEOUT_MS=0` to disable.
+ */
+function resolveDispatchAbsoluteTimeoutMs(): number {
+  const raw = process.env.CREW_DISPATCH_ABSOLUTE_TIMEOUT_MS;
+  if (raw === undefined) return 60 * 60 * 1000;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return Math.floor(parsed);

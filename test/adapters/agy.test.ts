@@ -130,6 +130,24 @@ describe('AgyAdapter', () => {
     });
   });
 
+  it('surfaces maxBuffer overflow with a diagnosable message', async () => {
+    const error = Object.assign(new Error('maxBuffer exceeded'), {
+      name: 'MaxBufferError',
+      stdout: '',
+      stderr: '',
+    });
+    mockExeca.mockRejectedValueOnce(error as never);
+
+    const result = await adapter.execute({
+      prompt: 'chatty task',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('agy output exceeded');
+    expect(result.failure?.kind).toBe('process');
+  });
+
   describe('recognizesModel', () => {
     it('matches the pinned labels EXACTLY', () => {
       for (const label of AGY_MODEL_LABELS) {

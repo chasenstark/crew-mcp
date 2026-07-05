@@ -5,6 +5,7 @@ import { join } from 'path';
 import { execSync } from 'child_process';
 import {
   planRunAgent,
+  buildAdapterDispatchTask,
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
   crewWorktreeRejectMessage,
@@ -158,6 +159,43 @@ describe('planRunAgent', () => {
     expect(args.constraints.writablePaths).toEqual(
       worktreeManager.getRunGitCommitWritablePaths(plan.runId).paths,
     );
+  });
+
+  it('hard-fails a requested resume when a resume-capable adapter returns no session id', async () => {
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
+      output: 'looked successful',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      supportsResume: true,
+      execute: executeMock,
+    });
+    const task = buildAdapterDispatchTask({
+      toolCallId: 'tool-1',
+      runId: 'run-1',
+      adapter,
+      prompt: 'composed prompt',
+      effectiveWorkingDirectory: root,
+      worktreePath: root,
+      runMode: 'read_only',
+      effectiveModel: undefined,
+      effectiveEffort: undefined,
+      resumeSessionId: 'thread-1',
+      worktreeManager,
+      input: {},
+    });
+    const result = await task.run({ signal: makeAbortSignal() });
+
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('resume_id_missing');
+    expect(result.failure).toMatchObject({
+      providerCode: 'resume_id_missing',
+      confidence: 'high',
+      recommendation: 'ask_user',
+    });
   });
 
   it('leaves successful worktree edits in the worktree (no auto-merge in v2)', async () => {

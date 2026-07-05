@@ -42,6 +42,8 @@ interface LazyAdapterMetadata {
   readonly requiresCrewWorktree?: boolean;
   readonly unmetered?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
+  readonly streamsIncrementally?: boolean;
+  readonly supportsResume?: boolean;
   readonly recognizesModel?: (modelId: string) => boolean;
   readonly hasExecuteWithSchema?: boolean;
   readonly hasExecuteWithTools?: boolean;
@@ -81,6 +83,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     enforcesReadOnly: false,
     reviewDispatchMode: 'read-only-dispatch',
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    streamsIncrementally: true,
+    supportsResume: true,
     recognizesModel: (modelId) =>
       typeof modelId === 'string'
       && (/^claude-/.test(modelId) || modelId === 'sonnet' || modelId === 'opus'),
@@ -97,6 +101,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     enforcesReadOnly: true,
     reviewDispatchMode: 'read-only-dispatch',
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    streamsIncrementally: true,
+    supportsResume: true,
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
     hasExecuteWithSchema: true,
@@ -111,6 +117,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     enforcesReadOnly: false,
     reviewDispatchMode: 'read-only-dispatch',
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    // gemini-cli auth/dispatchability is dead for this path today, so resume
+    // remains deliberately unwired; buffering runs use dispatcher absolute caps.
     // KNOWN COLLISION: this prefix regex also matches agy's "Gemini 3.1 Pro
     // (High)" labels (AgyAdapter pins exact labels instead). It is harmless
     // today because recognizesModel has NO production routing consumer —
@@ -145,6 +153,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     // No native captain tool-loop in v1 (executeWithTools deferred), so use the
     // generic structured-decision capabilities, not the tool-loop set.
     captainCapabilities: GENERIC_CAPABILITIES,
+    supportsResume: true,
     // EXACT-label match against the pinned agy label set, never a substring —
     // agy labels contain "Claude…"/"GPT-OSS…" which a loose test would claim.
     recognizesModel: (modelId) =>
@@ -326,6 +335,8 @@ function createLazyAdapterProxy(
     requiresCrewWorktree: metadata.requiresCrewWorktree,
     unmetered: metadata.unmetered,
     captainCapabilities: metadata.captainCapabilities,
+    streamsIncrementally: metadata.streamsIncrementally,
+    supportsResume: metadata.supportsResume,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),
   };

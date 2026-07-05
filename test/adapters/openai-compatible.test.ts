@@ -9,6 +9,8 @@ describe('OpenAiCompatibleAdapter', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   it('classifies loopback api bases as unmetered and cloud or malformed bases as metered', () => {
@@ -255,5 +257,42 @@ describe('OpenAiCompatibleAdapter', () => {
     ).rejects.toBe('Cancelled by test');
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('arms a default HTTP timeout and composes it with caller cancellation', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('CREW_OPENAI_COMPATIBLE_TIMEOUT_MS', '5000');
+    const fetchMock = vi.fn((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          reject(init.signal?.reason);
+        });
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+
+    const resultP = adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    const result = await resultP;
+
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('OpenAI-compatible request timed out');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const controller = new AbortController();
+    const cancelledP = adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+      constraints: { signal: controller.signal },
+    });
+    controller.abort('caller cancelled');
+    await expect(cancelledP).rejects.toBe('caller cancelled');
   });
 });

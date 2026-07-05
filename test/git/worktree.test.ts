@@ -208,6 +208,31 @@ describe('WorktreeManager', () => {
   });
 
   describe('Run-scoped API (M1.5-14)', () => {
+    it('captures source snapshot signatures byte-identically with async file hashing', async () => {
+      const { root, manager, rootGit } = createManager();
+      writeFileSync(join(root, 'README.md'), 'changed contents\n', 'utf-8');
+      rootGit.revparse.mockImplementation(async (args: string[]) =>
+        args[0] === 'HEAD' ? 'head-sha' : 'main');
+      rootGit.status.mockResolvedValueOnce({
+        modified: ['README.md'],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+        files: [{ path: 'README.md', index: ' ', working_dir: 'M' }],
+      });
+
+      const result = await (manager as any).captureSourceSnapshotSignature(rootGit, root);
+      const digest = createHash('sha256')
+        .update(readFileSync(join(root, 'README.md')))
+        .digest('hex');
+
+      expect(result).toEqual({
+        headSha: 'head-sha',
+        signature: `head-sha\nREADME.md${String.fromCharCode(0)}sha256:${digest}`,
+      });
+    });
+
     it('prunes run worktrees once per project root instead of on every createRunWorktree call', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-1')

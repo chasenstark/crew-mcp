@@ -1,22 +1,25 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { createHash, randomUUID } from 'crypto';
 import {
-  chmodSync,
-  closeSync,
-  copyFileSync,
+  createReadStream,
   existsSync,
-  lstatSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readlinkSync,
-  readSync,
   realpathSync,
   rmdirSync,
   rmSync,
   statSync,
-  symlinkSync,
 } from 'fs';
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  readlink,
+  rm,
+  symlink,
+} from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
@@ -416,8 +419,12 @@ export class WorktreeManager {
     // status.files-based collection (see collectStatusCandidatePaths) so
     // compound index/worktree states (e.g. `MD`) are signed too, in
     // lockstep with what syncUncommittedFromTo mirrors.
-    const entries = collectStatusCandidatePaths(status).map((relPath) =>
-      `${relPath} ${dirtyFileSignature(join(sourcePath, relPath))}`);
+    const separator = String.fromCharCode(0);
+    const entries = await mapWithConcurrency(
+      collectStatusCandidatePaths(status),
+      8,
+      async (relPath) => `${relPath}${separator}${await dirtyFileSignature(join(sourcePath, relPath))}`,
+    );
     return { headSha, signature: [headSha, ...entries].join('\n') };
   }
 
@@ -542,50 +549,59 @@ export class WorktreeManager {
     // states entirely (an `MD` staged-modified-then-deleted file appears in
     // NONE of them), which previously left the target holding the stale
     // HEAD version of a file the source deleted.
-    for (const relPath of collectStatusCandidatePaths(status)) {
-      const src = join(sourceRoot, relPath);
-      const dst = join(worktreePath, relPath);
-      try {
-        let st: ReturnType<typeof lstatSync>;
+    const syncResults = await mapWithConcurrency(
+      collectStatusCandidatePaths(status),
+      8,
+      async (relPath): Promise<{ copied: number; removed: number }> => {
+        const src = join(sourceRoot, relPath);
+        const dst = join(worktreePath, relPath);
         try {
-          st = lstatSync(src);
+          let st: Awaited<ReturnType<typeof lstat>>;
+          try {
+            st = await lstat(src);
+          } catch (err) {
+            if (!isEnoent(err)) throw err;
+            // Deleted in the source working tree (working-tree deletion,
+            // staged deletion, or staged-then-deleted) → mirror the deletion.
+            if (existsSync(dst)) {
+              await rm(dst, { force: true });
+              return { copied: 0, removed: 1 };
+            }
+            return { copied: 0, removed: 0 };
+          }
+          await mkdir(dirname(dst), { recursive: true });
+          if (st.isSymbolicLink()) {
+            const target = await readlink(src);
+            if (!this.isSafeSymlinkTarget(src, target, sourceRoot)) {
+              await rm(dst, { recursive: true, force: true });
+              logger.warn(
+                `syncUncommitted: skipped unsafe symlink ${relPath} -> ${target}; target escapes the sync source root`,
+              );
+              if (strict) failures.push(`unsafe symlink skipped: ${relPath} -> ${target}`);
+              return { copied: 0, removed: 0 };
+            }
+            await rm(dst, { recursive: true, force: true });
+            await symlink(target, dst);
+          } else if (st.isFile()) {
+            await copyFile(src, dst);
+            await chmod(dst, st.mode);
+          } else {
+            // Git submodules are directories with gitlink index entries; this
+            // best-effort file sync does not recurse or materialize them.
+            return { copied: 0, removed: 0 };
+          }
+          return { copied: 1, removed: 0 };
         } catch (err) {
-          if (!isEnoent(err)) throw err;
-          // Deleted in the source working tree (working-tree deletion,
-          // staged deletion, or staged-then-deleted) → mirror the deletion.
-          if (existsSync(dst)) {
-            rmSync(dst, { force: true });
-            removed++;
-          }
-          continue;
+          const message = err instanceof Error ? err.message : String(err);
+          logger.warn(`syncUncommitted: failed to mirror ${relPath} into worktree: ${message}`);
+          if (strict) failures.push(`${relPath}: ${message}`);
+          return { copied: 0, removed: 0 };
         }
-        mkdirSync(dirname(dst), { recursive: true });
-        if (st.isSymbolicLink()) {
-          const target = readlinkSync(src);
-          if (!this.isSafeSymlinkTarget(src, target, sourceRoot)) {
-            rmSync(dst, { recursive: true, force: true });
-            logger.warn(
-              `syncUncommitted: skipped unsafe symlink ${relPath} -> ${target}; target escapes the sync source root`,
-            );
-            if (strict) failures.push(`unsafe symlink skipped: ${relPath} -> ${target}`);
-            continue;
-          }
-          rmSync(dst, { recursive: true, force: true });
-          symlinkSync(target, dst);
-        } else if (st.isFile()) {
-          copyFileSync(src, dst);
-          chmodSync(dst, st.mode);
-        } else {
-          // Git submodules are directories with gitlink index entries; this
-          // best-effort file sync does not recurse or materialize them.
-          continue;
-        }
-        copied++;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.warn(`syncUncommitted: failed to mirror ${relPath} into worktree: ${message}`);
-        if (strict) failures.push(`${relPath}: ${message}`);
-      }
+      },
+    );
+    for (const result of syncResults) {
+      copied += result.copied;
+      removed += result.removed;
     }
     if (strict && failures.length > 0) {
       throw new Error(
@@ -1706,12 +1722,12 @@ function collectStatusCandidatePaths(status: StatusResult): string[] {
  * that a same-size in-place edit could evade); a missing path (deletion)
  * signs as 'missing'.
  */
-function dirtyFileSignature(absPath: string): string {
+async function dirtyFileSignature(absPath: string): Promise<string> {
   try {
-    const st = lstatSync(absPath);
-    if (st.isSymbolicLink()) return `symlink:${readlinkSync(absPath)}`;
+    const st = await lstat(absPath);
+    if (st.isSymbolicLink()) return `symlink:${await readlink(absPath)}`;
     if (!st.isFile()) return `non-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
-    return `sha256:${hashFileContentSync(absPath)}`;
+    return `sha256:${await hashFileContent(absPath)}`;
   } catch (err) {
     if (isEnoent(err)) return 'missing';
     return `error:${err instanceof Error ? err.message : String(err)}`;
@@ -1720,19 +1736,32 @@ function dirtyFileSignature(absPath: string): string {
 
 const HASH_CHUNK_BYTES = 64 * 1024;
 
-function hashFileContentSync(absPath: string): string {
-  const hash = createHash('sha256');
-  const fd = openSync(absPath, 'r');
-  try {
-    const buffer = Buffer.alloc(HASH_CHUNK_BYTES);
-    let bytesRead: number;
-    while ((bytesRead = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
-      hash.update(buffer.subarray(0, bytesRead));
+function hashFileContent(absPath: string): Promise<string> {
+  return new Promise((resolveHash, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(absPath, { highWaterMark: HASH_CHUNK_BYTES });
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolveHash(hash.digest('hex')));
+  });
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await mapper(items[index]);
     }
-  } finally {
-    closeSync(fd);
-  }
-  return hash.digest('hex');
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function isEnoent(err: unknown): boolean {

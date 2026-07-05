@@ -65,6 +65,8 @@ const ClaudeResponseSchema = z.object({
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
 
 const PROGRESS_LINE_MAX_LEN = 240;
+const CAPTURED_STDOUT_MAX_CHARS = 64 * 1024;
+const CAPTURED_STDERR_MAX_CHARS = 16 * 1024;
 
 /**
  * Exported argv builder for Claude's streaming tool-loop invocation.
@@ -232,6 +234,80 @@ function extractStreamEnvelope(stdout: string): ClaudeResponse | undefined {
     result: assistantChunks.join(''),
     session_id: sessionId,
     is_error: true,
+  };
+}
+
+function appendBounded(existing: string, next: string, maxChars = CAPTURED_STDOUT_MAX_CHARS): string {
+  const combined = existing + next;
+  return combined.length <= maxChars ? combined : combined.slice(combined.length - maxChars);
+}
+
+function createBoundedStderrCapture(): {
+  readonly feed: (chunk: string) => void;
+  readonly text: () => string;
+} {
+  let captured = '';
+  return {
+    feed: (chunk: string) => {
+      captured = appendBounded(captured, chunk, CAPTURED_STDERR_MAX_CHARS);
+    },
+    text: () => captured,
+  };
+}
+
+function createClaudeStreamCapture(): {
+  readonly feedLine: (line: string) => void;
+  readonly feedText: (text: string) => void;
+  readonly envelope: () => ClaudeResponse | undefined;
+  readonly capturedText: () => string;
+} {
+  let lastResultLine = '';
+  let assistantText = '';
+  let captured = '';
+  let sessionId: string | undefined;
+
+  const feedLine = (line: string): void => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    captured = appendBounded(captured, `${trimmed}\n`);
+    try {
+      const obj = JSON.parse(trimmed) as { type?: string; session_id?: string };
+      if (typeof obj.session_id === 'string' && !sessionId) {
+        sessionId = obj.session_id;
+      }
+      if (obj.type === 'result') {
+        lastResultLine = trimmed;
+      }
+    } catch {
+      return;
+    }
+    const chunk = extractAssistantTextFromStreamLine(trimmed);
+    if (chunk) assistantText = appendBounded(assistantText, chunk);
+  };
+
+  return {
+    feedLine,
+    feedText: (text: string) => {
+      for (const line of text.split('\n')) feedLine(line);
+    },
+    envelope: () => {
+      if (lastResultLine) {
+        try {
+          return ClaudeResponseSchema.parse(JSON.parse(lastResultLine));
+        } catch {
+          return undefined;
+        }
+      }
+      if (!assistantText) return undefined;
+      return {
+        type: 'result',
+        subtype: 'partial',
+        result: assistantText,
+        session_id: sessionId,
+        is_error: true,
+      };
+    },
+    capturedText: () => captured,
   };
 }
 
@@ -532,6 +608,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   // Current implementation extracts paths from final prose only. Claude tool
   // events do not cover shell edits, git mv, or every write path we allow.
   readonly filesModifiedReliable = false;
+  readonly streamsIncrementally = true;
+  readonly supportsResume = true;
   readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
@@ -576,6 +654,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--max-turns', String(task.constraints.maxTurns));
     }
 
+    if (task.constraints?.resumeSessionId) {
+      args.push('--resume', task.constraints.resumeSessionId);
+    }
+
     // No wall-clock timeout (was 300_000 pre-2026-05). Cancellation
     // is captain-driven via cancelSignal; the agent's own turn/token
     // budget is the natural cap.
@@ -589,12 +671,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     });
 
     let result;
+    const streamCapture = createClaudeStreamCapture();
+    const stderrCapture = createBoundedStderrCapture();
+    let rawStdoutCapture = '';
+    let flushBufferedLine: (() => void) | undefined;
     try {
       const subprocess = execa('claude', args, {
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout } : {}),
         ...processGroupSpawnOptions(),
         cancelSignal: task.constraints?.signal,
+        buffer: false,
         reject: false,
         input: task.prompt,
       });
@@ -603,26 +690,56 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         task.constraints?.signal,
       );
 
-      if (streaming && subprocess.stdout) {
+      if (subprocess.stdout) {
         let buffer = '';
+        const emitLine = (line: string): void => {
+          const trimmed = line.trim();
+          if (!trimmed) return;
+          if (streaming) streamCapture.feedLine(trimmed);
+          else rawStdoutCapture = appendBounded(rawStdoutCapture, `${trimmed}\n`);
+          if (!streaming) return;
+          for (const chunk of formatClaudeStreamLineForStream(trimmed)) {
+            try {
+              task.onOutput!(chunk);
+            } catch (err) {
+              logger.warn(
+                `[adapter:claude-code] onOutput listener failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          }
+        };
+        flushBufferedLine = () => {
+          if (!buffer.trim()) {
+            buffer = '';
+            return;
+          }
+          emitLine(buffer);
+          buffer = '';
+        };
         subprocess.stdout.on('data', (buf: Buffer) => {
           buffer += buf.toString('utf-8');
           let newlineIdx: number;
           while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-            const line = buffer.slice(0, newlineIdx).trim();
+            const line = buffer.slice(0, newlineIdx);
             buffer = buffer.slice(newlineIdx + 1);
-            if (!line) continue;
-            for (const chunk of formatClaudeStreamLineForStream(line)) {
-              try {
-                task.onOutput!(chunk);
-              } catch (err) {
-                logger.warn(
-                  `[adapter:claude-code] onOutput listener failed: ${
-                    err instanceof Error ? err.message : String(err)
-                  }`,
-                );
-              }
-            }
+            emitLine(line);
+          }
+        });
+        subprocess.stdout.on('end', flushBufferedLine);
+      }
+      if (subprocess.stderr) {
+        subprocess.stderr.setEncoding('utf-8');
+        subprocess.stderr.on('data', (chunk: string | Buffer) => {
+          try {
+            stderrCapture.feed(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
+          } catch (err) {
+            logger.warn(
+              `[adapter:claude-code] stderr capture failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
           }
         });
       }
@@ -632,16 +749,21 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       } finally {
         disposeProcessGroupAbort();
       }
+      flushBufferedLine?.();
+      const fallbackStdoutValue = (result as unknown as { stdout?: unknown }).stdout;
+      if (typeof fallbackStdoutValue === 'string') {
+        const fallbackStdout = fallbackStdoutValue;
+        if (streaming && !streamCapture.capturedText()) streamCapture.feedText(fallbackStdout);
+        if (!streaming && !rawStdoutCapture) rawStdoutCapture = fallbackStdout;
+      }
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'Unknown execution error';
-      const partialStdout = typeof (error as { stdout?: unknown })?.stdout === 'string'
-        ? (error as { stdout: string }).stdout
-        : '';
-      const partialStderr = typeof (error as { stderr?: unknown })?.stderr === 'string'
-        ? (error as { stderr: string }).stderr
-        : '';
-      const partialEnvelope = streaming ? extractStreamEnvelope(partialStdout) : undefined;
+      const partialStdout = streamCapture.capturedText() || rawStdoutCapture;
+      const errorStderr = (error as { stderr?: unknown })?.stderr;
+      const partialStderr = stderrCapture.text()
+        || (typeof errorStderr === 'string' ? errorStderr : '');
+      const partialEnvelope = streaming ? streamCapture.envelope() ?? extractStreamEnvelope(partialStdout) : undefined;
       const partialOutput = partialEnvelope?.result ?? partialStdout;
       logger.error('[adapter:claude-code] process execution threw', {
         cwd: task.context.workingDirectory,
@@ -667,8 +789,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       };
     }
 
-    const stdoutText = result.stdout ?? '';
-    const stderrText = result.stderr ?? '';
+    const stdoutText = streaming
+      ? streamCapture.capturedText() || (result.stdout ?? '')
+      : rawStdoutCapture || (result.stdout ?? '');
+    const fallbackStderr = (result as unknown as { stderr?: unknown }).stderr;
+    const stderrText = stderrCapture.text()
+      || (typeof fallbackStderr === 'string' ? fallbackStderr : '');
     logger.debug('[adapter:claude-code] execute finished', {
       exitCode: result.exitCode,
       stdoutChars: stdoutText.length,
@@ -705,7 +831,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     let parsed: ClaudeResponse | undefined;
     let parseError: string | undefined;
     if (streaming) {
-      parsed = extractStreamEnvelope(stdoutText);
+      parsed = streamCapture.envelope() ?? extractStreamEnvelope(stdoutText);
       if (!parsed) parseError = 'no result envelope or assistant text in stream';
     } else {
       try {

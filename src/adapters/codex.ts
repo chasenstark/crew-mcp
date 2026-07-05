@@ -88,6 +88,9 @@ interface ParseJsonlResult {
 
 const CODEX_STREAM_LINE_MAX_LEN = 240;
 const CODEX_STREAM_TRUNCATION_SUFFIX = '...';
+const CODEX_CAPTURED_EVENT_LIMIT = 500;
+const CODEX_CAPTURED_STDOUT_MAX_CHARS = 64 * 1024;
+const CODEX_CAPTURED_STDERR_MAX_CHARS = 16 * 1024;
 
 function parseJsonlEvent(line: string): CodexEvent | undefined {
   const parsed = JSON.parse(line);
@@ -332,12 +335,137 @@ function classifyCodexFailure(events: CodexEvent[]): TaskFailure | undefined {
   return undefined;
 }
 
+function classifyCodexFailureEvent(event: CodexEvent | undefined): TaskFailure | undefined {
+  if (!event || (event.type !== 'error' && event.type !== 'turn.failed')) return undefined;
+  const message = event.type === 'error' ? event.message : event.reason;
+  const providerCode = codexProviderCode(event);
+  return classifyTextFailure(
+    [message, providerCode].filter((part): part is string => typeof part === 'string').join('\n'),
+    {
+      defaultKind: 'unknown',
+      ...(providerCode ? { providerCode, confidence: 'high' } : {}),
+    },
+  );
+}
+
 function codexProviderCode(event: CodexEvent): string | undefined {
   for (const key of ['code', 'error_code', 'errorCode', 'reason_code', 'reasonCode']) {
     const value = event[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
   }
   return undefined;
+}
+
+function appendBounded(existing: string, next: string, maxChars = CODEX_CAPTURED_STDOUT_MAX_CHARS): string {
+  const combined = existing + next;
+  return combined.length <= maxChars ? combined : combined.slice(combined.length - maxChars);
+}
+
+function createBoundedStderrCapture(): {
+  readonly feed: (chunk: string) => void;
+  readonly text: () => string;
+} {
+  let captured = '';
+  return {
+    feed: (chunk: string) => {
+      captured = appendBounded(captured, chunk, CODEX_CAPTURED_STDERR_MAX_CHARS);
+    },
+    text: () => captured,
+  };
+}
+
+function createCodexTerminalReducer(): {
+  readonly feedLine: (line: string) => CodexEvent | undefined;
+  readonly feedText: (text: string) => void;
+  readonly snapshot: () => {
+    readonly events: CodexEvent[];
+    readonly droppedLines: number;
+    readonly capturedText: string;
+    readonly errorMessage?: string;
+    readonly failureEvent?: CodexEvent;
+    readonly filesModified: string[];
+    readonly lastAgentMessage: string;
+    readonly threadId?: string;
+    readonly hasFailedTurn: boolean;
+  };
+} {
+  const events: CodexEvent[] = [];
+  const filesModified: string[] = [];
+  let droppedLines = 0;
+  let capturedText = '';
+  let errorMessage: string | undefined;
+  let failureEvent: CodexEvent | undefined;
+  let lastAgentMessage = '';
+  let threadId: string | undefined;
+  let hasFailedTurn = false;
+
+  const feedEvent = (event: CodexEvent): void => {
+    if (events.length === CODEX_CAPTURED_EVENT_LIMIT) events.shift();
+    events.push(event);
+    if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+      threadId = event.thread_id;
+    }
+    if (event.type === 'turn.failed') {
+      hasFailedTurn = true;
+    }
+    if (errorMessage === undefined) {
+      if (event.type === 'error' && event.message) {
+        errorMessage = event.message;
+        failureEvent = event;
+      } else if (event.type === 'turn.failed' && event.reason) {
+        errorMessage = `Turn failed: ${event.reason}`;
+        failureEvent = event;
+      }
+    }
+    const item = getItemOfType(event, 'file_change');
+    if (item && typeof item.path === 'string' && item.action !== 'none') {
+      filesModified.push(item.path);
+    }
+    const messageItem = getItemOfType(event, 'agent_message');
+    if (messageItem && typeof messageItem.text === 'string') {
+      lastAgentMessage = messageItem.text;
+    }
+  };
+
+  const feedLine = (line: string): CodexEvent | undefined => {
+    const trimmed = line.trim();
+    if (!trimmed) return undefined;
+    capturedText = appendBounded(capturedText, `${trimmed}\n`);
+    try {
+      const event = parseJsonlEvent(trimmed);
+      if (!event) {
+        droppedLines++;
+        logger.warn(`Codex JSONL: dropped non-object line: ${trimmed}`);
+        return undefined;
+      }
+      feedEvent(event);
+      return event;
+    } catch {
+      droppedLines++;
+      logger.warn(`Codex JSONL: dropped malformed line: ${trimmed}`);
+      return undefined;
+    }
+  };
+
+  return {
+    feedLine,
+    feedText: (text: string) => {
+      for (const line of text.split('\n')) {
+        if (line.trim()) feedLine(line);
+      }
+    },
+    snapshot: () => ({
+      events: [...events],
+      droppedLines,
+      capturedText,
+      ...(errorMessage !== undefined ? { errorMessage } : {}),
+      ...(failureEvent !== undefined ? { failureEvent } : {}),
+      filesModified: [...filesModified],
+      lastAgentMessage,
+      ...(threadId !== undefined ? { threadId } : {}),
+      hasFailedTurn,
+    }),
+  };
 }
 
 export class CodexAdapter implements AgentAdapter {
@@ -368,6 +496,8 @@ export class CodexAdapter implements AgentAdapter {
   // that terminal list as authoritative so an empty array means no file_change
   // events were observed.
   readonly filesModifiedReliable = true;
+  readonly streamsIncrementally = true;
+  readonly supportsResume = true;
   readonly captainCapabilities = {
     supportsToolLoop: true,
     supportsStructuredDecisions: true,
@@ -398,8 +528,10 @@ export class CodexAdapter implements AgentAdapter {
     try {
       const outputFile = join(tmpDir, 'output.json');
 
+      const resumeSessionId = task.constraints?.resumeSessionId;
       const args = [
         'exec',
+        ...(resumeSessionId ? ['resume'] : []),
         '--json',
         '--skip-git-repo-check',
         '-o',
@@ -458,6 +590,13 @@ export class CodexAdapter implements AgentAdapter {
         // only affects workspace-write).
         args.push('-c', 'sandbox_workspace_write.network_access=true');
       }
+      if (resumeSessionId) {
+        // `codex exec resume --help` (checked 2026-07-05) names this a
+        // Conversation/session id. Treat it as stable across resumed turns and
+        // reject a different returned `thread.started.thread_id` as context
+        // loss rather than silently continuing on a fresh thread.
+        args.push(resumeSessionId, '-');
+      }
 
       // No wall-clock timeout. Pre-2026-05 we passed `timeout: 300_000`
       // to execa and the kernel SIGKILL'd codex mid-edit on long
@@ -477,12 +616,15 @@ export class CodexAdapter implements AgentAdapter {
 
       let result;
       let flushBufferedLine: (() => void) | undefined;
+      const reducer = createCodexTerminalReducer();
+      const stderrCapture = createBoundedStderrCapture();
       try {
         const subprocess = execa(AgentId.CODEX, args, {
           cwd: task.context.workingDirectory,
           ...(timeout ? { timeout } : {}),
           ...processGroupSpawnOptions(),
           cancelSignal: task.constraints?.signal,
+          buffer: false,
           reject: false,
           input: task.prompt,
         });
@@ -491,18 +633,16 @@ export class CodexAdapter implements AgentAdapter {
           task.constraints?.signal,
         );
 
-        if (task.onOutput && subprocess.stdout) {
+        if (subprocess.stdout) {
           let buffer = '';
           const emitBufferedLine = (line: string) => {
-            const trimmed = line.trim();
-            if (!trimmed) return;
+            const event = reducer.feedLine(line);
+            if (!event || !task.onOutput) return;
             try {
-              const event = parseJsonlEvent(trimmed);
-              if (!event) return;
               const chunk = formatEventForStream(event);
               if (chunk) task.onOutput!(chunk);
             } catch {
-              // Malformed or non-object line — already accounted for by the final parseJsonl pass.
+              // Malformed or unexpected event — reducer already accounted for dropped parse lines.
             }
           };
           flushBufferedLine = () => {
@@ -525,6 +665,20 @@ export class CodexAdapter implements AgentAdapter {
           });
           subprocess.stdout.on('end', flushBufferedLine);
         }
+        if (subprocess.stderr) {
+          subprocess.stderr.setEncoding('utf-8');
+          subprocess.stderr.on('data', (chunk: string | Buffer) => {
+            try {
+              stderrCapture.feed(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
+            } catch (err) {
+              logger.warn(
+                `[adapter:codex] stderr capture failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          });
+        }
 
         try {
           result = await subprocess;
@@ -532,6 +686,13 @@ export class CodexAdapter implements AgentAdapter {
           disposeProcessGroupAbort();
         }
         flushBufferedLine?.();
+        const fallbackStdout = (result as unknown as { stdout?: unknown }).stdout;
+        if (typeof fallbackStdout === 'string') {
+          const snapshot = reducer.snapshot();
+          if (!snapshot.capturedText) {
+            reducer.feedText(fallbackStdout);
+          }
+        }
       } catch (error: unknown) {
         const message =
           error instanceof Error ? error.message : 'Unknown execution error';
@@ -540,94 +701,125 @@ export class CodexAdapter implements AgentAdapter {
           timeoutMs: timeout,
           error: message,
         });
+        const stderrText = stderrCapture.text();
         return {
-          output: '',
+          output: stderrText,
           filesModified: [],
           status: 'error',
-          failure: classifyTextFailure(message, { defaultKind: 'process' }),
+          failure: classifyTextFailure(
+            [message, stderrText].filter(Boolean).join('\n'),
+            { defaultKind: 'process' },
+          ),
           metadata: {
-            rawEvents: [{ error: message }],
+            rawEvents: [{ error: message, stderr: stderrText }],
           },
         };
       }
 
+      const fallbackStderr = (result as unknown as { stderr?: unknown }).stderr;
+      const stderrText = stderrCapture.text()
+        || (typeof fallbackStderr === 'string' ? fallbackStderr : '');
       logger.debug('[adapter:codex] execute finished', {
         exitCode: result.exitCode,
-        stdoutChars: result.stdout?.length ?? 0,
-        stderrChars: result.stderr?.length ?? 0,
+        stdoutChars: reducer.snapshot().capturedText.length,
+        stderrChars: stderrText.length,
       });
 
-      if (result.exitCode !== 0 && !result.stdout) {
+      const reduced = reducer.snapshot();
+
+      if (resumeSessionId && reduced.threadId && reduced.threadId !== resumeSessionId) {
+        const message =
+          `codex resume invalidated: requested session ${resumeSessionId} but the CLI `
+          + `returned ${reduced.threadId}. Re-dispatch without resume or start a new run.`;
+        logger.warn('[adapter:codex] resume thread id mismatch', {
+          requested: resumeSessionId,
+          returned: reduced.threadId,
+        });
+        return {
+          output: message,
+          filesModified: [],
+          status: 'error',
+          sessionId: reduced.threadId,
+          failure: {
+            kind: 'unknown',
+            confidence: 'high',
+            providerCode: 'resume_invalidated',
+            recommendation: 'ask_user',
+            rawSignal: message,
+          },
+          metadata: {
+            rawEvents: reduced.events,
+            droppedLines: reduced.droppedLines,
+          },
+        };
+      }
+
+      if (result.exitCode !== 0 && !reduced.capturedText) {
         logger.error('[adapter:codex] command failed with no stdout', {
           exitCode: result.exitCode,
-          stderrPreview: preview(result.stderr),
+          stderrPreview: preview(stderrText),
         });
         return {
           output:
-            result.stderr ||
+            stderrText ||
             `Codex command failed with exit code ${result.exitCode} and no JSONL output`,
           filesModified: [],
           status: 'error',
           failure: classifyTextFailure(
-            result.stderr || `Codex command failed with exit code ${result.exitCode} and no JSONL output`,
+            stderrText || `Codex command failed with exit code ${result.exitCode} and no JSONL output`,
             { defaultKind: 'process' },
           ),
           metadata: {
             rawEvents: [
               {
                 exitCode: result.exitCode,
-                stderr: result.stderr,
+                stderr: stderrText,
               },
             ],
           },
         };
       }
 
-      // Parse JSONL from stdout
-      const { events, droppedLines } = result.stdout
-        ? parseJsonl(result.stdout)
-        : { events: [], droppedLines: 0 };
-
       // If stdout was non-empty but every line failed to parse, treat as error
-      if (result.stdout && events.length === 0) {
+      if (reduced.capturedText && reduced.events.length === 0) {
         logger.error('[adapter:codex] failed to parse any JSONL events', {
-          droppedLines,
-          stdoutPreview: preview(result.stdout),
+          droppedLines: reduced.droppedLines,
+          stdoutPreview: preview(reduced.capturedText),
         });
         return {
           output: 'Failed to parse any events from Codex JSONL output',
           filesModified: [],
           status: 'error',
-          failure: classifyTextFailure(result.stdout, { defaultKind: 'unknown' }),
+          failure: classifyTextFailure(reduced.capturedText, { defaultKind: 'unknown' }),
           metadata: {
             rawEvents: [],
-            droppedLines,
+            droppedLines: reduced.droppedLines,
           },
         };
       }
 
       // Check for errors in events
-      const errorMessage = findError(events);
-      if (errorMessage) {
+      if (reduced.errorMessage) {
         logger.error('[adapter:codex] runtime error event detected', {
-          errorMessage,
-          droppedLines,
+          errorMessage: reduced.errorMessage,
+          droppedLines: reduced.droppedLines,
         });
         return {
-          output: errorMessage,
+          output: reduced.errorMessage,
           filesModified: [],
           status: 'error',
-          failure: classifyCodexFailure(events)
-            ?? classifyTextFailure(errorMessage, { defaultKind: 'unknown' }),
+          sessionId: reduced.threadId,
+          failure: classifyCodexFailureEvent(reduced.failureEvent)
+            ?? classifyTextFailure(reduced.errorMessage, { defaultKind: 'unknown' }),
           metadata: {
-            rawEvents: events,
-            droppedLines,
+            rawEvents: reduced.events,
+            droppedLines: reduced.droppedLines,
           },
         };
       }
 
       // Extract file changes
-      const filesModified = extractFileChanges(events);
+      const filesModified = reduced.filesModified;
 
       // Get output: prefer output file, fall back to last agent message
       let output = '';
@@ -642,43 +834,43 @@ export class CodexAdapter implements AgentAdapter {
         }
       }
       if (!output) {
-        output = getLastAgentMessage(events);
+        output = reduced.lastAgentMessage;
       }
 
       if (result.exitCode !== 0) {
         logger.error('[adapter:codex] command failed after producing JSONL output', {
           exitCode: result.exitCode,
-          stderrPreview: preview(result.stderr),
+          stderrPreview: preview(stderrText),
           outputPreview: preview(output),
-          droppedLines,
+          droppedLines: reduced.droppedLines,
         });
         return {
           output:
-            result.stderr
+            stderrText
             || output
             || `Codex command failed with exit code ${result.exitCode}`,
           filesModified,
           status: 'error',
+          sessionId: reduced.threadId,
           failure: classifyTextFailure(
-            result.stderr || output || `Codex command failed with exit code ${result.exitCode}`,
+            stderrText || output || `Codex command failed with exit code ${result.exitCode}`,
             { defaultKind: 'process' },
           ),
           metadata: {
-            rawEvents: events,
-            droppedLines,
+            rawEvents: reduced.events,
+            droppedLines: reduced.droppedLines,
           },
         };
       }
 
-      const hasFailedTurn = events.some((e) => e.type === 'turn.failed');
-
       return {
         output,
         filesModified,
-        status: hasFailedTurn ? 'error' : output ? 'success' : 'partial',
+        status: reduced.hasFailedTurn ? 'error' : output ? 'success' : 'partial',
+        sessionId: reduced.threadId,
         metadata: {
-          rawEvents: events,
-          droppedLines,
+          rawEvents: reduced.events,
+          droppedLines: reduced.droppedLines,
         },
       };
     } finally {
