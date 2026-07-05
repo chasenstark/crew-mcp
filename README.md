@@ -168,6 +168,11 @@ git add .agents .crew/install.project.json package.json package-lock.json
 agy has no config-level tool-approval flag; launch it with
 `--dangerously-skip-permissions` so crew tool calls don't prompt.
 
+As a crew *worker*, agy is write-mode only — it can't be trusted to
+keep a read-only promise, so when agy is asked to review, crew hands it
+a disposable snapshot worktree of the diff and discards it afterward
+(review panels do this automatically).
+
 Project scope writes `./node_modules/.bin/crew-mcp serve` into the
 host config, not a machine-specific `dist/index.js` or home-directory
 path. It also writes `.crew/install.project.json` with repo-relative
@@ -240,12 +245,20 @@ crew-mcp uninstall --target all
 | `get_panel_status` | Check panel progress |
 | `get_run_status` | Check a single run's status |
 | `list_runs` | List all runs, optionally filtered by status |
-| `list_agents` | List available agents with `useWhen`, strengths, defaults, and health |
+| `list_agents` | List available agents with `useWhen`, strengths, defaults, health, and quota — the captain routes away from rate-limited agents |
 | `merge_run` | Apply a completed run's changes to your branch |
 | `continue_run` | Send follow-up instructions to a running agent |
 | `discard_run` | Discard a run's worktree and changes |
 | `cancel_run` | Cancel a running agent |
 | `get_crew_preferences` | Read crew configuration |
+| `create_criteria` | Draft an acceptance-criteria set for a piece of work |
+| `confirm_criteria` | Lock a criteria set after you approve it |
+| `get_criteria` | Read a criteria set (drives reviewer scoring) |
+| `revise_criteria` | Amend a criteria set mid-loop |
+
+The criteria tools back the `crew-iterate` loop: criteria are stored
+server-side, embedded into implementer prompts, and scored PASS/FAIL by
+every reviewer.
 
 ## ⚙️ Configure
 
