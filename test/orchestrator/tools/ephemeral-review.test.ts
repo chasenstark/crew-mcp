@@ -22,6 +22,7 @@ import { continueRunToolHandler, CONTINUE_RUN_DESCRIPTION } from '../../../src/o
 import { discardRunToolHandler } from '../../../src/orchestrator/tools/discard-run.js';
 import { mergeRunToolHandler } from '../../../src/orchestrator/tools/merge-run.js';
 import {
+  ephemeralReviewEscapedWriteNotice,
   ephemeralReviewUnsupportedMessage,
   ephemeralReviewWriteNotice,
   ephemeralWorkingDirectoryRejectMessage,
@@ -242,6 +243,31 @@ describe('ephemeral_review — filesModified suppression', () => {
       expect(warnings.join('\n')).not.toContain('stray-review-edit');
     });
   }
+
+  it('distinguishes ESCAPED writes: adapter claims filesModified but the worktree is clean', async () => {
+    const h = harnessWith([
+      makeEphemeralAdapter({
+        // Claims a write in its result WITHOUT touching the worktree — the
+        // write went somewhere outside the snapshot (scratch-dir shape). The
+        // containment notice would be false reassurance here.
+        execute: async () => ({
+          output: 'findings',
+          filesModified: ['ghost.txt'],
+          status: 'success',
+          metadata: {},
+        }),
+      }),
+    ]);
+    const { runId } = await dispatchEphemeral(h);
+    await awaitTerminal(h, runId);
+
+    const state = h.runStateStore.read(runId);
+    expect(state?.filesChanged).toEqual([]);
+    const warnings = state?.warnings ?? [];
+    expect(warnings).toContain(ephemeralReviewEscapedWriteNotice());
+    expect(warnings).not.toContain(ephemeralReviewWriteNotice());
+    expect(warnings.join('\n')).not.toContain('ghost.txt');
+  });
 
   it('emits NO write notice when the reviewer kept its hands off', async () => {
     const h = harnessWith([makeEphemeralAdapter()]);

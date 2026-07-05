@@ -641,6 +641,16 @@ async function finalizeAdapterResult(args: {
       if (changed.length === 0 && resultWithDispatchWarnings.filesModified.length === 0) {
         return suppressed;
       }
+      if (changed.length === 0) {
+        // The adapter's own result claimed modifications, but nothing landed
+        // in the review worktree: the writes went somewhere OUTSIDE the
+        // disposable snapshot (e.g. an agy scratch dir), so the containment
+        // notice below would be false reassurance (agy review catch).
+        return {
+          ...suppressed,
+          warnings: [ephemeralReviewEscapedWriteNotice(), ...(suppressed.warnings ?? [])],
+        };
+      }
       return {
         ...suppressed,
         warnings: [ephemeralReviewWriteNotice(), ...(suppressed.warnings ?? [])],
@@ -793,6 +803,21 @@ export function ephemeralReviewWriteNotice(): string {
   return 'ephemeral_review note: the reviewer modified files in its disposable review worktree. '
     + 'Those changes are NOT part of the run output, will never be merged, and are discarded with '
     + 'the worktree (discard_run / GC). Only the text findings above survive.';
+}
+
+/**
+ * Variant for the escaped-write case: the adapter's result claimed file
+ * modifications but the review worktree shows none, so the writes went
+ * somewhere OUTSIDE the disposable snapshot. Saying "contained and
+ * discarded" would be false reassurance — this notice says what is
+ * actually known. Unreachable for agy today (its adapter never reports
+ * filesModified); guards any future ephemeral-worktree adapter.
+ */
+export function ephemeralReviewEscapedWriteNotice(): string {
+  return 'ephemeral_review note: the reviewer reported file modifications, but none landed in its '
+    + 'disposable review worktree — the writes may have gone somewhere OUTSIDE the snapshot '
+    + '(e.g. an adapter scratch directory). Nothing was captured as run output and nothing will be '
+    + 'merged; treat only the text findings above as the deliverable.';
 }
 
 /**
