@@ -41,10 +41,12 @@ import { SERVE_VERSION } from '../cli/commands/serve.js';
  * as the default rather than universal — read-only runs reuse the
  * current tree (`run_agent --read_only`). Loaded into every session's
  * context, so the byte cost is permanent — keep additions matcher-load-
- * bearing, not decorative.
+ * bearing, not decorative. Hard budget: Claude Code rejects skill
+ * descriptions over 1024 characters, and the YAML block scalar in the
+ * host templates requires a single line — both enforced by tests.
  */
 export const SKILL_DESCRIPTION =
-  'Dispatch work to another AI agent (Claude, Codex, Gemini, sonnet, opus, local models) — coding, code review, investigations, exploration, spec-writing, refactors, audits, drafts, prototypes, spikes, triage. Runs in an isolated git worktree by default, or read-only against the current tree for review/triage. TRIGGER when the user: asks another model or agent (by name or generically) to do, review, critique, investigate, audit, draft, prototype, spike, or double-check work; wants a second opinion, second pair of eyes, cross-model comparison, panel of agents, or crew run; says "have/ask/send to/use <model>", "another Claude/Codex/Gemini", "subagent", "peer", "crew", "panel", "in parallel", "in the background", "while I…", "offload", "hand off", "delegate", "fan out", "kick off", "spawn", "fire off", or "race"; or wants long-running work that doesn\'t block the chat. SKIP when the user wants an inline subagent (TaskCreate) or a local shell command.';
+  'Dispatch work to another AI agent (Claude, Codex, Gemini, agy/Antigravity, GPT, sonnet, opus, local models) — coding, code review, investigations, spec-writing, refactors, audits, drafts, prototypes, spikes, triage. Isolated git worktree by default; read-only for review/triage. TRIGGER when the user: asks another model or agent (by name or generically) to do, review, critique, investigate, audit, draft, prototype, sanity-check, or double-check work; wants a second opinion, second pair of eyes, cross-model comparison, panel of agents, or crew run; says "have/ask/send to/run it by/use <model>", "what does <model> think", "get <model>\'s take", "another Claude/Codex/Gemini", "subagent", "peer", "crew", "panel", "in parallel", "in the background", "while I…", "offload", "hand off", "delegate", "fan out", "kick off", "spawn", "fire off", or "race"; or wants long-running work that doesn\'t block the chat. SKIP when the user wants an inline subagent (TaskCreate) or a local shell command.';
 
 /**
  * Auto-match phrase for the `crew-iterate` skill. Distinct from
@@ -54,7 +56,7 @@ export const SKILL_DESCRIPTION =
  * to avoid poaching one-shot dispatches.
  */
 export const ITERATE_SKILL_DESCRIPTION =
-  'Keep iterating on an implementation until acceptance criteria pass and reviewers approve. Loads when the user wants to ship-quality something via a multi-agent loop — phrasings like "keep working on X with review", "implement X and review until it\'s good", "iterate to convergence", "ship-quality loop", "use Claude + Codex to push this until criteria pass". The captain derives acceptance criteria, confirms with the user, dispatches an implementer with criteria embedded, runs crew + host-native review scoring per criterion, and folds findings back via continue_run until every criterion is PASS and every reviewer\'s overall verdict is APPROVE. Composes run_agent, continue_run, run_panel, aggregate_panel, merge_run.';
+  'Keep iterating on an implementation until acceptance criteria pass and reviewers approve. Loads when the user wants to ship-quality something via a multi-agent implement-review loop — phrasings like "keep working on X with review", "implement X and review until it\'s good", "iterate to convergence", "keep going until tests/criteria pass", "loop until reviewers approve", "don\'t stop until it\'s done", "ship-quality loop", "review loop", "polish until it ships", "use Claude + Codex to push this until criteria pass". The captain derives acceptance criteria, confirms with the user, dispatches an implementer with criteria embedded, runs crew + host-native review scoring per criterion, and folds findings back via continue_run until every criterion is PASS and every reviewer\'s verdict is APPROVE. Composes run_agent, continue_run, run_panel, aggregate_panel, merge_run.';
 
 export interface SkillTool {
   readonly name: string;

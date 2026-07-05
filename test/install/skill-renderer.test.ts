@@ -334,6 +334,17 @@ describe('SKILL_MANIFEST', () => {
       expect(entry.description.length).toBeGreaterThan(20);
     }
   });
+
+  // Claude Code rejects skill descriptions over 1024 characters, and the
+  // `description: |-` block scalar in the host templates only indents a
+  // single substituted line — a newline in the constant would produce
+  // invalid YAML frontmatter.
+  it('every description fits the 1024-char host cap on a single line', () => {
+    for (const entry of SKILL_MANIFEST) {
+      expect(entry.description.length).toBeLessThanOrEqual(1024);
+      expect(entry.description).not.toContain('\n');
+    }
+  });
 });
 
 describe('renderSkill (crew:iterate skill)', () => {
