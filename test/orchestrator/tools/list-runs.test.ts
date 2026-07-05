@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -168,6 +168,27 @@ describe('listRuns', () => {
         kind: 'rate_limited',
         recommendation: 'backoff',
       },
+    });
+  });
+
+  it('surfaces corrupt state.json records after quarantining them', () => {
+    const dir = join(crewHome, 'runs', 'run-corrupt');
+    const statePath = join(dir, 'state.json');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(statePath, '{bad json', 'utf-8');
+
+    const out = listRuns({}, { crewHome, repoRoot });
+
+    expect(out.runs).toHaveLength(1);
+    expect(out.runs[0]).toMatchObject({
+      run_id: 'run-corrupt',
+      status: 'error',
+      summary: expect.stringContaining('state.json was corrupt and has been quarantined'),
+    });
+    expect(existsSync(`${statePath}.corrupt`)).toBe(true);
+    expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toMatchObject({
+      runId: 'run-corrupt',
+      status: 'error',
     });
   });
 

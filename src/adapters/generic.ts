@@ -12,6 +12,7 @@ import {
   terminateProcessGroupOnAbort,
 } from './process-group.js';
 import { argvPromptTooLargeResult } from './prompt-transport.js';
+import { classifyTextFailure } from './failure-classifier.js';
 
 const PROMPT_VALUE_FLAGS = new Set(['--prompt']);
 
@@ -195,6 +196,7 @@ export class GenericAdapter implements AgentAdapter {
         output: '',
         filesModified: [],
         status: 'error',
+        failure: classifyTextFailure(message, { defaultKind: 'process' }),
         metadata: {
           rawEvents: [{ error: message }],
         },
@@ -226,6 +228,10 @@ export class GenericAdapter implements AgentAdapter {
         ),
         filesModified: [],
         status: 'error',
+        failure: classifyTextFailure(
+          renderFailureOutput(this.command, result.exitCode, stdoutText, stderrText),
+          { defaultKind: 'process', providerCode: result.exitCode !== undefined ? String(result.exitCode) : undefined },
+        ),
         metadata: {
           rawEvents: [
             {

@@ -35,13 +35,13 @@
  *     checkout fails, the envelope still returns the result with
  *     restore_failed:true and restore_warning.
  *   - On `merged`, the worktree directory is auto-cleaned best-effort
- *     (the merged commit is permanently in the host's HEAD, so the
+ *     (the merged commit is permanently in the target branch, so the
  *     worktree has no remaining value). state.json + events.log
  *     persist for archeology. On `conflict` or `no-changes` the
- *     worktree is preserved. On `conflict` the host is left mid-operation
- *     with no `MERGE_HEAD` (`git merge --abort` does NOT apply): for
- *     `squash`, resolve in place (`git add` + `git commit`) or bail with
- *     `git reset --hard HEAD`; for `preserve`, `git cherry-pick --abort`.
+ *     worktree is preserved. On `squash` conflict, conflict markers are
+ *     materialized in the run worktree and the host checkout is untouched.
+ *     On `preserve` conflict, the host checkout may be left in the legacy
+ *     cherry-pick path; use `git cherry-pick --abort` there.
  *     Then `discard_run` to throw away the run.
  */
 
@@ -98,7 +98,7 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run worktree into a target branch after user approval. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true must follow explicit approval. Lands linearly: 'squash' creates one commit; 'preserve' keeps individual commits. Returns merged+commit_sha, conflict+conflicts, or no-changes. Off-checkout success adds landed_off_current_branch plus target/original fields; restore failure adds restore_failed+restore_warning but still reports the landed result.";
+  "Merge a completed run worktree into a target branch after user approval. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true must follow explicit approval. Lands linearly: 'squash' creates one checkout-free plumbing commit; 'preserve' keeps individual commits. Squash conflicts appear in the run worktree. Returns merged+commit_sha, conflict+conflicts, or no-changes. Off-checkout success adds landed_off_current_branch plus target/original fields; restore failure adds restore_failed+restore_warning.";
 
 const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
   'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +

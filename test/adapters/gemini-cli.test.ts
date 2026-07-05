@@ -37,8 +37,10 @@ describe('GeminiCliAdapter', () => {
     vi.clearAllMocks();
   });
 
-  it('advertises native tool-loop support', () => {
-    expect(adapter.captainCapabilities.supportsToolLoop).toBe(true);
+  it('does not advertise the retired tool-loop path', () => {
+    expect(adapter.captainCapabilities.supportsToolLoop).toBe(false);
+    expect(adapter.captainCapabilities.supportsStructuredDecisions).toBe(true);
+    expect(adapter.captainCapabilities.supportsPauseForUserInput).toBe(false);
   });
 
   it('surfaces maxBuffer overflow with a diagnosable message', async () => {
@@ -457,67 +459,6 @@ describe('GeminiCliAdapter', () => {
     expect((callArgs?.[2] as { input?: string }).input).toContain('return json');
   });
 
-  it('does not replay the full transcript inline when resuming a provider session', async () => {
-    mockExeca
-      .mockResolvedValueOnce({
-        stdout: 'gemini-cli 0.20.1',
-        stderr: '',
-        exitCode: 0,
-      } as any)
-      .mockResolvedValueOnce({
-        stdout: [
-          JSON.stringify({ type: 'init', session_id: 'session-2' }),
-          JSON.stringify({
-            type: 'message',
-            role: 'assistant',
-            content: JSON.stringify({
-              type: 'finish',
-              output: 'done',
-              reasoning: 'workflow complete',
-            }),
-          }),
-          JSON.stringify({ type: 'result' }),
-        ].join('\n'),
-        stderr: '',
-        exitCode: 0,
-      } as any);
-
-    const result = await adapter.executeWithTools(
-      [
-        {
-          name: 'run_decompose',
-          description: 'decompose request',
-          inputSchema: { type: 'object' },
-        },
-      ],
-      [{ role: 'assistant', content: 'prior transcript should not be replayed inline' }],
-      vi.fn(async () => ({ output: { ok: true } })),
-      {
-        workingDirectory: '/tmp/project',
-        providerSession: {
-          provider: 'gemini',
-          transport: 'stateful-resume',
-          sessionId: 'session-1',
-          toolNamespace: 'mcp__crew__',
-          toolSchemaHash: 'abc',
-          startedAt: new Date().toISOString(),
-        },
-        toolNamespace: 'mcp__crew__',
-        toolSchemaHash: 'abc',
-      },
-    );
-
-    expect(result.status).toBe('completed');
-    const args = mockExeca.mock.calls[1]?.[1] as string[];
-    expect(args).toContain('--resume');
-    // With --prompt the prompt is at index args.indexOf('--prompt') + 1.
-    const promptIndex = args.indexOf('--prompt');
-    expect(promptIndex).toBeGreaterThan(-1);
-    const prompt = args[promptIndex + 1] ?? '';
-    expect(prompt).toContain('provider resume session already contains prior turns');
-    expect(prompt).not.toContain('prior transcript should not be replayed inline');
-  });
-
   it('returns structured error results when the gemini process rejects', async () => {
     mockExeca.mockRejectedValueOnce(new Error('spawn failed'));
 
@@ -535,27 +476,4 @@ describe('GeminiCliAdapter', () => {
     ]);
   });
 
-  it('returns interrupted and skips fallback prompt loop when signal is already aborted', async () => {
-    const executeWithSchemaSpy = vi.spyOn(adapter, 'executeWithSchema');
-    vi.spyOn(adapter as any, 'executeWithResumeSession').mockRejectedValueOnce(
-      new Error('resume path failed'),
-    );
-
-    const controller = new AbortController();
-    controller.abort('Cancelled by test');
-
-    const result = await adapter.executeWithTools(
-      [],
-      [{ role: 'system', content: 'test' }],
-      vi.fn(async () => ({ output: { ok: true } })),
-      {
-        signal: controller.signal,
-        toolNamespace: 'mcp__crew__',
-        toolSchemaHash: 'abc',
-      },
-    );
-
-    expect(result.status).toBe('interrupted');
-    expect(executeWithSchemaSpy).not.toHaveBeenCalled();
-  });
 });

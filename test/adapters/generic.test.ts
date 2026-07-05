@@ -9,6 +9,14 @@ const mockExeca = vi.mocked(execa);
 
 const { GenericAdapter } = await import('../../src/adapters/generic.js');
 
+function execaResult(args: {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}): Awaited<ReturnType<typeof execa>> {
+  return args as Awaited<ReturnType<typeof execa>>;
+}
+
 describe('GenericAdapter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -16,11 +24,11 @@ describe('GenericAdapter', () => {
 
   it('passes the composed prompt through the configured argv template', async () => {
     const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
-    mockExeca.mockResolvedValueOnce({
+    mockExeca.mockResolvedValueOnce(execaResult({
       stdout: 'ok',
       stderr: '',
       exitCode: 0,
-    } as any);
+    }));
 
     const adapter = new GenericAdapter({
       name: 'generic-test',
@@ -45,11 +53,11 @@ describe('GenericAdapter', () => {
   });
 
   it('inserts -- before an appended leading-dash prompt', async () => {
-    mockExeca.mockResolvedValueOnce({
+    mockExeca.mockResolvedValueOnce(execaResult({
       stdout: 'ok',
       stderr: '',
       exitCode: 0,
-    } as any);
+    }));
 
     const adapter = new GenericAdapter({
       name: 'generic-test',
@@ -71,11 +79,11 @@ describe('GenericAdapter', () => {
   });
 
   it('rewrites long-option prompt value templates for leading-dash prompts', async () => {
-    mockExeca.mockResolvedValueOnce({
+    mockExeca.mockResolvedValueOnce(execaResult({
       stdout: 'ok',
       stderr: '',
       exitCode: 0,
-    } as any);
+    }));
 
     const adapter = new GenericAdapter({
       name: 'generic-test',
@@ -97,11 +105,11 @@ describe('GenericAdapter', () => {
   });
 
   it('keeps unrelated boolean flags separate from leading-dash positional prompts', async () => {
-    mockExeca.mockResolvedValueOnce({
+    mockExeca.mockResolvedValueOnce(execaResult({
       stdout: 'ok',
       stderr: '',
       exitCode: 0,
-    } as any);
+    }));
 
     const adapter = new GenericAdapter({
       name: 'generic-test',
@@ -141,11 +149,11 @@ describe('GenericAdapter', () => {
   });
 
   it('treats nonzero exits with stdout as errors instead of partial success', async () => {
-    mockExeca.mockResolvedValueOnce({
+    mockExeca.mockResolvedValueOnce(execaResult({
       stdout: 'partial stdout',
       stderr: 'command failed',
       exitCode: 23,
-    } as any);
+    }));
 
     const adapter = new GenericAdapter({
       name: 'generic-test',
@@ -162,6 +170,11 @@ describe('GenericAdapter', () => {
     expect(result.status).toBe('error');
     expect(result.output).toContain('command failed');
     expect(result.output).toContain('partial stdout');
+    expect(result.failure).toMatchObject({
+      kind: 'process',
+      confidence: 'high',
+      providerCode: '23',
+    });
     expect(result.metadata.rawEvents).toEqual([
       {
         exitCode: 23,
@@ -169,5 +182,56 @@ describe('GenericAdapter', () => {
         stderr: 'command failed',
       },
     ]);
+  });
+
+  it('classifies quota-like nonzero exits for generic adapters', async () => {
+    mockExeca.mockResolvedValueOnce(execaResult({
+      stdout: '',
+      stderr: 'RESOURCE_EXHAUSTED: quota exceeded',
+      exitCode: 1,
+    }));
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    const result = await adapter.execute({
+      prompt: 'run task',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure).toMatchObject({
+      kind: 'quota_exhausted',
+      confidence: 'high',
+      providerCode: '1',
+      recommendation: 'reroute',
+    });
+  });
+
+  it('classifies thrown process failures', async () => {
+    mockExeca.mockRejectedValueOnce(new Error('spawn ENOENT'));
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    const result = await adapter.execute({
+      prompt: 'run task',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.failure).toMatchObject({
+      kind: 'process',
+      confidence: 'low',
+    });
+    expect(result.failure?.rawSignal).toBe('spawn ENOENT');
   });
 });

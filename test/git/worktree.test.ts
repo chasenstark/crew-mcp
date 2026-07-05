@@ -34,6 +34,8 @@ interface MockGitClient {
 }
 
 const gitClients = new Map<string, MockGitClient>();
+const MERGED_TREE_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const TARGET_TREE_SHA = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -48,6 +50,21 @@ function deferred<T>() {
 function createGitClient(cwd: string): MockGitClient {
   return {
     raw: vi.fn(async (args: string[]) => {
+      if (args[0] === '--version') {
+        return 'git version 2.38.0';
+      }
+      if (args[0] === 'merge-tree' && args[1] === '--write-tree') {
+        return MERGED_TREE_SHA;
+      }
+      if (args[0] === 'commit-tree') {
+        return 'merged-sha';
+      }
+      if (args[0] === 'update-ref') {
+        return '';
+      }
+      if (args[0] === 'rev-parse' && args[1]?.endsWith('^{tree}')) {
+        return TARGET_TREE_SHA;
+      }
       if (args[0] === 'worktree' && args[1] === 'add') {
         mkdirSync(args[4], { recursive: true });
         return '';
@@ -364,6 +381,30 @@ describe('WorktreeManager', () => {
       expect(b).toBe(join(crewHome, 'runs', 'run-2', 'worktree'));
     });
 
+    it('retries git lock contention while allocating a run worktree', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-run-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+
+      const { crewHome, manager, rootGit } = createManager();
+      const defaultRaw = rootGit.raw.getMockImplementation();
+      let addAttempts = 0;
+      rootGit.raw.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'worktree' && args[1] === 'add') {
+          addAttempts += 1;
+          if (addAttempts === 1) {
+            throw new Error("fatal: Unable to create '.git/packed-refs.lock': File exists");
+          }
+        }
+        return defaultRaw?.(args);
+      });
+
+      await expect(manager.createRunWorktree('run-1')).resolves.toBe(
+        join(crewHome, 'runs', 'run-1', 'worktree'),
+      );
+      expect(addAttempts).toBe(2);
+    });
+
     it('reclaims a stale run lock whose owner process is gone', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-reclaimed')
@@ -646,12 +687,10 @@ describe('WorktreeManager', () => {
       const result = await manager.mergeRunWorktree('run-1');
 
       expect(result).toMatchObject({ status: 'merged', commitSha: 'merged-sha' });
-      // Squash-merge by the worktree's actual HEAD SHA (not the recorded
-      // branch ref — see the bug fix in mergeRunWorktree() for rationale),
-      // then a single ordinary commit with the fallback subject (no
-      // commit_title supplied) and no machine trailer.
-      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
-      expect(rootGit.commit).toHaveBeenCalledWith('crew run run-1');
+      expect(rootGit.merge).not.toHaveBeenCalled();
+      expect(rootGit.raw).toHaveBeenCalledWith(['merge-tree', '--write-tree', 'target-sha', 'worktree-sha']);
+      expect(rootGit.raw).toHaveBeenCalledWith(['commit-tree', MERGED_TREE_SHA, '-p', 'target-sha', '-m', 'crew run run-1']);
+      expect(rootGit.raw).toHaveBeenCalledWith(['update-ref', 'refs/heads/main', 'merged-sha', 'target-sha']);
       expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
     });
 
@@ -725,8 +764,8 @@ describe('WorktreeManager', () => {
       targetHead.resolve('target-sha');
 
       await expect(merge).resolves.toMatchObject({ status: 'merged', commitSha: 'merged-sha' });
-      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
-      expect(rootGit.commit).toHaveBeenCalledWith('crew run run-1');
+      expect(rootGit.raw).toHaveBeenCalledWith(['merge-tree', '--write-tree', 'target-sha', 'worktree-sha']);
+      expect(rootGit.raw).toHaveBeenCalledWith(['commit-tree', MERGED_TREE_SHA, '-p', 'target-sha', '-m', 'crew run run-1']);
     });
 
     it('mergeRunWorktree uses captain-supplied commit_title + commit_body in the merge commit', async () => {
@@ -750,14 +789,18 @@ describe('WorktreeManager', () => {
       });
 
       expect(result).toMatchObject({ status: 'merged', commitSha: 'merged-sha' });
-      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
-      expect(rootGit.commit).toHaveBeenCalledWith(
+      expect(rootGit.raw).toHaveBeenCalledWith([
+        'commit-tree',
+        MERGED_TREE_SHA,
+        '-p',
+        'target-sha',
+        '-m',
         [
           'fix(parser): handle empty-line input correctly',
           '',
           'Adds the empty-line guard to parseLine() with a regression test.',
         ].join('\n'),
-      );
+      ]);
     });
 
     it('mergeRunWorktree squashes with the commit_title (no body, no trailer)', async () => {
@@ -778,8 +821,14 @@ describe('WorktreeManager', () => {
         commitTitle: 'docs: update README install steps',
       });
 
-      expect(rootGit.merge).toHaveBeenCalledWith(['worktree-sha', '--squash']);
-      expect(rootGit.commit).toHaveBeenCalledWith('docs: update README install steps');
+      expect(rootGit.raw).toHaveBeenCalledWith([
+        'commit-tree',
+        MERGED_TREE_SHA,
+        '-p',
+        'target-sha',
+        '-m',
+        'docs: update README install steps',
+      ]);
     });
 
     it('mergeRunWorktree reuses commit_title for the pre-merge auto-commit when worktree has uncommitted changes', async () => {
@@ -855,11 +904,11 @@ describe('WorktreeManager', () => {
 
       const result = await manager.mergeRunWorktree('run-1');
 
-      expect(result).toMatchObject({ status: 'merged', commitSha: 'post-merge-sha' });
+      expect(result).toMatchObject({ status: 'merged', commitSha: 'merged-sha' });
       // The squash target must be the worktree's actual HEAD SHA — not
       // `record.branchName` ('crew-run/run-1-aaaaaaaa'), which would
       // silently no-op when the agent worked on a different branch.
-      expect(rootGit.merge).toHaveBeenCalledWith(['actual-work-sha', '--squash']);
+      expect(rootGit.raw).toHaveBeenCalledWith(['merge-tree', '--write-tree', 'main-head-sha', 'actual-work-sha']);
     });
 
     it('mergeRunWorktree warn-logs when worktree HEAD is on a different branch than record.branchName', async () => {
@@ -989,72 +1038,6 @@ describe('WorktreeManager', () => {
       await expect(manager.mergeRunWorktree('run-1')).rejects.toThrow(/uncommitted changes/);
     });
 
-    it('mergeRunWorktree force=true does not hard-reset a dirty host after squash commit failure', async () => {
-      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-      const { manager, rootGit } = createManager();
-      const wPath = await manager.createRunWorktree('run-1');
-      const wGit = getGitClient(wPath);
-      const host = installHostCheckoutState(rootGit);
-      wGit.revparse.mockImplementation(async (args: string[]) => (
-        args[0] === 'HEAD' ? 'work-head' : 'crew-run/run-1-aaaaaaaa'
-      ));
-      rootGit.status.mockResolvedValue({
-        modified: ['host-dirty.ts'],
-        created: [],
-        not_added: [],
-        deleted: [],
-        renamed: [],
-      });
-      rootGit.commit.mockRejectedValueOnce(new Error('commit hook failed'));
-
-      await expect(
-        manager.mergeRunWorktree('run-1', { targetBranch: 'main', force: true }),
-      ).rejects.toThrow(/did not run git reset --hard/);
-
-      expect(rootGit.reset).not.toHaveBeenCalled();
-      expect(host.branch()).toBe('main');
-      expect(host.head()).toBe('target-head');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main']);
-    });
-
-    it('mergeRunWorktree reports merged when squash post-commit HEAD revparse fails', async () => {
-      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-      const { manager, rootGit } = createManager();
-      const wPath = await manager.createRunWorktree('run-1');
-      const wGit = getGitClient(wPath);
-      const host = installHostCheckoutState(rootGit);
-      wGit.revparse.mockImplementation(async (args: string[]) => (
-        args[0] === 'HEAD' ? 'work-head' : 'crew-run/run-1-aaaaaaaa'
-      ));
-      const defaultRevparse = rootGit.revparse.getMockImplementation();
-      let landed = false;
-      rootGit.commit.mockImplementation(async () => {
-        landed = true;
-        host.setHead('commit-result-sha');
-        return { commit: 'commit-result-sha' };
-      });
-      rootGit.revparse.mockImplementation(async (args: string[]) => {
-        if (landed && args[0] === 'HEAD') {
-          throw new Error('revparse failed after commit');
-        }
-        return defaultRevparse?.(args) ?? '';
-      });
-
-      const result = await manager.mergeRunWorktree('run-1', { targetBranch: 'main' });
-
-      expect(result).toMatchObject({
-        status: 'merged',
-        commitSha: 'commit-result-sha',
-        restoreFailed: true,
-      });
-      expect(result.restoreWarning).toContain('could not resolve the landed commit SHA');
-      expect(result.restoreWarning).toContain('revparse failed after commit');
-      expect(rootGit.reset).not.toHaveBeenCalled();
-      expect(host.branch()).toBe('main');
-      expect(host.head()).toBe('commit-result-sha');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main']);
-    });
-
     it('mergeRunWorktree reports merged when preserve fast-forward post-landing HEAD revparse fails', async () => {
       mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
@@ -1145,7 +1128,7 @@ describe('WorktreeManager', () => {
       expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main']);
     });
 
-    it('mergeRunWorktree restores the original branch after a merged result', async () => {
+    it('mergeRunWorktree leaves the original checkout untouched after an off-branch squash result', async () => {
       mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
       const wPath = await manager.createRunWorktree('run-1');
@@ -1159,7 +1142,7 @@ describe('WorktreeManager', () => {
 
       expect(result).toMatchObject({
         status: 'merged',
-        commitSha: 'merged-sha-1',
+        commitSha: 'merged-sha',
         targetBranch: 'main',
         originalBranch: 'feature',
         originalHead: 'feature-head',
@@ -1167,21 +1150,18 @@ describe('WorktreeManager', () => {
       });
       expect(host.branch()).toBe('feature');
       expect(host.head()).toBe('feature-head');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main', 'feature']);
+      expect(rootGit.checkout).not.toHaveBeenCalled();
     });
 
-    it('mergeRunWorktree reports merged with restore_failed when restore fails after the commit lands', async () => {
+    it('mergeRunWorktree advances a clean checked-out target branch after plumbing squash', async () => {
       mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
       const wPath = await manager.createRunWorktree('run-1');
       const wGit = getGitClient(wPath);
-      const host = installHostCheckoutState(rootGit);
-      const checkout = rootGit.checkout.getMockImplementation();
-      rootGit.checkout.mockImplementation(async (ref: string) => {
-        if (ref === 'feature') {
-          throw new Error('feature branch is unavailable');
-        }
-        await checkout?.(ref);
+      installHostCheckoutState(rootGit, {
+        branch: 'main',
+        head: 'target-head',
+        targetHead: 'target-head',
       });
       wGit.revparse.mockImplementation(async (args: string[]) => (
         args[0] === 'HEAD' ? 'work-head' : 'crew-run/run-1-aaaaaaaa'
@@ -1191,48 +1171,18 @@ describe('WorktreeManager', () => {
 
       expect(result).toMatchObject({
         status: 'merged',
-        commitSha: 'merged-sha-1',
+        commitSha: 'merged-sha',
         targetBranch: 'main',
-        originalBranch: 'feature',
-        originalHead: 'feature-head',
-        landedOffCurrentBranch: true,
-        restoreFailed: true,
-      });
-      expect(result.restoreWarning).toContain('Merge landed');
-      expect(result.restoreWarning).toContain('feature');
-      expect(result.restoreWarning).toContain('main');
-      expect(host.branch()).toBe('main');
-      expect(host.head()).toBe('merged-sha-1');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main', 'feature']);
-    });
-
-    it('mergeRunWorktree restores the original branch after staged-empty no-changes', async () => {
-      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
-      const { manager, rootGit } = createManager();
-      const wPath = await manager.createRunWorktree('run-1');
-      const wGit = getGitClient(wPath);
-      const host = installHostCheckoutState(rootGit);
-      wGit.revparse.mockImplementation(async (args: string[]) => (
-        args[0] === 'HEAD' ? 'work-head' : 'crew-run/run-1-aaaaaaaa'
-      ));
-      rootGit.diff.mockResolvedValueOnce('');
-
-      const result = await manager.mergeRunWorktree('run-1', { targetBranch: 'main' });
-
-      expect(result).toMatchObject({
-        status: 'no-changes',
-        targetBranch: 'main',
-        originalBranch: 'feature',
-        originalHead: 'feature-head',
+        originalBranch: 'main',
+        originalHead: 'target-head',
         landedOffCurrentBranch: false,
       });
-      expect(rootGit.reset).toHaveBeenCalledWith(['--hard', 'target-head']);
-      expect(host.branch()).toBe('feature');
-      expect(host.head()).toBe('feature-head');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main', 'feature']);
+      expect(rootGit.raw).toHaveBeenCalledWith(['update-ref', 'refs/heads/main', 'merged-sha', 'target-head']);
+      expect(rootGit.reset).toHaveBeenCalledWith(['--hard', 'merged-sha']);
+      expect(rootGit.checkout).not.toHaveBeenCalled();
     });
 
-    it('mergeRunWorktree leaves the host on target after a conflict result', async () => {
+    it('mergeRunWorktree leaves the host untouched after a conflict result', async () => {
       mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
       const wPath = await manager.createRunWorktree('run-1');
@@ -1241,13 +1191,13 @@ describe('WorktreeManager', () => {
       wGit.revparse.mockImplementation(async (args: string[]) => (
         args[0] === 'HEAD' ? 'work-head' : 'crew-run/run-1-aaaaaaaa'
       ));
-      rootGit.merge.mockRejectedValueOnce(new Error('CONFLICT'));
       const defaultRaw = rootGit.raw.getMockImplementation();
-      let conflictProbeCount = 0;
       rootGit.raw.mockImplementation(async (args: string[]) => {
-        if (args[0] === 'diff' && args.includes('--diff-filter=U')) {
-          conflictProbeCount += 1;
-          return conflictProbeCount === 1 ? '' : 'shared.txt\n';
+        if (args[0] === 'merge-tree') {
+          throw new Error(
+            'CONFLICT (content): Merge conflict in shared.txt\n'
+            + '100644 e484e3b90b47688ab4aae72c82f24ff4d1ef32dd 2\tshared.txt\n',
+          );
         }
         return defaultRaw?.(args);
       });
@@ -1262,9 +1212,10 @@ describe('WorktreeManager', () => {
         originalHead: 'feature-head',
         landedOffCurrentBranch: false,
       });
-      expect(host.branch()).toBe('main');
-      expect(host.head()).toBe('target-head');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main']);
+      expect(host.branch()).toBe('feature');
+      expect(host.head()).toBe('feature-head');
+      expect(rootGit.checkout).not.toHaveBeenCalled();
+      expect(wGit.merge).not.toHaveBeenCalled();
     });
 
     it('mergeRunWorktree restores a detached original checkout to the captured SHA', async () => {
@@ -1284,7 +1235,7 @@ describe('WorktreeManager', () => {
 
       expect(result).toMatchObject({
         status: 'merged',
-        commitSha: 'merged-sha-1',
+        commitSha: 'merged-sha',
         targetBranch: 'main',
         originalHead: 'detached-sha',
         landedOffCurrentBranch: true,
@@ -1292,7 +1243,7 @@ describe('WorktreeManager', () => {
       expect(result).not.toHaveProperty('originalBranch');
       expect(host.branch()).toBe('HEAD');
       expect(host.head()).toBe('detached-sha');
-      expect(rootGit.checkout.mock.calls.map(([ref]) => ref)).toEqual(['main', 'detached-sha']);
+      expect(rootGit.checkout).not.toHaveBeenCalled();
     });
 
     it('mergeRunWorktree serializes concurrent merges through the repo lock', async () => {
@@ -1310,17 +1261,21 @@ describe('WorktreeManager', () => {
         args[0] === 'HEAD' ? 'work-head-2' : 'crew-run/run-2-aaaaaaaa'
       ));
       const firstMergeMayFinish = deferred<void>();
-      let mergeCalls = 0;
-      rootGit.merge.mockImplementation(async () => {
-        mergeCalls += 1;
-        if (mergeCalls === 1) {
-          await firstMergeMayFinish.promise;
+      let commitTreeCalls = 0;
+      const defaultRaw = rootGit.raw.getMockImplementation();
+      rootGit.raw.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'commit-tree') {
+          commitTreeCalls += 1;
+          if (commitTreeCalls === 1) {
+            await firstMergeMayFinish.promise;
+          }
         }
+        return defaultRaw?.(args);
       });
 
       const first = manager.mergeRunWorktree('run-1', { targetBranch: 'main' });
       await vi.waitFor(() => {
-        expect(rootGit.merge).toHaveBeenCalledTimes(1);
+        expect(rootGit.raw.mock.calls.filter(([args]) => args[0] === 'commit-tree')).toHaveLength(1);
       });
 
       const second = manager.mergeRunWorktree('run-2', { targetBranch: 'main' });
@@ -1332,7 +1287,7 @@ describe('WorktreeManager', () => {
 
       expect(firstResult).toMatchObject({ status: 'merged' });
       expect(secondResult).toMatchObject({ status: 'merged' });
-      expect(rootGit.merge).toHaveBeenCalledTimes(2);
+      expect(rootGit.raw.mock.calls.filter(([args]) => args[0] === 'commit-tree')).toHaveLength(2);
     });
 
     it('mergeRunWorktree serializes merges across managers with different crewHome values', async () => {
@@ -1354,17 +1309,21 @@ describe('WorktreeManager', () => {
         args[0] === 'HEAD' ? 'work-head-2' : 'crew-run/run-2-aaaaaaaa'
       ));
       const firstMergeMayFinish = deferred<void>();
-      let mergeCalls = 0;
-      first.rootGit.merge.mockImplementation(async () => {
-        mergeCalls += 1;
-        if (mergeCalls === 1) {
-          await firstMergeMayFinish.promise;
+      let commitTreeCalls = 0;
+      const defaultRaw = first.rootGit.raw.getMockImplementation();
+      first.rootGit.raw.mockImplementation(async (args: string[]) => {
+        if (args[0] === 'commit-tree') {
+          commitTreeCalls += 1;
+          if (commitTreeCalls === 1) {
+            await firstMergeMayFinish.promise;
+          }
         }
+        return defaultRaw?.(args);
       });
 
       const firstMerge = first.manager.mergeRunWorktree('run-1', { targetBranch: 'main' });
       await vi.waitFor(() => {
-        expect(first.rootGit.merge).toHaveBeenCalledTimes(1);
+        expect(first.rootGit.raw.mock.calls.filter(([args]) => args[0] === 'commit-tree')).toHaveLength(1);
       });
 
       const secondMerge = second.manager.mergeRunWorktree('run-2', { targetBranch: 'main' });
@@ -1376,12 +1335,11 @@ describe('WorktreeManager', () => {
 
       expect(firstResult).toMatchObject({ status: 'merged' });
       expect(secondResult).toMatchObject({ status: 'merged' });
-      expect(first.rootGit.merge).toHaveBeenCalledTimes(2);
+      expect(first.rootGit.raw.mock.calls.filter(([args]) => args[0] === 'commit-tree')).toHaveLength(2);
       expect(existsSync(join(crewHomeA, 'repo-locks'))).toBe(false);
       expect(existsSync(join(crewHomeB, 'repo-locks'))).toBe(false);
       expect(existsSync(join(root, '.git', 'crew-merge-lock'))).toBe(true);
     });
-
     it('mergeRunWorktree refuses unmerged index paths even with force=true', async () => {
       mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();

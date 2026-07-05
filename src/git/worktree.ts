@@ -1,4 +1,5 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'crypto';
 import {
   createReadStream,
@@ -21,10 +22,13 @@ import {
   symlink,
 } from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
+import { promisify } from 'util';
 import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { FileLockTimeoutError, withFileLock } from '../utils/file-lock.js';
 import { logger } from '../utils/logger.js';
+
+const execFileAsync = promisify(execFile);
 
 interface RunWorktreeRecord {
   runId: string;
@@ -104,12 +108,14 @@ interface HostCheckout {
   readonly headSha: string;
 }
 
-type PreLandingRecovery = 'none' | 'squash' | 'cherry-pick';
+type PreLandingRecovery = 'none' | 'cherry-pick';
 type MergeRecoveryState = PreLandingRecovery | 'post-landing';
 
 export class WorktreeManager {
   private static readonly LOCK_TIMEOUT_MS = 20_000;
   private static readonly LOCK_STALE_MS = 15_000;
+  private static readonly CREATE_RETRY_ATTEMPTS = 5;
+  private static readonly CREATE_RETRY_BACKOFF_MS = 75;
   private static readonly prunedProjectRootRealpaths = new Set<string>();
 
   private git: SimpleGit;
@@ -265,7 +271,7 @@ export class WorktreeManager {
         return existing.worktreePath;
       }
 
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < WorktreeManager.CREATE_RETRY_ATTEMPTS; attempt++) {
         const record = this.buildRunWorktreeRecord(runId);
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
@@ -300,7 +306,8 @@ export class WorktreeManager {
           if (!this.isRecoverableCreateCollision(message)) {
             throw err;
           }
-          logger.warn(`Run worktree name collision for ${runId}; retrying with a new suffix.`);
+          logger.warn(`Run worktree create collision for ${runId}; retrying with a new suffix.`);
+          await this.backoffBeforeCreateRetry(attempt);
         }
       }
 
@@ -351,7 +358,7 @@ export class WorktreeManager {
       const sourceGit = simpleGit(source.sourcePath);
       const before = await this.captureSourceSnapshotSignature(sourceGit, source.sourcePath);
 
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < WorktreeManager.CREATE_RETRY_ATTEMPTS; attempt++) {
         const record = this.buildRunWorktreeRecord(runId);
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
@@ -363,7 +370,8 @@ export class WorktreeManager {
           if (!this.isRecoverableCreateCollision(message)) {
             throw err;
           }
-          logger.warn(`Run worktree name collision for ${runId}; retrying with a new suffix.`);
+          logger.warn(`Run worktree create collision for ${runId}; retrying with a new suffix.`);
+          await this.backoffBeforeCreateRetry(attempt);
           continue;
         }
         // The worktree exists from here on; any failure below must discard
@@ -768,10 +776,37 @@ export class WorktreeManager {
     if (worktreeHead === targetHead) {
       return this.withMergeCheckoutInfo({ status: 'no-changes' }, target, originalCheckout);
     }
+    if (hostDirtyAtMergeStart && originalCheckout.branchName === target) {
+      throw new Error(
+        `Cannot merge run ${runId}: target branch ${target} is checked out with uncommitted changes. `
+        + 'Plumbing squash landing would move the branch ref without updating the dirty index/worktree; '
+        + 'commit or stash those changes first.',
+      );
+    }
+
+    await this.warnIfRunHeadMoved({
+      runId,
+      record,
+      wGit,
+      worktreeHead,
+    });
+
+    if ((options.mergeStrategy ?? 'squash') === 'squash') {
+      return this.squashRunWithPlumbing({
+        runId,
+        target,
+        worktreePath: record.worktreePath,
+        targetHead,
+        worktreeHead,
+        originalCheckout,
+        commitTitle: options.commitTitle,
+        commitBody: options.commitBody,
+      });
+    }
 
     let checkedOutTarget = false;
     let leaveHostOnTarget = false;
-    let recovery: MergeRecoveryState = 'none';
+    let recovery = 'none' as MergeRecoveryState;
     try {
       if (originalCheckout.branchName !== target) {
         await this.git.checkout(target);
@@ -787,23 +822,6 @@ export class WorktreeManager {
     // Side effect: if the agent committed on a different branch, that
     // branch ref persists locally after `cleanupRunRecordedWorktree`
     // deletes only `record.branchName`. Detected and warn-logged below.
-      let actualBranch: string | undefined;
-      try {
-        const raw = (await wGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
-        // 'HEAD' here means detached — leave actualBranch undefined.
-        if (raw && raw !== 'HEAD') actualBranch = raw;
-      } catch {
-        // Best-effort; non-fatal.
-      }
-      if (actualBranch && actualBranch !== record.branchName) {
-        logger.warn(
-          `merge_run ${runId}: worktree HEAD is on branch '${actualBranch}', `
-          + `but the run was created on '${record.branchName}'. Merging the actual `
-          + `commit graph (${worktreeHead}) — '${actualBranch}' will remain as an `
-          + `orphan local ref after cleanup. Delete with `
-          + `\`git branch -D ${actualBranch}\` if you don't need it.`,
-        );
-      }
       // `preserve` keeps the run's individual commits linearly; `squash`
       // (default) collapses them into one. Both land without a `--no-ff`
       // merge commit. The run branch is force-deleted at cleanup, so
@@ -835,87 +853,7 @@ export class WorktreeManager {
         );
       }
 
-      // Squash: `--squash` stages the combined diff without committing and
-      // without recording a second parent, so the run lands as one clean
-      // commit carrying the captain's title/body.
-      const mergeMessage = buildMergeCommitMessage({
-        runId,
-        title: options.commitTitle,
-        body: options.commitBody,
-      });
-      try {
-        await this.git.merge([worktreeHead, '--squash']);
-      } catch (err) {
-        // simple-git throws on conflicts. Capture the conflicting paths and
-        // leave the staged squash in-progress for the user to resolve
-        // (matches `git merge --squash`'s natural behavior).
-        const conflicts = await this.detectConflicts();
-        if (conflicts.length > 0) {
-          leaveHostOnTarget = true;
-          return this.withMergeCheckoutInfo({ status: 'conflict', conflicts }, target, originalCheckout);
-        }
-        throw err;
-      }
-      recovery = 'squash';
-      // Defensive: if the run's commits net to no change against the
-      // target (e.g. a change and its revert), nothing is staged and a
-      // commit would fail. Reset the staged squash and report no-changes.
-      const stagedAfterSquash = (await this.git.diff(['--cached', '--name-only'])).trim();
-      if (stagedAfterSquash.length === 0) {
-        if (hostDirtyAtMergeStart) {
-          recovery = 'none';
-          leaveHostOnTarget = true;
-          return this.withMergeCheckoutInfo(
-            {
-              status: 'no-changes',
-              restoreFailed: true,
-              restoreWarning: this.buildDirtyHostHardResetSkippedWarning({
-                runId,
-                targetBranch: target,
-                targetHead,
-                originalCheckout,
-                reason: 'the squash merge produced no staged changes',
-              }),
-            },
-            target,
-            originalCheckout,
-          );
-        }
-        await this.git.reset(['--hard', targetHead]);
-        recovery = 'none';
-        return await this.restoreCheckoutAfterResult(
-          runId,
-          this.withMergeCheckoutInfo({ status: 'no-changes' }, target, originalCheckout),
-          {
-            checkedOutTarget,
-            leaveHostOnTarget,
-            originalCheckout,
-            targetBranch: target,
-          },
-        );
-      }
-      const commitResult = await this.git.commit(mergeMessage);
-      recovery = 'post-landing';
-      const outcome = await this.resolveLandedCommitResult({
-        runId,
-        targetBranch: target,
-        shaHint: this.commitShaFromCommitResult(commitResult),
-        shaSource: 'git commit',
-      });
-      if (outcome.leaveHostOnTarget) {
-        leaveHostOnTarget = true;
-      }
-      recovery = 'none';
-      return await this.restoreCheckoutAfterResult(
-        runId,
-        this.withMergeCheckoutInfo(outcome.result, target, originalCheckout),
-        {
-          checkedOutTarget,
-          leaveHostOnTarget,
-          originalCheckout,
-          targetBranch: target,
-        },
-      );
+      throw new Error(`Unsupported merge strategy: ${options.mergeStrategy ?? 'squash'}`);
     } catch (err) {
       if ((checkedOutTarget || recovery !== 'none') && !leaveHostOnTarget && recovery !== 'post-landing') {
         await this.recoverAndRestoreAfterPreLandingError({
@@ -929,6 +867,174 @@ export class WorktreeManager {
         });
       }
       throw err;
+    }
+  }
+
+  private async squashRunWithPlumbing(args: {
+    runId: string;
+    target: string;
+    worktreePath: string;
+    targetHead: string;
+    worktreeHead: string;
+    originalCheckout: HostCheckout;
+    commitTitle?: string;
+    commitBody?: string;
+  }): Promise<MergeRunResult> {
+    await this.assertMergeTreeWriteTreeSupported();
+    const mergeMessage = buildMergeCommitMessage({
+      runId: args.runId,
+      title: args.commitTitle,
+      body: args.commitBody,
+    });
+
+    let treeSha: string;
+    try {
+      treeSha = (await this.git.raw([
+        'merge-tree',
+        '--write-tree',
+        args.targetHead,
+        args.worktreeHead,
+      ])).trim();
+      if (!isGitObjectId(treeSha)) {
+        const conflicts = await this.squashConflictResult(args, treeSha);
+        return this.withMergeCheckoutInfo(
+          { status: 'conflict', conflicts },
+          args.target,
+          args.originalCheckout,
+        );
+      }
+    } catch (err) {
+      const conflicts = await this.squashConflictResult(args, err);
+      return this.withMergeCheckoutInfo(
+        { status: 'conflict', conflicts },
+        args.target,
+        args.originalCheckout,
+      );
+    }
+
+    const targetTree = (await this.git.raw(['rev-parse', `${args.targetHead}^{tree}`])).trim();
+    if (treeSha === targetTree) {
+      return this.withMergeCheckoutInfo(
+        { status: 'no-changes' },
+        args.target,
+        args.originalCheckout,
+      );
+    }
+
+    const commitSha = (await this.git.raw([
+      'commit-tree',
+      treeSha,
+      '-p',
+      args.targetHead,
+      '-m',
+      mergeMessage,
+    ])).trim();
+    await this.git.raw([
+      'update-ref',
+      `refs/heads/${args.target}`,
+      commitSha,
+      args.targetHead,
+    ]);
+
+    if (args.originalCheckout.branchName === args.target) {
+      // update-ref moves the checked-out branch ref but does not update the
+      // index/worktree. We refused dirty target checkouts earlier, so a hard
+      // reset is the narrow, deliberate mutation that advances the live
+      // checkout to the commit we just created.
+      await this.git.reset(['--hard', commitSha]);
+    }
+
+    return this.withMergeCheckoutInfo(
+      { status: 'merged', commitSha },
+      args.target,
+      args.originalCheckout,
+    );
+  }
+
+  private async squashConflictResult(
+    args: {
+      runId: string;
+      target: string;
+      worktreePath: string;
+    },
+    mergeTreeOutputOrError: unknown,
+  ): Promise<string[]> {
+    const reportedConflicts = conflictsFromMergeTreeOutput(mergeTreeOutputOrError);
+    const materializedConflicts = await this.materializeSquashConflictInRunWorktree(
+      args.worktreePath,
+      args.target,
+    ).catch((materializeErr) => {
+      logger.warn(
+        `merge_run ${args.runId}: failed to materialize squash conflict in run worktree: ${
+          materializeErr instanceof Error ? materializeErr.message : String(materializeErr)
+        }`,
+      );
+      return [];
+    });
+    return materializedConflicts.length > 0
+      ? materializedConflicts
+      : reportedConflicts;
+  }
+
+  private async assertMergeTreeWriteTreeSupported(): Promise<void> {
+    const raw = (await this.git.raw(['--version'])).trim();
+    const match = raw.match(/git version (\d+)\.(\d+)/);
+    if (!match) return;
+    const major = match ? Number(match[1]) : 0;
+    const minor = match ? Number(match[2]) : 0;
+    if (major > 2 || (major === 2 && minor >= 38)) return;
+    throw new Error(
+      `merge_run.unsupported_git_version: squash merge requires git >= 2.38 for merge-tree --write-tree; found ${raw || 'unknown'}.`,
+    );
+  }
+
+  private async materializeSquashConflictInRunWorktree(
+    worktreePath: string,
+    target: string,
+  ): Promise<string[]> {
+    try {
+      await execFileAsync('git', ['-C', worktreePath, 'merge', target]);
+    } catch {
+      // Expected conflict path: leave conflict markers in the run worktree.
+    }
+    try {
+      const { stdout } = await execFileAsync('git', [
+        '-C',
+        worktreePath,
+        'diff',
+        '--name-only',
+        '--diff-filter=U',
+      ]);
+      return stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  private async warnIfRunHeadMoved(args: {
+    runId: string;
+    record: RunWorktreeRecord;
+    wGit: SimpleGit;
+    worktreeHead: string;
+  }): Promise<void> {
+    let actualBranch: string | undefined;
+    try {
+      const raw = (await args.wGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
+      if (raw && raw !== 'HEAD') actualBranch = raw;
+    } catch {
+      // Best-effort; non-fatal.
+    }
+    if (actualBranch && actualBranch !== args.record.branchName) {
+      logger.warn(
+        `merge_run ${args.runId}: worktree HEAD is on branch '${actualBranch}', `
+        + `but the run was created on '${args.record.branchName}'. Merging the actual `
+        + `commit graph (${args.worktreeHead}) — '${actualBranch}' will remain as an `
+        + `orphan local ref after cleanup. Delete with `
+        + `\`git branch -D ${actualBranch}\` if you don't need it.`,
+      );
     }
   }
 
@@ -987,9 +1093,9 @@ export class WorktreeManager {
     });
   }
 
-  private async detectConflicts(): Promise<string[]> {
+  private async detectConflicts(git: SimpleGit = this.git): Promise<string[]> {
     try {
-      const out = await this.git.raw(['diff', '--name-only', '--diff-filter=U']);
+      const out = await git.raw(['diff', '--name-only', '--diff-filter=U']);
       return out
         .split('\n')
         .map((s) => s.trim())
@@ -1117,19 +1223,6 @@ export class WorktreeManager {
     }
   }
 
-  private commitShaFromCommitResult(result: unknown): string | undefined {
-    if (
-      result
-      && typeof result === 'object'
-      && 'commit' in result
-      && typeof result.commit === 'string'
-      && result.commit.trim().length > 0
-    ) {
-      return result.commit.trim();
-    }
-    return undefined;
-  }
-
   private async resolveLandedCommitResult(args: {
     runId: string;
     targetBranch: string;
@@ -1170,21 +1263,7 @@ export class WorktreeManager {
     hostDirtyAtMergeStart: boolean;
     operationError: unknown;
   }): Promise<void> {
-    if (args.recovery === 'squash') {
-      if (args.hostDirtyAtMergeStart) {
-        throw this.destructiveRecoveryBlockedError(
-          args,
-          'git reset --hard',
-          'the squash merge had modified the index/worktree before the commit failed',
-        );
-      }
-      try {
-        await this.git.reset(['--hard', args.targetHead]);
-      } catch (recoveryErr) {
-        throw this.recoveryFailedError(args, recoveryErr, 'reset --hard');
-      }
-      await this.assertCleanBeforeRestore(args, 'reset --hard');
-    } else if (args.recovery === 'cherry-pick') {
+    if (args.recovery === 'cherry-pick') {
       if (args.hostDirtyAtMergeStart) {
         throw this.destructiveRecoveryBlockedError(
           args,
@@ -1426,6 +1505,13 @@ export class WorktreeManager {
       || message.includes('is a missing but already registered worktree')
       || message.includes('.lock')
     );
+  }
+
+  private async backoffBeforeCreateRetry(attempt: number): Promise<void> {
+    if (attempt >= WorktreeManager.CREATE_RETRY_ATTEMPTS - 1) return;
+    await new Promise((resolveDelay) => {
+      setTimeout(resolveDelay, WorktreeManager.CREATE_RETRY_BACKOFF_MS * (attempt + 1));
+    });
   }
 
   private isMissingWorktreeError(message: string): boolean {
@@ -1676,6 +1762,27 @@ export function buildMergeCommitMessage(args: {
   const body = args.body?.trim();
   if (body) parts.push('', body);
   return parts.join('\n');
+}
+
+function isGitObjectId(value: string): boolean {
+  return /^[0-9a-f]{40,64}$/i.test(value);
+}
+
+function conflictsFromMergeTreeOutput(outputOrError: unknown): string[] {
+  const text = outputOrError instanceof Error ? outputOrError.message : String(outputOrError);
+  const paths = new Set<string>();
+  for (const line of text.split('\n')) {
+    const stagedPath = line.match(/^\d{6}\s+[0-9a-f]{40}\s+\d+\t(.+)$/);
+    if (stagedPath?.[1]) {
+      paths.add(stagedPath[1].trim());
+      continue;
+    }
+    const conflictPath = line.match(/^CONFLICT \([^)]+\): .* in (.+)$/);
+    if (conflictPath?.[1]) {
+      paths.add(conflictPath[1].trim());
+    }
+  }
+  return Array.from(paths).filter(Boolean).sort();
 }
 
 function isPathInside(root: string, candidate: string): boolean {

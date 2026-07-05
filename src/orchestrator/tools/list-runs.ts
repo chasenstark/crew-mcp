@@ -15,7 +15,11 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import { runModeFromState } from '../run-mode.js';
-import type { RunStateV1, RunStatus } from '../run-state.js';
+import {
+  quarantineCorruptRunState,
+  type RunStateV1,
+  type RunStatus,
+} from '../run-state.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { jsonContent } from './shared.js';
 
@@ -135,7 +139,9 @@ export function listRuns(
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     seenRunIds.add(entry.name);
-    const state = readRunState(entry.name, join(runsBasePath, entry.name, 'state.json'));
+    const state = readRunState(entry.name, join(runsBasePath, entry.name, 'state.json'), {
+      repoRoot,
+    });
     if (!state) continue;
     if (!belongsToRepo(state, repoRoot, includeUnknownRepo)) continue;
     if (statusFilter && !statusFilter.has(state.status)) continue;
@@ -192,7 +198,11 @@ function summaryField(state: RunStateV1): { summary?: string } {
   return summary !== undefined ? { summary } : {};
 }
 
-function readRunState(runId: string, path: string): RunStateV1 | undefined {
+function readRunState(
+  runId: string,
+  path: string,
+  options: { readonly repoRoot: string },
+): RunStateV1 | undefined {
   let mtimeMs: number;
   try {
     mtimeMs = listRunsFs.statSync(path).mtimeMs;
@@ -209,9 +219,19 @@ function readRunState(runId: string, path: string): RunStateV1 | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(listRunsFs.readFileSync(path, 'utf-8'));
-  } catch {
-    parsedRunStateCache.set(runId, { path, mtimeMs });
-    return undefined;
+  } catch (err) {
+    const quarantined = quarantineCorruptRunState({
+      runId,
+      statePath: path,
+      repoRoot: options.repoRoot,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    parsedRunStateCache.set(runId, {
+      path,
+      mtimeMs: listRunsFs.statSync(path).mtimeMs,
+      parsed: quarantined,
+    });
+    return quarantined;
   }
   if (!isRunStateV1(parsed)) {
     parsedRunStateCache.set(runId, { path, mtimeMs });

@@ -46,7 +46,6 @@ interface LazyAdapterMetadata {
   readonly supportsResume?: boolean;
   readonly recognizesModel?: (modelId: string) => boolean;
   readonly hasExecuteWithSchema?: boolean;
-  readonly hasExecuteWithTools?: boolean;
   readonly hasGetCliVersionTag?: boolean;
 }
 
@@ -60,12 +59,6 @@ interface AdapterEntry {
   readonly loader?: LazyAdapterLoader;
   loadPromise?: Promise<AgentAdapter>;
 }
-
-const CAPTAIN_TOOL_LOOP_CAPABILITIES: CaptainCapabilities = {
-  supportsToolLoop: true,
-  supportsStructuredDecisions: true,
-  supportsPauseForUserInput: true,
-};
 
 const GENERIC_CAPABILITIES: CaptainCapabilities = {
   supportsToolLoop: false,
@@ -82,14 +75,13 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsJsonSchema: true,
     enforcesReadOnly: false,
     reviewDispatchMode: 'read-only-dispatch',
-    captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    captainCapabilities: GENERIC_CAPABILITIES,
     streamsIncrementally: true,
     supportsResume: true,
     recognizesModel: (modelId) =>
       typeof modelId === 'string'
       && (/^claude-/.test(modelId) || modelId === 'sonnet' || modelId === 'opus'),
     hasExecuteWithSchema: true,
-    hasExecuteWithTools: true,
     hasGetCliVersionTag: true,
   },
   [AdapterId.CODEX]: {
@@ -100,13 +92,12 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsJsonSchema: true,
     enforcesReadOnly: true,
     reviewDispatchMode: 'read-only-dispatch',
-    captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    captainCapabilities: GENERIC_CAPABILITIES,
     streamsIncrementally: true,
     supportsResume: true,
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
     hasExecuteWithSchema: true,
-    hasExecuteWithTools: true,
     hasGetCliVersionTag: true,
   },
   [AdapterId.GEMINI_CLI]: {
@@ -116,7 +107,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsJsonSchema: false,
     enforcesReadOnly: false,
     reviewDispatchMode: 'read-only-dispatch',
-    captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+    captainCapabilities: GENERIC_CAPABILITIES,
     // gemini-cli auth/dispatchability is dead for this path today, so resume
     // remains deliberately unwired; buffering runs use dispatcher absolute caps.
     // KNOWN COLLISION: this prefix regex also matches agy's "Gemini 3.1 Pro
@@ -129,7 +120,6 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId),
     hasExecuteWithSchema: true,
-    hasExecuteWithTools: true,
     hasGetCliVersionTag: true,
   },
   [AdapterId.AGY]: {
@@ -150,8 +140,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     rejectsReadOnly: true,
     reviewDispatchMode: 'ephemeral-worktree',
     requiresCrewWorktree: true,
-    // No native captain tool-loop in v1 (executeWithTools deferred), so use the
-    // generic structured-decision capabilities, not the tool-loop set.
+    // No native captain tool-loop in v1, so use the generic structured-decision
+    // capabilities.
     captainCapabilities: GENERIC_CAPABILITIES,
     supportsResume: true,
     // EXACT-label match against the pinned agy label set, never a substring —
@@ -159,7 +149,6 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && AGY_MODEL_LABEL_SET.has(modelId),
     hasExecuteWithSchema: true,
-    hasExecuteWithTools: false,
     hasGetCliVersionTag: true,
   },
 };
@@ -353,15 +342,6 @@ function createLazyAdapterProxy(
       return adapter.executeWithSchema(prompt, schema, options);
     }) as NonNullable<AgentAdapter['executeWithSchema']>;
   }
-  if (metadata.hasExecuteWithTools) {
-    proxy.executeWithTools = async (tools, messages, onToolCall, context) => {
-      const adapter = await load();
-      if (!adapter.executeWithTools) {
-        throw new Error(`Adapter "${metadata.name}" does not support tool execution.`);
-      }
-      return adapter.executeWithTools(tools, messages, onToolCall, context);
-    };
-  }
   if (metadata.hasGetCliVersionTag) {
     proxy.getCliVersionTag = async () => {
       const adapter = await load();
@@ -447,9 +427,8 @@ function registerOpenAiCompatibleAdapter(
       supportsJsonSchema: false,
       enforcesReadOnly: false,
       unmetered,
-      captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
+      captainCapabilities: GENERIC_CAPABILITIES,
       hasExecuteWithSchema: true,
-      hasExecuteWithTools: true,
     },
     async () => {
       const { OpenAiCompatibleAdapter } = await import('./openai-compatible.js');

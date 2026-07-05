@@ -612,6 +612,26 @@ describe('RunStateStore', () => {
     expect(store.read('nope')).toBeUndefined();
   });
 
+  it('read() quarantines corrupt state.json and returns a terminal error record', async () => {
+    await createRun({ runId: 'r-corrupt', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    const statePath = join(crewHome, 'runs', 'r-corrupt', 'state.json');
+    writeFileSync(statePath, '{not json', 'utf-8');
+
+    const state = store.read('r-corrupt');
+
+    expect(state).toMatchObject({
+      runId: 'r-corrupt',
+      status: 'error',
+      agentId: 'unknown',
+      lastError: expect.stringContaining('state.json was corrupt and has been quarantined'),
+    });
+    expect(existsSync(`${statePath}.corrupt`)).toBe(true);
+    expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toMatchObject({
+      runId: 'r-corrupt',
+      status: 'error',
+    });
+  });
+
   it('read() propagates non-ENOENT read errors', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     chmodSync(join(crewHome, 'runs', 'r-1', 'state.json'), 0o000);

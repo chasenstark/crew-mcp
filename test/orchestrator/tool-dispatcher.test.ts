@@ -151,6 +151,53 @@ describe('ToolDispatcher', () => {
     expect(d.cancel('nope')).toBe(false);
   });
 
+  it('escalates a cancelled task that does not settle and releases the in-flight slot', async () => {
+    vi.useFakeTimers();
+    try {
+      const d = new ToolDispatcher({
+        bufferedAbsoluteTimeoutMs: 0,
+        streamingIdleTimeoutMs: 0,
+        cancelEscalationTimeoutMs: 25,
+      });
+      let aborted = false;
+      let lateResolve!: (value: unknown) => void;
+      let completedAfterEscalation = false;
+      d.onEvent('run:complete', () => {
+        completedAfterEscalation = true;
+      });
+
+      d.start(makeTask(
+        'c-zombie',
+        (signal) => new Promise((resolve) => {
+          lateResolve = resolve;
+          signal.addEventListener('abort', () => {
+            aborted = true;
+          });
+        }),
+        'run_agent',
+        'run-zombie',
+      ));
+
+      const cancelledP = waitForEvent(d, 'run:cancelled');
+      expect(d.cancel('c-zombie', 'user-requested')).toBe(true);
+      await vi.advanceTimersByTimeAsync(25);
+
+      const info = (await cancelledP) as { reason: string; runId?: string };
+      expect(aborted).toBe(true);
+      expect(info.runId).toBe('run-zombie');
+      expect(info.reason).toContain('user-requested');
+      expect(info.reason).toContain('process did not exit after abort; flagged as zombie');
+      expect(d.inFlightCount()).toBe(0);
+
+      lateResolve({ ok: true });
+      await Promise.resolve();
+      expect(completedAfterEscalation).toBe(false);
+      expect(d.inFlightCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('cancelAll() terminates N concurrent tasks', async () => {
     const d = new ToolDispatcher();
     const cancellations: string[] = [];

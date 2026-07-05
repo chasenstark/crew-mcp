@@ -29,8 +29,10 @@ import {
   getRunGc,
   getStaleRunSweep,
   nextStepSentence,
+  resolveRunGcIntervalMs,
   scheduleRunGc,
   scheduleStaleRunSweep,
+  startPeriodicRunGc,
   waitForInFlightDrain,
   waitForShutdownDrain,
   type FullRunEnvelope,
@@ -1492,6 +1494,55 @@ describe('crew serve — stale-run sweeper', () => {
       rmSync(rootB, { recursive: true, force: true });
       rmSync(crewHomeA, { recursive: true, force: true });
       rmSync(crewHomeB, { recursive: true, force: true });
+    }
+  });
+
+  it('re-arms run GC on an unref periodic interval', async () => {
+    await getRunGc();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-periodic-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-periodic-home-'));
+    const args = {
+      crewHome,
+      projectRoot: root,
+      runStateStore: new RunStateStore({ crewHome, repoRoot: root }),
+      worktreeManager: {} as WorktreeManager,
+    };
+    let calls = 0;
+    const timer = startPeriodicRunGc(args, async () => {
+      calls += 1;
+    }, 10);
+
+    try {
+      expect(timer).toBeDefined();
+      const startedAt = Date.now();
+      while (calls < 2 && Date.now() - startedAt < 500) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(calls).toBeGreaterThanOrEqual(2);
+    } finally {
+      if (timer) clearInterval(timer);
+      await getRunGc();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('allows CREW_RUN_GC_INTERVAL_MS=0 to disable periodic run GC', () => {
+    expect(resolveRunGcIntervalMs({ CREW_RUN_GC_INTERVAL_MS: '0' } as NodeJS.ProcessEnv)).toBe(0);
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-disabled-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-disabled-home-'));
+    try {
+      const args = {
+        crewHome,
+        projectRoot: root,
+        runStateStore: new RunStateStore({ crewHome, repoRoot: root }),
+        worktreeManager: {} as WorktreeManager,
+      };
+      expect(startPeriodicRunGc(args, async () => undefined, 0)).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
     }
   });
 });
@@ -3239,6 +3290,8 @@ describe('crew serve — merge_run tool', () => {
       const env = mergeRes.structuredContent as { status: string; conflicts?: string[] };
       expect(env.status).toBe('conflict');
       expect(env.conflicts).toContain('shared.txt');
+      expect(readFileSync(join(runEnv.worktree_path, 'shared.txt'), 'utf-8')).toContain('<<<<<<<');
+      expect(readFileSync(join(h.root, 'shared.txt'), 'utf-8')).toBe('from host\n');
       expect(toolText(mergeRes)).toBe(
         `**Conflict** on \`${runEnv.run_id}\` (1 files): shared.txt`,
       );
@@ -3256,10 +3309,10 @@ describe('crew serve — merge_run tool', () => {
       const continueText = (continueRes.content as Array<{ text: string }>)[0].text;
       expect(continueText).toMatch(/merge_conflict/);
 
-      // merge_run squash-merges, so the conflict leaves staged conflict
-      // markers but no MERGE_HEAD — `git merge --abort` does not apply.
-      // Bail with a hard reset back to the target tip.
-      execSync('git reset --hard HEAD', { cwd: h.root });
+      // Squash conflicts are materialized in the run worktree, not the
+      // host checkout. Reset the run branch so a retry can materialize the
+      // same conflict again.
+      execSync('git reset --hard HEAD', { cwd: runEnv.worktree_path });
 
       const retry = await h.client.callTool({
         name: 'merge_run',
@@ -3270,7 +3323,7 @@ describe('crew serve — merge_run tool', () => {
       expect(retryEnv.status).toBe('conflict');
       expect(retryEnv.conflicts).toContain('shared.txt');
 
-      execSync('git reset --hard HEAD', { cwd: h.root });
+      execSync('git reset --hard HEAD', { cwd: runEnv.worktree_path });
 
       writeFileSync(join(h.root, 'shared.txt'), 'original\n', 'utf-8');
       execSync('git add shared.txt && git commit -q -m resolve-target', { cwd: h.root });
@@ -3293,8 +3346,6 @@ describe('crew serve — merge_run tool', () => {
       expect(existsSync(runEnv.worktree_path)).toBe(false);
       expect(runWorktreeCount(h.crewHome)).toBe(0);
     } finally {
-      // Clean up any staged squash conflict on the host so afterEach's
-      // rmSync works.
       try {
         execSync('git reset --hard HEAD', { cwd: h.root, stdio: 'ignore' });
       } catch {

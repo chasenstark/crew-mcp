@@ -284,6 +284,7 @@ export function scheduleStaleRunSweep(
 }
 
 const runGcPromises = new Map<string, Promise<void>>();
+const DEFAULT_RUN_GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export function getRunGc(): Promise<void> | null {
   return joinInFlightPromises(runGcPromises);
@@ -320,6 +321,32 @@ export function scheduleRunGc(
 
   runGcPromises.set(key, promise);
   return promise;
+}
+
+export function resolveRunGcIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.CREW_RUN_GC_INTERVAL_MS;
+  if (raw === undefined) return DEFAULT_RUN_GC_INTERVAL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    logger.warn(
+      `CREW_RUN_GC_INTERVAL_MS is present but is not a non-negative integer; using ${DEFAULT_RUN_GC_INTERVAL_MS}`,
+    );
+    return DEFAULT_RUN_GC_INTERVAL_MS;
+  }
+  return Math.floor(parsed);
+}
+
+export function startPeriodicRunGc(
+  args: RunGcArgs,
+  gc: (args: RunGcArgs) => void | Promise<unknown> = gcTerminalRunsAndCriteriaSets,
+  intervalMs = resolveRunGcIntervalMs(),
+): ReturnType<typeof setInterval> | undefined {
+  if (intervalMs <= 0) return undefined;
+  const timer = setInterval(() => {
+    void scheduleRunGc(args, gc);
+  }, intervalMs);
+  timer.unref?.();
+  return timer;
 }
 
 function singleFlightKey(crewHome: string, projectRoot: string): string {
@@ -469,6 +496,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     options.staleRunSweeper,
   );
   void scheduleRunGc(
+    { crewHome, projectRoot, runStateStore, worktreeManager },
+    options.runGc,
+  );
+  startPeriodicRunGc(
     { crewHome, projectRoot, runStateStore, worktreeManager },
     options.runGc,
   );

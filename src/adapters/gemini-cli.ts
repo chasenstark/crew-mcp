@@ -14,14 +14,6 @@ import {
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
-import { executePromptToolLoop } from './tool-loop/controller.js';
-import { resolveTerminalOutput } from './tool-loop/result.js';
-import {
-  parseToolInput,
-  ToolLoopDecisionSchema,
-} from './tool-loop/decision.js';
-import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
-import { buildDecisionPrompt } from './tool-loop/transcript.js';
 import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
@@ -38,12 +30,6 @@ import type {
   HealthCheckResult,
   Task,
   TaskResult,
-  ToolCall,
-  ToolDefinition,
-  ToolLoopContext,
-  ToolLoopMessage,
-  ToolLoopResult,
-  ToolResult,
 } from './types.js';
 
 /**
@@ -342,9 +328,9 @@ export class GeminiCliAdapter implements AgentAdapter {
   // Gemini terminal execution does not currently parse a file-change stream.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
-    supportsToolLoop: true,
+    supportsToolLoop: false,
     supportsStructuredDecisions: true,
-    supportsPauseForUserInput: true,
+    supportsPauseForUserInput: false,
   };
   private readonly healthCheckCache = new HealthCheckCache();
 
@@ -565,61 +551,6 @@ export class GeminiCliAdapter implements AgentAdapter {
     return schema.parse(extractJson(result.output)) as z.infer<T>;
   }
 
-  async executeWithTools(
-    tools: ToolDefinition[],
-    messages: ToolLoopMessage[],
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-    context?: ToolLoopContext,
-  ): Promise<ToolLoopResult> {
-    if (!context) {
-      return this.executeWithPromptLoop(tools, messages, onToolCall);
-    }
-
-    let latestTranscript = messages.map((message) => ({ ...message }));
-    const wrappedContext: ToolLoopContext = {
-      ...context,
-      onTranscriptUpdate: (transcript) => {
-        latestTranscript = transcript.map((message) => ({ ...message }));
-        context.onTranscriptUpdate?.(latestTranscript);
-      },
-    };
-
-    try {
-      return await this.executeWithResumeSession(tools, messages, onToolCall, wrappedContext);
-    } catch (error: unknown) {
-      if (context.signal?.aborted) {
-        return {
-          status: 'interrupted',
-          transcript: latestTranscript,
-          pathTaken: 'fallback',
-          error: String(context.signal.reason ?? 'Cancelled'),
-        };
-      }
-      logger.warn('[adapter:gemini-cli] resume path failed; using adapter loop fallback', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      context.onProviderSession?.({
-        provider: 'gemini',
-        transport: 'adapter',
-        cliVersion: await this.getCliVersionTag(),
-        toolNamespace: context.toolNamespace ?? 'mcp__crew__',
-        toolSchemaHash: context.toolSchemaHash ?? '',
-        startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
-        lastTurnAt: new Date().toISOString(),
-      });
-      const fallbackResult = await this.executeWithPromptLoop(
-        tools,
-        latestTranscript,
-        onToolCall,
-        wrappedContext,
-      );
-      return {
-        ...fallbackResult,
-        pathTaken: 'adapter',
-      };
-    }
-  }
-
   async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
     return this.healthCheckCache.get(options, () => this.probeHealth());
   }
@@ -677,181 +608,4 @@ export class GeminiCliAdapter implements AgentAdapter {
     }
   }
 
-  private async executeWithResumeSession(
-    tools: ToolDefinition[],
-    messages: ToolLoopMessage[],
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-    context: ToolLoopContext,
-  ): Promise<ToolLoopResult> {
-    const transcript: ToolLoopMessage[] = [...messages];
-    const publishTranscript = () => {
-      context.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
-    };
-    const cliVersion = await this.getCliVersionTag();
-    let providerSession = {
-      provider: 'gemini' as const,
-      transport: 'stateful-resume' as const,
-      sessionId: context.providerSession?.sessionId,
-      cliVersion,
-      toolNamespace: context.toolNamespace ?? 'mcp__crew__',
-      toolSchemaHash: context.toolSchemaHash ?? '',
-      startedAt: context.providerSession?.startedAt ?? new Date().toISOString(),
-      lastTurnAt: new Date().toISOString(),
-    };
-    context.onProviderSession?.(providerSession);
-    let prompt = buildDecisionPrompt(
-      tools,
-      transcript,
-      { continueFromSession: Boolean(providerSession.sessionId) },
-    );
-
-    const allowedServerNames =
-      context.mcpRegistration?.kind === 'gemini-cli'
-        ? context.mcpRegistration.allowedServerNames
-        : undefined;
-
-    for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
-      const args = buildGeminiResumeArgs(providerSession.sessionId, prompt, {
-        allowedServerNames,
-      });
-      assertArgvPromptWithinLimit(this.name, prompt);
-
-      const subprocess = execa('gemini', args, {
-        cwd: context.workingDirectory,
-        ...processGroupSpawnOptions(),
-        cancelSignal: context.signal,
-        reject: false,
-      });
-      const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
-        subprocess,
-        context.signal,
-      );
-      let result;
-      try {
-        result = await subprocess;
-      } finally {
-        disposeProcessGroupAbort();
-      }
-
-      const stderrText = result.stderr ?? '';
-      if (isInvalidSessionStderr(stderrText)) {
-        logger.warn('[adapter:gemini-cli] session id rejected by CLI; dropping it for replay', {
-          sessionId: providerSession.sessionId,
-        });
-        providerSession = {
-          ...providerSession,
-          sessionId: undefined,
-          lastTurnAt: new Date().toISOString(),
-        };
-        context.onProviderSession?.(providerSession);
-        throw new Error('Gemini resume session invalidated upstream; caller must replay.');
-      }
-
-      if (result.exitCode !== 0 && !result.stdout) {
-        throw new Error(stderrText || `gemini exited with code ${result.exitCode}`);
-      }
-
-      const events = parseStreamJsonEvents(result.stdout ?? '');
-      const maybeSessionId = extractStreamJsonSessionId(events);
-      if (maybeSessionId && maybeSessionId !== providerSession.sessionId) {
-        providerSession = {
-          ...providerSession,
-          sessionId: maybeSessionId,
-          lastTurnAt: new Date().toISOString(),
-        };
-        context.onProviderSession?.(providerSession);
-      }
-
-      const assistantText = extractStreamJsonAssistantText(events);
-      if (!assistantText) {
-        throw new Error('Gemini CLI returned no decision text.');
-      }
-      const decision = ToolLoopDecisionSchema.parse(extractJson(assistantText));
-
-      if (decision.reasoning) {
-        transcript.push({ role: 'assistant', content: decision.reasoning });
-        publishTranscript();
-      }
-
-      if (decision.type === 'finish') {
-        return {
-          status: 'completed',
-          transcript,
-          output: decision.output ?? decision.reasoning ?? '',
-          pathTaken: 'stateful-resume',
-          providerSession,
-        };
-      }
-      if (decision.type === 'fail') {
-        return {
-          status: 'failed',
-          transcript,
-          error: decision.error ?? decision.reasoning ?? 'Controller requested fail',
-          pathTaken: 'stateful-resume',
-          providerSession,
-        };
-      }
-
-      const toolName = decision.tool?.trim();
-      if (!toolName) throw new Error('Tool call missing tool name.');
-      const toolInput = parseToolInput(decision.input);
-      transcript.push({
-        role: 'assistant',
-        content: JSON.stringify({ type: 'tool_call', tool: toolName, input: toolInput }),
-      });
-      publishTranscript();
-      const toolResult = await onToolCall({ name: toolName, input: toolInput });
-      transcript.push({
-        role: 'tool',
-        name: toolName,
-        content: JSON.stringify(toolResult.output),
-      });
-      publishTranscript();
-      if (toolResult.terminal) {
-        return {
-          status: 'completed',
-          transcript,
-          output: resolveTerminalOutput(toolResult),
-          pathTaken: 'stateful-resume',
-          providerSession,
-        };
-      }
-      prompt = [
-        `Tool ${toolName} returned:`,
-        JSON.stringify(toolResult.output),
-        'Choose the next action as a JSON object.',
-      ].join('\n');
-    }
-
-    return {
-      status: 'failed',
-      transcript,
-      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
-      pathTaken: 'stateful-resume',
-      providerSession,
-    };
-  }
-
-  private async executeWithPromptLoop(
-    tools: ToolDefinition[],
-    messages: ToolLoopMessage[],
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-    context?: ToolLoopContext,
-  ): Promise<ToolLoopResult> {
-    return executePromptToolLoop(
-      tools,
-      messages,
-      onToolCall,
-      (prompt) =>
-        this.executeWithSchema(prompt, ToolLoopDecisionSchema, {
-          signal: context?.signal,
-          workingDirectory: context?.workingDirectory,
-        }),
-      {
-        pathTaken: 'adapter',
-        signal: context?.signal,
-        onTranscriptUpdate: context?.onTranscriptUpdate,
-      },
-    );
-  }
 }

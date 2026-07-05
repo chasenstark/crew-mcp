@@ -1,11 +1,7 @@
 import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
-import { logger } from '../utils/logger.js';
 import { ModelId } from '../workflow/models.js';
 import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
-import { TOOL_LOOP_MAX_TURNS } from './tool-loop/constants.js';
-import { parseToolInput, ToolLoopDecisionSchema } from './tool-loop/decision.js';
-import { resolveTerminalOutput } from './tool-loop/result.js';
 import { classifyHttpFailure, classifyTextFailure } from './failure-classifier.js';
 import type {
   AgentAdapter,
@@ -14,12 +10,6 @@ import type {
   HealthCheckResult,
   Task,
   TaskResult,
-  ToolCall,
-  ToolDefinition,
-  ToolLoopContext,
-  ToolLoopMessage,
-  ToolLoopResult,
-  ToolResult,
 } from './types.js';
 
 class OpenAiCompatibleHttpError extends Error {
@@ -33,18 +23,9 @@ class OpenAiCompatibleHttpError extends Error {
 }
 
 interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
+  role: 'system' | 'user' | 'assistant';
   content?: string;
-  tool_call_id?: string;
   name?: string;
-  tool_calls?: Array<{
-    id: string;
-    type: 'function';
-    function: {
-      name: string;
-      arguments: string;
-    };
-  }>;
 }
 
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -68,9 +49,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   // Chat completions do not provide an adapter-level filesystem change list.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {
-    supportsToolLoop: true,
+    supportsToolLoop: false,
     supportsStructuredDecisions: true,
-    supportsPauseForUserInput: true,
+    supportsPauseForUserInput: false,
   };
 
   private readonly defaultModel: string;
@@ -170,231 +151,6 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     return schema.parse(extractJson(text)) as z.infer<T>;
   }
 
-  async executeWithTools(
-    tools: ToolDefinition[],
-    messages: ToolLoopMessage[],
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-    context?: ToolLoopContext,
-  ): Promise<ToolLoopResult> {
-    const transcript: ToolLoopMessage[] = [...messages];
-    const publishTranscript = () => {
-      context?.onTranscriptUpdate?.(transcript.map((message) => ({ ...message })));
-    };
-    const history: ChatMessage[] = messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-      name: message.name,
-    }));
-    const openAiTools = tools.map((tool) => ({
-      type: 'function' as const,
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-      },
-    }));
-
-    const providerSession = {
-      provider: 'local' as const,
-      transport: 'prefix-cached' as const,
-      toolNamespace: context?.toolNamespace ?? 'mcp__crew__',
-      toolSchemaHash: context?.toolSchemaHash ?? '',
-      startedAt: context?.providerSession?.startedAt ?? new Date().toISOString(),
-      lastTurnAt: new Date().toISOString(),
-    };
-    context?.onProviderSession?.(providerSession);
-
-    for (let turn = 1; turn <= TOOL_LOOP_MAX_TURNS; turn++) {
-      const response = await this.chatCompletion({
-        model: this.defaultModel,
-        messages: history,
-        tools: openAiTools,
-        timeoutMs: undefined,
-        signal: context?.signal,
-      });
-
-      const assistant = response?.choices?.[0]?.message as ChatMessage | undefined;
-      if (!assistant) {
-        return {
-          status: 'failed',
-          transcript,
-          error: 'OpenAI-compatible adapter returned no assistant message.',
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-
-      if (Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0) {
-        history.push(assistant);
-        for (const toolCall of assistant.tool_calls) {
-          const parsedArgs = this.parseFunctionArguments(toolCall.function.arguments);
-          transcript.push({
-            role: 'assistant',
-            content: JSON.stringify({
-              type: 'tool_call',
-              tool: toolCall.function.name,
-              input: parsedArgs,
-            }),
-          });
-          publishTranscript();
-
-          const toolResult = await onToolCall({
-            name: toolCall.function.name,
-            input: parsedArgs,
-          });
-
-          const toolContent = JSON.stringify(toolResult.output);
-          history.push({
-            role: 'tool',
-            tool_call_id: toolCall.id,
-            content: toolContent,
-          });
-          transcript.push({
-            role: 'tool',
-            name: toolCall.function.name,
-            content: toolContent,
-          });
-          publishTranscript();
-
-          if (toolResult.terminal) {
-            return {
-              status: 'completed',
-              transcript,
-              output: resolveTerminalOutput(toolResult),
-              pathTaken: 'prefix-cached',
-              providerSession,
-            };
-          }
-        }
-
-        providerSession.lastTurnAt = new Date().toISOString();
-        context?.onProviderSession?.(providerSession);
-        continue;
-      }
-
-      const content = typeof assistant.content === 'string' ? assistant.content : '';
-      if (!content.trim()) {
-        return {
-          status: 'failed',
-          transcript,
-          error: 'OpenAI-compatible adapter returned empty completion.',
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-
-      let parsedDecision: z.infer<typeof ToolLoopDecisionSchema> | null = null;
-      try {
-        parsedDecision = ToolLoopDecisionSchema.parse(extractJson(content));
-      } catch {
-        // If the model did not emit a tool-loop decision object, treat content as terminal output.
-      }
-
-      if (!parsedDecision) {
-        history.push(assistant);
-        transcript.push({ role: 'assistant', content });
-        publishTranscript();
-        return {
-          status: 'completed',
-          transcript,
-          output: content,
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-
-      if (parsedDecision.reasoning) {
-        transcript.push({ role: 'assistant', content: parsedDecision.reasoning });
-        publishTranscript();
-      }
-
-      if (parsedDecision.type === 'finish') {
-        return {
-          status: 'completed',
-          transcript,
-          output: parsedDecision.output ?? parsedDecision.reasoning ?? '',
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-
-      if (parsedDecision.type === 'fail') {
-        return {
-          status: 'failed',
-          transcript,
-          error: parsedDecision.error ?? parsedDecision.reasoning ?? 'Controller requested fail',
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-
-      const toolName = parsedDecision.tool?.trim();
-      if (!toolName) {
-        return {
-          status: 'failed',
-          transcript,
-          error: 'Tool call missing tool name.',
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-
-      const toolInput = parseToolInput(parsedDecision.input);
-      const toolCallId = `synthetic-${turn}`;
-      history.push({
-        role: 'assistant',
-        content: parsedDecision.reasoning ?? undefined,
-        tool_calls: [
-          {
-            id: toolCallId,
-            type: 'function',
-            function: {
-              name: toolName,
-              arguments: JSON.stringify(toolInput),
-            },
-          },
-        ],
-      });
-      const toolResult = await onToolCall({ name: toolName, input: toolInput });
-      const toolContent = JSON.stringify(toolResult.output);
-      history.push({
-        role: 'tool',
-        tool_call_id: toolCallId,
-        content: toolContent,
-      });
-      transcript.push({
-        role: 'assistant',
-        content: JSON.stringify({ type: 'tool_call', tool: toolName, input: toolInput }),
-      });
-      publishTranscript();
-      transcript.push({
-        role: 'tool',
-        name: toolName,
-        content: toolContent,
-      });
-      publishTranscript();
-      if (toolResult.terminal) {
-        return {
-          status: 'completed',
-          transcript,
-          output: resolveTerminalOutput(toolResult),
-          pathTaken: 'prefix-cached',
-          providerSession,
-        };
-      }
-      providerSession.lastTurnAt = new Date().toISOString();
-      context?.onProviderSession?.(providerSession);
-    }
-
-    return {
-      status: 'failed',
-      transcript,
-      error: `Exceeded maximum native tool-loop turns (${TOOL_LOOP_MAX_TURNS}).`,
-      pathTaken: 'prefix-cached',
-      providerSession,
-    };
-  }
-
   async healthCheck(): Promise<HealthCheckResult> {
     try {
       const response = await fetch(`${this.apiBase}/models`, {
@@ -422,31 +178,9 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     }
   }
 
-  private parseFunctionArguments(raw: string): Record<string, unknown> {
-    if (!raw.trim()) return {};
-    try {
-      const parsed = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return {};
-      }
-      return parsed as Record<string, unknown>;
-    } catch {
-      logger.warn('[adapter:openai-compatible] tool arguments were not valid JSON; using empty object');
-      return {};
-    }
-  }
-
   private async chatCompletion(params: {
     model: string;
     messages: ChatMessage[];
-    tools?: Array<{
-      type: 'function';
-      function: {
-        name: string;
-        description: string;
-        parameters: Record<string, unknown>;
-      };
-    }>;
     timeoutMs?: number;
     signal?: AbortSignal;
   }): Promise<any> {
@@ -481,8 +215,6 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
         body: JSON.stringify({
           model: params.model,
           messages: params.messages,
-          tools: params.tools,
-          tool_choice: params.tools ? 'auto' : undefined,
         }),
         signal: controller?.signal ?? params.signal,
       });

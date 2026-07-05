@@ -139,7 +139,7 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(existsSync(join(crewHome, 'runs', '.meta', 'run-1.json'))).toBe(true);
   });
 
-  it('failed squash commit discards staged run changes before restoring the original branch', async () => {
+  it('plumbing squash lands off-checkout without running host commit hooks or touching the checkout', async () => {
     const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
     const targetBranch = execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim();
     execSync('git checkout -q -b feature', { cwd: repoRoot });
@@ -154,20 +154,18 @@ describe('M3.5 host-repo cleanliness', () => {
     writeFileSync(hookPath, '#!/bin/sh\necho blocked by test hook >&2\nexit 1\n', 'utf-8');
     chmodSync(hookPath, 0o755);
 
-    await expect(
-      manager.mergeRunWorktree('run-1', { targetBranch }),
-    ).rejects.toThrow(/blocked by test hook/);
+    const result = await manager.mergeRunWorktree('run-1', { targetBranch });
 
+    expect(result.status).toBe('merged');
     expect(execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe('feature');
     expect(execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' })).toBe('');
-    expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
+    expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).not.toBe(targetHead);
     expect(existsSync(join(repoRoot, 'RUN.md'))).toBe(false);
   }, 30_000);
 
-  it('force=true failed squash commit preserves pre-existing staged host changes', async () => {
+  it('force=true refuses to land a plumbing squash onto the checked-out target with staged host changes', async () => {
     const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
     const targetBranch = execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim();
-    execSync('git checkout -q -b feature', { cwd: repoRoot });
     const targetHead = execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim();
     const worktreePath = await manager.createRunWorktree('run-1');
 
@@ -178,13 +176,9 @@ describe('M3.5 host-repo cleanliness', () => {
     writeFileSync(join(repoRoot, 'README.md'), 'init\nhost staged change\n', 'utf-8');
     execSync('git add README.md', { cwd: repoRoot });
 
-    const hookPath = join(repoRoot, '.git', 'hooks', 'pre-commit');
-    writeFileSync(hookPath, '#!/bin/sh\necho blocked by test hook >&2\nexit 1\n', 'utf-8');
-    chmodSync(hookPath, 0o755);
-
     await expect(
       manager.mergeRunWorktree('run-1', { targetBranch, force: true }),
-    ).rejects.toThrow(/did not run git reset --hard/);
+    ).rejects.toThrow(/target branch .* checked out with uncommitted changes/);
 
     expect(execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetBranch);
     expect(readFileSync(join(repoRoot, 'README.md'), 'utf-8')).toBe('init\nhost staged change\n');

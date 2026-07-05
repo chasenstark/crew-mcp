@@ -12,7 +12,7 @@
  *     serialize cleanly.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,6 +60,40 @@ describe('writeFileAtomic', () => {
       await writeFile(target, 'old', 'utf-8');
       writeFileAtomic(target, 'new');
       expect(readFileSync(target, 'utf-8')).toBe('new');
+    });
+  });
+
+  it('fsyncs the temp file before renaming it into place', async () => {
+    await withTmpHome(async (home) => {
+      const events: string[] = [];
+      vi.resetModules();
+      vi.doMock('node:fs', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('node:fs')>();
+        return {
+          ...actual,
+          writeSync: vi.fn((...args: Parameters<typeof actual.writeSync>) => {
+            events.push('write');
+            return actual.writeSync(...args);
+          }),
+          fsyncSync: vi.fn((fd: number) => {
+            events.push('fsync');
+            return actual.fsyncSync(fd);
+          }),
+          renameSync: vi.fn((...args: Parameters<typeof actual.renameSync>) => {
+            events.push('rename');
+            return actual.renameSync(...args);
+          }),
+        };
+      });
+
+      try {
+        const { writeFileAtomic: mockedWriteFileAtomic } = await import('../../src/install/atomic-write.js');
+        mockedWriteFileAtomic(join(home, 'out.txt'), 'hello');
+        expect(events).toEqual(['write', 'fsync', 'rename']);
+      } finally {
+        vi.doUnmock('node:fs');
+        vi.resetModules();
+      }
     });
   });
 

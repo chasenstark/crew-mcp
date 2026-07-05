@@ -116,49 +116,6 @@ describe('adapter cancellation plumbing (CI, mock subprocess)', () => {
     });
   });
 
-  describe('executeWithTools interrupt semantics', () => {
-    it('Codex returns status=interrupted when signal is already aborted', async () => {
-      const adapter = new CodexAdapter();
-      const decisionSpy = vi.spyOn(
-        adapter as unknown as { executeDecisionTurn: () => Promise<unknown> },
-        'executeDecisionTurn',
-      );
-
-      const result = await adapter.executeWithTools(
-        [],
-        [{ role: 'system', content: 'start' }],
-        vi.fn(async () => ({ output: { ok: true } })),
-        {
-          signal: abortedController().signal,
-          toolNamespace: 'mcp__crew__',
-          toolSchemaHash: 'abc',
-        },
-      );
-
-      expect(result.status).toBe('interrupted');
-      expect(decisionSpy).not.toHaveBeenCalled();
-    });
-
-    it('Gemini returns status=interrupted when signal is already aborted and resume session fails', async () => {
-      const adapter = new GeminiCliAdapter();
-      vi.spyOn(adapter as unknown as { executeWithResumeSession: () => Promise<unknown> }, 'executeWithResumeSession')
-        .mockRejectedValueOnce(new Error('resume session failed'));
-
-      const result = await adapter.executeWithTools(
-        [],
-        [{ role: 'system', content: 'start' }],
-        vi.fn(async () => ({ output: { ok: true } })),
-        {
-          signal: abortedController().signal,
-          toolNamespace: 'mcp__crew__',
-          toolSchemaHash: 'abc',
-        },
-      );
-
-      expect(result.status).toBe('interrupted');
-    });
-  });
-
   describe('ClaudeCodeAdapter.execute', () => {
     it('forwards the AbortSignal to execa when a model override is set', async () => {
       mockExeca.mockResolvedValueOnce({

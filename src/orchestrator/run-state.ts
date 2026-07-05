@@ -33,6 +33,7 @@ import {
   writeSync,
   closeSync,
   rmSync,
+  renameSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -228,6 +229,65 @@ export function truncatePromptForStorage(prompt: string): string {
 
 function isEnoent(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
+}
+
+export function corruptRunStatePath(statePath: string): string {
+  return `${statePath}.corrupt`;
+}
+
+export function createCorruptRunStateRecord(args: {
+  readonly runId: string;
+  readonly statePath: string;
+  readonly repoRoot?: string;
+  readonly reason: string;
+}): RunStateV1 {
+  const now = new Date().toISOString();
+  const summary = `state.json was corrupt and has been quarantined: ${args.reason}`;
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    runId: args.runId,
+    agentId: 'unknown',
+    status: 'error',
+    startedAt: now,
+    completedAt: now,
+    worktreePath: join(dirname(args.statePath), 'worktree'),
+    ...(args.repoRoot ? { repoRoot: args.repoRoot } : {}),
+    prompts: [
+      {
+        turn: 1,
+        prompt: '',
+        startedAt: now,
+        completedAt: now,
+        summary,
+      },
+    ],
+    filesChanged: [],
+    lastError: summary,
+    failure: {
+      kind: 'process',
+      confidence: 'high',
+      rawSignal: args.reason,
+    },
+  };
+}
+
+export function quarantineCorruptRunState(args: {
+  readonly runId: string;
+  readonly statePath: string;
+  readonly repoRoot?: string;
+  readonly reason: string;
+}): RunStateV1 {
+  const quarantinePath = corruptRunStatePath(args.statePath);
+  try {
+    renameSync(args.statePath, quarantinePath);
+  } catch (err) {
+    logger.warn(
+      `Failed to quarantine corrupt run state for ${args.runId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const state = createCorruptRunStateRecord(args);
+  atomicWrite(args.statePath, JSON.stringify(state, null, 2));
+  return state;
 }
 
 function assertCanMarkMerged(runId: string, status: RunStatus): void {
@@ -510,9 +570,12 @@ export class RunStateStore {
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
-      throw new Error(
-        `Failed to parse run state for ${runId} at ${path}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      return quarantineCorruptRunState({
+        runId,
+        statePath: path,
+        repoRoot: this.repoRootPath,
+        reason: err instanceof Error ? err.message : String(err),
+      });
     }
     if (
       !parsed ||

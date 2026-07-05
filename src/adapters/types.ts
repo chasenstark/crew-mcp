@@ -1,5 +1,4 @@
 import type { z } from 'zod';
-import type { PathTaken, ProviderSession } from '../provider-session.js';
 
 export interface CaptainCapabilities {
   supportsToolLoop: boolean;
@@ -18,60 +17,7 @@ export interface ToolCall {
   input: Record<string, unknown>;
 }
 
-export interface ToolResult {
-  output: unknown;
-  /**
-   * Control signal from a tool handler to the adapter loop. When true, the
-   * tool result has already completed the surrounding workflow and the adapter
-   * must return without asking the model for another decision.
-   */
-  terminal?: boolean;
-  /**
-   * Optional user-facing output to surface on terminal results. Falls back to
-   * `output` when omitted.
-   */
-  terminalOutput?: string;
-}
-
-export interface ToolLoopMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  name?: string;
-}
-
-export interface ToolLoopResult {
-  status: 'completed' | 'failed' | 'interrupted';
-  transcript: ToolLoopMessage[];
-  output?: string;
-  error?: string;
-  pathTaken?: PathTaken;
-  providerSession?: ProviderSession;
-  telemetry?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-    totalTurns?: number;
-  };
-}
-
-/**
- * Per-invocation MCP wiring the session-loop hands to an adapter via
- * `ToolLoopContext.mcpRegistration`. Each captain CLI has a different native
- * shape — the session-loop projects a single `ToolCatalog` through
- * `resolveCaptainConverter` (M3-8 wiring) and attaches the result here so the
- * adapter can extract what it needs.
- *
- * - `claude-code`: `inlineConfigJson` goes to `--mcp-config <json>`. Omitted
- *   when the catalog has no MCP servers — recent claude-code CLI versions
- *   reject `--mcp-config '{}'` as an invalid schema, so we skip the flag
- *   entirely rather than send an empty config.
- * - `gemini-cli`: `allowedServerNames` goes to `--allowed-mcp-server-names <csv>`.
- * - `codex`: `configOverrideArgv` is the ready-to-spread `-c mcp_servers.*=...` argv.
- *
- * Adapters MUST tolerate an undefined `mcpRegistration` and the shape
- * belonging to a different CLI (session-loop sends at most one shape per
- * call, but resilience keeps cross-test wiring simple).
- */
+/** Per-invocation MCP projection payloads used by catalog converter tests. */
 export type McpRegistrationPayload =
   | {
       readonly kind: 'claude-code';
@@ -85,17 +31,6 @@ export type McpRegistrationPayload =
       readonly kind: 'codex';
       readonly configOverrideArgv: readonly string[];
     };
-
-export interface ToolLoopContext {
-  signal?: AbortSignal;
-  workingDirectory?: string;
-  providerSession?: ProviderSession;
-  toolNamespace?: string;
-  toolSchemaHash?: string;
-  mcpRegistration?: McpRegistrationPayload;
-  onProviderSession?: (session: ProviderSession | undefined) => void;
-  onTranscriptUpdate?: (transcript: ToolLoopMessage[]) => void;
-}
 
 export interface AgentAdapter {
   readonly name: string;
@@ -246,12 +181,6 @@ export interface AgentAdapter {
     schema: T,
     options?: ExecuteOptions,
   ): Promise<z.infer<T>>;
-  executeWithTools?(
-    tools: ToolDefinition[],
-    messages: ToolLoopMessage[],
-    onToolCall: (call: ToolCall) => Promise<ToolResult>,
-    context?: ToolLoopContext,
-  ): Promise<ToolLoopResult>;
   getCliVersionTag?(): Promise<string | undefined>;
   /**
    * Returns true when the given model id is known to work with this adapter.

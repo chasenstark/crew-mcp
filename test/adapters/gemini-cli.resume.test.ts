@@ -1,13 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildGeminiResumeArgs, isVersionBelowFloor } from '../../src/adapters/gemini-cli.js';
-
-vi.mock('execa', () => ({
-  execa: vi.fn(),
-}));
-
-const { execa } = await import('execa');
-const mockExeca = vi.mocked(execa);
-const { GeminiCliAdapter } = await import('../../src/adapters/gemini-cli.js');
 
 describe('buildGeminiResumeArgs', () => {
   it('emits seed-turn args with positional prompt when no sessionId', () => {
@@ -34,99 +26,6 @@ describe('buildGeminiResumeArgs', () => {
     const resumeIndex = args.indexOf('--resume');
     const promptFlagIndex = args.indexOf('--prompt');
     expect(resumeIndex).toBeLessThan(promptFlagIndex);
-  });
-});
-
-describe('GeminiCliAdapter resume path', () => {
-  let adapter: InstanceType<typeof GeminiCliAdapter>;
-
-  beforeEach(() => {
-    adapter = new GeminiCliAdapter();
-    vi.clearAllMocks();
-  });
-
-  it('captures session_id from the init event on the first resume turn', async () => {
-    vi.spyOn(adapter, 'getCliVersionTag').mockResolvedValue('gemini-cli@0.20.1');
-
-    const capturedSessionIds: (string | undefined)[] = [];
-
-    mockExeca.mockResolvedValueOnce({
-      stdout: [
-        JSON.stringify({ type: 'init', session_id: 'captured-session' }),
-        JSON.stringify({
-          type: 'message',
-          role: 'assistant',
-          content: JSON.stringify({
-            type: 'finish',
-            output: 'done',
-            reasoning: 'workflow complete',
-          }),
-        }),
-        JSON.stringify({ type: 'result' }),
-      ].join('\n'),
-      stderr: '',
-      exitCode: 0,
-    } as any);
-
-    const result = await adapter.executeWithTools(
-      [{ name: 'run_decompose', description: 'decompose', inputSchema: { type: 'object' } }],
-      [{ role: 'user', content: 'start' }],
-      vi.fn(async () => ({ output: { ok: true } })),
-      {
-        workingDirectory: '/tmp/project',
-        toolNamespace: 'mcp__crew__',
-        toolSchemaHash: 'abc',
-        onProviderSession: (session) => {
-          capturedSessionIds.push(session.sessionId);
-        },
-      },
-    );
-
-    expect(result.status).toBe('completed');
-    expect(capturedSessionIds).toContain('captured-session');
-  });
-
-  it('filters the --prompt deprecation assistant message before validating the decision', async () => {
-    vi.spyOn(adapter, 'getCliVersionTag').mockResolvedValue('gemini-cli@0.20.1');
-
-    mockExeca.mockResolvedValueOnce({
-      stdout: [
-        JSON.stringify({ type: 'init', session_id: 's-1' }),
-        JSON.stringify({
-          type: 'message',
-          role: 'assistant',
-          content: 'The --prompt (-p) flag has been deprecated.',
-        }),
-        JSON.stringify({
-          type: 'message',
-          role: 'assistant',
-          content: JSON.stringify({
-            type: 'finish',
-            output: 'final',
-            reasoning: 'complete',
-          }),
-        }),
-        JSON.stringify({ type: 'result' }),
-      ].join('\n'),
-      stderr: '',
-      exitCode: 0,
-    } as any);
-
-    const result = await adapter.executeWithTools(
-      [{ name: 'noop', description: '', inputSchema: { type: 'object' } }],
-      [{ role: 'user', content: 'go' }],
-      vi.fn(async () => ({ output: { ok: true } })),
-      {
-        workingDirectory: '/tmp/project',
-        toolNamespace: 'mcp__crew__',
-        toolSchemaHash: 'abc',
-      },
-    );
-
-    expect(result.status).toBe('completed');
-    if (result.status === 'completed') {
-      expect(result.output).toBe('final');
-    }
   });
 });
 

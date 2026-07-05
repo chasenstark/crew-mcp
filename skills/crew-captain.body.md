@@ -182,12 +182,12 @@ Not just "Should I merge?" The same goes for `discard_run` — confirm
 before throwing away work the user might still want. If `merge_run`
 returns conflicts, surface the conflicting paths to the user; do not
 attempt automated resolution. merge_run lands the run linearly (no
-`MERGE_HEAD`), so `git merge --abort` does NOT apply — the abort
-command depends on the strategy: `squash` leaves staged conflict
-markers (resolve in place with `git add` + `git commit`, or bail with
-`git reset --hard HEAD`); `preserve` leaves a cherry-pick in progress
-(`git cherry-pick --abort`). Don't run a reset/abort yourself without
-asking; it throws away their working state.
+empty merge commit). For `squash`, conflicts are materialized in the
+run worktree, not the host checkout; ask before resetting or discarding
+that run worktree. For `preserve`, conflicts can still come from the
+legacy cherry-pick path, where `git cherry-pick --abort` is the escape
+hatch. Don't run a reset/abort yourself without asking; it throws away
+working state.
 
 For merge and discard confirmations, use the host's structured-question
 tool (AskUserQuestion on Claude Code) to present the options and

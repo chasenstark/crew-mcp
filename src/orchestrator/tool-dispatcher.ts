@@ -56,12 +56,15 @@ export interface ToolDispatcherOptions {
   readonly streamingIdleTimeoutMs?: number;
   /** Absolute wall-clock cap for buffering adapters. `0` disables. */
   readonly bufferedAbsoluteTimeoutMs?: number;
+  /** Max time to wait after cancellation before releasing a stuck task. `0` disables. */
+  readonly cancelEscalationTimeoutMs?: number;
 }
 
 type InFlight = {
   controller: AbortController;
   toolName: string;
   runId?: string;
+  cancelEscalationTimer?: ReturnType<typeof setTimeout>;
 };
 
 /** Watchdog sampling cadence is the timeout quartered, clamped to [1s, 10s]. */
@@ -71,12 +74,14 @@ function watchdogIntervalMs(stallTimeoutMs: number): number {
 
 const DEFAULT_STREAMING_IDLE_TIMEOUT_MS = 12 * 60 * 1000;
 const DEFAULT_BUFFERED_ABSOLUTE_TIMEOUT_MS = 60 * 60 * 1000;
+const DEFAULT_CANCEL_ESCALATION_TIMEOUT_MS = 30 * 1000;
 
 export class ToolDispatcher {
   private readonly emitter = new EventEmitter<DispatcherEvents>();
   private readonly inFlight = new Map<string, InFlight>();
   private readonly streamingIdleTimeoutMs: number;
   private readonly bufferedAbsoluteTimeoutMs: number;
+  private readonly cancelEscalationTimeoutMs: number;
 
   constructor(options: ToolDispatcherOptions = {}) {
     const rawStreaming = options.streamingIdleTimeoutMs
@@ -85,6 +90,9 @@ export class ToolDispatcher {
     this.streamingIdleTimeoutMs = normalizeTimeout(rawStreaming);
     this.bufferedAbsoluteTimeoutMs = normalizeTimeout(
       options.bufferedAbsoluteTimeoutMs ?? DEFAULT_BUFFERED_ABSOLUTE_TIMEOUT_MS,
+    );
+    this.cancelEscalationTimeoutMs = normalizeTimeout(
+      options.cancelEscalationTimeoutMs ?? resolveCancelEscalationTimeoutMs(),
     );
   }
 
@@ -170,6 +178,7 @@ export class ToolDispatcher {
     if (!entry) return false;
     if (!entry.controller.signal.aborted) {
       entry.controller.abort(new DispatcherCancelError(reason));
+      this.armCancelEscalation(toolCallId, entry);
     }
     return true;
   }
@@ -212,7 +221,9 @@ export class ToolDispatcher {
 
   private handleCompleted(task: DispatchTask, result: unknown): void {
     const entry = this.inFlight.get(task.toolCallId);
+    if (!entry) return;
     this.inFlight.delete(task.toolCallId);
+    clearCancelEscalation(entry);
     // If the task finished during a cancellation race, honor the cancellation
     // event instead of overwriting it with a completed one.
     if (entry?.controller.signal.aborted) {
@@ -225,26 +236,36 @@ export class ToolDispatcher {
       return;
     }
     if (isErrorTaskResult(result)) {
-      this.emitter.emit('run:failed', {
+      this.emitFailed(task, readTaskResultError(result), result);
+      return;
+    }
+    try {
+      this.emitter.emit('run:complete', {
         toolCallId: task.toolCallId,
         toolName: task.toolName,
-        error: readTaskResultError(result),
         result,
         runId: task.runId,
       });
-      return;
+    } catch (err) {
+      this.emitFailed(task, err instanceof Error ? err.message : String(err));
     }
-    this.emitter.emit('run:complete', {
-      toolCallId: task.toolCallId,
-      toolName: task.toolName,
-      result,
-      runId: task.runId,
-    });
+  }
+
+  private emitFailed(task: DispatchTask, error: string, result?: unknown): void {
+    this.emitter.emit('run:failed', {
+        toolCallId: task.toolCallId,
+        toolName: task.toolName,
+        error,
+        result,
+        runId: task.runId,
+      });
   }
 
   private handleFailedOrCancelled(task: DispatchTask, err: unknown): void {
     const entry = this.inFlight.get(task.toolCallId);
+    if (!entry) return;
     this.inFlight.delete(task.toolCallId);
+    clearCancelEscalation(entry);
     const aborted = entry?.controller.signal.aborted ?? false;
     if (aborted) {
       this.emitter.emit('run:cancelled', {
@@ -255,13 +276,39 @@ export class ToolDispatcher {
       });
       return;
     }
-    this.emitter.emit('run:failed', {
-      toolCallId: task.toolCallId,
-      toolName: task.toolName,
-      error: err instanceof Error ? err.message : String(err),
-      runId: task.runId,
-    });
+    this.emitFailed(task, err instanceof Error ? err.message : String(err));
   }
+
+  private armCancelEscalation(toolCallId: string, entry: InFlight): void {
+    if (this.cancelEscalationTimeoutMs <= 0 || entry.cancelEscalationTimer) return;
+    entry.cancelEscalationTimer = setTimeout(() => {
+      const current = this.inFlight.get(toolCallId);
+      if (current !== entry) return;
+      this.inFlight.delete(toolCallId);
+      current.cancelEscalationTimer = undefined;
+      this.emitter.emit('run:cancelled', {
+        toolCallId,
+        toolName: current.toolName,
+        reason: `${readAbortReason(current.controller.signal.reason)}; process did not exit after abort; flagged as zombie`,
+        runId: current.runId,
+      });
+    }, this.cancelEscalationTimeoutMs);
+    entry.cancelEscalationTimer.unref?.();
+  }
+}
+
+function clearCancelEscalation(entry: InFlight): void {
+  if (!entry.cancelEscalationTimer) return;
+  clearTimeout(entry.cancelEscalationTimer);
+  entry.cancelEscalationTimer = undefined;
+}
+
+function resolveCancelEscalationTimeoutMs(): number {
+  const raw = process.env.CREW_CANCEL_ESCALATION_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_CANCEL_ESCALATION_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_CANCEL_ESCALATION_TIMEOUT_MS;
+  return Math.floor(parsed);
 }
 
 class DispatcherCancelError extends Error {
