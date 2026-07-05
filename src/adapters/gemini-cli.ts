@@ -327,6 +327,10 @@ export class GeminiCliAdapter implements AgentAdapter {
   // the dispatch layer keeps its dirty-tree probe as a backstop and surfaces a
   // tool-policy advisory. See execute() + renderReadOnlyPolicyToml().
   readonly enforcesReadOnly = false;
+  // Reviews run in place via the read_only dispatch path (tool-level policy
+  // deny, see above). Keep in lockstep with BUILTIN_ADAPTER_METADATA in
+  // registry.ts (proxy/instance parity).
+  readonly reviewDispatchMode = 'read-only-dispatch' as const;
   // Gemini terminal execution does not currently parse a file-change stream.
   readonly filesModifiedReliable = false;
   readonly captainCapabilities = {

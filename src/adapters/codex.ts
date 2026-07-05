@@ -361,6 +361,9 @@ export class CodexAdapter implements AgentAdapter {
   readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
   readonly supportsJsonSchema = true;
   readonly enforcesReadOnly = true;
+  // Reviews run in place via the read_only dispatch path. Keep in lockstep
+  // with BUILTIN_ADAPTER_METADATA in registry.ts (proxy/instance parity).
+  readonly reviewDispatchMode = 'read-only-dispatch' as const;
   // Codex emits structured `file_change` events for in-band file edits; treat
   // that terminal list as authoritative so an empty array means no file_change
   // events were observed.

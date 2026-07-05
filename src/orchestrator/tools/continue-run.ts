@@ -28,6 +28,7 @@ import { validatePeerMessagesPreflight } from '../peer-messages/preflight.js';
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
+import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import {
   buildAdapterDispatchTask,
   captureRunBranchPointSnapshot,
@@ -62,7 +63,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the run-linked criteria contract; passing a different id is rejected. model/effort may override defaults and read_only stays sticky. Returns the async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the run-linked criteria contract; passing a different id is rejected. model/effort may override defaults and run_mode stays sticky (write re-syncs host changes in; ephemeral_review continues against its FROZEN review snapshot and stays non-mergeable). Returns the async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -113,13 +114,17 @@ export async function continueRunToolHandler(
       `Agent "${preState.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
     );
   }
+  // Sticky lifecycle mode, resolved once for every branch below. Legacy
+  // records (no runMode field) derive from the persisted readOnly shim.
+  const runMode = runModeFromState(preState);
   // Defense in depth: a read-only run for a reject-read-only adapter should
   // never exist (planRunAgent refuses to create one), but if one is encountered
   // (e.g. a future adapter gained rejectsReadOnly after read-only runs existed),
   // refuse the continuation fail-closed rather than emit the "run it anyway"
-  // advisory below.
-  if (preState.readOnly === true && adapter.rejectsReadOnly === true) {
-    return errorContent(readOnlyRejectMessage(adapter.name));
+  // advisory below. ephemeral_review is NOT rejected here — it is
+  // continue-capable by design (conversational reviews, frozen snapshot).
+  if (runMode === 'read_only' && adapter.rejectsReadOnly === true) {
+    return errorContent(readOnlyRejectMessage(adapter.name, adapter));
   }
   const continueExtra = extra;
   let criteriaContract: CriteriaContractResolution | undefined;
@@ -167,7 +172,7 @@ export async function continueRunToolHandler(
     ...appendResult.warnings,
     ...criteriaPeerMessageBypassWarnings(args.criteria_set_id, validatedInput, criteriaContract),
   ];
-  const dispatchWarnings = state.readOnly === true && adapter.enforcesReadOnly !== true
+  const dispatchWarnings = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
 
@@ -177,7 +182,11 @@ export async function continueRunToolHandler(
     return new DispatchError(message, { warnings: [...dispatchWarnings, ...warnings] });
   };
 
-  if (state.readOnly !== true) {
+  // Source re-sync runs ONLY for write continues: an ephemeral_review
+  // continue keeps a FROZEN snapshot, so the follow-up reasons about exactly
+  // what was reviewed rather than a moved target (read_only has no worktree
+  // to sync at all).
+  if (runMode === 'write') {
     try {
       await deps.worktreeManager.syncUncommittedToRunWorktree(args.run_id);
     } catch (err) {
@@ -186,7 +195,7 @@ export async function continueRunToolHandler(
     }
   }
   const branchPointBefore =
-    state.readOnly !== true
+    ownsWorktree(runMode)
       ? await captureRunBranchPointSnapshot(deps.worktreeManager, args.run_id, state.worktreePath)
       : undefined;
 
@@ -197,7 +206,7 @@ export async function continueRunToolHandler(
     prompt: composedPrompt,
     effectiveWorkingDirectory: state.worktreePath,
     worktreePath: state.worktreePath,
-    readOnly: state.readOnly === true,
+    runMode,
     dispatchWarnings,
     branchPointBefore,
     effectiveModel,

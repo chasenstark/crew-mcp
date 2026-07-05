@@ -29,6 +29,7 @@ import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import type { TaskFailure } from '../adapters/types.js';
+import { runModeFromState, type RunMode } from './run-mode.js';
 import type { RunStateV1, RunStatus } from './run-state.js';
 
 export const RUN_RECEIPT_FILENAME = 'run.json';
@@ -47,8 +48,14 @@ export interface RunReceiptV1 {
   readonly runId: string;
   readonly agentId: string;
   readonly status: RunStatus;
-  /** True iff the run was dispatched `read_only` (no owned worktree). */
+  /**
+   * Legacy shim: `!isMergeable(runMode)` — true for BOTH `read_only` and
+   * `ephemeral_review` runs. `runMode` is the discriminator; this stays for
+   * external consumers written against receipt v1's original meaning.
+   */
   readonly readOnly: boolean;
+  /** Lifecycle mode: 'write' | 'read_only' | 'ephemeral_review'. */
+  readonly runMode: RunMode;
   /** ISO timestamp the run was first created. */
   readonly startedAt: string;
   /** ISO timestamp the run reached its terminal state, if known. */
@@ -95,6 +102,7 @@ export function buildRunReceipt(state: RunStateV1): RunReceiptV1 {
     agentId: state.agentId,
     status: state.status,
     readOnly: state.readOnly ?? false,
+    runMode: runModeFromState(state),
     startedAt: state.startedAt,
     completedAt,
     durationMs,
@@ -134,7 +142,11 @@ export function renderRunSummaryMarkdown(state: RunStateV1): string {
   lines.push(`# Run ${receipt.runId}`, '');
   lines.push(`- **Agent:** ${receipt.agentId}`);
   lines.push(`- **Status:** ${receipt.status}`);
-  if (receipt.readOnly) lines.push('- **Mode:** read-only');
+  if (receipt.runMode === 'ephemeral_review') {
+    lines.push('- **Mode:** ephemeral review (findings only; never mergeable; worktree disposable)');
+  } else if (receipt.runMode === 'read_only') {
+    lines.push('- **Mode:** read-only');
+  }
   lines.push(`- **Started:** ${receipt.startedAt}`);
   lines.push(`- **Completed:** ${receipt.completedAt ?? 'n/a'}`);
   lines.push(`- **Duration:** ${formatDuration(receipt.durationMs)}`);

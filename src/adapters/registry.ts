@@ -4,6 +4,7 @@ import type {
   CaptainCapabilities,
   EffortLevel,
   HealthCheckResult,
+  ReviewDispatchMode,
 } from './types.js';
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
@@ -37,6 +38,7 @@ interface LazyAdapterMetadata {
   readonly supportsJsonSchema: boolean;
   readonly enforcesReadOnly: boolean;
   readonly rejectsReadOnly?: boolean;
+  readonly reviewDispatchMode?: ReviewDispatchMode;
   readonly requiresCrewWorktree?: boolean;
   readonly unmetered?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
@@ -77,6 +79,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.CLAUDE_CODE].useWhen,
     supportsJsonSchema: true,
     enforcesReadOnly: false,
+    reviewDispatchMode: 'read-only-dispatch',
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
     recognizesModel: (modelId) =>
       typeof modelId === 'string'
@@ -92,6 +95,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     defaultEffort: 'medium',
     supportsJsonSchema: true,
     enforcesReadOnly: true,
+    reviewDispatchMode: 'read-only-dispatch',
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
@@ -105,6 +109,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.GEMINI_CLI].useWhen,
     supportsJsonSchema: false,
     enforcesReadOnly: false,
+    reviewDispatchMode: 'read-only-dispatch',
     captainCapabilities: CAPTAIN_TOOL_LOOP_CAPABILITIES,
     // KNOWN COLLISION: this prefix regex also matches agy's "Gemini 3.1 Pro
     // (High)" labels (AgyAdapter pins exact labels instead). It is harmless
@@ -125,14 +130,17 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.AGY].useWhen,
     // No native JSON-schema flag (post-validate via executeWithSchema/Zod).
     supportsJsonSchema: false,
-    // agy has no enforceable read-only sandbox; it is REFUSED read-only rather
-    // than weakly enforced. enforcesReadOnly stays false; rejectsReadOnly drives
-    // the plan-layer fail-closed reject. requiresCrewWorktree confines write
-    // dispatches to their allocated worktree. Keep these in lockstep with the
-    // AgyAdapter class flags (proxy/instance parity — registry.get reads the
-    // proxy before load).
+    // agy has no enforceable read-only sandbox; an in-place read_only dispatch
+    // is REFUSED rather than weakly enforced. enforcesReadOnly stays false;
+    // rejectsReadOnly drives the plan-layer fail-closed reject. Reviews route
+    // through run_mode:'ephemeral_review' instead (reviewDispatchMode) — agy
+    // runs write-capable in a disposable crew worktree whose changes are never
+    // merged. requiresCrewWorktree confines write dispatches to their allocated
+    // worktree. Keep these in lockstep with the AgyAdapter class flags
+    // (proxy/instance parity — registry.get reads the proxy before load).
     enforcesReadOnly: false,
     rejectsReadOnly: true,
+    reviewDispatchMode: 'ephemeral-worktree',
     requiresCrewWorktree: true,
     // No native captain tool-loop in v1 (executeWithTools deferred), so use the
     // generic structured-decision capabilities, not the tool-loop set.
@@ -309,6 +317,7 @@ function createLazyAdapterProxy(
     supportsJsonSchema: metadata.supportsJsonSchema,
     enforcesReadOnly: metadata.enforcesReadOnly,
     rejectsReadOnly: metadata.rejectsReadOnly,
+    reviewDispatchMode: metadata.reviewDispatchMode,
     requiresCrewWorktree: metadata.requiresCrewWorktree,
     unmetered: metadata.unmetered,
     captainCapabilities: metadata.captainCapabilities,

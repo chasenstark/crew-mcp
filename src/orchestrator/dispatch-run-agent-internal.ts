@@ -11,6 +11,7 @@ import {
 import { validatePeerMessagesPreflight } from './peer-messages/preflight.js';
 import { type ProgressNotifier } from './progress.js';
 import { installRunLifecycleListeners } from './run-lifecycle-listeners.js';
+import { ownsWorktree, type RunMode } from './run-mode.js';
 import type { RunStateStore, RunStateV1 } from './run-state.js';
 import type { ToolDispatcher } from './tool-dispatcher.js';
 import {
@@ -47,6 +48,8 @@ export interface DispatchRunAgentInternalArgs {
 export interface DispatchRunAgentInternalResult {
   readonly runId: string;
   readonly worktreePath: string;
+  readonly runMode: RunMode;
+  /** Legacy convenience: `runMode === 'read_only'`. Prefer `runMode`. */
   readonly readOnly: boolean;
   readonly tailUrl: string;
   readonly tailCommandPath: string;
@@ -119,7 +122,7 @@ export async function dispatchRunAgentInternal(
             criteriaEpoch: criteriaContract.criteriaEpoch,
           }
         : {}),
-      readOnly: plan.readOnly,
+      runMode: plan.runMode,
     });
     if (criteriaContract !== undefined && args.linkCriteriaImplementerRun !== false) {
       await linkCriteriaSetImplementerRun({
@@ -176,6 +179,7 @@ export async function dispatchRunAgentInternal(
   return {
     runId: plan.runId,
     worktreePath: plan.worktreePath,
+    runMode: plan.runMode,
     readOnly: plan.readOnly,
     tailUrl: crewTailUrl(eventsLogPath),
     tailCommandPath,
@@ -204,7 +208,7 @@ async function cleanupAllocatedWorktree(
   plan: RunAgentDispatchPlan,
   reason: string,
 ): Promise<void> {
-  if (plan.readOnly) return;
+  if (!ownsWorktree(plan.runMode)) return;
   try {
     const cleanup = await ctx.worktreeManager.cleanupByRunId(plan.runId);
     if (!cleanup.success) {

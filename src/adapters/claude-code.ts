@@ -524,6 +524,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly useWhen = BUILTIN_AGENT_ROUTING['claude-code'].useWhen;
   readonly supportsJsonSchema = true;
   readonly enforcesReadOnly = false;
+  // Reviews run in place via the read_only dispatch path (advisory contract,
+  // not FS-sandboxed — enforcesReadOnly above stays the enforcement truth).
+  // Keep in lockstep with BUILTIN_ADAPTER_METADATA in registry.ts
+  // (proxy/instance parity).
+  readonly reviewDispatchMode = 'read-only-dispatch' as const;
   // Current implementation extracts paths from final prose only. Claude tool
   // events do not cover shell edits, git mv, or every write path we allow.
   readonly filesModifiedReliable = false;

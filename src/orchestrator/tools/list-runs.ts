@@ -14,6 +14,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
+import { runModeFromState } from '../run-mode.js';
 import type { RunStateV1, RunStatus } from '../run-state.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { jsonContent } from './shared.js';
@@ -58,6 +59,8 @@ export interface ListRunsEntry {
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly worktreePath: string;
+  /** Present only for non-default lifecycles (read_only / ephemeral_review). */
+  readonly run_mode?: string;
   readonly summary?: string;
   readonly failure?: RunStateV1['failure'];
 }
@@ -151,6 +154,9 @@ export function listRuns(
       startedAt: state.startedAt,
       ...(state.completedAt ? { completedAt: state.completedAt } : {}),
       worktreePath: state.worktreePath,
+      ...(runModeFromState(state) !== 'write'
+        ? { run_mode: runModeFromState(state) }
+        : {}),
       ...summaryField(state),
       ...(state.failure !== undefined ? { failure: state.failure } : {}),
     })),

@@ -33,6 +33,7 @@ import { z } from 'zod';
 
 import { filterEventsTailNoise } from '../events-filter.js';
 import { formatProgressLines } from '../progress.js';
+import { runModeFromState } from '../run-mode.js';
 import type { RunStateStore, RunStateV1 } from '../run-state.js';
 import type { ToolDispatcher } from '../tool-dispatcher.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
@@ -258,6 +259,10 @@ function buildGetRunStatusResponse(
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
     ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
     ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
+    // run_mode only when it isn't the default lifecycle; readOnly kept for
+    // legacy consumers (it is the persisted !isMergeable shim, so it also
+    // reads true for ephemeral_review — run_mode is the discriminator).
+    ...(runModeFromState(state) !== 'write' ? { run_mode: runModeFromState(state) } : {}),
     ...(state.readOnly ? { readOnly: state.readOnly } : {}),
     ...(skipped > 0 ? { events_tail_skipped: skipped } : {}),
     ...legacyLogTail,

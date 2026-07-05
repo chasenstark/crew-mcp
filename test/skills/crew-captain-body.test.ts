@@ -245,3 +245,19 @@ describe('crew-captain body — watcher checklist', () => {
     expectContainsCI(flat, 'not harness-tracked');
   });
 });
+
+describe('crew-captain body — ephemeral review dispatches (agy)', () => {
+  it('teaches the ephemeral_review contract: disposable worktree, findings only, never mergeable', async () => {
+    const body = await loadBody();
+    const flat = flattenWhitespace(body);
+
+    expectContainsCI(flat, 'Ephemeral review dispatches (agy)');
+    expectContainsCI(flat, 'run_mode: "ephemeral_review"');
+    expectContainsCI(flat, 'disposable snapshot worktree');
+    expectContainsCI(flat, 'Never mergeable');
+    expectContainsCI(flat, 'frozen snapshot');
+    expectContainsCI(flat, 'trusted diffs');
+    // read_only on agy stays a reject, and the panel path is explicitly not wired.
+    expectContainsCI(flat, 'Do NOT put agy on a `run_panel`');
+  });
+});

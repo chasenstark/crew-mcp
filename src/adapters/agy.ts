@@ -26,9 +26,13 @@ import type {
  * `agy` = the Antigravity CLI, Google's replacement for the now-dead
  * gemini-cli individual-auth path. This adapter is intentionally NOT a
  * drop-in for gemini-cli.ts: different binary, flags, model labels, resume
- * mechanism, and write-sandbox behavior. It is **write-mode only** — see the
- * read-only hard-reject below and docs/plans/active/agy-adapter.md for why
- * agy read-only cannot be enforced.
+ * mechanism, and write-sandbox behavior. It dispatches in two modes:
+ * **write** (implementation, its own crew worktree) and **ephemeral review**
+ * (write-capable in a disposable worktree, findings-only, never merged —
+ * `reviewDispatchMode: 'ephemeral-worktree'`). An in-place `read_only`
+ * dispatch stays hard-rejected — see the reject below and
+ * docs/plans/active/agy-readonly-reviewer.md for why agy read-only cannot
+ * be enforced.
  */
 
 /**
@@ -168,10 +172,52 @@ export function withAgyWorkspacePreamble(prompt: string, worktreeRoot: string): 
   ].join('\n');
 }
 
+/**
+ * Review variant of the workspace contract, selected when the dispatch
+ * carries `constraints.reviewIntent` (an `ephemeral_review` run). It REPLACES
+ * the write preamble — the two are never stacked, because "write with
+ * absolute paths" + "don't write" is a contradiction that makes agy behave
+ * unpredictably. The absolute worktree-root pin is RETAINED: agy relies on
+ * that injected path to locate files at all (relative reads resolve against
+ * the wrong place), so the path half stays and only the behavioral half
+ * (write-with-abs-paths → report-findings-only) is swapped. Prompt-level
+ * only, not a sandbox: the run's worktree is disposable and its changes are
+ * discarded regardless, which is the actual containment.
+ */
+export function withAgyReviewPreamble(prompt: string, worktreeRoot: string): string {
+  return [
+    'Crew review contract for this agy run (read first):',
+    `- You are REVIEWING the code in this workspace root: ${worktreeRoot}`,
+    '- Read files and run inspection commands using ABSOLUTE paths under that'
+      + ' workspace root. Do NOT use relative paths — they resolve against the'
+      + ' wrong place.',
+    `- Treat "the current working directory" as exactly this absolute path: ${worktreeRoot}`,
+    '- This is a review, not an implementation task: deliver your findings as'
+      + ' TEXT in your response only.',
+    '- Do NOT create, edit, or delete any files, and do NOT run mutating shell'
+      + ' commands. Any file changes you make will be DISCARDED unread — only'
+      + ' the findings you write in your response survive.',
+    '',
+    prompt,
+  ].join('\n');
+}
+
+/**
+ * Pick the operational preamble for a dispatch: the review contract when the
+ * dispatch layer marked review intent (`ephemeral_review`), else the write
+ * workspace contract. Exactly one preamble is ever applied.
+ */
+function withAgyOperationalPreamble(task: Task): string {
+  return task.constraints?.reviewIntent === true
+    ? withAgyReviewPreamble(task.prompt, task.context.workingDirectory)
+    : withAgyWorkspacePreamble(task.prompt, task.context.workingDirectory);
+}
+
 export class AgyAdapter implements AgentAdapter {
   readonly name = AgentId.AGY;
-  // Soft routing hints; users override via ~/.crew/agents.json. These MUST NOT
-  // advertise agy as a reviewer or read-only agent — agy is write-mode only.
+  // Soft routing hints; users override via ~/.crew/agents.json. These may
+  // advertise ephemeral review (findings-only, disposable worktree) but MUST
+  // NOT advertise agy as read-only — it cannot honestly enforce read-only.
   readonly strengths: AgentStrength[] = [...BUILTIN_AGENT_ROUTING[AgentId.AGY].strengths];
   readonly useWhen = BUILTIN_AGENT_ROUTING[AgentId.AGY].useWhen;
   // No native JSON-schema flag; executeWithSchema post-validates with Zod.
@@ -181,10 +227,17 @@ export class AgyAdapter implements AgentAdapter {
   // equivalent to gemini's. So read-only is not "weakly enforced" — it is
   // refused outright (rejectsReadOnly). enforcesReadOnly stays false.
   readonly enforcesReadOnly = false;
-  // agy v1 is dispatched WRITE-MODE ONLY. A read-only dispatch is hard-rejected
-  // fail-closed at the plan layer (planRunAgent) so the run never starts; this
-  // flag is what that layer keys on. Review/triage routes to codex/claude.
+  // An in-place read_only dispatch is hard-rejected fail-closed at the plan
+  // layer (planRunAgent) so the run never starts; this flag is what that layer
+  // keys on. Reviews route through run_mode:'ephemeral_review' instead (below).
   readonly rejectsReadOnly = true;
+  // Reviews run write-capable inside a crew-allocated DISPOSABLE worktree
+  // (run_mode:'ephemeral_review'): only text findings are kept, the run is
+  // never mergeable, and the worktree is reclaimed by discard/GC. Containment
+  // is disposal, not denial — agy cannot honestly enforce read-only. Keep in
+  // lockstep with BUILTIN_ADAPTER_METADATA in registry.ts (proxy/instance
+  // parity).
+  readonly reviewDispatchMode = 'ephemeral-worktree' as const;
   // A write dispatch must run inside its own crew-allocated worktree. The
   // planner refuses a working_directory override for agy so an untrusted prompt
   // can't redirect writes outside the isolated worktree.
@@ -291,11 +344,11 @@ export class AgyAdapter implements AgentAdapter {
         // peer_messages/file excerpts, can exceed the argv byte limit, and a
         // leading-dash prompt would be parsed as a flag. `--output-format json`
         // alone triggers headless print mode (no -p needed); passing both -p
-        // and stdin would concatenate them. The workspace-contract preamble
-        // pins the worktree root so agy writes with absolute paths instead of
-        // silently escaping relative writes to its scratch dir (see
-        // withAgyWorkspacePreamble).
-        input: withAgyWorkspacePreamble(task.prompt, task.context.workingDirectory),
+        // and stdin would concatenate them. The operational preamble pins the
+        // absolute worktree root (agy needs it to locate files) and carries
+        // either the write contract or, for ephemeral reviews, the
+        // findings-only review contract (see withAgyOperationalPreamble).
+        input: withAgyOperationalPreamble(task),
       });
       const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
         subprocess,

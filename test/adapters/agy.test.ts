@@ -8,8 +8,14 @@ vi.mock('execa', () => ({
 const { execa } = await import('execa');
 const mockExeca = vi.mocked(execa);
 
-const { AgyAdapter, AGY_MIN_VERSION, parseAgyEnvelope, isAgyVersionBelowFloor, withAgyWorkspacePreamble } =
-  await import('../../src/adapters/agy.js');
+const {
+  AgyAdapter,
+  AGY_MIN_VERSION,
+  parseAgyEnvelope,
+  isAgyVersionBelowFloor,
+  withAgyWorkspacePreamble,
+  withAgyReviewPreamble,
+} = await import('../../src/adapters/agy.js');
 const { AGY_MODEL_LABELS } = await import('../../src/adapters/agy-models.js');
 
 const VALID_MODEL = 'Gemini 3.1 Pro (High)';
@@ -42,7 +48,7 @@ describe('AgyAdapter', () => {
   });
 
   describe('capability flags', () => {
-    it('is write-mode only: refuses read-only, requires a crew worktree, no OS sandbox', () => {
+    it('refuses in-place read-only, requires a crew worktree, no OS sandbox', () => {
       expect(adapter.enforcesReadOnly).toBe(false);
       expect(adapter.rejectsReadOnly).toBe(true);
       expect(adapter.requiresCrewWorktree).toBe(true);
@@ -50,10 +56,77 @@ describe('AgyAdapter', () => {
       expect(adapter.filesModifiedReliable).toBe(false);
     });
 
-    it('declares strengths/useWhen that do NOT advertise review or read-only', () => {
-      expect(adapter.strengths).toEqual(['bulk-implementation', 'fast-iteration', 'long-context']);
-      expect(adapter.useWhen).toMatch(/NOT a reviewer/i);
-      expect(adapter.useWhen.toLowerCase()).not.toContain('review or triage with');
+    it('routes reviews through the ephemeral-worktree dispatch mode', () => {
+      expect(adapter.reviewDispatchMode).toBe('ephemeral-worktree');
+    });
+
+    it('declares ephemeral-review routing without advertising read-only', () => {
+      expect(adapter.strengths).toEqual([
+        'bulk-implementation',
+        'fast-iteration',
+        'long-context',
+        'code-review',
+      ]);
+      expect(adapter.useWhen).toContain('ephemeral_review');
+      expect(adapter.useWhen).toMatch(/CANNOT run read_only/);
+    });
+  });
+
+  describe('ephemeral-review dispatch contract', () => {
+    it('swaps in the review preamble on reviewIntent — path pin retained, write contract absent', async () => {
+      mockOnce(successEnvelope());
+      await adapter.execute({
+        prompt: 'review these changes',
+        context: { workingDirectory: '/crew/review-wt' },
+        constraints: { reviewIntent: true, sandbox: 'workspace-write' },
+      });
+      const [, , options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
+      const input = options.input ?? '';
+      // Review contract replaces the write contract — never stacked.
+      expect(input.startsWith('Crew review contract')).toBe(true);
+      expect(input).not.toContain('Crew workspace contract');
+      expect(input).not.toContain('ONLY writable workspace root');
+      // The absolute worktree-root pin is load-bearing (agy locates files by
+      // it) and MUST survive the swap.
+      expect(input).toContain('/crew/review-wt');
+      expect(input).toMatch(/ABSOLUTE paths/);
+      // Findings-only behavioral half.
+      expect(input).toMatch(/findings/i);
+      expect(input).toMatch(/Do NOT create, edit, or delete/);
+      // The user prompt follows the contract.
+      expect(input.indexOf('Crew review contract')).toBeLessThan(input.indexOf('review these changes'));
+    });
+
+    it('keeps the write preamble when reviewIntent is absent', async () => {
+      mockOnce(successEnvelope());
+      await adapter.execute({
+        prompt: 'implement',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { sandbox: 'workspace-write' },
+      });
+      const [, , options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
+      expect(options.input?.startsWith('Crew workspace contract')).toBe(true);
+      expect(options.input).not.toContain('Crew review contract');
+    });
+
+    it('still hard-refuses sandbox read-only even with reviewIntent (ephemeral is workspace-write)', async () => {
+      const result = await adapter.execute({
+        prompt: 'review',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { reviewIntent: true, sandbox: 'read-only' },
+      });
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('cannot run read-only');
+      expect(mockExeca).not.toHaveBeenCalled();
+    });
+
+    it('withAgyReviewPreamble pins the root and never contains the write instruction', () => {
+      const text = withAgyReviewPreamble('prompt body', '/abs/root');
+      expect(text).toContain('/abs/root');
+      expect(text).toMatch(/ABSOLUTE paths/);
+      expect(text).not.toContain('ONLY writable workspace root');
+      const writeText = withAgyWorkspacePreamble('prompt body', '/abs/root');
+      expect(writeText).toContain('ONLY writable workspace root');
     });
   });
 

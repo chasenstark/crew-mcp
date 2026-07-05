@@ -54,6 +54,7 @@ import type {
   PeerMessageInput,
   PeerMessageRendered,
 } from './peer-messages/schema.js';
+import { legacyReadOnlyShim, type RunMode } from './run-mode.js';
 import { withStateLock } from './run-state-lock.js';
 
 export type RunStatus =
@@ -103,10 +104,21 @@ export interface RunStateV1 {
    */
   readonly repoRoot?: string;
   /**
-   * True iff this run was dispatched with `read_only: true` — no
-   * worktree was allocated, `worktreePath` is informational (the
-   * agent's CWD, not a worktree we own), `merge_run` refuses, and
-   * `discard_run` is metadata-only. Sticky on `continue_run`.
+   * Lifecycle mode for this run — see src/orchestrator/run-mode.ts.
+   * Optional for backward compatibility with state.json files written
+   * before this field existed; readers derive legacy records via
+   * `runModeFromState` (readOnly:true → 'read_only', else 'write').
+   * Sticky on `continue_run`.
+   */
+  readonly runMode?: RunMode;
+  /**
+   * LEGACY SHIM — do not read this in new code; route through
+   * `runModeFromState` / `isMergeable` / `ownsWorktree` instead.
+   * Persisted as `!isMergeable(runMode)` so a version-skewed old server
+   * that only knows `readOnly` refuses to merge an `ephemeral_review`
+   * run rather than treating it as a mergeable write run. (An old
+   * `discard_run` will then also skip that run's worktree removal — a
+   * hygiene cost the run-GC sweep absorbs, not a correctness one.)
    *
    * Optional for backward compatibility with state.json files written
    * before this field existed (treated as `false` when absent).
@@ -212,10 +224,16 @@ export interface CreateRunStateInit {
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
   /**
-   * Whether this run was dispatched with `read_only: true`. Persisted
-   * so `continue_run` can read the bit back and stay sticky, and so
-   * `merge_run` / `discard_run` can branch on it without consulting
-   * the dispatcher.
+   * Lifecycle mode for this run. Persisted so `continue_run` can read
+   * it back and stay sticky, and so `merge_run` / `discard_run` can
+   * branch on it without consulting the dispatcher. The legacy
+   * `readOnly` shim is derived from it (`legacyReadOnlyShim`) — callers
+   * pass the mode, never the shim. Defaults to 'write' when omitted.
+   */
+  readonly runMode?: RunMode;
+  /**
+   * DEPRECATED legacy input: `readOnly: true` maps to
+   * `runMode: 'read_only'` when `runMode` is absent. Prefer `runMode`.
    */
   readonly readOnly?: boolean;
 }
@@ -337,6 +355,7 @@ export class RunStateStore {
         );
       }
 
+      const runMode = init.runMode ?? (init.readOnly === true ? 'read_only' : 'write');
       const state: RunStateV1 = {
         schemaVersion: SCHEMA_VERSION,
         runId: init.runId,
@@ -346,7 +365,8 @@ export class RunStateStore {
         worktreePath: init.worktreePath,
         repoRoot: this.repoRoot,
         serverPid: process.pid,
-        ...(init.readOnly ? { readOnly: true } : {}),
+        runMode,
+        ...(legacyReadOnlyShim(runMode) ? { readOnly: true } : {}),
         ...(init.criteriaSetId !== undefined
           ? { criteriaSetId: init.criteriaSetId, criteriaEpoch: init.criteriaEpoch }
           : {}),

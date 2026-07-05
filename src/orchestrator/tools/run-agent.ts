@@ -34,7 +34,14 @@ import { resolve, sep } from 'path';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
-import { clampEffortToSupported } from '../../adapters/types.js';
+import { clampEffortToSupported, resolveReviewDispatchMode } from '../../adapters/types.js';
+import {
+  isMergeable,
+  ownsWorktree,
+  runModeFromInput,
+  RUN_MODES,
+  type RunMode,
+} from '../run-mode.js';
 import { AgentId } from '../../workflow/agents.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
@@ -99,14 +106,29 @@ export const runAgentInputSchema = z.object({
    * Sticky: a `continue_run` against a read-only run stays read-only.
    * `merge_run` errors with a clear reason; `discard_run` is
    * metadata-only.
+   *
+   * Legacy sugar for `run_mode: 'read_only'`. When both fields are
+   * supplied they must agree; a disagreeing pair is rejected.
    */
   read_only: z.boolean().optional(),
+  /**
+   * Explicit lifecycle mode. `write` (default) allocates a mergeable
+   * worktree; `read_only` runs in place (same as `read_only: true`);
+   * `ephemeral_review` allocates a DISPOSABLE worktree for a
+   * write-capable reviewer (agy): only its text findings are kept, the
+   * run is never mergeable, `continue_run` follow-ups see a frozen
+   * snapshot, and the worktree is reclaimed via discard_run / GC.
+   * `ephemeral_review` requires an adapter with
+   * `reviewDispatchMode: 'ephemeral-worktree'` and refuses a
+   * caller-supplied `working_directory` (the worktree is crew-allocated).
+   */
+  run_mode: z.enum(RUN_MODES).optional(),
 });
 
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. Optional peer_messages are prepended as untrusted context; optional confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults, working_directory changes the start path, and read_only skips worktree allocation for review. Returns an async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. Optional peer_messages are prepended as untrusted context; optional confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults and working_directory changes the start path. run_mode picks the lifecycle: write (default, mergeable worktree), read_only (in place, no worktree; read_only:true is legacy sugar), or ephemeral_review (disposable worktree for a write-capable reviewer like agy — findings only, never mergeable, frozen snapshot on continue). Returns an async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -200,11 +222,18 @@ export interface RunAgentDispatchPlan {
    */
   readonly worktreePath: string;
   /**
-   * True iff this dispatch skipped worktree allocation. serve.ts uses
-   * this to (a) propagate the bit into RunStateV1 so continue_run
-   * stays sticky, (b) suppress merge-related branches in lifecycle
-   * cleanup. Distinct from `worktreePath === host repo root` because
-   * a read-only run can also point at someone else's worktree.
+   * Resolved lifecycle mode for this dispatch (see run-mode.ts). The
+   * dispatch layer persists it into RunStateV1 so continue_run stays
+   * sticky, and branches cleanup/merge behavior through the
+   * `ownsWorktree`/`isMergeable` resolvers.
+   */
+  readonly runMode: RunMode;
+  /**
+   * True iff this dispatch skipped worktree allocation
+   * (`runMode === 'read_only'`). Legacy convenience; new code should
+   * route through `runMode` + the resolvers. Distinct from
+   * `worktreePath === host repo root` because a read-only run can also
+   * point at someone else's worktree.
    */
   readonly readOnly: boolean;
   readonly dispatchWarnings: readonly string[];
@@ -255,21 +284,45 @@ export async function planRunAgent(
   }
 
   const runId = makeRunId(input.agent_id, input.prompt);
-  const readOnly = input.read_only === true;
+  const modeResolution = runModeFromInput(input);
+  if (!modeResolution.ok) {
+    return { kind: 'error', message: modeResolution.message };
+  }
+  const runMode = modeResolution.mode;
+  const readOnly = runMode === 'read_only';
 
   // Fail-closed read-only reject. Adapters that cannot enforce read-only by any
-  // means (rejectsReadOnly) are refused at the plan layer BEFORE allocation or
-  // dispatch, so the run never starts and the generic read-only advisory below
-  // is never emitted (it would contradict the reject). Review/triage routes to
-  // an adapter that can sandbox (codex) or to the host.
+  // means (rejectsReadOnly) are refused the IN-PLACE read-only path at the plan
+  // layer BEFORE allocation or dispatch, so the run never starts and the generic
+  // read-only advisory below is never emitted (it would contradict the reject).
+  // The reject message redirects to run_mode:'ephemeral_review' when the adapter
+  // supports the disposable-worktree review route (agy); otherwise review/triage
+  // routes to an adapter that can sandbox (codex) or to the host.
   if (readOnly && adapter.rejectsReadOnly === true) {
-    return { kind: 'error', message: readOnlyRejectMessage(adapter.name) };
+    return { kind: 'error', message: readOnlyRejectMessage(adapter.name, adapter) };
+  }
+  if (runMode === 'ephemeral_review') {
+    // Only adapters that opted into the disposable-worktree review route may
+    // be dispatched ephemeral — for everyone else the cheap in-place
+    // read-only path is the honest review surface.
+    if (resolveReviewDispatchMode(adapter) !== 'ephemeral-worktree') {
+      return { kind: 'error', message: ephemeralReviewUnsupportedMessage(adapter.name) };
+    }
+    // The disposable worktree is always crew-allocated: a caller-supplied
+    // working_directory is exactly the redirect vector the mode exists to
+    // remove (consistent with the requiresCrewWorktree write-mode guard).
+    if (input.working_directory !== undefined) {
+      return {
+        kind: 'error',
+        message: ephemeralWorkingDirectoryRejectMessage(adapter.name, input.working_directory),
+      };
+    }
   }
   // Crew-owned-worktree enforcement (write mode). An adapter that an untrusted
   // prompt can steer to write outside its working directory (requiresCrewWorktree)
   // must run in its OWN crew-allocated worktree; refuse a caller-supplied
   // working_directory override, which is the redirect vector.
-  if (!readOnly && adapter.requiresCrewWorktree === true && input.working_directory !== undefined) {
+  if (runMode === 'write' && adapter.requiresCrewWorktree === true && input.working_directory !== undefined) {
     return { kind: 'error', message: crewWorktreeRejectMessage(adapter.name, input.working_directory) };
   }
 
@@ -277,7 +330,7 @@ export async function planRunAgent(
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   let worktreePath: string;
-  if (readOnly) {
+  if (!ownsWorktree(runMode)) {
     // No FS isolation: working_directory is either what the caller
     // specified (e.g., another run's worktree for the reviewer
     // pattern) or the host repo root. The "worktreePath" stored in
@@ -297,7 +350,7 @@ export async function planRunAgent(
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
   const branchPointBefore =
-    !readOnly
+    ownsWorktree(runMode)
     && effectiveWorkingDirectory === worktreePath
       ? await captureRunBranchPointSnapshot(ctx.worktreeManager, runId, worktreePath)
       : undefined;
@@ -315,7 +368,7 @@ export async function planRunAgent(
       prompt: composedPrompt,
       effectiveWorkingDirectory,
       worktreePath,
-      readOnly,
+      runMode,
       dispatchWarnings,
       branchPointBefore,
       effectiveModel,
@@ -328,6 +381,7 @@ export async function planRunAgent(
     kind: 'dispatched',
     runId,
     worktreePath,
+    runMode,
     readOnly,
     dispatchWarnings,
     branchPointBefore,
@@ -428,13 +482,18 @@ export function buildAdapterDispatchTask(args: {
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
   /**
-   * Whether the dispatch is read-only (no worktree allocated).
-   * Changes the post-run probe: instead of enriching filesModified
-   * from the worktree, run a best-effort `git status --porcelain` in
-   * the working_directory and surface a `warnings` entry if the
-   * agent dirtied the tree against the prompt's contract.
+   * The run's lifecycle mode. Changes the post-run probe:
+   *   - `read_only` (no worktree allocated): instead of enriching
+   *     filesModified from the worktree, run a best-effort
+   *     `git status --porcelain` in the working_directory and surface a
+   *     `warnings` entry if the agent dirtied the tree against the
+   *     prompt's contract.
+   *   - `ephemeral_review`: suppress filesModified entirely (the
+   *     worktree is disposable; its changes are never output) — at most
+   *     a single pathless warning that the reviewer wrote.
+   *   - `write`: enrich filesModified from worktree git status.
    */
-  readonly readOnly?: boolean;
+  readonly runMode: RunMode;
   readonly dispatchWarnings?: readonly string[];
   readonly branchPointBefore?: ReadonlyMap<string, string>;
   readonly effectiveModel: string | undefined;
@@ -461,8 +520,9 @@ export function buildAdapterDispatchTask(args: {
     runId: args.runId,
     input: args.input,
     run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
+      const readOnly = args.runMode === 'read_only';
       let writablePaths: readonly string[] | undefined;
-      if (!args.readOnly) {
+      if (ownsWorktree(args.runMode)) {
         try {
           writablePaths = args.worktreeManager.getRunGitCommitWritablePaths(args.runId).paths;
         } catch (err) {
@@ -485,7 +545,7 @@ export function buildAdapterDispatchTask(args: {
       // every read-only dispatch against a dirty host repo (the common
       // case during development) returns a false-positive warning
       // listing files the agent never touched.
-      const dirtyBefore = args.readOnly
+      const dirtyBefore = readOnly
         ? await capturePathSignatureSnapshot(
             args.effectiveWorkingDirectory,
             await detectDirtyTree(args.effectiveWorkingDirectory).catch(() => []),
@@ -501,14 +561,20 @@ export function buildAdapterDispatchTask(args: {
           model: args.effectiveModel,
           effort: args.effectiveEffort,
           resumeSessionId: args.resumeSessionId,
-          sandbox: args.readOnly ? 'read-only' : 'workspace-write',
+          // ephemeral_review deliberately dispatches workspace-write: the
+          // reviewer runs write-capable in its disposable worktree (agy would
+          // hard-error on sandbox:'read-only'); containment is disposal.
+          sandbox: readOnly ? 'read-only' : 'workspace-write',
+          // Findings-only contract for disposable-worktree reviews — the
+          // adapter (agy) swaps its operational preamble on this.
+          reviewIntent: args.runMode === 'ephemeral_review' ? true : undefined,
           // Only auto-trust the workspace (gemini headless trust gate) when the
           // dir is crew-controlled — the host repo or a crew worktree, i.e. the
           // user's own code. Never force-trust an arbitrary caller-supplied
           // working_directory: trusting loads its project config/MCP/hooks/.env,
           // which run outside the read-only tool policy. See isCrewControlledPath.
           trustWorkspace:
-            args.readOnly === true
+            readOnly
             && args.worktreeManager.isCrewControlledPath(args.effectiveWorkingDirectory),
           writablePaths,
           // Allow localhost egress so tests that hit a local DB or
@@ -527,7 +593,7 @@ export function buildAdapterDispatchTask(args: {
       return finalizeAdapterResult({
         result,
         dirtyBefore,
-        readOnly: args.readOnly,
+        runMode: args.runMode,
         dispatchWarnings: args.dispatchWarnings,
         effectiveWorkingDirectory: args.effectiveWorkingDirectory,
         worktreePath: args.worktreePath,
@@ -543,7 +609,7 @@ export function buildAdapterDispatchTask(args: {
 async function finalizeAdapterResult(args: {
   readonly result: TaskResult;
   readonly dirtyBefore: ReadonlyMap<string, string> | undefined;
-  readonly readOnly: boolean | undefined;
+  readonly runMode: RunMode;
   readonly dispatchWarnings: readonly string[] | undefined;
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
@@ -557,7 +623,34 @@ async function finalizeAdapterResult(args: {
       ? { ...args.result, warnings: [...(args.result.warnings ?? []), ...args.dispatchWarnings] }
       : args.result;
 
-  if (args.readOnly) {
+  // ephemeral_review: filesModified is suppressed AT THE DATA LAYER, before
+  // terminal persistence copies it into state.filesChanged and before any
+  // reader sees it — for success, partial, AND error results. The worktree is
+  // disposable; listing the reviewer's stray writes would invite treating them
+  // as output. At most one pathless advisory when the reviewer did write
+  // (best-effort probe against the dispatch-time branch-point signature so the
+  // host's pre-existing dirty state, mirrored into the worktree at allocation,
+  // doesn't false-positive).
+  if (args.runMode === 'ephemeral_review') {
+    const suppressed = { ...resultWithDispatchWarnings, filesModified: [] };
+    try {
+      const fromWorktree = await args.worktreeManager.getModifiedFilesByRun(args.runId);
+      const before = args.branchPointBefore ?? new Map<string, string>();
+      const after = await capturePathSignatureSnapshot(args.worktreePath, fromWorktree);
+      const changed = fromWorktree.filter((path) => before.get(path) !== after.get(path));
+      if (changed.length === 0 && resultWithDispatchWarnings.filesModified.length === 0) {
+        return suppressed;
+      }
+      return {
+        ...suppressed,
+        warnings: [ephemeralReviewWriteNotice(), ...(suppressed.warnings ?? [])],
+      };
+    } catch {
+      return suppressed;
+    }
+  }
+
+  if (args.runMode === 'read_only') {
     // Best-effort: detect contract violations (the agent edited
     // despite being told not to) and surface as a warning. Never
     // fail the dispatch on probe errors — the run completed; the
@@ -645,14 +738,61 @@ function maybeWarnAgyScratchEscape(result: TaskResult, adapterName: string): Tas
  * Message for a fail-closed read-only reject (adapter.rejectsReadOnly). Used by
  * planRunAgent / continue_run when an adapter that cannot enforce read-only is
  * dispatched read-only. This is a terminal config refusal — the run never
- * starts — NOT the advisory below (which means "we'll run it anyway").
+ * starts — NOT the advisory below (which means "we'll run it anyway"). When the
+ * adapter supports the disposable-worktree review route (agy), the message
+ * redirects the captain to `run_mode: 'ephemeral_review'` instead of leaving
+ * them stuck.
  */
-export function readOnlyRejectMessage(adapterName: string): string {
+export function readOnlyRejectMessage(
+  adapterName: string,
+  adapter?: Pick<AgentAdapter, 'reviewDispatchMode'>,
+): string {
+  const redirect =
+    adapter !== undefined && resolveReviewDispatchMode(adapter) === 'ephemeral-worktree'
+      ? ` For a review, dispatch it with run_mode: 'ephemeral_review' instead: it runs write-capable `
+        + 'in a disposable crew worktree, only its text findings are kept, and the run is never mergeable.'
+      : ' Route read-only review/triage to an agent with a real sandbox (codex) or to the host.';
   return `Agent "${adapterName}" cannot run read-only and crew refuses to dispatch it read-only: `
     + 'it has no enforceable read-only sandbox (no OS sandbox, no tool-deny policy), so a review/triage '
-    + 'prompt carrying untrusted content could make it write outside any boundary. Route read-only '
-    + 'review/triage to an agent with a real sandbox (codex) or to the host. This is a configuration '
-    + 'refusal, not a transient error — it will not be retried.';
+    + `prompt carrying untrusted content could make it write outside any boundary.${redirect} `
+    + 'This is a configuration refusal, not a transient error — it will not be retried.';
+}
+
+/**
+ * Message for an `ephemeral_review` dispatch to an adapter that has not opted
+ * into the disposable-worktree review route. In-place read-only dispatch is
+ * the honest (and cheaper) review surface for everyone else.
+ */
+export function ephemeralReviewUnsupportedMessage(adapterName: string): string {
+  return `Agent "${adapterName}" does not support run_mode: 'ephemeral_review' `
+    + "(its reviewDispatchMode is not 'ephemeral-worktree'). Dispatch it as a reviewer with "
+    + "read_only: true instead — the disposable-worktree route exists only for agents that "
+    + 'cannot honestly enforce read-only (agy).';
+}
+
+/**
+ * Message for an `ephemeral_review` dispatch that supplies a
+ * working_directory: the disposable worktree is always crew-allocated.
+ */
+export function ephemeralWorkingDirectoryRejectMessage(
+  adapterName: string,
+  workingDirectory: string,
+): string {
+  return `Agent "${adapterName}" runs ephemeral reviews only inside a crew-allocated disposable `
+    + `worktree; refusing the working_directory override "${workingDirectory}". Omit `
+    + 'working_directory — crew snapshots the host repo (including uncommitted changes) into the '
+    + "review worktree automatically.";
+}
+
+/**
+ * The single, deliberately pathless advisory attached when an ephemeral
+ * reviewer modified its disposable worktree. Paths are never listed —
+ * that would invite treating discarded writes as run output.
+ */
+export function ephemeralReviewWriteNotice(): string {
+  return 'ephemeral_review note: the reviewer modified files in its disposable review worktree. '
+    + 'Those changes are NOT part of the run output, will never be merged, and are discarded with '
+    + 'the worktree (discard_run / GC). Only the text findings above survive.';
 }
 
 /**

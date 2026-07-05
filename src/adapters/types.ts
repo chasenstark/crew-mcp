@@ -179,6 +179,27 @@ export interface AgentAdapter {
    */
   readonly rejectsReadOnly?: boolean;
   /**
+   * HOW this adapter is placed for a review dispatch — orthogonal to
+   * whether read-only is actually ENFORCED (that truth stays in
+   * `enforcesReadOnly`; claude/gemini are `read-only-dispatch` yet
+   * enforce nothing at the FS level).
+   *
+   *   - `read-only-dispatch` (default when omitted): reviews run in
+   *     place via `run_mode:'read_only'` — no owned worktree.
+   *   - `ephemeral-worktree`: reviews run via
+   *     `run_mode:'ephemeral_review'` — write-capable inside a
+   *     crew-allocated disposable worktree whose changes are never
+   *     merged (agy: absolute-path writes make honest read-only
+   *     impossible, so containment-by-disposal replaces denial).
+   *   - `unsupported`: this adapter cannot be dispatched as a reviewer
+   *     at all.
+   *
+   * Resolve via `resolveReviewDispatchMode`, never by reading the field
+   * with your own default. Must be computed identically for the lazy
+   * registry proxy and the loaded instance (proxy/instance parity).
+   */
+  readonly reviewDispatchMode?: ReviewDispatchMode;
+  /**
    * True when a WRITE dispatch for this adapter must run inside its own
    * crew-allocated run worktree, so the planner refuses a caller-supplied
    * `working_directory` override in write mode. Set by adapters that can be
@@ -228,6 +249,24 @@ export interface AgentAdapter {
    */
   recognizesModel?(modelId: string): boolean;
   healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult>;
+}
+
+/**
+ * How an adapter is placed when dispatched as a reviewer. See the
+ * `AgentAdapter.reviewDispatchMode` doc for the semantics of each value.
+ */
+export type ReviewDispatchMode = 'read-only-dispatch' | 'ephemeral-worktree' | 'unsupported';
+
+/**
+ * Canonical accessor for an adapter's review placement. An adapter that
+ * doesn't declare `reviewDispatchMode` defaults to `read-only-dispatch`
+ * (in-place review) — ONLY an explicit `ephemeral-worktree` opts into the
+ * disposable-worktree route.
+ */
+export function resolveReviewDispatchMode(
+  adapter: Pick<AgentAdapter, 'reviewDispatchMode'>,
+): ReviewDispatchMode {
+  return adapter.reviewDispatchMode ?? 'read-only-dispatch';
 }
 
 /**
@@ -376,6 +415,17 @@ export interface Task {
      * opening the parent repository's entire `.git/` directory.
      */
     writablePaths?: readonly string[];
+    /**
+     * True when this dispatch is an `ephemeral_review`: the agent runs
+     * write-capable in a disposable worktree but is expected to REPORT
+     * FINDINGS ONLY — any file changes are discarded, never merged. An
+     * adapter that injects an operational preamble (agy's workspace
+     * contract) must swap in its review variant: keep the absolute
+     * worktree-root path pin (load-bearing for locating files), replace
+     * the write instructions with findings-only ones, never stack both.
+     * Adapters without such a preamble ignore this.
+     */
+    reviewIntent?: boolean;
     /**
      * Provider conversation/session id to RESUME on this dispatch. Threaded by
      * `continue_run` from the prior turn's persisted `TaskResult.sessionId` so

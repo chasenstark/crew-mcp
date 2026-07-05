@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 
+import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import type { DiscardEnvelope, ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import {
   errorContent,
@@ -39,7 +40,11 @@ export async function discardRunToolHandler(
   const cleanupErrors: string[] = [];
   try {
     if (state) {
-      if (!state.readOnly) {
+      // Worktree removal for every mode that OWNS one (write and
+      // ephemeral_review — discarding an ephemeral review is what actually
+      // throws its disposable snapshot away); read_only runs have no
+      // worktree, so discard is metadata-only.
+      if (ownsWorktree(runModeFromState(state))) {
         if (existingInFlight) {
           cleanupErrors.push(
             `worktree cleanup skipped: run "${args.run_id}" still has in-flight work ` +

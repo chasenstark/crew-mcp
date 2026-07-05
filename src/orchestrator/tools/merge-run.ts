@@ -49,6 +49,7 @@ import { z } from 'zod';
 
 import { logger } from '../../utils/logger.js';
 import { readConfigFile } from '../../utils/config-store.js';
+import { isMergeable, runModeFromState } from '../run-mode.js';
 import type { ToolCallReturn, ToolHandlerDeps, MergeEnvelope } from './shared.js';
 import {
   checkoutEnvelope,
@@ -113,7 +114,16 @@ export async function mergeRunToolHandler(
   if (state.status === 'running') {
     return errorContent('merge_run: run is currently running; call cancel_run first.');
   }
-  if (state.readOnly) {
+  const runMode = runModeFromState(state);
+  if (!isMergeable(runMode)) {
+    if (runMode === 'ephemeral_review') {
+      return errorContent(
+        `Run "${args.run_id}" is an ephemeral review; it is NEVER mergeable. ` +
+        'Its worktree is a disposable snapshot whose changes are discarded — only the ' +
+        'reviewer\'s text findings are the output. Use `continue_run` for follow-up ' +
+        'questions or `discard_run` to reclaim the worktree.',
+      );
+    }
     return errorContent(
       `Run "${args.run_id}" was dispatched read-only; nothing to merge. ` +
       'Read-only runs run against the host repo (or a target worktree) without ' +

@@ -143,8 +143,13 @@ When the user dispatches an implementation:
    the implementer's worktree — the reviewer reads the changes
    without allocating its own worktree. (Restate "review only, do
    not edit" in the reviewer's prompt anyway; the flag skips
-   allocation but doesn't constrain the agent's tools.) Apply
-   reviewer findings via `continue_run` on the implementer's run.
+   allocation but doesn't constrain the agent's tools.) Exception:
+   an agy second opinion is dispatched with
+   `run_mode: "ephemeral_review"` and NO `working_directory` — agy
+   rejects `read_only` outright, so crew gives it its own disposable
+   snapshot worktree instead (see Ephemeral review dispatches).
+   Apply reviewer findings via `continue_run` on the implementer's
+   run.
 4. **Surface to the user.** Once you're satisfied (or once you have
    a question only the user can answer), summarize. For an
    implementer run, ask: merge, continue iterating, or discard?
@@ -446,7 +451,8 @@ Parse `run_id` from that line and call
 (summary, `files_changed`, `events_tail`). Surface a tight
 synthesis to the user and ask the relevant follow-up
 (merge / iterate / discard for implementer runs;
-keep / cleanup for read-only).
+keep / cleanup for read-only and ephemeral reviews — never
+offer merge on an ephemeral review).
 
 If the synthetic turn arrives without the `CREW_WAIT_TERMINAL`
 line (host stdout-surfacing degrades, watcher killed by signal,
@@ -507,7 +513,8 @@ message, check pending run state:
 When a run reaches `success | partial | error | cancelled`, synthesize
 from `summary`, `files_changed`, and `events_tail`. Do not dump the
 tail verbatim. Ask about merge / iterate / discard for implementer
-runs, or cleanup / keep-around for read-only runs.
+runs, or cleanup / keep-around for read-only and ephemeral-review
+runs (an ephemeral review is never a merge candidate).
 
 ### Multiple terminations don't batch
 
@@ -650,6 +657,33 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
     dispatch a fresh `run_agent`.
   - Without the flag, dispatching a reviewer at another worktree
     still works but allocates a wasted worktree — prefer the flag.
+
+- **Ephemeral review dispatches (agy).** agy cannot honestly enforce
+  read-only (no OS sandbox, no tool-deny; absolute paths escape any
+  boundary), so `read_only: true` on agy is REJECTED, not weakly run.
+  To use agy as a reviewer, dispatch
+  `run_agent({ agent_id: "agy", run_mode: "ephemeral_review", prompt: "<review prompt>" })`:
+  - Crew allocates a **disposable snapshot worktree** (host HEAD +
+    your uncommitted changes copied in) and lets agy run
+    write-capable inside it. Only its TEXT findings are the output.
+  - **Never mergeable.** `merge_run` refuses permanently;
+    `filesChanged` is always empty; any files agy touched are
+    discarded with the worktree. Review-capable ≠ read-only — treat
+    the findings as the entire deliverable.
+  - **Conversational.** The worktree is retained after the run, and
+    `continue_run` works for follow-ups ("why did you flag X?") —
+    against a FROZEN snapshot: unlike write runs, host edits between
+    turns are NOT re-synced in, so follow-ups reason about exactly
+    what was reviewed. Resume is stateful (same agy conversation).
+  - Do NOT pass `working_directory` (rejected — the snapshot is
+    crew-allocated), and don't combine with `read_only: true`
+    (conflicting pair is rejected).
+  - Cleanup: `discard_run` when you've consumed the findings (that
+    is what disposes the snapshot); the run-GC sweep is the backstop.
+  - Scope: trusted diffs (your own code, teammates' PRs). It is a
+    discard-all-writes lifecycle, not a sandbox — a hostile diff
+    could still steer agy to write outside the worktree by absolute
+    path, so don't use it on untrusted third-party code.
 
 - **Effort.** `run_agent` / `continue_run` accept the canonical
   `effort: "low" | "medium" | "high" | "xhigh" | "max"` scale. `list_agents` surfaces the per-machine default; accept it by passing nothing. **When you override**, do BOTH: (a) pass
@@ -917,7 +951,12 @@ carrying A's summary + files_changed. The reviewers can READ A's
 edits directly. If you explicitly set `read_only: false` on a
 reviewer, you take responsibility for that reviewer's
 `working_directory` — the panel won't auto-point at A's worktree
-(prevents accidental mutation).
+(prevents accidental mutation). Do NOT put agy on a `run_panel`
+yet: the panel's auto `read_only` dispatch is rejected for agy
+(panel routing to its ephemeral-worktree mode is not wired up).
+For an agy perspective alongside a panel, dispatch a separate solo
+`run_agent` with `run_mode: "ephemeral_review"` and fold its
+findings in by hand.
 
 Standalone (no implementer):
 
@@ -1015,10 +1054,11 @@ implementer sees what happened. You decide whether to proceed.
 ### When NOT to use run_panel
 
 - One crew reviewer only: just `run_agent` with `read_only: true` +
-  `working_directory`. `run_panel` is overhead for a single crew
-  dispatch. (The host reviewer still runs as a native subagent
-  alongside it — "one crew reviewer" isn't "no host review"; fold the
-  host vote in by hand, since there's no `panel_id` to aggregate.)
+  `working_directory` (or `run_mode: "ephemeral_review"` for agy).
+  `run_panel` is overhead for a single crew dispatch. (The host
+  reviewer still runs as a native subagent alongside it — "one crew
+  reviewer" isn't "no host review"; fold the host vote in by hand,
+  since there's no `panel_id` to aggregate.)
 - You want auto-cancel-on-blocker: not supported (yet). Cancel
   per-reviewer with `cancel_run`.
 - Anti-pattern: don't use `run_panel` to split a review by concern
