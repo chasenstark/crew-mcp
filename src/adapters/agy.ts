@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { execa } from 'execa';
 import { z } from 'zod';
 import { extractJson } from '../utils/json-parse.js';
@@ -221,6 +223,74 @@ function withAgyOperationalPreamble(task: Task): string {
     : withAgyWorkspacePreamble(task.prompt, task.context.workingDirectory);
 }
 
+export const AGY_MCP_CONFIG_RELPATH = path.join('.agents', 'mcp_config.json');
+export const AGY_MCP_QUARANTINE_SUFFIX = '.crew-quarantine';
+
+/**
+ * Captain-mode escalation defense. agy has NO MCP allowlist/exclusion flag
+ * (verified against agy 1.0.16 `--help`: no MCP-related flag exists), and it
+ * loads MCP servers from the project-scoped `<cwd>/.agents/mcp_config.json`.
+ * A crew install into agy writes exactly that file, and because it is
+ * untracked, worktree sync mirrors it into write worktrees and
+ * ephemeral_review snapshots. An agy worker spawned into such a directory
+ * boots its own `crew-mcp serve` with the FULL captain tool surface
+ * (merge_run / discard_run / run_agent / ...) and
+ * `--dangerously-skip-permissions` auto-approves every call — a privilege
+ * escalation from worker to captain.
+ *
+ * Defense: quarantine the file (rename, not delete — a crash leaves the
+ * content on disk, recoverable by hand) for the lifetime of the agy
+ * subprocess, then restore it. agy reads the config only at startup, so the
+ * transient absence is invisible to everything else. If the worker recreated
+ * the path mid-run, its version is kept and the quarantine copy is removed so
+ * `merge_run` never commits a stray `*.crew-quarantine` file.
+ *
+ * Returns a restore callback when a config was quarantined, null when none
+ * existed. Throws on any other fs failure — callers must FAIL CLOSED (refuse
+ * the dispatch) rather than spawn agy with the config still readable.
+ */
+async function quarantineAgyMcpConfig(
+  workingDirectory: string,
+): Promise<(() => Promise<void>) | null> {
+  const configPath = path.join(workingDirectory, AGY_MCP_CONFIG_RELPATH);
+  const quarantinePath = `${configPath}${AGY_MCP_QUARANTINE_SUFFIX}`;
+  try {
+    await fs.rename(configPath, quarantinePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  logger.warn('[adapter:agy] quarantined project MCP config for worker spawn', {
+    configPath,
+  });
+  return async () => {
+    let workerRecreated = true;
+    try {
+      await fs.access(configPath);
+    } catch {
+      workerRecreated = false;
+    }
+    if (workerRecreated) {
+      // POSIX rename would clobber the worker's file; keep the worker's
+      // version and drop the quarantine copy so it can't leak into a merge.
+      await fs.rm(quarantinePath, { force: true });
+      logger.warn(
+        '[adapter:agy] worker recreated the MCP config during the run; kept the worker version',
+        { configPath },
+      );
+      return;
+    }
+    try {
+      await fs.rename(quarantinePath, configPath);
+    } catch (error) {
+      logger.error('[adapter:agy] failed to restore quarantined MCP config', {
+        quarantinePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+}
+
 export class AgyAdapter implements AgentAdapter {
   readonly name = AgentId.AGY;
   // Soft routing hints; users override via ~/.crew/agents.json. These may
@@ -341,6 +411,43 @@ export class AgyAdapter implements AgentAdapter {
       args.push('--print-timeout', `${Math.ceil(timeout / 1000)}s`);
     }
 
+    // Quarantine any project-scoped MCP config before spawning; fail closed
+    // when the quarantine itself fails — never run agy with crew captain
+    // tools reachable (see quarantineAgyMcpConfig).
+    let restoreMcpConfig: (() => Promise<void>) | null = null;
+    try {
+      restoreMcpConfig = await quarantineAgyMcpConfig(task.context.workingDirectory);
+    } catch (error: unknown) {
+      const message =
+        `agy dispatch refused: could not quarantine ${AGY_MCP_CONFIG_RELPATH} in the `
+        + 'working directory, so the worker would inherit the crew captain MCP tool '
+        + 'surface with --dangerously-skip-permissions. Underlying error: '
+        + `${error instanceof Error ? error.message : String(error)}`;
+      logger.error('[adapter:agy] MCP config quarantine failed; refusing dispatch', {
+        cwd: task.context.workingDirectory,
+      });
+      return {
+        output: message,
+        filesModified: [],
+        status: 'error',
+        failure: { kind: 'process', confidence: 'high', recommendation: 'ask_user' },
+        metadata: { rawEvents: [{ refused: 'mcp-config-quarantine-failed' }] },
+      };
+    }
+    try {
+      return await this.spawnAndParse(task, args, model, timeout, resumeSessionId);
+    } finally {
+      if (restoreMcpConfig) await restoreMcpConfig();
+    }
+  }
+
+  private async spawnAndParse(
+    task: Task,
+    args: string[],
+    model: string | undefined,
+    timeout: number | undefined,
+    resumeSessionId: string | undefined,
+  ): Promise<TaskResult> {
     let result;
     try {
       const subprocess = execa('agy', args, {

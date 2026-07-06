@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fsp } from 'node:fs';
+import os from 'node:os';
+import nodePath from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 vi.mock('execa', () => ({
@@ -11,6 +14,8 @@ const mockExeca = vi.mocked(execa);
 const {
   AgyAdapter,
   AGY_MIN_VERSION,
+  AGY_MCP_CONFIG_RELPATH,
+  AGY_MCP_QUARANTINE_SUFFIX,
   parseAgyEnvelope,
   isAgyVersionBelowFloor,
   withAgyWorkspacePreamble,
@@ -264,6 +269,104 @@ describe('AgyAdapter', () => {
       // execa hard timeout must be ABOVE agy's own budget so agy returns a clean
       // ERROR envelope before execa SIGKILLs it.
       expect(options.timeout).toBeGreaterThan(60_000);
+    });
+  });
+
+  describe('MCP config captain-escalation quarantine', () => {
+    // Real fs, real temp dirs: the quarantine is a filesystem defense, so
+    // mock-path tests would hide exactly the class of bug it exists to stop.
+    const CONFIG_CONTENT = '{"mcpServers":{"crew":{"command":"crew-mcp","args":["serve"]}}}';
+    let wt: string;
+    let configPath: string;
+    let quarantinePath: string;
+
+    beforeEach(async () => {
+      wt = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'crew-agy-quarantine-'));
+      configPath = nodePath.join(wt, AGY_MCP_CONFIG_RELPATH);
+      quarantinePath = `${configPath}${AGY_MCP_QUARANTINE_SUFFIX}`;
+    });
+
+    afterEach(async () => {
+      await fsp.chmod(nodePath.join(wt, '.agents'), 0o755).catch(() => {});
+      await fsp.rm(wt, { recursive: true, force: true });
+    });
+
+    async function seedConfig(): Promise<void> {
+      await fsp.mkdir(nodePath.dirname(configPath), { recursive: true });
+      await fsp.writeFile(configPath, CONFIG_CONTENT);
+    }
+
+    function taskFor(dir: string) {
+      return { prompt: 'go', context: { workingDirectory: dir } };
+    }
+
+    it('quarantines the config for the subprocess lifetime and restores it after', async () => {
+      await seedConfig();
+      let configVisibleAtSpawn: boolean | undefined;
+      let quarantineVisibleAtSpawn: boolean | undefined;
+      mockExeca.mockImplementationOnce((async () => {
+        configVisibleAtSpawn = await fsp.access(configPath).then(() => true, () => false);
+        quarantineVisibleAtSpawn = await fsp.access(quarantinePath).then(() => true, () => false);
+        return { stdout: successEnvelope(), stderr: '', exitCode: 0 };
+      }) as never);
+
+      const result = await adapter.execute(taskFor(wt));
+
+      expect(result.status).toBe('success');
+      // The captain MCP config must be unreadable while agy runs...
+      expect(configVisibleAtSpawn).toBe(false);
+      expect(quarantineVisibleAtSpawn).toBe(true);
+      // ...and byte-identical afterwards, with no stray quarantine file left
+      // for merge_run to pick up.
+      expect(await fsp.readFile(configPath, 'utf8')).toBe(CONFIG_CONTENT);
+      await expect(fsp.access(quarantinePath)).rejects.toThrow();
+    });
+
+    it('restores the config even when the agy process throws', async () => {
+      await seedConfig();
+      mockExeca.mockRejectedValueOnce(new Error('spawn agy ENOENT'));
+
+      const result = await adapter.execute(taskFor(wt));
+
+      expect(result.status).toBe('error');
+      expect(await fsp.readFile(configPath, 'utf8')).toBe(CONFIG_CONTENT);
+      await expect(fsp.access(quarantinePath)).rejects.toThrow();
+    });
+
+    it('keeps a worker-recreated config and drops the quarantine copy', async () => {
+      await seedConfig();
+      mockExeca.mockImplementationOnce((async () => {
+        await fsp.writeFile(configPath, '{"mcpServers":{}}');
+        return { stdout: successEnvelope(), stderr: '', exitCode: 0 };
+      }) as never);
+
+      await adapter.execute(taskFor(wt));
+
+      expect(await fsp.readFile(configPath, 'utf8')).toBe('{"mcpServers":{}}');
+      await expect(fsp.access(quarantinePath)).rejects.toThrow();
+    });
+
+    it('spawns normally when no config exists and leaves no stray files', async () => {
+      mockOnce(successEnvelope());
+
+      const result = await adapter.execute(taskFor(wt));
+
+      expect(result.status).toBe('success');
+      expect(mockExeca).toHaveBeenCalledTimes(1);
+      await expect(fsp.access(configPath)).rejects.toThrow();
+      await expect(fsp.access(quarantinePath)).rejects.toThrow();
+    });
+
+    it('FAILS CLOSED: refuses the dispatch without spawning when quarantine fails', async () => {
+      await seedConfig();
+      // Read-only parent dir → rename(2) fails with EACCES/EPERM.
+      await fsp.chmod(nodePath.join(wt, '.agents'), 0o555);
+
+      const result = await adapter.execute(taskFor(wt));
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('could not quarantine');
+      expect(mockExeca).not.toHaveBeenCalled();
     });
   });
 
