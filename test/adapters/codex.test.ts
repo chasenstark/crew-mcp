@@ -242,6 +242,80 @@ describe('CodexAdapter', () => {
       expect(result.sessionId).toBe('thread-1');
     });
 
+    it('passes sandbox as a config override when resuming', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"thread-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"continued"}}',
+          '{"type":"turn.completed","turn_id":"turn-1"}',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Continue',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          resumeSessionId: 'thread-1',
+          sandbox: 'workspace-write',
+          model: ModelId.GPT_MINI,
+          effort: 'high',
+          writablePaths: ['/repo/.git/worktrees/run-a'],
+          networkAccess: true,
+        },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args).toEqual([
+        'exec',
+        'resume',
+        '--json',
+        '--skip-git-repo-check',
+        '-o',
+        '/tmp/codex-mock/output.json',
+        '--model',
+        ModelId.GPT_MINI,
+        '-c',
+        'model_reasoning_effort="high"',
+        '-c',
+        'sandbox_mode="workspace-write"',
+        '-c',
+        'sandbox_workspace_write.writable_roots=["/repo/.git/worktrees/run-a"]',
+        '-c',
+        'sandbox_workspace_write.network_access=true',
+        'thread-1',
+        '-',
+      ]);
+      expect(args).not.toContain('--sandbox');
+    });
+
+    it('reports exit code and streamed stderr when resume returns no thread id', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingCodexProcess({
+        chunks: [],
+        stderrChunks: ["error: unexpected argument '--sandbox' found\n"],
+        exitCode: 2,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Continue',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { resumeSessionId: 'thread-1' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('resume_id_missing:');
+      expect(result.output).toContain('Subprocess exit code: 2.');
+      expect(result.output).toContain("error: unexpected argument '--sandbox' found");
+      expect(result.failure).toMatchObject({
+        providerCode: 'resume_id_missing',
+        confidence: 'high',
+        recommendation: 'ask_user',
+      });
+      expect(result.failure?.rawSignal).toContain('Subprocess exit code: 2.');
+      expect(result.failure?.rawSignal).toContain("error: unexpected argument '--sandbox' found");
+    });
+
     it('treats a different resumed codex thread id as context loss', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: [
@@ -557,7 +631,7 @@ describe('CodexAdapter', () => {
       expect(cliArgs.some((a) => a.startsWith('model_reasoning_effort'))).toBe(false);
     });
 
-    it('passes --sandbox when sandbox constraint is set', async () => {
+    it('passes --sandbox when sandbox constraint is set for fresh dispatches', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,
         stderr: '',
@@ -571,9 +645,15 @@ describe('CodexAdapter', () => {
       });
 
       const cliArgs = mockExeca.mock.calls[0][1] as string[];
-      const sIdx = cliArgs.indexOf('--sandbox');
-      expect(sIdx).toBeGreaterThan(-1);
-      expect(cliArgs[sIdx + 1]).toBe('workspace-write');
+      expect(cliArgs).toEqual([
+        'exec',
+        '--json',
+        '--skip-git-repo-check',
+        '-o',
+        '/tmp/codex-mock/output.json',
+        '--sandbox',
+        'workspace-write',
+      ]);
     });
 
     it('passes -c sandbox_workspace_write.network_access=true when networkAccess is true', async () => {

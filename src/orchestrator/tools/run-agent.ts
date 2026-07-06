@@ -661,10 +661,21 @@ function enforceRequestedResumeSessionId(args: {
   if (typeof args.result.sessionId === 'string' && args.result.sessionId.trim().length > 0) {
     return args.result;
   }
+  if (args.result.failure?.providerCode === 'resume_id_missing') {
+    return args.result;
+  }
+  const adapterSignal = [
+    args.result.failure?.rawSignal,
+    args.result.output,
+  ]
+    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    .filter((part, idx, all) => all.indexOf(part) === idx)
+    .join('\n');
   const message =
     `resume_id_missing: ${args.adapter.name} was asked to resume provider session `
     + `${args.requestedSessionId} but returned no session id for this turn. Refusing `
-    + 'to treat this as a successful continuation because it may be a cold start.';
+    + 'to treat this as a successful continuation because it may be a cold start.'
+    + (adapterSignal ? `\nAdapter diagnostic:\n${adapterSignal}` : '');
   return {
     ...args.result,
     output: message,

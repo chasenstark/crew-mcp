@@ -487,10 +487,14 @@ export class CodexAdapter implements AgentAdapter {
         args.push('-c', `model_reasoning_effort="${task.constraints.effort}"`);
       }
       if (task.constraints?.sandbox) {
-        // String values mirror Codex's `--sandbox` enum. Type union in
-        // adapters/types.ts enforces this at compile time; if Codex
-        // renames a value upstream, fix both places together.
-        args.push('--sandbox', task.constraints.sandbox);
+        // String values mirror Codex's sandbox enum. Fresh `exec` accepts
+        // `--sandbox`; `exec resume` accepts the same value only through a
+        // config override.
+        if (resumeSessionId) {
+          args.push('-c', `sandbox_mode="${task.constraints.sandbox}"`);
+        } else {
+          args.push('--sandbox', task.constraints.sandbox);
+        }
       }
       // Sandbox writable-roots grant. We set `sandbox_workspace_write.writable_roots`
       // via a `-c` config override rather than `--add-dir`. Why not --add-dir:
@@ -665,6 +669,36 @@ export class CodexAdapter implements AgentAdapter {
       });
 
       const reduced = reducer.snapshot();
+
+      if (resumeSessionId && !reduced.threadId) {
+        const message = [
+          `resume_id_missing: codex was asked to resume provider session `
+            + `${resumeSessionId} but returned no session id for this turn.`,
+          `Subprocess exit code: ${result.exitCode}.`,
+          stderrText ? `stderr tail:\n${stderrText}` : undefined,
+        ].filter((part): part is string => Boolean(part)).join('\n');
+        logger.error('[adapter:codex] resume produced no thread id', {
+          requested: resumeSessionId,
+          exitCode: result.exitCode,
+          stderrPreview: preview(stderrText),
+        });
+        return {
+          output: message,
+          filesModified: [],
+          status: 'error',
+          failure: {
+            kind: 'unknown',
+            confidence: 'high',
+            providerCode: 'resume_id_missing',
+            recommendation: 'ask_user',
+            rawSignal: message,
+          },
+          metadata: {
+            rawEvents: reduced.events,
+            droppedLines: reduced.droppedLines,
+          },
+        };
+      }
 
       if (resumeSessionId && reduced.threadId && reduced.threadId !== resumeSessionId) {
         const message =

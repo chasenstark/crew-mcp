@@ -198,6 +198,46 @@ describe('planRunAgent', () => {
     });
   });
 
+  it('preserves adapter diagnostics when a requested resume returns no session id', async () => {
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
+      output: 'Codex command failed with exit code 2 and no JSONL output',
+      filesModified: [],
+      status: 'error',
+      failure: {
+        kind: 'process',
+        confidence: 'low',
+        rawSignal: "exit code 2\nerror: unexpected argument '--sandbox' found",
+      },
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      supportsResume: true,
+      execute: executeMock,
+    });
+    const task = buildAdapterDispatchTask({
+      toolCallId: 'tool-1',
+      runId: 'run-1',
+      adapter,
+      prompt: 'composed prompt',
+      effectiveWorkingDirectory: root,
+      worktreePath: root,
+      runMode: 'read_only',
+      effectiveModel: undefined,
+      effectiveEffort: undefined,
+      resumeSessionId: 'thread-1',
+      worktreeManager,
+      input: {},
+    });
+    const result = await task.run({ signal: makeAbortSignal() });
+
+    expect(result.status).toBe('error');
+    expect(result.failure?.providerCode).toBe('resume_id_missing');
+    expect(result.failure?.rawSignal).toContain('resume_id_missing:');
+    expect(result.failure?.rawSignal).toContain('exit code 2');
+    expect(result.failure?.rawSignal).toContain("error: unexpected argument '--sandbox' found");
+  });
+
   it('leaves successful worktree edits in the worktree (no auto-merge in v2)', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
       const typedTask = task as { context: { workingDirectory: string } };
