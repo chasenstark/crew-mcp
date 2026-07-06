@@ -44,6 +44,8 @@ const { execa } = await import('execa');
 const mockExeca = vi.mocked(execa);
 
 const { CodexAdapter } = await import('../../src/adapters/codex.js');
+const { logger } = await import('../../src/utils/logger.js');
+const { REDACTED_RUN_TOKEN } = await import('../../src/utils/redaction.js');
 
 // Load fixtures using the real readFileSync
 const successFixture = realReadFileSync(
@@ -102,6 +104,10 @@ function createStreamingCodexProcess({
 
 describe('CodexAdapter', () => {
   let adapter: InstanceType<typeof CodexAdapter>;
+  const dispatchMcpEnv = {
+    CREW_RUN_ID: 'codex-run-123',
+    CREW_RUN_TOKEN: 'a'.repeat(64),
+  };
 
   beforeEach(() => {
     adapter = new CodexAdapter();
@@ -210,11 +216,77 @@ describe('CodexAdapter', () => {
 
       const args = mockExeca.mock.calls[0]?.[1] as string[];
       expect(args[0]).toBe('exec');
+      expect(args).not.toContain('mcp_servers.crew.env.CREW_RUN_ID="codex-run-123"');
+      expect(args).not.toContain(`mcp_servers.crew.env.CREW_RUN_TOKEN="${dispatchMcpEnv.CREW_RUN_TOKEN}"`);
       expect(args).not.toContain(composedPrompt);
       expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
         buffer: false,
         input: composedPrompt,
       }));
+    });
+
+    it('appends per-dispatch crew MCP env as TOML overrides on fresh exec', async () => {
+      expect(dispatchMcpEnv.CREW_RUN_TOKEN).toMatch(/^[0-9a-f]{64}$/);
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"thread-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}',
+          '{"type":"turn.completed","turn_id":"turn-1"}',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Do work',
+        dispatchMcpEnv,
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      const tokenOverride = `mcp_servers.crew.env.CREW_RUN_TOKEN="${dispatchMcpEnv.CREW_RUN_TOKEN}"`;
+      expect(args).toEqual([
+        'exec',
+        '--json',
+        '--skip-git-repo-check',
+        '-o',
+        '/tmp/codex-mock/output.json',
+        '-c',
+        'mcp_servers.crew.env.CREW_RUN_ID="codex-run-123"',
+        '-c',
+        tokenOverride,
+      ]);
+      expect(tokenOverride).not.toContain('\\');
+    });
+
+    it('redacts dispatch run tokens from spawn-error results and logs', async () => {
+      const loggerSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+      mockExeca.mockImplementationOnce(() => {
+        throw new Error(
+          `spawn ENOENT: codex exec -c mcp_servers.crew.env.CREW_RUN_TOKEN="${dispatchMcpEnv.CREW_RUN_TOKEN}"`,
+        );
+      });
+
+      try {
+        const result = await adapter.execute({
+          prompt: 'Do work',
+          dispatchMcpEnv,
+          context: { workingDirectory: '/tmp/project' },
+        });
+
+        const resultText = JSON.stringify(result);
+        expect(resultText).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(resultText).toContain(REDACTED_RUN_TOKEN);
+        expect(result.output).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(result.failure?.rawSignal).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(JSON.stringify(result.metadata.rawEvents)).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+
+        const logText = JSON.stringify(loggerSpy.mock.calls);
+        expect(logText).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(logText).toContain(REDACTED_RUN_TOKEN);
+      } finally {
+        loggerSpy.mockRestore();
+      }
     });
 
     it('captures thread id and resumes with codex exec resume', async () => {
@@ -240,6 +312,41 @@ describe('CodexAdapter', () => {
       expect(result.status).toBe('success');
       expect(result.output).toBe('continued');
       expect(result.sessionId).toBe('thread-1');
+    });
+
+    it('appends per-dispatch crew MCP env before the resume session positional', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"thread.started","thread_id":"thread-1"}',
+          '{"type":"item.completed","item":{"type":"agent_message","text":"continued"}}',
+          '{"type":"turn.completed","turn_id":"turn-1"}',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Continue',
+        dispatchMcpEnv,
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { resumeSessionId: 'thread-1' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args).toEqual([
+        'exec',
+        'resume',
+        '--json',
+        '--skip-git-repo-check',
+        '-o',
+        '/tmp/codex-mock/output.json',
+        '-c',
+        'mcp_servers.crew.env.CREW_RUN_ID="codex-run-123"',
+        '-c',
+        `mcp_servers.crew.env.CREW_RUN_TOKEN="${dispatchMcpEnv.CREW_RUN_TOKEN}"`,
+        'thread-1',
+        '-',
+      ]);
     });
 
     it('passes sandbox as a config override when resuming', async () => {

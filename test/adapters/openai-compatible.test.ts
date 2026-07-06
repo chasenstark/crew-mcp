@@ -52,6 +52,39 @@ describe('OpenAiCompatibleAdapter', () => {
     expect(body.messages).toEqual([{ role: 'user', content: composedPrompt }]);
   });
 
+  it('ignores dispatchMcpEnv instead of sending MCP env in the HTTP request', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'qwen-test',
+    });
+
+    await adapter.execute({
+      prompt: 'run task',
+      dispatchMcpEnv: {
+        CREW_RUN_ID: 'openai-run-123',
+        CREW_RUN_TOKEN: 'e'.repeat(64),
+      },
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const requestText = JSON.stringify({
+      headers: request.headers,
+      body: JSON.parse(String(request.body)),
+    });
+    expect(requestText).not.toContain('CREW_RUN_TOKEN');
+    expect(requestText).not.toContain('openai-run-123');
+    expect(requestText).not.toContain('e'.repeat(64));
+  });
+
   it('returns a typed rate-limit failure for HTTP 429', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: false,

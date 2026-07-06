@@ -36,6 +36,7 @@ import {
 } from './process-group.js';
 import { classifyTextFailure } from './failure-classifier.js';
 import type { TaskFailure } from './types.js';
+import { redactRunToken } from '../utils/redaction.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -533,6 +534,17 @@ export class CodexAdapter implements AgentAdapter {
         // only affects workspace-write).
         args.push('-c', 'sandbox_workspace_write.network_access=true');
       }
+      if (task.dispatchMcpEnv) {
+        // Env-only overlay assumes the worker host already has a crew MCP
+        // server table installed; if not, the partial table fails closed.
+        // The token rides in argv under the single-UID local threat model.
+        args.push(
+          '-c',
+          `mcp_servers.crew.env.CREW_RUN_ID="${task.dispatchMcpEnv.CREW_RUN_ID}"`,
+          '-c',
+          `mcp_servers.crew.env.CREW_RUN_TOKEN="${task.dispatchMcpEnv.CREW_RUN_TOKEN}"`,
+        );
+      }
       if (resumeSessionId) {
         // `codex exec resume --help` (checked 2026-07-05) names this a
         // Conversation/session id. Treat it as stable across resumed turns and
@@ -637,14 +649,17 @@ export class CodexAdapter implements AgentAdapter {
           }
         }
       } catch (error: unknown) {
-        const message =
-          error instanceof Error ? error.message : 'Unknown execution error';
+        const runToken = task.dispatchMcpEnv?.CREW_RUN_TOKEN;
+        const message = redactRunToken(
+          error instanceof Error ? error.message : 'Unknown execution error',
+          runToken,
+        );
         logger.error('[adapter:codex] process execution threw', {
           cwd: task.context.workingDirectory,
           timeoutMs: timeout,
           error: message,
         });
-        const stderrText = stderrCapture.text();
+        const stderrText = redactRunToken(stderrCapture.text(), runToken);
         return {
           output: stderrText,
           filesModified: [],

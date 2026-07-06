@@ -26,6 +26,8 @@ import {
   classifyHttpFailure,
   classifyTextFailure,
 } from './failure-classifier.js';
+import { defaultCrewBinaryResolver } from '../install/crew-binary.js';
+import { redactRunToken } from '../utils/redaction.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -587,6 +589,26 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--resume', task.constraints.resumeSessionId);
     }
 
+    if (task.dispatchMcpEnv) {
+      const crewBinary = defaultCrewBinaryResolver();
+      args.push(
+        '--mcp-config',
+        JSON.stringify({
+          mcpServers: {
+            crew: {
+              command: crewBinary.command,
+              args: [...crewBinary.args],
+              env: {
+                CREW_RUN_ID: task.dispatchMcpEnv.CREW_RUN_ID,
+                CREW_RUN_TOKEN: task.dispatchMcpEnv.CREW_RUN_TOKEN,
+              },
+            },
+          },
+        }),
+        '--strict-mcp-config',
+      );
+    }
+
     // No wall-clock timeout (was 300_000 pre-2026-05). Cancellation
     // is captain-driven via cancelSignal; the agent's own turn/token
     // budget is the natural cap.
@@ -686,14 +708,22 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         if (!streaming && !rawStdoutCapture) rawStdoutCapture = fallbackStdout;
       }
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown execution error';
-      const partialStdout = streamCapture.capturedText() || rawStdoutCapture;
+      const runToken = task.dispatchMcpEnv?.CREW_RUN_TOKEN;
+      const message = redactRunToken(
+        error instanceof Error ? error.message : 'Unknown execution error',
+        runToken,
+      );
+      const partialStdout = redactRunToken(
+        streamCapture.capturedText() || rawStdoutCapture,
+        runToken,
+      );
       const errorStderr = (error as { stderr?: unknown })?.stderr;
-      const partialStderr = stderrCapture.text()
-        || (typeof errorStderr === 'string' ? errorStderr : '');
+      const partialStderr = redactRunToken(
+        stderrCapture.text() || (typeof errorStderr === 'string' ? errorStderr : ''),
+        runToken,
+      );
       const partialEnvelope = streaming ? streamCapture.envelope() ?? extractStreamEnvelope(partialStdout) : undefined;
-      const partialOutput = partialEnvelope?.result ?? partialStdout;
+      const partialOutput = redactRunToken(partialEnvelope?.result ?? partialStdout, runToken);
       logger.error('[adapter:claude-code] process execution threw', {
         cwd: task.context.workingDirectory,
         timeoutMs: timeout,

@@ -280,6 +280,37 @@ describe('dispatchRunAgentInternal', () => {
     await waitFor(() => readRunAuthSidecar(h.crewHome, result.runId).revoked === true);
   });
 
+  it('does not write the per-dispatch run token to events.log', async () => {
+    let observedToken = '';
+    const adapter = makeMockAdapter({
+      name: 'mock',
+      execute: async (task) => {
+        observedToken = task.dispatchMcpEnv?.CREW_RUN_TOKEN ?? '';
+        task.onOutput?.('worker booted without argv echo');
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = makeHarness([adapter]);
+    cleanups.push(h.cleanup);
+
+    const result = await dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'do work' },
+      ctx: h.ctx,
+    });
+
+    await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+    expect(observedToken).toMatch(/^[0-9a-f]{64}$/);
+    const eventsLog = readFileSync(h.runStateStore.eventsLogPath(result.runId), 'utf-8');
+    expect(eventsLog).toContain('[mock] worker booted without argv echo');
+    expect(eventsLog).not.toContain(observedToken);
+    expect(eventsLog).not.toContain('CREW_RUN_TOKEN');
+  });
+
   it('revokes sidecars for error terminals but not cancelled terminals', async () => {
     const errorAdapter = makeMockAdapter({
       name: 'mock-error',

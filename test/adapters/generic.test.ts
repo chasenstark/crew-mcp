@@ -52,6 +52,35 @@ describe('GenericAdapter', () => {
     );
   });
 
+  it('ignores dispatchMcpEnv instead of emitting MCP env argv', async () => {
+    mockExeca.mockResolvedValueOnce(execaResult({
+      stdout: 'ok',
+      stderr: '',
+      exitCode: 0,
+    }));
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    await adapter.execute({
+      prompt: 'run task',
+      dispatchMcpEnv: {
+        CREW_RUN_ID: 'generic-run-123',
+        CREW_RUN_TOKEN: 'd'.repeat(64),
+      },
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    const args = mockExeca.mock.calls[0]?.[1] as string[];
+    expect(args).toEqual(['--prompt', 'run task']);
+    expect(args.join('\n')).not.toContain('CREW_RUN_TOKEN');
+    expect(args.join('\n')).not.toContain('generic-run-123');
+  });
+
   it('inserts -- before an appended leading-dash prompt', async () => {
     mockExeca.mockResolvedValueOnce(execaResult({
       stdout: 'ok',

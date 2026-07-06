@@ -252,9 +252,41 @@ describe('GeminiCliAdapter', () => {
       constraints: { sandbox: 'workspace-write' },
     });
 
-    expect(observedArgs).toEqual(['--output-format', 'json']);
+    expect(observedArgs).toEqual([
+      '--output-format',
+      'json',
+      '--allowed-mcp-server-names',
+      '',
+    ]);
     expect(observedArgs).not.toContain('--policy');
     expect(observedEnv?.GEMINI_CLI_TRUST_WORKSPACE).toBeUndefined();
+  });
+
+  it('always disables inherited MCP servers, even if dispatchMcpEnv is present', async () => {
+    let observedArgs: string[] = [];
+    mockExeca.mockImplementationOnce(((_cmd: string, args: string[]) => {
+      observedArgs = args;
+      return Promise.resolve({
+        stdout: `${JSON.stringify({ response: 'ok' })}\n`,
+        stderr: '',
+        exitCode: 0,
+      });
+    }) as never);
+
+    await adapter.execute({
+      prompt: 'review',
+      dispatchMcpEnv: {
+        CREW_RUN_ID: 'gemini-run-123',
+        CREW_RUN_TOKEN: 'c'.repeat(64),
+      },
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    const allowlistIndex = observedArgs.indexOf('--allowed-mcp-server-names');
+    expect(allowlistIndex).toBeGreaterThan(-1);
+    expect(observedArgs[allowlistIndex + 1]).toBe('');
+    expect(observedArgs.join('\n')).not.toContain('CREW_RUN_TOKEN');
+    expect(observedArgs.join('\n')).not.toContain('gemini-run-123');
   });
 
   it('extracts semantic version tag', async () => {
@@ -357,7 +389,12 @@ describe('GeminiCliAdapter', () => {
     const [, args, options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
     // Gemini runs headless on `--output-format json`; the prompt must not be
     // a positional or post-`--` argv token (Gemini would never see it).
-    expect(args).toEqual(['--output-format', 'json']);
+    expect(args).toEqual([
+      '--output-format',
+      'json',
+      '--allowed-mcp-server-names',
+      '',
+    ]);
     expect(args).not.toContain('--');
     expect(args).not.toContain(composedPrompt);
     expect(options.input).toBe(composedPrompt);
@@ -377,7 +414,7 @@ describe('GeminiCliAdapter', () => {
 
     expect(mockExeca).toHaveBeenCalledWith(
       'gemini',
-      ['--output-format', 'json'],
+      ['--output-format', 'json', '--allowed-mcp-server-names', ''],
       expect.objectContaining({
         cwd: '/tmp/project',
         input: '-not-a-gemini-flag',
@@ -402,7 +439,12 @@ describe('GeminiCliAdapter', () => {
     // stdin has no argv byte limit, so a large prompt is delivered, not rejected.
     expect(mockExeca).toHaveBeenCalledTimes(1);
     const [, args, options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
-    expect(args).toEqual(['--output-format', 'json']);
+    expect(args).toEqual([
+      '--output-format',
+      'json',
+      '--allowed-mcp-server-names',
+      '',
+    ]);
     expect(options.input).toBe(largePrompt);
     expect(result.status).toBe('success');
   });
@@ -422,7 +464,14 @@ describe('GeminiCliAdapter', () => {
 
     expect(mockExeca).toHaveBeenCalledWith(
       'gemini',
-      ['--output-format', 'json', '--model', 'gemini-2.5-pro'],
+      [
+        '--output-format',
+        'json',
+        '--model',
+        'gemini-2.5-pro',
+        '--allowed-mcp-server-names',
+        '',
+      ],
       expect.objectContaining({
         cwd: '/tmp/project',
         input: 'test',
@@ -454,6 +503,8 @@ describe('GeminiCliAdapter', () => {
       'json',
       '--model',
       'gemini-2.5-flash',
+      '--allowed-mcp-server-names',
+      '',
     ]);
     expect((callArgs?.[2] as { input?: string }).input).toContain('return json');
   });

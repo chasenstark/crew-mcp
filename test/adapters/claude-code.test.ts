@@ -19,6 +19,7 @@ const mockExeca = vi.mocked(execa);
 
 const { ClaudeCodeAdapter } = await import('../../src/adapters/claude-code.js');
 const { logger } = await import('../../src/utils/logger.js');
+const { REDACTED_RUN_TOKEN } = await import('../../src/utils/redaction.js');
 
 // Load fixtures
 const successFixture = readFileSync(
@@ -97,6 +98,10 @@ function createStreamingClaudeProcess({
 
 describe('ClaudeCodeAdapter', () => {
   let adapter: InstanceType<typeof ClaudeCodeAdapter>;
+  const dispatchMcpEnv = {
+    CREW_RUN_ID: 'claude-run-123',
+    CREW_RUN_TOKEN: 'b'.repeat(64),
+  };
 
   beforeEach(() => {
     adapter = new ClaudeCodeAdapter();
@@ -178,11 +183,80 @@ describe('ClaudeCodeAdapter', () => {
       const args = mockExeca.mock.calls[0]?.[1] as string[];
       expect(args[0]).toBe('-p');
       expect(args[1]).toBe('-');
+      expect(args).not.toContain('--mcp-config');
+      expect(args).not.toContain('--strict-mcp-config');
       expect(args).not.toContain(composedPrompt);
       expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
         buffer: false,
         input: composedPrompt,
       }));
+    });
+
+    it('appends an inline crew MCP config when dispatchMcpEnv is present', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'Test prompt',
+        dispatchMcpEnv,
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      const configIndex = args.indexOf('--mcp-config');
+      expect(configIndex).toBeGreaterThan(-1);
+      expect(args[configIndex + 2]).toBe('--strict-mcp-config');
+      expect(args[configIndex + 1]).toBe(JSON.stringify({
+        mcpServers: {
+          crew: {
+            command: process.execPath,
+            args: [process.argv[1], 'serve'],
+            env: dispatchMcpEnv,
+          },
+        },
+      }));
+      expect(JSON.parse(args[configIndex + 1])).toEqual({
+        mcpServers: {
+          crew: {
+            command: process.execPath,
+            args: [process.argv[1], 'serve'],
+            env: dispatchMcpEnv,
+          },
+        },
+      });
+    });
+
+    it('redacts dispatch run tokens from spawn-error results and logs', async () => {
+      const loggerSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+      mockExeca.mockImplementationOnce(() => {
+        throw new Error(
+          `spawn ENOENT: claude --mcp-config {"env":{"CREW_RUN_TOKEN":"${dispatchMcpEnv.CREW_RUN_TOKEN}"}}`,
+        );
+      });
+
+      try {
+        const result = await adapter.execute({
+          prompt: 'Test prompt',
+          dispatchMcpEnv,
+          context: { workingDirectory: '/tmp/project' },
+        });
+
+        const resultText = JSON.stringify(result);
+        expect(resultText).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(resultText).toContain(REDACTED_RUN_TOKEN);
+        expect(result.output).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(result.failure?.rawSignal).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(JSON.stringify(result.metadata.rawEvents)).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+
+        const logText = JSON.stringify(loggerSpy.mock.calls);
+        expect(logText).not.toContain(dispatchMcpEnv.CREW_RUN_TOKEN);
+        expect(logText).toContain(REDACTED_RUN_TOKEN);
+      } finally {
+        loggerSpy.mockRestore();
+      }
     });
 
     it('passes --resume and returns the rotated session id without an equality guard', async () => {

@@ -181,6 +181,9 @@ export class GeminiCliAdapter implements AgentAdapter {
     if (task.constraints?.model) {
       args.push('--model', task.constraints.model);
     }
+    // Empirically verified on gemini-cli 0.49.0: an empty string parses to
+    // [''] and denies every real MCP server name. Re-verify on version bumps.
+    args.push('--allowed-mcp-server-names', '');
 
     // Read-only dispatches (review/triage) are enforced at the tool level: we
     // write a per-run policy that denies Gemini's file-write and shell tools
