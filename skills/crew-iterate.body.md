@@ -1,12 +1,6 @@
 <!--
-  Canonical skill body for `crew-iterate`. Per-host templates wrap this
-  in the appropriate frontmatter. Single source of truth — edit here,
-  re-run `crew-mcp install` to propagate.
-
-  This skill is INDEPENDENT of `crew-captain.body.md` (the umbrella
-  `crew` skill). No host co-loads both bodies into context at the same
-  time, so the safety invariants from the umbrella are restated below.
-  When in doubt, the invariants in this preamble win.
+  Canonical `crew-iterate` body. Host templates add frontmatter.
+  Standalone by design; the safety invariants below win on conflicts.
 -->
 
 ## Crew — iterate-to-acceptance playbook
@@ -51,13 +45,21 @@ the turn, and:
      harness-tracked native `Agent` / `Task` subagent completing tells
      you nothing about crew runs, which are not harness-tracked.
   The host will fire a synthetic next-turn prefixed with
-  `CREW_WAIT_TERMINAL run_id=... status=... worktree=...` when the run
-  reaches terminal. Parse that line on receipt, then call
+  `CREW_WAIT_TERMINAL run_id=... agent=... status=... worktree=...`
+  when the run reaches terminal. Parse that line on receipt, then call
   `get_run_status({run_id})` for the full envelope. Without the
   synthetic-turn handling, the loop deadlocks: dispatched and ended
   the turn but never recognizes the resume.
+  If the synthetic turn arrives without that terminal line, or if a run
+  has been in-flight suspiciously long, fall back to:
+  `list_runs({status: ["success","partial","error","cancelled"],
+  completedAfter: <last surfaced ISO timestamp>})`. Dedupe run IDs you
+  already surfaced and process the remainder as normal terminal runs.
 - Codex / Gemini: no watcher. Discover terminal runs on the next user
   turn via `list_runs({status: ["success","partial","error"]})`.
+On any user turn while this loop has in-flight crew runs,
+opportunistically call `list_runs` so a lost watcher cannot stall the
+loop silently.
 
 **Iterate-specific: never use the foreground-wait opt-in.** Unlike
 one-shot dispatches in the umbrella body, iterate runs MUST NOT use
@@ -83,13 +85,13 @@ serializing any of them wastes the most wall-clock.
 
 **3. Escape hatch.** If the user says "stop / cancel / abandon /
 discard / pause" at any point: stop dispatching new runs, `cancel_run`
-any in-flight runs they name, and ask whether to discard or keep
-their worktrees. Use the host's structured-question tool
-(AskUserQuestion on Claude Code) to present the discard/keep options
-and capture the choice when available; if the host exposes no such
-tool, surface the options as prose and wait for a free-text reply.
-Either way, **Silence is not consent.** The escape hatch wins over any
-in-flight round.
+the in-flight runs they name; if they name none, default to ALL
+in-flight runs of this iterate loop. Then ask whether to discard or
+keep their worktrees. Apply the Structured-choice rule
+(AskUserQuestion on Claude Code; if the host exposes no such tool,
+surface the options as prose and wait for a free-text reply) for the
+discard/keep options. **Silence is not consent.** The escape hatch wins
+over any in-flight round.
 
 **4. Tool availability.** Before dispatching, call `list_agents` to
 confirm the chosen agent is `available: true`. Unavailable agents
@@ -113,10 +115,12 @@ shelling out bypasses dispatch tracking, watcher registration, and
 worktree allocation.
 
 **7. Read-only reviewer dispatches do not auto-clean.** After a
-reviewer's read-only run terminates, you must explicitly `discard_run`
-it. Iteration rounds accumulate read-only runs; forgetting to discard
-them leaves clutter in `list_runs`. This cleanup is the carve-out in
-invariant #1 — no user prompt required.
+reviewer's read-only run output is consumed, explicitly `discard_run`
+it. Iteration rounds accumulate reviewer runs; forgetting cleanup
+leaves clutter in `list_runs`. This cleanup is the carve-out in
+invariant #1 — no user prompt required. If cleanup fails with typed
+`run_in_flight:` or `busy_worktree:` errors, retry after the blocking
+run reaches terminal; never drop cleanup silently.
 
 **8. Ask the user before dispatching on ambiguity.** Step 0 is the
 natural disambiguation gate. If criteria are unclear, scope is
@@ -141,27 +145,19 @@ explicit Other/free-text escape.
 
 ### When to use this skill (vs umbrella `crew` alone)
 
-Use `crew-iterate` when ANY hold:
-- User used "review", "iterate", "until good", "keep working",
-  "ship-ready", or similar quality-loop framing.
-- User wants multiple agents pushing on something until criteria
-  pass.
-- The change should land via `merge_run` once it converges.
+Use `crew-iterate` when the user wants a quality loop: review,
+iterate, ship-ready, multiple agents pushing until criteria pass, or a
+converged run that should land via `merge_run`.
 
-Fall back to umbrella `crew` when:
-- One-shot dispatch with no review expected.
-- Review-only work on existing code (no implementer).
-- User explicitly says "no review, just implement".
+Fall back to umbrella `crew` for one-shot dispatch, review-only work, or
+an explicit "no review, just implement."
 
 When in doubt: ask. "Do you want me to iterate this until review
 passes, or just dispatch once?"
 
 **Cross-host trigger.** All hosts use `name: crew-iterate`; only the
-slash prefix differs (`/crew-iterate` on Claude Code; `crew-iterate`
-on Codex/Gemini). Auto-load matches the `description:` phrase on any
-host. On Codex/Gemini the loop still works but each terminal status
-surfaces on the next user turn (no watcher overlay) — tell the user
-upfront if you detect that host.
+slash prefix differs. On Codex/Gemini, terminal status surfaces on the
+next user turn (no watcher overlay) — tell the user upfront.
 
 ## The 5-step loop
 
@@ -173,35 +169,22 @@ step — implementer prompt, reviewer prompt, and stop condition all
 reference the same persisted set. Skip this step and you have no
 defined "done".
 
-Read the user's request. Derive 3–7 criteria. **Every criterion must
-be tagged with one of three TYPE labels** — these are MANDATORY
-because the type decides *who* establishes the criterion's truth: `[M]`
-is verified by running the command in a writable tree (the implementer
-reports it, the captain re-runs to confirm — Step 3), while `[B]`/`[N]`
-are scored by the reviewers reading the diff:
+Read the user's request and derive 3–7 criteria. **Every criterion must
+be tagged with one TYPE label** because the type decides who establishes
+truth:
 
-- **`[M]` Mechanical**: a test command, lint check, file-content
-  assertion, or build step producing a binary signal. The captain owns
-  this signal — it re-runs the command itself in the implementer's
-  worktree (Step 3). Do NOT rely on a dispatched reviewer to run it: a
-  read-only Codex reviewer's sandbox blocks the temp-dir writes Vitest
-  needs, so it physically cannot run the suite and would FAIL the
-  criterion environmentally.
-  Example: **Skill-renderer tests pass** `[M]` —
-  `pnpm test src/install/skill-renderer.test.ts` exits 0.
-- **`[B]` Behavioral**: a property a reviewer can verify by reading
-  the diff.
-  Example: **Manifest entries well-formed** `[B]` — SKILL_MANIFEST
-  entries each have a unique id and a bodyFile present on disk.
-- **`[N]` Negative**: a "doesn't break X" clause for load-bearing
-  code the change touches.
-  Example: **v1 fixtures still parse** `[N]` — existing v1
-  install-manifest fixtures still parse via the v1→v2 migration path.
+- **`[M]` Mechanical**: test, lint, build, or file-content assertion
+  with a binary signal. The captain owns it by re-running in the
+  implementer's writable worktree (Step 3); reviewers do not run `[M]`
+  commands because read-only sandboxes can fail environmentally.
+- **`[B]` Behavioral**: a property a reviewer can verify by reading the
+  diff, with file:line evidence.
+- **`[N]` Negative**: a "doesn't break X" clause for load-bearing code
+  the change touches.
 
 Avoid pure-vibes criteria ("looks idiomatic", "feels clean") unless
-paired with a concrete signal. Avoid criteria the reviewer can't
-check from the diff alone (don't say "performance regresses by <5%"
-unless you also dispatch a benchmark).
+paired with a concrete signal, and avoid claims reviewers cannot check
+from the diff unless you also dispatch a benchmark or equivalent.
 
 **Criteria-store flow.** When the criteria tools are present, they are
 the source of truth. Use them in this order:
@@ -218,11 +201,11 @@ the source of truth. Use them in this order:
    output itself; if you skip the reprint, you are asking the user to
    confirm criteria they cannot read. Print the table before invoking
    AskUserQuestion, and do not hand-format a parallel criteria list.
-3. Use the host's structured-question tool (AskUserQuestion on Claude
-   Code) to present Confirm / Edit / Add options and capture the choice
-   when available; Edit and Add must allow free-text details. If the
-   host exposes no such tool, surface the options as prose and wait for
-   a free-text reply. Either way, **Silence is not consent.**
+3. Present Confirm / Edit / Add options; Edit and Add must allow
+   free-text details. Apply the Structured-choice rule
+   (AskUserQuestion on Claude Code; if the host exposes no such tool,
+   surface the options as prose and wait for a free-text reply).
+   **Silence is not consent.**
 4. If the user explicitly OKs with no edits, call
    `confirm_criteria({criteria_set_id})`.
 5. If the user explicitly OKs and includes edits in the same message,
@@ -257,13 +240,21 @@ criteria tools exist.
 **Tools-absent fallback.** Only when the criteria tools are genuinely
 absent from the MCP surface, fall back to the legacy prose criteria
 block: derive the same 3–7 `[M]`/`[B]`/`[N]` criteria, surface the
-numbered list to the user, use the host's structured-question tool
-(AskUserQuestion on Claude Code) to present Confirm / Edit / Add
-options and capture the choice when available, and carry that confirmed
-block in prompts/peer messages for the rest of the loop. If the host
-exposes no such tool, surface the options as prose and wait for a
-free-text reply. Either way, **Silence is not consent.**
-This fallback is a compatibility path, not the normal contract.
+numbered list, present Confirm / Edit / Add options, and carry that
+confirmed block in prompts/peer messages for the rest of the loop.
+Apply the Structured-choice rule
+(AskUserQuestion on Claude Code; if the host exposes no such tool,
+surface the options as prose and wait for a free-text reply).
+**Silence is not consent.** This fallback is compatibility, not the
+normal contract.
+
+**Combined Step 0 + 0.5 gate.** If `get_crew_preferences` in Step 0.5
+fills every role without heuristic picks, use one structured ask with
+two questions: criteria Confirm / Edit / Add, and agent picks OK /
+Override. `AskUserQuestion` supports multiple questions. If any role
+falls to the fallback heuristic, keep the gates sequential: first
+criteria confirmation, then agent-pick confirmation after the heuristic
+can use the confirmed criteria profile.
 
 **Criteria revision mid-loop (new-epoch rule).** If a later round
 reveals a criterion is malformed or impossible:
@@ -274,11 +265,10 @@ reveals a criterion is malformed or impossible:
    wait for it to terminate and then `continue_run` after the revised
    criteria are confirmed.
 2. **Flag to user; propose revision ops; wait for confirmation.**
-   Use the host's structured-question tool (AskUserQuestion on Claude
-   Code) to present Confirm revision / Edit revision / Hand off options
-   and capture the choice when available; Edit revision must allow
-   free-text details. If the host exposes no such tool, surface the
-   options as prose and wait for a free-text reply. Either way,
+   Present Confirm revision / Edit revision / Hand off options; Edit
+   revision must allow free-text details. Apply the Structured-choice
+   rule (AskUserQuestion on Claude Code; if the host exposes no such
+   tool, surface the options as prose and wait for a free-text reply).
    **Silence is not consent.** If the user edits the proposal without
    explicitly OKing it, hold the pending ops and ask again.
 3. After explicit approval, call
@@ -292,9 +282,9 @@ reveals a criterion is malformed or impossible:
 5. **Start a new loop epoch.** The revised criteria define a fresh
    epoch with its own round counter starting at 0. Total rounds across
    all epochs are bounded by an **epoch-aware safety cap (default 9
-   total, no more than 3 in any one epoch)**. This prevents both the
-   unfair cap-out where a revision at round 3 immediately hits cap
-   AND infinite revisions becoming a perpetual-motion machine.
+   total, no more than 3 in any one epoch)**. This is captain-enforced
+   only; the runtime does not count rounds. The cap prevents both an
+   unfair revision-at-round-3 cap-out and infinite revision loops.
 
 What counts as a "revision": any change altering a criterion's
 testable predicate. Pure wording clarifications that preserve the
@@ -308,70 +298,51 @@ choice is part of the loop contract, not an invisible captain
 preference. This gate parallels the Review panels gate in the
 umbrella `crew` body.
 
-**Preferences win — this is the overriding rule of this step.** The
-user's configured defaults and bans are the decision, not hints you
-weigh against your own taste for model variety. Heterogeneity is a
-distant tiebreaker used only to fill a role the user left open. Never
-trade a user preference for "a different model would surface different
-bugs."
+**Preferences win.** Configured defaults and bans are decisions, not
+hints. Heterogeneity is only a tiebreaker for roles the user left open.
 
 1. Call `list_agents`.
 2. Call `get_crew_preferences({scope: "iterate"})`. **Not optional
    when the tool exists** — you cannot honor preferences you never
    read. Only skip it (and fall back to the heuristic) if the tool is
    genuinely absent from this install.
-3. **Apply `iterate.banList` as an absolute filter.** Every id in the
-   banList is removed from every candidate pool — implementer,
-   reviewers, fallbacks, all of it. A banned agent is NEVER proposed,
-   never offered as an alternative, and never used to satisfy
-   heterogeneity or availability, even if it is the only remaining
-   option. If banning empties a role, leave that role unfilled and ask
-   the user — do NOT reach for a banned agent to fill it.
+3. **Apply `iterate.banList` as an absolute filter.** Remove banned ids
+   from every pool. Never propose, offer, or use one for heterogeneity
+   or availability; if a role empties, leave it unfilled and ask.
 4. Remove any `available: false` agents, and remove your own host
    product from the **crew** candidate pools (invariant #5). Don't
    drop the host from the review plan, though: unless it's banned or
    the user excluded it, carry it as the **host reviewer** — a native
    subagent run outside Crew (Step 2).
-5. Fill each role by this precedence, highest first:
-   a. **Per-run override** the user states in this conversation.
-   b. **Configured preference** — `iterate.implementer` for the
-      implementer; `iterate.reviewers` (in order) for reviewers. Use
-      them as-is. If the user configured the same product for multiple
-      roles, honor that — do NOT inject a different model for variety.
-   c. **Fallback heuristic** — only for a role no preference covers.
-      Mechanical-heavy criteria fit a fast-iteration implementer
-      profile; behavioral-heavy fit a deep-reasoning profile.
-      Heterogeneity (different product for implementer vs reviewer) is
-      a tiebreaker among otherwise-equal candidates here — never a
-      reason to override (a) or (b).
+5. Fill each role by precedence: (a) per-run override in this
+   conversation, (b) configured preference (`iterate.implementer`,
+   `iterate.reviewers` in order), then (c) fallback heuristic only for
+   uncovered roles. Mechanical-heavy criteria fit fast iteration;
+   behavioral-heavy fit deep reasoning. Do not inject variety over (a)
+   or (b).
 
-**How many reviewers — scale the count to the change.** The number of
-dispatched reviewers is the captain's call, sized to complexity and
-risk (this is in addition to the host reviewer — your native subagent):
+**How many reviewers — scale the count to the change.** The dispatched
+reviewer count is sized to complexity and risk, in addition to the host
+native reviewer:
 
 - **1 dispatched reviewer** (the default): narrow, localized, low-risk
   change — a handful of files, no load-bearing code.
-- **2 distinct-model reviewers**: moderate complexity, OR a small but
-  high-risk change — auth, migrations, money, concurrency, public API,
-  security, anything where a regression is expensive — where a second
-  independent model earns its keep.
-- **3 distinct-model reviewers**: large AND high-risk AND cross-cutting
-  (touches several subsystems). Stop at ~3 distinct models; beyond that
-  is diminishing returns. For a very large diff, keep the model count
-  and use intra-model splitting (Step 2) rather than adding more
-  distinct models.
+- **2 distinct-model reviewers**: moderate complexity, OR small but
+  high-risk work where a second independent model earns its keep.
+- **3 distinct-model reviewers**: large AND high-risk AND cross-cutting.
+  Stop at ~3 distinct models; for very large diffs, split within a model
+  (Step 2) instead of adding more distinct models.
 
-A panel's value is distinct **models** reviewing the same diff, so add
-different products — never repeats of one model (repeats exist only for
-intra-model splitting of a huge diff). Draw extra reviewers from the
-eligible pool (non-banned, available, not your host product). If that
-pool has only one model, you cannot scale the distinct-model count past
-one — say so rather than padding.
+A panel's value is distinct **models** reviewing the same diff. Draw
+extras from eligible agents (non-banned, available, not your host
+product); if only one model is eligible, say so rather than padding.
+Configured `iterate.reviewers` is the baseline roster, but the user
+confirms the final count below, so always show the count and one-line
+complexity reason.
 
-Configured `iterate.reviewers` is the baseline roster. You MAY propose
-more reviewers than configured for a high-complexity change, or fewer
-for a trivial one — but the user confirms the final count below, so
-always show the count you chose and the one-line complexity reason.
+**Reviewer effort.** Scale effort to this tier, not automatically to
+the implementer's +1 bump. Default to the un-bumped implementer level;
+raise only for moderate/high-risk tiers. Use `low|medium|high|xhigh|max`.
 
 Surface to the user verbatim:
 
@@ -391,11 +362,10 @@ Surface to the user verbatim:
 > "drop reviewer <id>", "drop host reviewer", "just one reviewer",
 > "use <id> for both") or OK.
 
-Use the host's structured-question tool (AskUserQuestion on Claude
-Code) to present OK / Override options and capture the choice when
-available; Override must allow free-text details. If the host exposes
-no such tool, surface the options as prose and wait for a free-text
-reply. Either way, **Silence is not consent.** If the user overrides,
+Present OK / Override options; Override must allow free-text details.
+Apply the Structured-choice rule (AskUserQuestion on Claude Code; if the
+host exposes no such tool, surface the options as prose and wait for a
+free-text reply). **Silence is not consent.** If the user overrides,
 restate the final picks and ask again with the same structured-choice
 surface.
 
@@ -411,22 +381,34 @@ Recognize these phrases consistently:
   subagent for this iteration (one-run exclusion, not a ban).
 - `no <id>` / `never <id>` → session-scoped ban only; do not persist.
 
-After confirmation, include this agent-pick block in downstream
-`peer_messages` and host-native prompts. The acceptance criteria
-contract travels separately via `criteria_set_id` when the tools are
-present, so do not paste the criteria beside this block except in the
-tools-absent fallback:
+After confirmation, include this loop-state block in every downstream
+dispatch's `peer_messages` and in host-native prompts. The acceptance
+criteria contract travels separately via `criteria_set_id` when the
+tools are present, so do not paste the criteria beside this block except
+in the tools-absent fallback:
 
 ```
-## Agent-pick (Step 0.5)
+## Loop state (Step 0.5)
+Round: <N> (epoch <E>; captain-enforced cap: 3 per epoch, 9 total)
+Criteria: <criteria_set_id> (epoch <E>, confirmed)
 Implementer: <id> (<reason>)
-Crew reviewer(s): <id, id> (<reason>)
+Crew reviewer(s): <id, id> (<reason>; effort <level>)
 Host reviewer: <host via native subagent | foreground native | inline fallback | omitted> (<reason>)
-This block is included in downstream prompts so reviewers can audit agent-pick consistency across rounds.
+Roster: implementer=<id>; crew_reviewers=<ids>; host_reviewer=<host|omitted>
+Accepted N-As: <none | criterion ids + user-confirmed reason>
+Deferred/accepted findings: <none | finding ids + user decision>
+This block is included in downstream prompts so reviewers can audit
+agent-pick and loop-state consistency across rounds.
 ```
 
 If a later round uses different picks without a documented user
 override, stop and re-confirm before dispatching again.
+
+**State recovery after compaction or `/clear`.** Recover from durable
+state, not memory: call `get_criteria({criteria_set_id})` for the
+current criteria/epoch/status, call `list_runs` for latest run statuses
+and worktrees, then read the latest run's stored prompt context for the
+loop-state block above. Never re-derive criteria from memory.
 
 ### Step 1 — Dispatch implementer
 
@@ -446,7 +428,7 @@ run_agent({
      the command + exit code in your summary.">,
   effort: <one level higher than for raw implementation, clamped at "max">,
   peer_messages: [
-    { body: <agent-pick block, verbatim from Step 0.5>,
+    { body: <loop-state block, verbatim from Step 0.5>,
       kind: "note", from_label: "agent picks" }
   ]
 })
@@ -464,12 +446,9 @@ run_agent({
   behavioral-heavy → deep-reasoning profile. Heterogeneity between
   implementer and reviewer is only a tiebreaker for heuristic picks —
   never a reason to deviate from a confirmed Step 0.5 pick.
-- If dispatch rejects the criteria contract, the dispatch-time criteria
-  errors are exactly `criteria.unknown`, `criteria.not_confirmed`,
-  `criteria.cross_repo`, `criteria.unparsable`,
-  `criteria.unknown_schema_version`, `criteria.linkage_mismatch`, and
-  `criteria.contract_too_large`. `criteria.invalid` belongs to
-  `create_criteria` / `confirm_criteria` / `revise_criteria`
+- If dispatch rejects the criteria contract, handle the seven
+  dispatch-time `criteria.*` codes (Step 0). `criteria.invalid` belongs
+  to `create_criteria` / `confirm_criteria` / `revise_criteria`
   validation, not dispatch.
 - Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
   the turn, and on Claude Code spawn the watcher for each returned
@@ -488,9 +467,13 @@ host review runs (invariant #2).
 **(a) Crew review (default-on).** Dispatch the reviewer(s) confirmed
 in Step 0.5 — the exact set and count the user OK'd. Do not re-pick or
 resize here, and do not swap in a different model for variety. The
-dispatch mechanism depends on the count:
+dispatch mechanism depends on count and lifecycle:
 
-- **One reviewer → `run_agent`** (single read-only dispatch, below).
+- **One in-place-capable reviewer → `run_agent`** (single read-only
+  dispatch, below).
+- **One ephemeral-worktree reviewer (agy) → bound `run_panel` with one
+  reviewer.** A solo `run_agent` ephemeral review snapshots the HOST
+  repo, not the implementer worktree, so it reviews the wrong diff.
 - **Two or more reviewers → `run_panel`** (one call, all reviewers at
   once; see §"1+1 vs panel" and the `run_panel` dispatch shape). Never
   fan out N separate `run_agent` calls by hand — you'd lose the
@@ -501,12 +484,12 @@ host model's review vote. Crew can't dispatch your own host product
 (invariant #5), so run it as a native subagent (`Agent` / `Task`) —
 **not** `run_agent`. Launch it **after** the crew dispatch so the
 panel never waits on it. Hand it the SAME `REVIEW_PROMPT_TEMPLATE`,
-agent-pick block, implementer summary, and worktree path the crew
+loop-state block, implementer summary, and worktree path the crew
 reviewers get; tell it review-only, do not edit. Native subagents have
 no `criteria_set_id` param or `peer_messages` channel, so immediately
 before launching the host reviewer, call
 `get_criteria({criteria_set_id})` and build the subagent prompt from
-that returned `rendered_block` plus the agent-pick block, implementer
+that returned `rendered_block` plus the loop-state block, implementer
 summary, and worktree path. This is the one residual captain-inserted
 criteria block, and it must come from `get_criteria` rather than memory
 or hand reformatting.
@@ -530,6 +513,13 @@ The captain ALSO reads the diff to consolidate (Step 3) — that read is
 mandatory orchestration QA, not an extra same-model vote. Don't
 double-count the captain's read and the host subagent's review.
 
+After dispatching crew reviewers, start every `[M]` criterion command as
+background Bash in `A.worktree_path` when the command does not mutate
+tracked files (tests/lint/build normally qualify; skip or defer mutating
+commands). This overlaps the captain's mechanical pass with review.
+Reconcile the results in Step 3; captain `[M]` scores still override
+reviewer `[M]` scores.
+
 Single-reviewer dispatch:
 
 ```
@@ -538,9 +528,10 @@ run_agent({
   criteria_set_id: <confirmed criteria_set_id>,
   read_only: true,
   working_directory: <A.worktree_path>,
+  effort: <reviewer effort from Step 0.5>,
   peer_messages: [
-    { body: <agent-pick block>, kind: "note",
-      from_label: "agent picks" },
+    { body: <loop-state block>, kind: "note",
+      from_label: "agent picks + loop state" },
     { body: A.summary, files: A.files_changed,
       kind: "review", from_label: "implementer" }
   ],
@@ -555,15 +546,36 @@ run_panel({
   implementer_run_id: A,
   criteria_set_id: <confirmed criteria_set_id>,
   reviewers: [
-    { agent_id: <reviewer>, prompt: <REVIEW_PROMPT_TEMPLATE>,
-      read_only: true,
+    { agent_id: <reviewer>,
+      effort: <reviewer effort from Step 0.5>,
+      prompt: <REVIEW_PROMPT_TEMPLATE>,
       peer_messages: [
-        { body: <agent-pick block>, kind: "note",
-          from_label: "agent picks" }
+        { body: <loop-state block>, kind: "note",
+          from_label: "agent picks + loop state" }
       ] }
   ]
 })
 ```
+
+For bound panels, omit explicit read-only and working-directory fields
+on reviewer entries. Crew derives in-place reviewer placement from
+`implementer_run_id`; ephemeral-worktree adapters are routed to their
+disposable snapshots.
+
+**Ephemeral reviewers.** An adapter such as agy reviews via
+`run_mode: "ephemeral_review"`: Crew snapshots A's worktree into a
+disposable per-reviewer worktree, keeps only the text findings, and
+never makes that reviewer mergeable. Give it a bound panel entry with
+`agent_id`, `prompt`, optional `effort`, and `peer_messages` only.
+Explicit read-only or working-directory fields are rejected for that
+reviewer. `discard_run` disposes the snapshot after findings are
+consumed.
+
+If `run_panel` returns `partial: true` or `failed_reviewers`, surface
+which reviewers failed and why. Re-dispatch with the fixed shape when
+the fix is obvious (for example remove explicit placement fields from
+an ephemeral reviewer); otherwise ask the user before consolidating a
+thinner panel than they confirmed.
 
 **Skip review entirely** (crew AND host) only when the user says "no
 review" out loud.
@@ -619,56 +631,26 @@ complexity — this is how each shape dispatches):
 
 ### Intra-model split mechanics (large diffs)
 
-When a single model's review needs to be split across multiple
-agents of that model, the captain partitions, dispatches, and
-merges as follows.
+Split only when one model cannot review the diff well in one pass
+(roughly 200 files / 5000 lines; when in doubt, do not split). Partition
+by files:
 
-**When to split.** Use judgment: a 200-file / 5000-line diff is a
-reasonable threshold where a single agent's review quality degrades.
-Smaller diffs should stay as one agent per model. When in doubt,
-don't split — a slightly less thorough single-pass review is better
-than a poorly partitioned split.
+1. **Group by module/directory.** Never split a file across agents.
+2. **Keep test + implementation paired.** `foo.ts` and `foo.test.ts`
+   belong together.
+3. **Shared files go to every partition.** Mark config/types/shared
+   files as shared context, not exclusive ownership.
+4. **Aim for roughly equal partitions,** but respect module boundaries.
 
-**How to partition files.**
+Each sub-agent gets the same `criteria_set_id`, full implementer
+summary, same review prompt, and a scoped partition note.
 
-1. **Group by module/directory.** Keep files from the same directory
-   or logical module together. Never split a file across two agents —
-   the split boundary is always at the file level.
-2. **Keep test + implementation paired.** If `foo.ts` is in partition
-   A, `foo.test.ts` must also be in partition A. The reviewer needs
-   to see both to assess coverage.
-3. **Shared files go to every partition.** Config files, type
-   definitions, and other files touched by multiple partitions are
-   included in every sub-agent's file list (marked as shared context,
-   not exclusive). Each sub-agent reviews them in the context of its
-   own partition.
-4. **Aim for roughly equal partitions** by file count, but respect
-   module boundaries over strict equality.
-
-**Prompt for sub-agents.** Each sub-agent gets:
-- The same `criteria_set_id` contract as every other crew reviewer.
-- The implementer's full summary (not partitioned).
-- A scoped file list: "Your partition covers these files: [list].
-  Other partitions cover the remaining files — focus your review on
-  your partition but note any cross-partition concerns you spot."
-- The same review prompt template as a single-agent reviewer.
-
-**Merging sub-agent results into one per-model review.** Before
-cross-model consolidation, the captain merges sub-agent outputs
-into a single per-model review:
-
-1. **Union of criteria scores.** Each sub-agent scores every
-   criterion against its partition. A criterion is PASS for the
-   model only if every sub-agent scored it PASS (or N-A). Any FAIL
-   from any sub-agent → the criterion is FAIL for that model.
-2. **Union of findings.** Deduplicate findings that reference the
-   same file:line. When two sub-agents flag the same shared file,
-   keep the more detailed finding.
-3. **Overall verdict.** Worst-case across sub-agents: any
-   CHANGES_NEEDED → model verdict is CHANGES_NEEDED; any BLOCKING →
-   model verdict is BLOCKING.
-4. **The merged per-model review** is what enters cross-model
-   consolidation (§"Cross-model consolidation" in Step 3).
+**Merging sub-agent results into one per-model review.** PASS a
+criterion only if every sub-agent scored it PASS (or N-A); any FAIL
+makes the model FAIL it. Deduplicate findings by file:line, keep the
+more detailed duplicate, and use the worst-case verdict (`BLOCKING` >
+`CHANGES_NEEDED` > `APPROVE`). The merged per-model review enters
+cross-model consolidation in Step 3.
 
 **`run_panel` dispatch shape for splits:**
 
@@ -678,10 +660,18 @@ run_panel({
   criteria_set_id: <confirmed criteria_set_id>,
   reviewers: [
     // Model 1: split across 2 agents
-    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files A–M list]. Other files are covered by another codex reviewer." },
-    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files N–Z list]. Other files are covered by another codex reviewer." },
+    { agent_id: "codex",
+      prompt: "<full review prompt>\n\nYour partition: [files A-M].",
+      peer_messages: [{ body: <loop-state block>, kind: "note",
+        from_label: "agent picks + loop state" }] },
+    { agent_id: "codex",
+      prompt: "<full review prompt>\n\nYour partition: [files N-Z].",
+      peer_messages: [{ body: <loop-state block>, kind: "note",
+        from_label: "agent picks + loop state" }] },
     // Model 2: single agent (diff small enough for one pass)
-    { agent_id: "claude-code", prompt: "<full review prompt>" },
+    { agent_id: "claude-code", prompt: "<full review prompt>",
+      peer_messages: [{ body: <loop-state block>, kind: "note",
+        from_label: "agent picks + loop state" }] },
   ],
 })
 ```
@@ -786,22 +776,32 @@ criterion.
 
 ### Step 3 — Iterate or converge
 
-Once the host review and all crew reviewer verdicts are in, parse each
-reviewer's criteria scoring + overall verdict. The stop condition is
-mechanical.
+On each wakeup, first join the two async review channels:
 
-**Captain mechanical pass (do this FIRST, before reading verdicts).**
-For every `[M]` criterion, the captain runs the command itself in the
-implementer's worktree (`A.worktree_path`) and records the exit code.
-The captain has full write access there — no sandbox — so the runner's
-temp writes succeed; this is the authoritative mechanical signal. These
-captain scores OVERRIDE any reviewer's `[M]` score: a read-only
-reviewer that FAILed an `[M]` criterion only because its sandbox
-blocked the suite is discarded as environmental, not a defect.
-Cross-check against the implementer's reported run — if the captain's
-re-run disagrees with what the implementer claimed, that gap is itself
-iterate-worthy signal. Only `[B]`/`[N]` criteria are scored from
-reviewer output.
+1. If a panel is active, call `get_panel_status({panel_id})` once. If
+   `running_count > 0`, note which reviewers are still running and end
+   the turn. If `partial: true` or `failed_reviewers` is non-empty,
+   surface the failed reviewers and reasons, then re-dispatch with a
+   fixed shape or ask the user before consolidating.
+2. Check whether the host-native review result has arrived. If crew is
+   terminal but the host review is missing, note that state and end the
+   turn; if the host review is in but crew is still running, do the same.
+3. Consolidate exactly once, only after all panel members are terminal
+   and the host review has arrived.
+
+At every round boundary, print a one-line ledger in chat: `round N,
+epoch E, failing criteria: <ids|none>, verdicts: <crew/host summary>`.
+Then parse each reviewer's criteria scoring + overall verdict. The stop
+condition is mechanical.
+
+**Captain mechanical pass (reconcile before reading verdicts).** For
+every `[M]` criterion, collect the background Bash result started in
+Step 2, or run it now in `A.worktree_path` if no safe background pass
+was started. The captain has full write access there, so runner temp
+writes succeed; this is the authoritative mechanical signal. Captain
+scores OVERRIDE any reviewer's `[M]` score. Cross-check the
+implementer's reported run; disagreement is iterate-worthy signal. Only
+`[B]`/`[N]` criteria are scored from reviewer output.
 
 **Converged (go to Step 4).** ALL of:
 - **every `[M]` criterion** exits cleanly in the captain's mechanical
@@ -832,11 +832,10 @@ structurally valid APPROVE.
 - If ANY reviewer scores N-A on ANY criterion, surface to the user
   before Step 4: "Reviewer X scored criterion N as N-A: '<reason>'.
   Accept N-A (treat as PASS), revise the criterion, override (treat
-  as FAIL and continue iterating), or hand off?" Use the host's
-  structured-question tool (AskUserQuestion on Claude Code) to present
-  those options and capture the choice when available; if the host
+  as FAIL and continue iterating), or hand off?" Apply the
+  Structured-choice rule (AskUserQuestion on Claude Code; if the host
   exposes no such tool, surface the options as prose and wait for a
-  free-text reply. Either way, **Silence is not consent.**
+  free-text reply). **Silence is not consent.**
 - Treat N-A as malformed if the reviewer gave no reason or only a
   generic one — follow the malformed-output re-dispatch path.
 - ≥2 N-A scores on the same criterion across rounds, OR ≥3 N-A
@@ -868,7 +867,10 @@ in alongside the crew reviewers (`aggregate_panel` won't return it):
    output is incomplete or malformed, re-dispatch that reviewer
    before consolidating.
 
-The consolidated report feeds into the iterate path below.
+After the consolidated report consumes the reviewer outputs, discard the
+read-only reviewer runs immediately (and ephemeral snapshots too). This
+is cleanup only; keep the implementer run. The consolidated report feeds
+into the iterate path below.
 
 **Iterate path.** Aggregate FAILing criteria + CHANGES_NEEDED
 findings into `peer_messages` and `continue_run` the implementer:
@@ -878,8 +880,8 @@ continue_run({
   run_id: A,
   criteria_set_id: <confirmed criteria_set_id>,
   peer_messages: [
-    { body: <agent-pick block>, kind: "note",
-      from_label: "agent picks (unchanged)" },
+    { body: <updated loop-state block>, kind: "note",
+      from_label: "agent picks + loop state" },
     { body: <host native review's failing criteria + findings>,
       kind: "review", from_label: "<host> native subagent review" },
       // label "captain inline review" if you used the inline fallback
@@ -888,7 +890,8 @@ continue_run({
       files: dispatched_review.files_changed },
     // one per crew reviewer if panel
   ],
-  prompt: "Address these review findings. Specifically, make the
+  prompt: "Round <N> recap: criteria still failing: <ids>.
+           Address these review findings. Specifically, make the
            FAILing criteria PASS under the injected criteria contract.
            Re-run every [M] criterion's command and report the command
            + exit code in your summary. Reply with a brief summary of
@@ -897,14 +900,17 @@ continue_run({
 ```
 
 For panels, the crew reviewer entries come from
-`aggregate_panel({panel_id})` — pass its result as `peer_messages`
-rather than hand-building the crew entries. Pass the same
-`criteria_set_id` to `continue_run` and **hand-append the host review**
-as one synthetic entry; `aggregate_panel` won't include it.
+`aggregate_panel({panel_id})` — pass its `.peer_messages` array to
+`continue_run` rather than the whole result object or hand-built crew
+entries. Pass the same `criteria_set_id` and **hand-append the host
+review** as one synthetic entry; `aggregate_panel` won't include it.
 
-After `continue_run` reaches terminal, `discard_run` the read-only
-reviewer runs (they don't auto-clean per invariant #7) and re-dispatch
-the same reviewers against the new diff. Round count increments by 1.
+After `continue_run` reaches terminal, increment the round count,
+update the loop-state block, and re-dispatch the same reviewers against
+the new diff. Include prior-round findings plus the implementer's fix
+summary as a labeled `peer_message`: "prior round — verify addressed;
+still re-score ALL criteria." Full re-score of ALL criteria remains
+mandatory.
 
 ### Step 3 — Edge cases
 
@@ -918,12 +924,9 @@ the same reviewers against the new diff. Round count increments by 1.
   structural check twice, replace with a different agent and flag.
 - **Criteria contract dispatch errors.** Stop and fix the store,
   confirmation, repo linkage, or prompt-size issue before retrying.
-  The dispatch-time criteria errors are exactly `criteria.unknown`,
-  `criteria.not_confirmed`, `criteria.cross_repo`,
-  `criteria.unparsable`, `criteria.unknown_schema_version`,
-  `criteria.linkage_mismatch`, and `criteria.contract_too_large`.
-  `criteria.invalid` is limited to `create_criteria`,
-  `confirm_criteria`, and `revise_criteria` validation.
+  Handle the seven dispatch-time `criteria.*` codes (Step 0).
+  `criteria.invalid` is limited to `create_criteria`, `confirm_criteria`,
+  and `revise_criteria` validation.
 - **A reviewer's `[M]` score never converges the loop.** `[M]` truth
   is the captain's mechanical pass, not reviewer output. If a reviewer
   PASSes an `[M]` criterion that the captain's re-run FAILs, the
@@ -933,23 +936,21 @@ the same reviewers against the new diff. Round count increments by 1.
   re-dispatch.
 - **BLOCKING verdict.** Stop the loop. Surface the reviewer's
   Recommended action. Ask: "rethink the approach, revise the
-  criteria, discard, or continue anyway?" Use the host's
-  structured-question tool (AskUserQuestion on Claude Code) to present
-  those options and capture the choice when available; if the host
-  exposes no such tool, surface the options as prose and wait for a
-  free-text reply. Either way, **Silence is not consent.** Do NOT
-  silently continue.
+  criteria, discard, or continue anyway?" Apply the Structured-choice
+  rule (AskUserQuestion on Claude Code; if the host exposes no such
+  tool, surface the options as prose and wait for a free-text reply).
+  **Silence is not consent.** Do NOT silently continue.
 - **Iteration cap reached (default 3 rounds per epoch; 9 total).**
   Reframe with criteria context: "We've iterated 3 rounds; criteria
   still failing: [2, 4]. Options: revise criteria → starts a new
   epoch (epoch-aware total cap still applies); switch implementer →
   continues current epoch; accept failing finding(s) and merge →
   carries into Step 4 as user-accepted/deferred (recorded in commit
-  body); hand off → captain stops dispatching." Use the host's
-  structured-question tool (AskUserQuestion on Claude Code) to present
-  those options and capture the choice when available; if the host
+  body); hand off → captain stops dispatching." This cap is
+  captain-enforced only; the runtime counts nothing. Apply the
+  Structured-choice rule (AskUserQuestion on Claude Code; if the host
   exposes no such tool, surface the options as prose and wait for a
-  free-text reply. Either way, **Silence is not consent.**
+  free-text reply). **Silence is not consent.**
 - **Reviewer disagreement (one PASS, one FAIL on criterion N).**
   Treat as FAIL (conservative). Forward both reviewers' reasoning to
   the implementer. If disagreement persists across two rounds on the
@@ -992,11 +993,10 @@ Step 4 with out-of-scope material:
 > Ready to merge `<run_id>` (<N> files changed): `<commit_title>`
 > into `<target_branch>`?
 
-Use the host's structured-question tool (AskUserQuestion on Claude
-Code) to present Merge / Do not merge options and capture the choice
-when available; if the host exposes no such tool, surface the options
-as prose and wait for a free-text reply. Either way, **Silence is not
-consent.** Wait for explicit "yes / go / merge" or the equivalent
+Present Merge / Do not merge options. Apply the Structured-choice rule
+(AskUserQuestion on Claude Code; if the host exposes no such tool,
+surface the options as prose and wait for a free-text reply). **Silence
+is not consent.** Wait for explicit "yes / go / merge" or the equivalent
 Merge selection. Then:
 
 ```
@@ -1023,13 +1023,15 @@ the iteration fixups rarely make a clean standalone stack. See the
 umbrella `crew` body's "Pick the merge strategy" for the full rule and
 the `confirmBeforeMerge` interaction.
 
-After merge, `discard_run` the read-only reviewer runs (cleanup) and
-acknowledge to the user.
+After merge, retry any reviewer cleanup that earlier hit
+`run_in_flight:` or `busy_worktree:`, then acknowledge to the user.
 
 ## Operating guardrails (delta from umbrella)
 
-- Reviewer effort defaults to mirror the implementer's. When you
-  override, restate in the reviewer's prompt.
+- Reviewer effort scales with the Step 0.5 complexity tier. Default to
+  the un-bumped implementer level unless the tier justifies more; do not
+  mirror the implementer's +1 bump automatically. When you override,
+  restate the effort in the reviewer's prompt.
 - The host review is mandatory and default-on (via its own native
   subagent — see Step 2b); inline review is its fallback only when no
   fresh-context subagent is available. You can't drop the host vote
@@ -1049,11 +1051,9 @@ The MCP surface this skill composes includes the criteria-store tools
 `create_criteria`, `confirm_criteria`, `get_criteria`, and
 `revise_criteria`, plus dispatch tools whose inputs accept
 `criteria_set_id` (`run_agent`, `run_panel`, and `continue_run`).
-Dispatch-time criteria errors are exactly `criteria.unknown`,
-`criteria.not_confirmed`, `criteria.cross_repo`, `criteria.unparsable`,
-`criteria.unknown_schema_version`, `criteria.linkage_mismatch`, and
-`criteria.contract_too_large`. `criteria.invalid` is a validation error
-for `create_criteria`, `confirm_criteria`, and `revise_criteria`.
+Handle the seven dispatch-time `criteria.*` codes (Step 0).
+`criteria.invalid` is a validation error for `create_criteria`,
+`confirm_criteria`, and `revise_criteria`.
 
 The rendered installed tool list follows:
 
