@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { RunStateStore } from '../../../src/orchestrator/run-state.js';
 import { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import { getRunStatusToolHandler } from '../../../src/orchestrator/tools/get-run-status.js';
+import { WorktreeManager } from '../../../src/git/worktree.js';
 import {
   installRunLifecycleListeners,
   pendingTerminalPersistCount,
@@ -67,6 +69,49 @@ describe('getRunStatusToolHandler', () => {
       },
     });
     expect(response.content[0]?.text).toContain('Failure: `rate_limited` (backoff)');
+  });
+
+  it('includes newest-first run commits capped at 20 for terminal write runs', async () => {
+    execSync('git init -q', { cwd: repoRoot });
+    execSync('git config user.email test@crew.local', { cwd: repoRoot });
+    execSync('git config user.name test', { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: repoRoot });
+    execSync('git commit -q -m init', { cwd: repoRoot });
+
+    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
+    const worktreePath = await manager.createRunWorktree('r-commits');
+    await store.create({
+      runId: 'r-commits',
+      agentId: 'codex',
+      worktreePath,
+      initialPrompt: 'go',
+    });
+    for (let index = 1; index <= 21; index += 1) {
+      writeFileSync(join(worktreePath, `file-${index}.txt`), `${index}\n`, 'utf-8');
+      execSync(`git add file-${index}.txt`, { cwd: worktreePath });
+      execSync(`git commit -q -m "chore: change ${index}"`, { cwd: worktreePath });
+    }
+    await store.markTerminal('r-commits', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: ['file-21.txt'],
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-commits' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+
+    expect(response.structuredContent).toMatchObject({
+      status: 'success',
+      commit_count: 21,
+    });
+    const commits = response.structuredContent?.commits as Array<{ sha: string; subject: string }>;
+    expect(commits).toHaveLength(20);
+    expect(commits[0].subject).toBe('chore: change 21');
+    expect(commits[19].subject).toBe('chore: change 2');
+    expect(commits[0].sha).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it('terminal-only long-poll returns immediately during the terminal persist gap', async () => {

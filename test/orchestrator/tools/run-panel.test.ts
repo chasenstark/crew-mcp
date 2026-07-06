@@ -143,7 +143,7 @@ describe('runPanelHandler', () => {
     expect(dispatched).toEqual(['codex', 'claude-code']);
   });
 
-  it('adds one required_next_action per reviewer run for Claude Code panels', async () => {
+  it('adds a panel-level required_next_action plus selective per-reviewer waits for Claude Code panels', async () => {
     const h = makeHarness([
       makeMockAdapter({ name: 'codex' }),
       makeMockAdapter({ name: 'gemini-cli' }),
@@ -167,6 +167,16 @@ describe('runPanelHandler', () => {
     });
 
     expect(out.reviewers).toHaveLength(2);
+    expect(out.required_next_action).toEqual({
+      type: 'spawn_watcher',
+      mechanism: 'background_shell',
+      command: '/usr/local/bin/crew-wait codex-run-1 gemini-cli-run-2',
+      run_ids: ['codex-run-1', 'gemini-cli-run-2'],
+      run_in_background: true,
+      per_run: false,
+      consequence_if_skipped:
+        'Skip it and the panel is orphaned; no watcher-triggered terminal turn will surface panel completion.',
+    });
     expect(out.reviewers.map((reviewer) => reviewer.required_next_action)).toEqual([
       {
         type: 'spawn_watcher',

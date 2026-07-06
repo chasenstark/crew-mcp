@@ -74,7 +74,7 @@ describe('install / verify / uninstall — happy path', () => {
 
     // Skill file written and contains body content
     const skill = readFileSync(adapter.skillPath(home), 'utf-8');
-    expect(skill).toContain('## Crew — orchestration playbook');
+    expect(skill).toContain('## Crew orchestration playbook');
     expect(skill).toContain('mcp__crew__run_agent');
 
     // crew:iterate sub-skill also written (Phase 2 of crew-iterate-skill plan)

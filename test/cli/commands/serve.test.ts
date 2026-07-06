@@ -2283,7 +2283,7 @@ describe('crew serve — peer_messages integration', () => {
     }
   });
 
-  it('run_panel lists one Claude Code watcher per reviewer run', async () => {
+  it('run_panel lists one Claude Code panel watcher plus selective reviewer waits', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
       execute: async () => ({ output: 'review ok', filesModified: [], status: 'success', metadata: {} }),
@@ -2300,14 +2300,25 @@ describe('crew serve — peer_messages integration', () => {
         },
       });
       const panelEnv = panel.structuredContent as {
+        required_next_action?: { command: string; run_ids: string[] };
         reviewers: Array<{
           run_id: string;
           required_next_action?: { command: string; run_id: string };
         }>;
       };
       expect(panelEnv.reviewers).toHaveLength(2);
+      const runIds = panelEnv.reviewers.map((reviewer) => reviewer.run_id);
+      expect(panelEnv.required_next_action).toMatchObject({
+        type: 'spawn_watcher',
+        mechanism: 'background_shell',
+        command: `crew-wait ${runIds.join(' ')}`,
+        run_ids: runIds,
+        run_in_background: true,
+        per_run: false,
+      });
       const text = toolText(panel);
-      expect(text).toContain('spawn one watcher per reviewer run');
+      expect(text).toContain('spawn one panel watcher');
+      expect(text).toContain(`Bash(crew-wait ${runIds.join(' ')}, run_in_background: true)`);
       for (const reviewer of panelEnv.reviewers) {
         expect(reviewer.required_next_action).toEqual({
           type: 'spawn_watcher',
@@ -2320,7 +2331,7 @@ describe('crew serve — peer_messages integration', () => {
             'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
         });
         expect(text).toContain(
-          `Bash(crew-wait ${reviewer.run_id}, run_in_background: true)`,
+          `crew-wait ${reviewer.run_id}`,
         );
         await pollUntilTerminal(h.client, reviewer.run_id);
       }
@@ -3861,6 +3872,8 @@ describe('crew serve — get_run_status tool', () => {
         events_tail: string[];
         next_event_line: number;
         filesChanged: string[];
+        commits: Array<{ sha: string; subject: string }>;
+        commit_count: number;
         summary?: string;
       };
       expect(s.status).toBe('success');
@@ -3874,6 +3887,8 @@ describe('crew serve — get_run_status tool', () => {
         next_event_line: s.next_event_line,
         filesChanged: [],
         prompts: s.prompts,
+        commits: [],
+        commit_count: 0,
         summary: 'all done',
       });
       // Verbatim prompt text AND per-turn summary are intentionally

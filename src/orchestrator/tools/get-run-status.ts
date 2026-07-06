@@ -29,6 +29,8 @@
  * doesn't re-render the same paragraph every turn.
  */
 
+import { execFileSync } from 'node:child_process';
+
 import { z } from 'zod';
 
 import { filterEventsTailNoise } from '../events-filter.js';
@@ -114,7 +116,7 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read a run's current status by run_id. Default: omit wait params for an immediate snapshot (turn-start, post-watcher, status question). wait_for_change_ms / wait_for_terminal_only block the turn until events arrive or terminal; opt-in only when the user explicitly asks to wait. Captain's chat-available default is the crew-wait watcher (Claude Code) or a next-turn snapshot — not a long-poll here. Pass since_event_line to page events, max_events_tail to cap tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Returns status, cursor, paths, summary/filesChanged/prompts/warnings, and events_tail on terminal; wait timeouts return { status: "running", timed_out: true }.`;
+  `Read a run's current status by run_id. Default: omit wait params for an immediate snapshot (turn-start, post-watcher, status question). wait_for_change_ms / wait_for_terminal_only block until events arrive or terminal; opt-in only when the user explicitly asks to wait. Captain default is the crew-wait watcher (Claude Code) or next-turn snapshot, not a long-poll. Pass since_event_line to page events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal returns status, cursor, paths, summary/filesChanged/prompts/warnings, commits/commit_count, events_tail; timeouts return { status: "running", timed_out: true }.`;
 
 export async function getRunStatusToolHandler(
   args: GetRunStatusInput,
@@ -192,6 +194,11 @@ interface GetRunStatusResponse {
   readonly log_tail?: readonly string[];
 }
 
+interface CommitSummary {
+  readonly sha: string;
+  readonly subject: string;
+}
+
 type TerminalPromptRecord = {
   readonly turn: number;
   readonly startedAt: string;
@@ -250,6 +257,7 @@ function buildGetRunStatusResponse(
   const lastSummary = state.prompts.length > 0
     ? state.prompts[state.prompts.length - 1]?.summary
     : undefined;
+  const commitSummary = collectRunCommits(state, store.repoRoot);
 
   const payload: GetRunStatusResponse = {
     status,
@@ -257,6 +265,8 @@ function buildGetRunStatusResponse(
     next_event_line: cursorAfterDelta,
     filesChanged: state.filesChanged,
     prompts: projectedPrompts,
+    commits: commitSummary.commits,
+    commit_count: commitSummary.commit_count,
     ...(lastSummary !== undefined ? { summary: lastSummary } : {}),
     ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
@@ -271,6 +281,49 @@ function buildGetRunStatusResponse(
     ...legacyLogTail,
   };
   return getRunStatusContent(runId, payload);
+}
+
+function collectRunCommits(
+  state: RunStateV1,
+  fallbackRepoRoot: string,
+): { readonly commits: readonly CommitSummary[]; readonly commit_count: number } {
+  try {
+    const targetRoot = state.repoRoot ?? fallbackRepoRoot;
+    const targetHead = gitOutput(targetRoot, ['rev-parse', 'HEAD']);
+    const range = `${targetHead}..HEAD`;
+    const count = Number.parseInt(gitOutput(state.worktreePath, ['rev-list', '--count', range]), 10);
+    if (!Number.isFinite(count) || count <= 0) {
+      return { commits: [], commit_count: 0 };
+    }
+    const raw = gitOutput(state.worktreePath, [
+      'log',
+      '--format=%H%x00%s',
+      '-n',
+      '20',
+      range,
+    ]);
+    const commits = raw.split('\n')
+      .map((line): CommitSummary | undefined => {
+        const separator = line.indexOf('\0');
+        if (separator <= 0) return undefined;
+        return {
+          sha: line.slice(0, separator),
+          subject: line.slice(separator + 1),
+        };
+      })
+      .filter((commit): commit is CommitSummary => commit !== undefined);
+    return { commits, commit_count: count };
+  } catch {
+    return { commits: [], commit_count: 0 };
+  }
+}
+
+function gitOutput(cwd: string, args: readonly string[]): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
 }
 
 async function waitForRunChange(args: {

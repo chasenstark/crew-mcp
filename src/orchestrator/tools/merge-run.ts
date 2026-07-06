@@ -75,9 +75,10 @@ export const mergeRunInputSchema = z.object({
    * runs. `preserve` keeps the run's individual commits linearly
    * (fast-forward, or cherry-pick when the target diverged) — for a
    * deliberate stack of discrete commits; commit_title/body are unused.
-   * The captain picks the strategy from the run's `git log`; with
-   * confirmBeforeMerge on it surfaces the choice for the user to flip,
-   * and when merging without confirmation it applies its own judgment.
+   * The captain picks the strategy from get_run_status commits/commit_count
+   * (falling back to `git log` for older runs/envelopes); with
+   * confirmBeforeMerge on it surfaces the choice for the user to flip, and
+   * when merging without confirmation it applies its own judgment.
    */
   merge_strategy: z.enum(['squash', 'preserve']).optional(),
   /**

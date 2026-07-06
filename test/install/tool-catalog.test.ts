@@ -82,6 +82,7 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     expect(GET_RUN_STATUS_DESCRIPTION).toContain('crew-wait');
     expect(GET_RUN_STATUS_DESCRIPTION).toContain('opt-in');
     expect(GET_RUN_STATUS_DESCRIPTION).toContain('not a long-poll');
+    expect(GET_RUN_STATUS_DESCRIPTION).toContain('commits/commit_count');
     // The neutral framing that masked the failure mode must not return.
     expect(GET_RUN_STATUS_DESCRIPTION).not.toContain('advanced in-turn waits');
     expect(GET_RUN_STATUS_DESCRIPTION).not.toContain('advanced/legacy');
@@ -107,8 +108,9 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     }
   });
 
-  it('run_panel description points at per-run watchers and forbids long-polling', () => {
-    expect(RUN_PANEL_DESCRIPTION).toContain('one crew-wait watcher per run');
+  it('run_panel description points at panel-level watcher and forbids long-polling', () => {
+    expect(RUN_PANEL_DESCRIPTION).toContain('panel-level crew-wait watcher command');
+    expect(RUN_PANEL_DESCRIPTION).toContain('per-reviewer wait commands remain available');
     expect(RUN_PANEL_DESCRIPTION).toMatch(/Do not block the turn long-polling/);
     expect(RUN_PANEL_DESCRIPTION).not.toMatch(/check (?:status )?later/i);
   });

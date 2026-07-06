@@ -37,16 +37,27 @@ as part of the iterate cycle (see invariant #7).
 `continue_run` / `run_panel`, do NOT long-poll `get_run_status`
 in-turn. Confirm dispatch with the inline `tail_url` markdown, end
 the turn, and:
-- Claude Code: before ending the turn, complete this checklist for
-  every crew run returned by the dispatch:
+- Claude Code, independent runs (`run_agent` / `continue_run`): before
+  ending the turn, complete this checklist for every crew run returned
+  by the dispatch:
   1. Read the crew `run_id`.
   2. Spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
-  3. Repeat once per crew run. N crew runs means N watchers; a
-     harness-tracked native `Agent` / `Task` subagent completing tells
-     you nothing about crew runs, which are not harness-tracked.
-  The host will fire a synthetic next-turn prefixed with
-  `CREW_WAIT_TERMINAL run_id=... agent=... status=... worktree=...`
-  when the run reaches terminal. Parse that line on receipt, then call
+  3. Repeat once per independent run — each surfaces individually as
+     it lands.
+- Claude Code, panels (`run_panel`): spawn ONE watcher for the whole
+  panel, not one per reviewer — consolidation waits for all reviewers.
+  Use the panel envelope's panel-level `required_next_action` command:
+  `Bash({{CREW_WAIT_COMMAND}} <id1> <id2> ..., run_in_background: true)`.
+  Per-reviewer commands remain available for selective/degraded waits;
+  on such watcher turns call `get_panel_status({panel_id})` — if
+  `running_count > 0`, end the turn with at most one short status
+  line; at 0, proceed to `aggregate_panel` + consolidation.
+- On either shape, a harness-tracked native `Agent` / `Task` subagent
+  completing tells you nothing about crew runs, which are not
+  harness-tracked. The host will fire a synthetic next-turn prefixed
+  with `CREW_WAIT_TERMINAL run_id=... agent=... status=... worktree=...`
+  when a run reaches terminal — one line per run from a multi-id panel
+  watcher. Parse those lines on receipt, then call
   `get_run_status({run_id})` for the full envelope. Without the
   synthetic-turn handling, the loop deadlocks: dispatched and ended
   the turn but never recognizes the resume.

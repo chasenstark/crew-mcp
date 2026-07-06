@@ -415,7 +415,7 @@ describe('crew-iterate body — standalone safety invariants', () => {
     expect(step2).toContain('(invariant #2)');
   });
 
-  it('requires one watcher per crew run in invariant #2', async () => {
+  it('requires per-run watchers for independent runs and one panel-level watcher in invariant #2', async () => {
     const body = await loadBody();
     const start = body.indexOf('**2. Dispatch lifecycle');
     const end = body.indexOf('**3. Escape hatch', start);
@@ -425,10 +425,17 @@ describe('crew-iterate body — standalone safety invariants', () => {
 
     expectContainsCI(inv2, 'complete this checklist');
     expectContainsCI(inv2, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
-    expectContainsCI(inv2, 'N crew runs means N watchers');
+    expectContainsCI(inv2, 'Repeat once per independent run');
+    expectContainsCI(inv2, 'ONE watcher for the whole panel');
+    expectContainsCI(inv2, 'Bash({{CREW_WAIT_COMMAND}} <id1> <id2> ..., run_in_background: true)');
+    expectContainsCI(inv2, 'required_next_action');
+    expectContainsCI(inv2, 'get_panel_status');
+    expectContainsCI(inv2, 'running_count');
+    expectContainsCI(inv2, 'aggregate_panel');
     expectContainsCI(inv2, 'Agent');
     expectContainsCI(inv2, 'Task');
     expectContainsCI(inv2, 'not harness-tracked');
+    expect(inv2).not.toContain('N crew runs means N watchers');
   });
 
   it('renders the verbatim review prompt template anchors', async () => {

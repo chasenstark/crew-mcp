@@ -106,9 +106,10 @@ export interface RequiredNextAction {
   readonly type: 'spawn_watcher';
   readonly mechanism: 'background_shell';
   readonly command: string;
-  readonly run_id: string;
+  readonly run_id?: string;
+  readonly run_ids?: readonly string[];
   readonly run_in_background: true;
-  readonly per_run: true;
+  readonly per_run: boolean;
   readonly consequence_if_skipped: string;
 }
 
@@ -299,6 +300,27 @@ export function requiredNextActionForRun(
     per_run: true,
     consequence_if_skipped:
       'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+  };
+}
+
+export function requiredNextActionForRuns(
+  clientKind: ClientKind,
+  crewWaitCommand: string,
+  runIds: readonly string[],
+): RequiredNextAction | undefined {
+  if (clientKind !== 'claude-code' || runIds.length === 0) return undefined;
+  if (runIds.length === 1) {
+    return requiredNextActionForRun(clientKind, crewWaitCommand, runIds[0]);
+  }
+  return {
+    type: 'spawn_watcher',
+    mechanism: 'background_shell',
+    command: `${crewWaitCommand} ${runIds.join(' ')}`,
+    run_ids: [...runIds],
+    run_in_background: true,
+    per_run: false,
+    consequence_if_skipped:
+      'Skip it and the panel is orphaned; no watcher-triggered terminal turn will surface panel completion.',
   };
 }
 

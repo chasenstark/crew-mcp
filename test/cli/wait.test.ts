@@ -11,6 +11,7 @@ import {
   nextCrewWaitPollIntervalMs,
   usage,
   waitForRunTerminal,
+  waitForRunsTerminal,
 } from '../../src/cli/wait.js';
 
 describe('crew-wait', () => {
@@ -236,7 +237,111 @@ describe('crew-wait', () => {
     } finally {
       process.stderr.write = originalWrite;
     }
-    expect(writes.join('')).toContain('Usage: crew-wait <run_id>');
+    expect(writes.join('')).toContain('Usage: crew-wait <run_id...>');
+  });
+
+  it('waits for multiple run ids before printing terminal lines in argument order', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-multi-'));
+    cleanup.push(crewHome);
+    const firstRunDir = join(crewHome, 'runs', 'run-first');
+    const secondRunDir = join(crewHome, 'runs', 'run-second');
+    mkdirSync(firstRunDir, { recursive: true });
+    mkdirSync(secondRunDir, { recursive: true });
+    writeStateAtomic(firstRunDir, {
+      schemaVersion: 1,
+      runId: 'run-first',
+      agentId: 'codex',
+      status: 'success',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      worktreePath: '/tmp/first',
+      prompts: [],
+      filesChanged: [],
+    });
+    writeStateAtomic(secondRunDir, {
+      schemaVersion: 1,
+      runId: 'run-second',
+      agentId: 'gemini-cli',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      worktreePath: '/tmp/second',
+      prompts: [],
+      filesChanged: [],
+    });
+
+    const stdout: string[] = [];
+    let sleeps = 0;
+    await waitForRunsTerminal({
+      runIds: ['run-first', 'run-second'],
+      crewHome,
+      pollIntervalMs: 5,
+      sleep: async () => {
+        expect(stdout).toEqual([]);
+        sleeps += 1;
+        writeStateAtomic(secondRunDir, {
+          schemaVersion: 1,
+          runId: 'run-second',
+          agentId: 'gemini-cli',
+          status: 'partial',
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          worktreePath: '/tmp/second',
+          prompts: [],
+          filesChanged: [],
+        });
+      },
+      writeStdout: (line) => stdout.push(line),
+    });
+
+    expect(sleeps).toBe(1);
+    expect(stdout).toEqual([
+      'CREW_WAIT_TERMINAL run_id=run-first agent=codex status=success worktree=/tmp/first',
+      'CREW_WAIT_TERMINAL run_id=run-second agent=gemini-cli status=partial worktree=/tmp/second',
+    ]);
+  });
+
+  it('multi-id unknown run exits through the exit-3 diagnostic path after printing terminal peers', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-multi-unknown-'));
+    cleanup.push(crewHome);
+    const runDir = join(crewHome, 'runs', 'run-done');
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      schemaVersion: 1,
+      runId: 'run-done',
+      agentId: 'codex',
+      status: 'success',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      worktreePath: '/tmp/done',
+      prompts: [],
+      filesChanged: [],
+    });
+
+    const stdout: string[] = [];
+    let nowMs = 0;
+    let exitCode = 0;
+    try {
+      await waitForRunsTerminal({
+        runIds: ['run-done', 'missing-run'],
+        crewHome,
+        pollIntervalMs: 5,
+        stateFirstAppearanceGraceMs: 50,
+        now: () => nowMs,
+        sleep: async () => { nowMs += 25; },
+        writeStdout: (line) => stdout.push(line),
+      });
+    } catch (err) {
+      if (err instanceof CrewWaitUnknownRunError) {
+        exitCode = 3;
+      } else {
+        throw err;
+      }
+    }
+
+    expect(exitCode).toBe(3);
+    expect(stdout).toEqual([
+      'CREW_WAIT_TERMINAL run_id=run-done agent=codex status=success worktree=/tmp/done',
+    ]);
   });
 
   it('does not exit on post-terminal user-action statuses (merged / merge_conflict / discarded)', async () => {
@@ -379,7 +484,7 @@ describe('crew-wait', () => {
     } finally {
       process.stdout.write = originalWrite;
     }
-    expect(writes.join('')).toMatch(/Usage: crew-wait <run_id>/);
+    expect(writes.join('')).toMatch(/Usage: crew-wait <run_id\.\.\.>/);
   });
 });
 

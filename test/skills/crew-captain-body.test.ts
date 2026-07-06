@@ -14,17 +14,12 @@ async function loadBody(): Promise<string> {
   return stripHtmlComments(raw);
 }
 
-function expectContainsCI(haystack: string, needle: string): void {
-  const ok = haystack.toLowerCase().includes(needle.toLowerCase());
-  if (!ok) {
-    throw new Error(
-      `Expected body to contain phrase (case-insensitive): "${needle}"`,
-    );
-  }
-}
-
 function flattenWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ');
+}
+
+function expectContainsCI(haystack: string, needle: string): void {
+  expect(haystack.toLowerCase()).toContain(needle.toLowerCase());
 }
 
 function sliceBetween(
@@ -39,228 +34,210 @@ function sliceBetween(
   return haystack.slice(start, end);
 }
 
-function expectStructuredQuestionGuidance(section: string): void {
-  const flat = flattenWhitespace(section);
-  expectContainsCI(flat, 'AskUserQuestion on Claude Code');
-  expectContainsCI(flat, 'if the host exposes no such tool');
-  expectContainsCI(flat, 'surface the options as prose');
-  expectContainsCI(flat, 'free-text reply');
-  expectContainsCI(flat, 'Silence is not consent');
+function expectAskGate(section: string): void {
+  expect(section).toContain('**Ask gate:**');
+  expect(section).toContain('Ask protocol');
+  expect(section).toContain('Silence is not consent');
 }
 
-describe('crew-captain body — review panel agent picks', () => {
-  it('contains the load-bearing panel-pick anchors in Review panels', async () => {
+describe('crew-captain body — named protocols', () => {
+  it('defines Ask protocol and Own-host rule once, then references short gates', async () => {
     const body = await loadBody();
-    const reviewPanelsStart = body.indexOf('## Review panels');
-    expect(reviewPanelsStart).toBeGreaterThanOrEqual(0);
-    const toolsStart = body.indexOf('## Tools', reviewPanelsStart);
-    const sectionEnd = toolsStart === -1 ? body.length : toolsStart;
-    expect(sectionEnd).toBeGreaterThan(reviewPanelsStart);
-    const section = body.slice(reviewPanelsStart, sectionEnd);
+    expect(body.match(/^### Ask protocol$/gm)).toHaveLength(1);
+    expect(body.match(/^### Own-host rule$/gm)).toHaveLength(1);
 
-    expect(section).toContain('### Confirm reviewer picks');
-    expect(section).toContain('Agents for this panel:');
-    expect(section).toContain('Override grammar');
-    expect(section).toContain('get_crew_preferences({scope: "panel"})');
-    expect(section).toContain('panel.reviewers');
-    expect(section).toContain('panel.banList');
-    // The host model reviews via a native subagent, not run_panel.
-    expect(section).toContain('The host reviewer');
-    expect(section).toContain('native subagent');
-  });
+    const protocols = sliceBetween(body, '## Named protocols', '## Dispatch or inline');
+    const flat = flattenWhitespace(protocols);
+    expectContainsCI(flat, 'AskUserQuestion on Claude Code');
+    expectContainsCI(flat, 'If the host has no structured question tool');
+    expectContainsCI(flat, 'free-text reply');
+    expectContainsCI(flat, 'Other/free-text path');
+    expectContainsCI(flat, 'Silence is not consent');
+    expectContainsCI(flat, 'Do not Crew-dispatch to the same product');
+    expectContainsCI(flat, 'explicitly asks for same-product worktree isolation');
 
-  it('routes reviewer-pick confirmation through structured questions', async () => {
-    const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '### Confirm reviewer picks',
-      '#### Override grammar',
-    );
-
-    expectStructuredQuestionGuidance(section);
-    expectContainsCI(section, 'OK / Override options');
-    expectContainsCI(section, 'Override must allow free-text details');
-    expectContainsCI(section, 'restate the final reviewer list');
+    expect(body.match(/\*\*Ask gate:\*\*/g)?.length).toBeGreaterThanOrEqual(7);
+    expect(body.match(/\*\*Own-host gate:\*\*/g)?.length).toBeGreaterThanOrEqual(2);
   });
 });
 
-describe('crew-captain body — structured-question gates', () => {
-  it('describes criteria tool markdown results and the pre-question table reprint gate', async () => {
+describe('crew-captain body — structured gates', () => {
+  it('keeps concise Ask gates adjacent to dispatch, terminal, merge, strategy, rubric, quota, and panel choices', async () => {
     const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '## Criteria tool display',
-      '## Dispatch-vs-inline',
-    );
+    expectAskGate(sliceBetween(body, '## Dispatch or inline', '## Default flow'));
+    expectAskGate(sliceBetween(body, '## Default flow', '## Merge boundary'));
+    expectAskGate(sliceBetween(body, '## Merge boundary', '### Pick the merge strategy'));
+    expectAskGate(sliceBetween(body, '### Pick the merge strategy', '## When to ask before dispatch'));
+    expectAskGate(sliceBetween(body, '## When to ask before dispatch', '## Dispatch lifecycle'));
+    expectAskGate(sliceBetween(body, '## Quota-aware routing', '## Peer context'));
+    expectAskGate(sliceBetween(body, '### Confirm reviewer picks', '### Host reviewer'));
+  });
+
+  it('keeps criteria-table display guidance before any user confirmation', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '## Criteria display', '## Named protocols');
     const flat = flattenWhitespace(section);
 
     expectContainsCI(flat, 'create_criteria');
     expectContainsCI(flat, 'confirm_criteria');
     expectContainsCI(flat, 'revise_criteria');
-    expectContainsCI(flat, 'return chat-readable markdown as the tool result text');
+    expectContainsCI(flat, 'chat-readable markdown');
     expectContainsCI(flat, 'display hint');
     expectContainsCI(flat, 'GFM criteria table');
-    expectContainsCI(flat, 'Reprint that table verbatim as normal chat before invoking AskUserQuestion');
-    expectContainsCI(flat, 'Do not treat these results as raw JSON');
-  });
-
-  it('routes dispatch-vs-inline and same-host decisions through structured questions', async () => {
-    const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '## Dispatch-vs-inline',
-      '## The default flow',
-    );
-
-    const flat = flattenWhitespace(section);
-    expectStructuredQuestionGuidance(section);
-    expectContainsCI(flat, 'dispatch-vs-inline decision');
-    expectContainsCI(flat, 'native subagent and explicit worktree isolation');
-    expectContainsCI(flat, 'Other/free-text escape');
-  });
-
-  it('routes terminal follow-up choices through structured questions', async () => {
-    const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '## The default flow',
-      '## Merge boundary',
-    );
-
-    const flat = flattenWhitespace(section);
-    expectStructuredQuestionGuidance(section);
-    expectContainsCI(flat, 'merge, continue iterating, or discard');
-    expectContainsCI(flat, 'discard the worktree (cleanup) or keep it');
-  });
-
-  it('routes merge/discard confirmation and merge-strategy choice through structured questions', async () => {
-    const body = await loadBody();
-    const mergeBoundary = sliceBetween(
-      body,
-      '## Merge boundary',
-      '### Pick the merge strategy',
-    );
-    expectStructuredQuestionGuidance(mergeBoundary);
-    expectContainsCI(flattenWhitespace(mergeBoundary), 'merge and discard confirmations');
-    expectContainsCI(mergeBoundary, 'confirmed: true');
-    expectContainsCI(mergeBoundary, 'yes / go / merge');
-
-    const strategy = sliceBetween(
-      body,
-      '### Pick the merge strategy',
-      '## When to ask the user',
-    );
-    expectStructuredQuestionGuidance(strategy);
-    expectContainsCI(strategy, 'Squash / Preserve options');
-  });
-
-  it('keeps open-ended clarifications free-text capable while structuring discrete rubric choices', async () => {
-    const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '## When to ask the user',
-      '## Dispatch lifecycle',
-    );
-
-    const flat = flattenWhitespace(section);
-    expectStructuredQuestionGuidance(section);
-    expectContainsCI(flat, 'Do not force genuinely open-ended asks');
-    expectContainsCI(flat, 'what does done look like');
-    expectContainsCI(flat, 'Other/free-text option');
-    expectContainsCI(flat, 'Scope is open-ended');
-    expectContainsCI(flat, 'More than one plausible approach exists');
-    expectContainsCI(flat, "You don't know which agent fits");
+    expectContainsCI(flat, 'Reprint that table verbatim');
+    expectContainsCI(flat, 'rendered_block');
   });
 });
 
-describe('crew-captain body — general dispatch-order rule', () => {
-  it('states crew-first ordering with the dependency carve-out in Dispatch lifecycle', async () => {
+describe('crew-captain body — dispatch lifecycle', () => {
+  it('states async dispatch, scoped turn-start checks, watcher degradation, and timestamp-free recovery', async () => {
     const body = await loadBody();
-    // Slice the Dispatch lifecycle section so anchors can't be satisfied
-    // by the unrelated watcher prose (which also says run_in_background)
-    // elsewhere in the body. Section end is "## The tools" (NOT "## Tools"
-    // — that heading belongs to the iterate body).
-    const start = body.indexOf('## Dispatch lifecycle');
-    const end = body.indexOf('## The tools', start);
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    const section = body.slice(start, end);
+    const section = sliceBetween(body, '## Dispatch lifecycle', '## The tools');
+    const flat = flattenWhitespace(section);
 
-    // Deletion anchors: the subsection and its core mechanics.
-    expect(section).toContain('### Dispatch order — crew first');
-    expect(section).toContain('native subagent');
-    expect(section).toContain('run_in_background');
+    expectContainsCI(flat, 'async-first');
+    expectContainsCI(flat, "Don't block the turn with `get_run_status`");
+    expectContainsCI(flat, 'wait_for_terminal_only');
+    expectContainsCI(flat, '### Dispatch order - crew first');
+    expectContainsCI(flat, 'Exception');
+    expectContainsCI(flat, 'prerequisite');
+    expectContainsCI(flat, 'crew-mcp install-tail-handler');
+    expectContainsCI(flat, 'live runs:');
+    expectContainsCI(flat, 'Complete this checklist before ending the turn');
+    expectContainsCI(flat, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
+    expectContainsCI(flat, 'N crew runs means N watchers');
+    expectContainsCI(flat, 'Agent');
+    expectContainsCI(flat, 'Task');
+    expectContainsCI(flat, 'not Crew-tracked');
+    expectContainsCI(flat, 'diagnostic code 3');
+    expectContainsCI(flat, 'unknown');
+    expectContainsCI(flat, '$CREW_HOME');
+    expectContainsCI(flat, 'Do not respawn in a loop');
+    expectContainsCI(flat, 'without `completedAfter`');
+    expectContainsCI(flat, 'dedupe by `run_id`');
+    expectContainsCI(flat, 'context was compacted or cleared');
+    expectContainsCI(flat, 'more than one pending run');
+    expectContainsCI(flat, 'one repo-scoped `list_runs` call');
+  });
+});
 
-    // Contradiction anchor: the dependency exception. A crew-first rule
-    // without this carve-out contradicts §"The default flow" step 3 and
-    // §implement-then-review, where the dispatch is produced by prior
-    // captain-side work. Dropping the carve-out must fail the test.
-    expect(section).toContain('Exception');
-    expect(section).toContain('produces');
-    expect(section).toContain('prerequisite');
+describe('crew-captain body — merge and cleanup', () => {
+  it('uses commit metadata for merge strategy and keeps git log as old-run fallback', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Pick the merge strategy', '## When to ask before dispatch');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, '`commits` and `commit_count`');
+    expectContainsCI(flat, 'newest-first');
+    expectContainsCI(flat, 'capped at 20');
+    expectContainsCI(flat, 'fall back to `git log`');
+    expectContainsCI(flat, 'commit_title');
+    expectContainsCI(flat, 'squash');
+    expectContainsCI(flat, 'preserve');
+  });
+
+  it('describes prompt-discard habit plus run-GC backstop for read-only and ephemeral runs', async () => {
+    const body = await loadBody();
+    const guardrails = sliceBetween(body, '## Operating guardrails', '## Quota-aware routing');
+    const flat = flattenWhitespace(guardrails);
+
+    expect(flat).not.toContain("Read-only runs don't auto-clean");
+    expectContainsCI(flat, 'Prompt discard remains the habit');
+    expectContainsCI(flat, 'terminal worktrees are eligible after 7 days');
+    expectContainsCI(flat, 'run directories after 30 days');
+    expectContainsCI(flat, 'repo-scoped');
+    expectContainsCI(flat, 'run_mode: "ephemeral_review"');
+    expectContainsCI(flat, 'disposable snapshot worktree');
+    expectContainsCI(flat, 'never mergeable');
+    expectContainsCI(flat, 'frozen snapshot');
+    expectContainsCI(flat, 'trusted diffs');
   });
 });
 
 describe('crew-captain body — quota-aware routing', () => {
   it('pins preemptive quota routing and reactive remediation guidance', async () => {
     const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '## Quota-aware routing',
-      '## Forwarding peer context',
-    );
+    const section = sliceBetween(body, '## Quota-aware routing', '## Peer context');
     const flat = flattenWhitespace(section);
 
-    expectStructuredQuestionGuidance(section);
-    expectContainsCI(flat, '`limited` agents are excluded');
-    expectContainsCI(flat, '`near_limit` agents are down-ranked');
-    expectContainsCI(flat, '`unknown` agents are allowed but penalized');
-    expectContainsCI(flat, '`local_unmetered` agents are preferred');
-    expectContainsCI(flat, 'refresh: true');
+    expectContainsCI(flat, '`limited` agents');
+    expectContainsCI(flat, '`near_limit`');
+    expectContainsCI(flat, '`unknown`');
+    expectContainsCI(flat, '`local_unmetered`');
+    expectContainsCI(flat, 'refresh:');
     expectContainsCI(flat, 'un-stick');
-    expectContainsCI(flat, 'quota_exhausted');
     expectContainsCI(flat, 'rate_limited');
+    expectContainsCI(flat, 'quota_exhausted');
     expectContainsCI(flat, 'auth');
     expectContainsCI(flat, 'Never retry the same agent');
-    expectContainsCI(flat, 'write run with any captured edits');
-    expectContainsCI(flat, 'never auto-discard a half-done worktree');
+    expectContainsCI(flat, 'captured edits');
+    expectContainsCI(flat, 'Never auto-discard a half-done worktree');
   });
 });
 
-describe('crew-captain body — watcher checklist', () => {
-  it('requires one watcher per crew run and distinguishes native subagents', async () => {
+describe('crew-captain body — peer context', () => {
+  it('inlines peer_messages error families and removes plan references', async () => {
     const body = await loadBody();
-    const section = sliceBetween(
-      body,
-      '### Step 2 — background watcher overlay',
-      '### Foreground',
-    );
+    const section = sliceBetween(body, '## Peer context', '## Review panels');
     const flat = flattenWhitespace(section);
 
-    expectContainsCI(flat, 'complete this checklist before ending the turn');
-    expectContainsCI(flat, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
-    expectContainsCI(flat, 'N crew runs means N watchers');
-    expectContainsCI(flat, 'Agent');
-    expectContainsCI(flat, 'Task');
-    expectContainsCI(flat, 'not harness-tracked');
+    expectContainsCI(flat, 'peer_messages.composed_prompt_too_large');
+    expectContainsCI(flat, 'peer_messages.item_too_large');
+    expectContainsCI(flat, 'peer_messages.too_many_items');
+    expectContainsCI(flat, 'peer_messages.run_unknown');
+    expectContainsCI(flat, 'peer_messages.run_in_flight');
+    expectContainsCI(flat, 'peer_messages.run_terminal');
+    expect(flat).not.toContain('See plan');
+    expect(flat).not.toContain('in this plan');
+    expect(flat).not.toContain('peer_messages.<code>');
   });
 });
 
-describe('crew-captain body — ephemeral review dispatches (agy)', () => {
-  it('teaches the ephemeral_review contract: disposable worktree, findings only, never mergeable', async () => {
+describe('crew-captain body — review panels', () => {
+  it('contains panel-pick anchors and own-host/native-review routing', async () => {
     const body = await loadBody();
-    const flat = flattenWhitespace(body);
+    const section = sliceBetween(body, '## Review panels', '### Panel lifecycle');
+    const flat = flattenWhitespace(section);
 
-    expectContainsCI(flat, 'Ephemeral review dispatches (agy)');
-    expectContainsCI(flat, 'run_mode: "ephemeral_review"');
-    expectContainsCI(flat, 'disposable snapshot worktree');
-    expectContainsCI(flat, 'Never mergeable');
-    expectContainsCI(flat, 'frozen snapshot');
-    expectContainsCI(flat, 'trusted diffs');
-    // Phase 2: panels auto-route agy to its ephemeral-worktree mode; the
-    // old "Do NOT put agy on a run_panel" warning must be gone.
-    expectContainsCI(flat, 'auto-routed to `run_mode: "ephemeral_review"`');
-    expectContainsCI(flat, 'snapshots A\'s worktree');
-    expect(flat).not.toMatch(/Do NOT put agy on a `run_panel`/i);
+    expectContainsCI(flat, '### Confirm reviewer picks');
+    expectContainsCI(flat, 'Agents for this panel:');
+    expectContainsCI(flat, 'Override grammar');
+    expectContainsCI(flat, 'get_crew_preferences({scope: "panel"})');
+    expectContainsCI(flat, 'panel.reviewers');
+    expectContainsCI(flat, 'panel.banList');
+    expectContainsCI(flat, 'Own-host gate');
+    expectContainsCI(flat, 'native subagent');
+    expectContainsCI(flat, 'inline fallback');
+  });
+
+  it('uses one panel watcher and get_panel_status fallback instead of aggregate_not_ready discovery', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Panel lifecycle', '### Aggregation and consolidation');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'panel-level');
+    expectContainsCI(flat, 'required_next_action');
+    expectContainsCI(flat, '{{CREW_WAIT_COMMAND}} <id1> <id2> ...');
+    expectContainsCI(flat, 'Spawn one watcher for the panel');
+    expectContainsCI(flat, 'per-run commands for selective/degraded waits');
+    expectContainsCI(flat, 'get_panel_status({ panel_id })');
+    expectContainsCI(flat, 'running_count > 0');
+    expectContainsCI(flat, 'at most one short status line');
+    expectContainsCI(flat, 'no reviewer findings dump');
+    expectContainsCI(flat, 'Never discover panel completeness');
+    expectContainsCI(flat, 'run_panel.aggregate_not_ready');
+  });
+
+  it('keeps consolidation output compact and preserves full reviewer text in run records', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Aggregation and consolidation', '### Partial dispatch');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'severity');
+    expectContainsCI(flat, '`file:line`');
+    expectContainsCI(flat, 'one-line description');
+    expectContainsCI(flat, 'which models agree');
+    expectContainsCI(flat, 'Full reviewer text stays in run records');
+    expectContainsCI(flat, 'not chat');
   });
 });

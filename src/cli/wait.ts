@@ -65,6 +65,17 @@ export interface WaitForRunTerminalOptions {
   readonly watch?: CrewWaitWatchFactory;
 }
 
+export interface WaitForRunsTerminalOptions {
+  readonly runIds: readonly string[];
+  readonly crewHome?: string;
+  readonly pollIntervalMs?: number;
+  readonly stateFirstAppearanceGraceMs?: number;
+  readonly writeStdout?: (line: string) => void;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
+  readonly watch?: CrewWaitWatchFactory;
+}
+
 /**
  * Thrown when `state.json` for the requested `runId` never appears
  * within the grace window. Distinct from a runtime error so `main()`
@@ -123,6 +134,76 @@ export async function waitForRunTerminal(
     now,
     writeStdout,
   });
+}
+
+export async function waitForRunsTerminal(
+  options: WaitForRunsTerminalOptions,
+): Promise<void> {
+  if (options.runIds.length === 0) {
+    throw new Error('crew-wait: at least one run_id is required');
+  }
+  if (options.runIds.length === 1) {
+    await waitForRunTerminal({
+      runId: options.runIds[0],
+      crewHome: options.crewHome,
+      pollIntervalMs: options.pollIntervalMs,
+      stateFirstAppearanceGraceMs: options.stateFirstAppearanceGraceMs,
+      writeStdout: options.writeStdout,
+      sleep: options.sleep,
+      now: options.now,
+      watch: options.watch,
+    });
+    return;
+  }
+
+  const crewHome = options.crewHome ?? resolveCrewHome();
+  const pollIntervalMs = options.pollIntervalMs ?? resolvePollIntervalMs();
+  const graceMs = options.stateFirstAppearanceGraceMs ?? STATE_FIRST_APPEARANCE_GRACE_MS;
+  const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? Date.now;
+  const writeStdout = options.writeStdout ?? ((line) => process.stdout.write(`${line}\n`));
+  const startedAtMs = now();
+  const pending = new Set(options.runIds);
+  const stateAppeared = new Set<string>();
+  const linesByRunId = new Map<string, string>();
+  const statePathByRunId = new Map(
+    options.runIds.map((runId) => [runId, join(crewHome, 'runs', runId, 'state.json')]),
+  );
+
+  while (pending.size > 0) {
+    for (const runId of options.runIds) {
+      if (!pending.has(runId)) continue;
+
+      const statePath = statePathByRunId.get(runId)!;
+      const snapshot = await readStateSnapshotIfPresent(statePath);
+      if (snapshot) {
+        stateAppeared.add(runId);
+        const line = terminalLine(snapshot.state, runId);
+        if (line) {
+          linesByRunId.set(runId, line);
+          pending.delete(runId);
+        }
+        continue;
+      }
+
+      if (!stateAppeared.has(runId) && now() - startedAtMs >= graceMs) {
+        for (const completedRunId of options.runIds) {
+          const line = linesByRunId.get(completedRunId);
+          if (line !== undefined) writeStdout(line);
+        }
+        throw new CrewWaitUnknownRunError(runId, statePath);
+      }
+    }
+
+    if (pending.size > 0) {
+      await sleep(pollIntervalMs);
+    }
+  }
+
+  for (const runId of options.runIds) {
+    const line = linesByRunId.get(runId);
+    if (line !== undefined) writeStdout(line);
+  }
 }
 
 export function nextCrewWaitPollIntervalMs(
@@ -448,9 +529,9 @@ async function readStateSnapshotIfPresent(path: string): Promise<StateSnapshot |
 
 export function usage(): string {
   return [
-    'Usage: crew-wait <run_id>',
+    'Usage: crew-wait <run_id...>',
     '',
-    'Wait for a crew run to reach a terminal state and print one terminal metadata line.',
+    'Wait for one or more crew runs to reach terminal state and print one terminal metadata line per run.',
   ].join('\n');
 }
 
@@ -460,12 +541,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
 
-  if (argv.length !== 1 || argv[0].startsWith('-')) {
+  if (argv.length < 1 || argv.some((arg) => arg.startsWith('-'))) {
     process.stderr.write(`${usage()}\n`);
     return 2;
   }
 
-  await waitForRunTerminal({ runId: argv[0] });
+  await waitForRunsTerminal({ runIds: argv });
   return 0;
 }
 

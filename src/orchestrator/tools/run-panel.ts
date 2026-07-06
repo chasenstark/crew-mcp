@@ -48,6 +48,7 @@ import {
   markdownContent,
   progressNotifierFrom,
   requiredNextActionForRun,
+  requiredNextActionForRuns,
 } from './shared.js';
 
 const runPanelReviewerInputSchema = z.object({
@@ -86,6 +87,7 @@ export interface FailedReviewerEnvelope {
 export interface RunPanelOutput {
   readonly panel_id: string;
   readonly partial: boolean;
+  readonly required_next_action?: RequiredNextAction;
   readonly reviewers: readonly ReviewerDispatchEnvelope[];
   readonly failed_reviewers: readonly FailedReviewerEnvelope[];
 }
@@ -101,7 +103,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend its summary/files as peer_messages; omitted/empty reviewers fill from workflow.agentDefaults.panel, while explicit reviewers always win. Ephemeral-worktree reviewers (agy) auto-route to run_mode:"ephemeral_review" on a disposable snapshot worktree; omit read_only/working_directory for them. Returns panel_id, successful reviewer run_ids, and failed_reviewers. For Claude Code reviewer runs, spawn one crew-wait watcher per run. Do not block the turn long-polling get_run_status.';
+  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend summary/files as peer_messages; omitted/empty reviewers use workflow.agentDefaults.panel, explicit reviewers win. Ephemeral-worktree reviewers (agy) auto-route to run_mode:"ephemeral_review" on a disposable snapshot; omit read_only/working_directory. Returns panel_id, reviewer run_ids, failed_reviewers, and for Claude Code a panel-level crew-wait watcher command covering all reviewer runs; per-reviewer wait commands remain available for selective recovery. Do not block the turn long-polling get_run_status.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -306,10 +308,9 @@ export async function runPanelHandler(
         },
       });
       record = dispatchedReviewerRecord(reviewer.agent_id, result);
-      // Each reviewer dispatch is an independent crew run. Claude Code
-      // therefore needs one watcher action per reviewer run, not one
-      // panel-level watcher, so captains can spawn N watchers for N
-      // reviewer run IDs.
+      // Reviewer-level actions remain available for selective/degraded
+      // waits; the returned panel envelope adds the primary all-reviewer
+      // watcher once the successful run ids are known.
       const requiredNextAction = requiredNextActionForRun(
         clientKind,
         crewWaitCommand,
@@ -337,11 +338,22 @@ export async function runPanelHandler(
   });
   await panelWriteQueue;
 
+  const successfulReviewers = dispatchEnvelopes.filter(
+    (envelope): envelope is ReviewerDispatchEnvelope => envelope !== undefined,
+  );
+  const panelRequiredNextAction = requiredNextActionForRuns(
+    clientKind,
+    crewWaitCommand,
+    successfulReviewers.map((envelope) => envelope.run_id),
+  );
+
   return {
     panel_id: panelId,
     partial: panelState.reviewers.some(isFailedReviewerRecord),
-    reviewers: dispatchEnvelopes.filter((envelope): envelope is ReviewerDispatchEnvelope =>
-      envelope !== undefined),
+    ...(panelRequiredNextAction !== undefined
+      ? { required_next_action: panelRequiredNextAction }
+      : {}),
+    reviewers: successfulReviewers,
     failed_reviewers: panelState.reviewers
       .filter(isFailedReviewerRecord)
       .map((reviewer) => ({
@@ -366,17 +378,22 @@ function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): st
         `  - ${reviewer.agent_id}: ${reviewer.error}`),
     );
   }
-  const requiredActions = out.reviewers
-    .map((reviewer) => reviewer.required_next_action)
-    .filter((action): action is RequiredNextAction => action !== undefined);
-  if (clientKind === 'claude-code' && requiredActions.length > 0) {
+  if (clientKind === 'claude-code' && out.required_next_action !== undefined) {
     lines.push(
       '',
-      '**REQUIRED before you end this turn:** spawn one watcher per reviewer run.',
-      ...requiredActions.map((action) =>
-        `- \`Bash(${action.command}, run_in_background: true)\``),
-      'Skip any watcher and that crew run is orphaned.',
+      '**REQUIRED before you end this turn:** spawn one panel watcher.',
+      `- \`Bash(${out.required_next_action.command}, run_in_background: true)\``,
+      'Skip it and the panel is orphaned.',
     );
+    const selectiveActions = out.reviewers
+      .map((reviewer) => reviewer.required_next_action)
+      .filter((action): action is RequiredNextAction => action !== undefined);
+    if (selectiveActions.length > 0) {
+      lines.push(
+        '- Selective waits if the panel watcher degrades: '
+        + selectiveActions.map((action) => `\`${action.command}\``).join(', '),
+      );
+    }
   }
   return lines.join('\n');
 }

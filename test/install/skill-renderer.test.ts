@@ -97,12 +97,12 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain(SKILL_DESCRIPTION);
 
     // Body content shows up
-    expect(out).toContain('## Crew — orchestration playbook');
-    expect(out).toContain('## Escape hatch');
-    expect(out).toContain('## Dispatch-vs-inline');
+    expect(out).toContain('## Crew orchestration playbook');
+    expect(out).toContain('## Tool availability');
+    expect(out).toContain('## Dispatch or inline');
     expect(out).toContain('## Merge boundary');
-    expect(out).toContain('## Dispatch lifecycle — chat stays available');
-    expect(out).toContain('Step 2 — background watcher overlay (Claude Code, mandatory)');
+    expect(out).toContain('## Dispatch lifecycle');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code, mandatory)');
     expect(out).toContain('Checking pending runs at turn start');
     expect(out).not.toContain('## Polling lifecycle — every dispatch');
     expect(out).not.toContain('Hard rule: stay in the same turn');
@@ -163,8 +163,7 @@ describe('renderSkill (claude-code template)', () => {
 
     expect(out).toContain(`${ABSOLUTE_PATH} <run_id>`);
     expect(out).not.toMatch(/\{\{CREW_WAIT_COMMAND\}\}/);
-    // Bare "crew-wait" can still appear in the verbose section header
-    // (e.g., "Step 2 — background watcher overlay") but the actual
+    // Bare "crew-wait" can still appear in prose, but the actual
     // command-shape examples must use the absolute path.
     const watcherInvocation = out.match(/Bash\(["']?[^)]*crew-wait[^)]*["']?\s*,?\s*run_in_background/);
     expect(watcherInvocation?.[0]).toContain(ABSOLUTE_PATH);
@@ -190,14 +189,17 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).not.toMatch(/Always pass\s+`wait_for_change_ms:\s*30000`/);
 
     // ADDED — Phase 2 + post-review revisions:
-    expect(out).toContain('Step 2 — background watcher overlay (Claude Code, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code, mandatory)');
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
     expect(out).toContain('Synthetic-turn handling');
     expect(out).toContain('list_runs');
     // Foreground crew-wait hard gate: Codex/Gemini blocked until
     // empirical evidence lands. (Phase 2 review's major finding.)
     expect(out).toMatch(/Codex.*Gemini.*blocked|blocked.*Codex.*Gemini/);
-    expect(out).toContain('docs/status/captain-flow-review-2026-04-29.md');
+    expect(out).not.toContain('docs/status/captain-flow-review-2026-04-29.md');
+    expect(out).toContain('panel-level');
+    expect(out).toContain('commits');
+    expect(out).toContain('commit_count');
     // Multiple terminations don't batch:
     expect(out).toContain("don't batch");
     // Pending-run check guidance:
@@ -220,7 +222,7 @@ describe('renderSkill (codex template)', () => {
     // discovered as a skill.
     expect(out).toMatch(/^---\nname: crew\ndescription: /);
     expect(out).toContain(SKILL_DESCRIPTION);
-    expect(out).toContain('## Crew — orchestration playbook');
+    expect(out).toContain('## Crew orchestration playbook');
     expect(out).toContain('mcp__crew__run_agent');
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
@@ -239,7 +241,7 @@ describe('renderSkill (gemini template)', () => {
 
     expect(out).toMatch(/^---\nname: crew\ndescription: /);
     expect(out).toContain(SKILL_DESCRIPTION);
-    expect(out).toContain('# crew — orchestration playbook');
+    expect(out).toContain('## Crew orchestration playbook');
     expect(out).toContain('mcp__crew__merge_run');
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });

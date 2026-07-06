@@ -1,594 +1,348 @@
 <!--
-  Canonical skill body. Per-host templates wrap this in the appropriate
-  frontmatter (Claude Code skill, Codex prompt, Gemini extension). Single
-  source of truth for the orchestration playbook — edit here, re-run
-  `crew-mcp install` to propagate.
-
+  Canonical skill body. Per-host templates wrap this in host frontmatter.
+  Maintainer evidence for the foreground wait gate lives in
+  docs/status/captain-flow-review-2026-04-29.md; rendered host skills strip
+  comments, so captains get the self-contained rule below.
 -->
 
-## Crew — orchestration playbook
+## Crew orchestration playbook
 
-This skill loads when the user wants to dispatch coding work to other
-AI agents — "have Claude review this", "send this to Codex", "use a
-local model to triage", or any "have _another_ agent do X" framing.
-It teaches you how to use the `mcp__crew__*` tools to dispatch work
-into worktree-isolated runs and merge them back when the user is
-ready. Crew is an MCP server: it provides the verbs; you stay the
-orchestrator.
+Use Crew when the user wants work delegated to another AI agent: "have
+Claude review this", "send this to Codex", "ask Gemini to triage", or
+parallel exploration. Crew is an MCP server. The tools allocate run state
+and worktrees; you remain the captain who decides what to dispatch, when
+to ask, and when to merge or discard.
 
-## Escape hatch — verify the tools are actually available
+## Tool availability
 
-The `mcp__crew__*` tools live in an external MCP server the user has
-to install. If you call one and it returns "tool not found" (or you
-don't see them in the tool list at all), **stop and tell the user
-that crew may be misconfigured**. Suggest `crew-mcp install --target
-<host>` followed by a session restart. Do not invent a result; do
-not pretend the dispatch happened. If the user prefers, continue
-inline yourself instead.
+If `mcp__crew__*` tools are missing or a call says "tool not found", stop
+and tell the user Crew may be misconfigured. Suggest `crew-mcp install
+--target <host>` and a session restart. Do not pretend a dispatch
+happened; continue inline only if the user wants that.
 
-Always reach for the `mcp__crew__*` tools — never shell out to a
-local `crew-mcp` binary on PATH (or a `dist/index.js` you spot in
-the repo). The MCP path is the contract; shelling out bypasses
-worktree allocation and run-state tracking, leaving the user in a
-state where
-`merge_run` / `discard_run` can't find the run.
+Always use the MCP tools. Never shell out to a local `crew-mcp` binary or
+`dist/index.js`; that bypasses worktree allocation and run-state tracking,
+so `merge_run` / `discard_run` cannot find the run.
 
-## Criteria tool display
+## Criteria display
 
-When the criteria-store tools are present, `create_criteria`,
-`confirm_criteria`, and `revise_criteria` return chat-readable
-markdown as the tool result text: first a display hint, then a blank
-line, then the GFM criteria table. Reprint that table verbatim as
-normal chat before invoking AskUserQuestion or asking the user to
-confirm criteria. Do not treat these results as raw JSON hidden under
-the MCP fold. `get_criteria` is different: use its `rendered_block`
-field when you need to inline criteria into a host-native subagent
-prompt.
+When criteria tools are present, `create_criteria`, `confirm_criteria`,
+and `revise_criteria` return chat-readable markdown: display hint, blank
+line, then the GFM criteria table. Reprint that table verbatim before
+asking the user to confirm criteria. `get_criteria` is different: use its
+`rendered_block` when a prompt needs inline criteria.
 
-## Dispatch-vs-inline — the load-bearing decision
+## Named protocols
 
-Most asks should not be dispatched. A dispatch costs ~30–60s of
-latency, allocates a worktree, and demands the user's attention to
-merge or discard. **Default to answering inline** unless the work
-matches one of these signals:
+### Ask protocol
 
-- **The user named another agent.** "Have Claude review this", "send
-  this to Codex". Dispatch.
-- **A different model is genuinely better-suited.** "Use a
-  code-review-tuned model", "let the local Gemma triage these test
-  failures". Dispatch.
-- **The work is large enough to dominate the conversation.** Full-repo
-  refactor, 30-file change, anything where seeing intermediate output
-  inline would be noise. Dispatch.
-- **The user wants parallel exploration.** "Try two implementations
-  and we'll pick." Dispatch each variant.
+For a discrete choice, use the host's structured question surface when it
+exists (AskUserQuestion on Claude Code). If the host has no structured
+question tool, ask in prose and wait for a free-text reply. Include an
+Other/free-text path when the listed options may not cover the user's
+intent. Genuinely open-ended questions can stay prose. **Silence is not
+consent.**
 
-**Default to inline whenever zero of the four signals applies
-cleanly.** Maybe-fits should not dispatch — they should ask. A
-30–60s dispatch followed by a discard is worse than a 5-second
-clarifying question; dispatching for trivial work defeats the
-point of the user staying in their primary CLI.
+### Own-host rule
 
-When the dispatch-vs-inline decision itself is a discrete choice, use
-the host's structured-question tool (AskUserQuestion on Claude Code) to
-present the options and capture the choice when available; if the host
-exposes no such tool, surface the options as prose and wait for a
-free-text reply. Either way, **Silence is not consent.** Genuinely
-open-ended clarification remains prose, or uses the host question tool
-only with an explicit Other/free-text escape.
+Crew bridges between products. Do not Crew-dispatch to the same product
+you are already running in: Claude Code -> Claude Code, Codex -> Codex,
+Gemini -> Gemini. Use the host's native subagent mechanism instead. The
+only exception is when the user explicitly asks for same-product worktree
+isolation; then Crew is appropriate. For review panels, the host model is
+still a reviewer, but it reviews through a native subagent or inline
+fallback, not through `run_panel`.
 
-### Don't dispatch to your own host product
+## Dispatch or inline
 
-Crew bridges **between** agent products (Claude ↔ Codex ↔ Gemini ↔
-local). It's not the right tool for spawning another instance of the
-host you're already running in. If you're Claude Code and the user
-says "have Claude review this", **use your native subagent
-mechanism (the `Agent` / `Task` tool) directly** — don't `run_agent`
-to `claude-code`. Symmetric for Codex → Codex, Gemini → Gemini.
+Default to inline. Dispatch only when at least one signal is clear:
 
-The one legitimate exception is **explicit worktree isolation** for
-a same-product run ("fork a Claude run in a worktree so I can keep
-working on main"). If the user names that, proceed. Otherwise:
-native subagent. If unsure, ask. When `list_agents` shows your own
-host product, treat it as "available for explicit isolation
-requests only" rather than a default routing target.
-If you need the user to choose between native subagent and explicit
-worktree isolation, use the host's structured-question tool
-(AskUserQuestion on Claude Code) to present those options and capture
-the choice when available; if the host exposes no such tool, surface
-the options as prose and wait for a free-text reply. Either way,
-**Silence is not consent.**
+- The user named another agent or product.
+- A different model is materially better suited.
+- The task is large enough that inline work would dominate the chat.
+- The user wants parallel exploration.
 
-**This rule governs Crew dispatch, not your native subagents.** For
-**review panels**, the host model should still review — as a
-first-class reviewer through your native subagent (the `Agent` /
-`Task` tool), never through `run_panel`. A fresh native subagent gives
-the host model a clean context and the same review prompt the crew
-reviewers get: a real independent vote, not the confirmation-biased
-"I just orchestrated this, looks good to me" of an inline self-review.
-Dispatch the crew reviewers **first** so they run async, then launch
-the native subagent — backgrounded if your host supports it
-(`run_in_background: true`), otherwise foreground (the panel's already
-async, so only the turn waits). Inline review is the last resort, for
-hosts with no native subagent at all. (This is the general
-dispatch-order rule — see _"Dispatch order — crew first"_.) See _"The
-host reviewer"_ for the full ordering and _"Review panels"_ for how to
-fold the native review into consolidation (`aggregate_panel` won't
-include it).
+**Ask gate:** if the dispatch-vs-inline choice is itself uncertain,
+confirm via the Ask protocol. **Silence is not consent.**
 
-## The default flow — code → review → iterate → merge
+**Own-host gate:** if the user names your own host product and did not ask
+for worktree isolation, follow the Own-host rule instead of Crew-dispatch.
 
-When the user dispatches an implementation:
+Most maybe-fits should not dispatch. A 30-60s run followed by discard is
+worse than a short clarifying question.
 
-1. **Dispatch.** Call `run_agent` with the implementer's `agent_id`
-   (from `list_agents`) and a precise prompt. Write the prompt
-   yourself; the agent sees it verbatim.
-2. **Yield while running.** `run_agent` returns immediately with the
-   `run_id` and `tail_url`. Confirm the dispatch with the `run_id`
-   and tail link, then end your turn so the user can keep chatting.
-   On Claude Code, this is mandatory before ending the turn:
-   spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
-   For N crew runs, spawn N watchers — one watcher per crew run ID.
-   A harness-tracked native `Agent` / `Task` subagent completing tells
-   you nothing about crew runs, which are not harness-tracked. On
-   Codex / Gemini, just end the turn — no watcher. Read the terminal
-   payload with `get_run_status` on the watcher's synthetic turn
-   (Claude Code) or on the next user turn (Codex / Gemini).
-   **Never** call `get_run_status` with `wait_for_terminal_only` or
-   a long `wait_for_change_ms` to block the turn open — see the
-   Dispatch lifecycle section.
-3. **Iterate.** `continue_run` for fix-up turns (same agent, same
-   worktree). For a second opinion, `run_agent` to a different
-   agent with `read_only: true` + `working_directory` pointed at
-   the implementer's worktree — the reviewer reads the changes
-   without allocating its own worktree. (Restate "review only, do
-   not edit" in the reviewer's prompt anyway; the flag skips
-   allocation but doesn't constrain the agent's tools.) Exception:
-   an agy second opinion is dispatched with
-   `run_mode: "ephemeral_review"` and NO `working_directory` — agy
-   rejects `read_only` outright, so crew gives it its own disposable
-   snapshot worktree instead (see Ephemeral review dispatches).
-   A solo ephemeral dispatch snapshots the HOST repo; to point agy
-   at an implementer run's worktree instead, use a bound
-   `run_panel` (it snapshots that worktree per reviewer — the
-   solo path can't).
-   Apply reviewer findings via `continue_run` on the implementer's
-   run.
-4. **Surface to the user.** Once you're satisfied (or once you have
-   a question only the user can answer), summarize. For an
-   implementer run, ask: merge, continue iterating, or discard?
-   For a **review-only run** (no edits expected), there's nothing to
-   merge — surface the findings and ask whether to discard the
-   worktree (cleanup) or keep it around for follow-up. For these
-   discrete follow-up prompts, use the host's structured-question tool
-   (AskUserQuestion on Claude Code) to present the options and capture
-   the choice when available; if the host exposes no such tool,
-   surface the options as prose and wait for a free-text reply. Either
-   way, **Silence is not consent.**
-5. **Merge or discard on user instruction.** Never call `merge_run`
-   or `discard_run` without explicit approval — see merge-boundary
-   safety rule below. When merging, pass `confirmed: true` only after
-   that approval.
+## Default flow
 
-## Merge boundary — always confirm before merge_run
+1. **Dispatch.** Call `run_agent` with an `agent_id` from `list_agents`
+   and a precise prompt you wrote. The worker sees it verbatim.
+2. **Yield while running.** `run_agent` / `continue_run` return
+   immediately with `run_id`, `status: "running"`, and `tail_url`.
+   Confirm in one visible line that names the `run_id` and status, include
+   the tail link, then end the turn. On Claude Code, first spawn the
+   required watcher:
+   `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
+   For independent non-panel Crew runs, spawn N watchers for N run ids.
+   On Codex and Gemini, end the turn; no watcher overlay.
+3. **Read terminal state later.** Claude Code gets a watcher-triggered
+   synthetic turn; Codex/Gemini read snapshots at the next user turn.
+   Use `get_run_status` for the rich terminal payload.
+4. **Iterate or review.** Use `continue_run` for fixups. For a second
+   opinion, dispatch a reviewer with `read_only: true` and
+   `working_directory: <implementer worktree>`. For agy reviews, use
+   `run_mode: "ephemeral_review"` or a bound `run_panel`; do not pass
+   `read_only` or `working_directory`.
+5. **Ask what to do next.** For implementer runs, ask merge / iterate /
+   discard. For read-only or ephemeral reviews, ask cleanup / keep.
+   **Ask gate:** confirm via the Ask protocol. **Silence is not consent.**
+6. **Merge or discard only on instruction.** Pass `confirmed: true` to
+   `merge_run` only after explicit approval in the immediately preceding
+   user turn.
 
-`merge_run` is the only tool that mutates the user's branch. Always
-confirm with the user before calling it. Phrase the confirmation
-concretely so they know what they're approving:
+## Merge boundary
 
-> "Ready to merge `r-9f3a` (3 files changed, summary: …) into `main`?"
+`merge_run` mutates the user's branch. Always ask before calling it:
+"Ready to merge `r-9f3a` (3 files changed, summary: ...) into `main`?"
+Do the same before `discard_run`, because discarding can throw away a
+worktree the user still wants.
 
-Not just "Should I merge?" The same goes for `discard_run` — confirm
-before throwing away work the user might still want. If `merge_run`
-returns conflicts, surface the conflicting paths to the user; do not
-attempt automated resolution. merge_run lands the run linearly (no
-empty merge commit). For `squash`, conflicts are materialized in the
-run worktree, not the host checkout; ask before resetting or discarding
-that run worktree. For `preserve`, conflicts can still come from the
-legacy cherry-pick path, where `git cherry-pick --abort` is the escape
-hatch. Don't run a reset/abort yourself without asking; it throws away
-working state.
+If `merge_run` reports conflicts, surface the paths and stop. Do not
+reset, abort, or discard without asking; those operations destroy state.
+For `squash`, conflicts are materialized in the run worktree. For
+`preserve`, the legacy cherry-pick path may leave the host checkout in a
+conflict and `git cherry-pick --abort` is the escape hatch, but ask first.
 
-For merge and discard confirmations, use the host's structured-question
-tool (AskUserQuestion on Claude Code) to present the options and
-capture the choice when available; if the host exposes no such tool,
-surface the options as prose and wait for a free-text reply. Either
-way, **Silence is not consent.** The structured surface does not weaken
-consent: pass `confirmed: true` only after the user explicitly chooses
-Merge or otherwise gives an affirmative "yes / go / merge" in the
-immediately preceding turn.
+**Ask gate:** merge/discard confirmations use the Ask protocol.
+**Silence is not consent.** The structured surface does not weaken
+consent: pass `confirmed: true` only after an explicit "yes / go / merge"
+or an explicit structured Merge choice in the immediately preceding turn.
 
-By default the server enforces this boundary too:
-`merge_run` requires `{ confirmed: true }` when
-`confirmBeforeMerge=true` in the user's crew config. You may pass
-`confirmed: true` only after the user gives explicit affirmative
-consent in the immediately preceding turn. Never add it
-pre-emptively, never infer it from a stale approval, and never pass it
-just to get past the gate.
-
-If `merge_run` rejects with
-`requires explicit user confirmation`, re-ask the user with a concrete
-merge prompt, wait for an affirmative answer, then retry
-`merge_run` with `confirmed: true`. Do not retry automatically.
-If `merge_run`, `discard_run`, or `continue_run` rejects with
-`run_in_flight` or `busy_worktree`, another live run is still using
-the run worktree or host checkout. Tell the user which run is blocking
-and wait for it to finish or ask whether to cancel it. For `merge_run`
-only, use `force: true` solely after explicit user approval and only
+If `merge_run` rejects with `requires explicit user confirmation`, ask the
+concrete merge question, wait for an affirmative answer, then retry with
+`confirmed: true`. Do not retry automatically. If `merge_run`,
+`discard_run`, or `continue_run` rejects with `run_in_flight` or
+`busy_worktree`, tell the user which run is blocking and wait, or ask
+whether to cancel. Use `force: true` only after explicit approval and only
 when the blocker is safe to ignore.
 
-After a successful `merge_run`, check the structured output. If it
-includes `landed_off_current_branch: true`, explicitly tell the user
-the commit landed on `target_branch` and that their original checkout
-was restored (`original_branch`, or detached `original_head` when no
-branch was checked out). Example: "Landed on `main`; you're back on
-`feature`." This warning matters because the host repo is restored
-after non-conflict merges, while the commit belongs to the target.
-If the output includes `restore_failed: true`, the merge/no-changes
-result still landed and the run is still terminal; tell the user the
-`restore_warning` verbatim enough to make the current checkout clear
-(for example, "merge landed but I couldn't return you to `feature`;
-you're on `main`"). Do not retry merge_run just to fix checkout state.
+After a successful merge, inspect the structured output. If
+`landed_off_current_branch: true`, tell the user which `target_branch`
+received the commit and which original checkout was restored. If
+`restore_failed: true`, the merge/no-changes result still landed; relay
+`restore_warning` enough to make the current checkout clear. Do not rerun
+merge just to repair checkout state.
 
 ### Pick the merge strategy
 
-`merge_run` lands the run linearly — never an empty merge commit — in
-one of two shapes. Read the run's `git log` (in the run's worktree) and
-choose:
+Use terminal `get_run_status` fields `commits` and `commit_count`; they
+list newest-first commit subjects for the run (`target..HEAD`, capped at
+20). If those fields are absent on an old run, fall back to `git log` in
+the run worktree.
 
-- **`squash`** (default): collapse the run into one commit. Right when
-  the run is one logical change plus fixups — an implementation commit
-  followed by "address review" / "wip" commits, or just a single
-  commit. **Always pass a meaningful `commit_title`** (and optionally
-  `commit_body`); the subject becomes permanent history the user reads
-  later — "crew run abc123…" is the useless fallback. Compose a
-  conventional-style imperative (≤72 chars) describing what the run
-  accomplished.
-- **`preserve`**: keep the run's individual commits. Right when the
-  implementer produced a deliberate stack of discrete, standalone
-  commits, each with its own well-formed conventional subject.
-  `commit_title` / `commit_body` are ignored here — the commits carry
-  their own messages.
+- **`squash`** (default): one logical change plus fixups, WIP/review
+  commits, or a single commit. Always pass a meaningful `commit_title`
+  (optionally `commit_body`), ideally a conventional imperative subject
+  under 72 chars. Compose it from the terminal summary, files changed, and
+  commit subjects.
+- **`preserve`**: a deliberate stack of standalone commits with good
+  subjects. `commit_title` / `commit_body` are ignored.
 
-How to apply the choice against the confirmation gate:
+With `confirmBeforeMerge` on, propose the strategy and show the commit
+count/list in the merge prompt ("3 commits: squash to one or keep all
+three?"). With it off, apply the same heuristic yourself; the user opted
+into landing without confirmation.
 
-- **`confirmBeforeMerge` on (default):** propose the strategy and show
-  the run's commit list in your merge prompt ("3 commits — squash to
-  one, or keep all three?"). The user confirms or flips; then
-  `merge_run` with `confirmed: true` and the chosen `merge_strategy`.
-  Use the host's structured-question tool (AskUserQuestion on Claude
-  Code) to present Squash / Preserve options and capture the choice
-  when available; if the host exposes no such tool, surface the options
-  as prose and wait for a free-text reply. Either way, **Silence is not
-  consent.**
-- **`confirmBeforeMerge` off (auto-merge):** there's no gate to surface
-  the choice at, so apply your own judgment from the run's `git log` —
-  the same heuristic above — and merge. The user opted into landing runs
-  without review, so trust your read; `squash` still fits most runs.
+**Ask gate:** when the strategy is presented to the user, confirm via the
+Ask protocol. **Silence is not consent.**
 
-## When to ask the user — rubric, not vibes
+## When to ask before dispatch
 
-Before dispatching, **ask one clarifying question** if any of the
-following hold. The check is mandatory; skip it only when none of
-them hold.
+Before dispatching, ask one clarifying question if any condition holds:
 
-For discrete clarifying gates in this rubric, use the host's
-structured-question tool (AskUserQuestion on Claude Code) to present
-the options and capture the choice when available; if the host exposes
-no such tool, surface the options as prose and wait for a free-text
-reply. Either way, **Silence is not consent.** Do not force genuinely
-open-ended asks into rigid multiple choice: for "what does done look
-like?", broad scope, or approach details the listed options do not
-cover, ask in prose or include an explicit Other/free-text option.
+1. Scope is open-ended: "improve", "rework", "make X better" without a
+   target, success criterion, or stop condition.
+2. More than one plausible approach exists.
+3. The work touches sensitive areas: auth, money, data migrations, public
+   APIs, deletion, or anything irreversible.
+4. You do not know which agent fits.
+5. Same-host ambiguity triggers the Own-host rule.
 
-1. **Scope is open-ended.** The ask uses verbs like "improve",
-   "rework", "redesign", or "make X better" without naming a target
-   file, success criterion, or stop condition. Ask: _"What does
-   done look like for this?"_
-2. **More than one plausible approach exists.** Name two and let
-   the user pick, with an Other/free-text escape when the options do
-   not cover the space. Don't dispatch on the assumption your read is
-   right when a different interpretation is equally defensible.
-3. **The work touches a sensitive area** — auth, money, data
-   migrations, public APIs, deletion, anything irreversible. Confirm
-   in-scope with the specific paths or symbols before dispatching.
-4. **You don't know which agent fits.** Ask the user rather than
-   guessing; include an Other/free-text option if the listed agents
-   are not exhaustive. Picking the wrong agent costs the user a
-   30–60s round-trip and a discard.
-5. **The user named the same product as the host CLI without an
-   explicit isolation reason.** Don't route it through Crew — see
-   _"Don't dispatch to your own host product"_ above. For
-   implementation or one-off same-host work, use the host's native
-   subagent mechanism instead, or ask whether they want worktree
-   isolation (the only reason to route same-product work through
-   crew). For a **review panel**, the host belongs in the panel via a
-   native subagent (not `run_panel`), so this isn't a reason to ask —
-   just include it.
+**Ask gate:** these clarifying gates use the Ask protocol. **Silence is not consent.** Do not force open-ended "what does done look like?" style
+questions into rigid choices.
 
-The rubric only fires **after** you've decided to dispatch. If a
-dispatch signal already applies and the five items above are clean —
-**just dispatch**, no clarifying question needed. Trivial,
-well-specified asks should not be ceremonious; over-asking on an
-obvious "fix this typo via the reviewer" defeats the point of the
-crew. The escape hatch matters as much as the gate.
+The rubric fires only after you have decided Crew dispatch is plausible.
+If a dispatch signal applies and none of the five conditions are true,
+just dispatch.
 
-If the user has already answered one of these inline ("use Codex
-for this, scope is just src/parser.ts, replace the regex
-implementation"), don't re-ask. The rubric is about catching gaps,
-not running through a checklist for its own sake.
+## Dispatch lifecycle
 
-## Dispatch lifecycle — chat stays available
+`run_agent`, `continue_run`, and `run_panel` are async-first. They return
+immediately; terminal results surface later. Your visible output should
+normally be one dispatch confirmation, one terminal synthesis, and one
+merge/iterate/discard prompt. The user has the tail link for live
+progress.
 
-`run_agent` and `continue_run` are **async-first**: they always
-return immediately with `run_id` and `tail_url`. There is no
-terminal fast path. The default flow is dispatch-and-yield: confirm
-the run, give the user the tail link, and end the turn so chat stays
-available while the agent works.
+**Don't block the turn with `get_run_status`.** Do not call `get_run_status` with
+`wait_for_terminal_only: true` or a long `wait_for_change_ms` to keep the
+turn open. The only legitimate in-turn waits are the explicit foreground
+`{{CREW_WAIT_COMMAND}}` opt-in below and bounded native subagent work that
+is not a Crew MCP long-poll.
 
-**Your job is coordination, not narration.** During a dispatch, keep
-your visible output to one dispatch confirmation, one terminal
-summary, and one merge/iterate/discard prompt. The user has an
-independent progress channel through the tail link.
+### Dispatch order - crew first
 
-**Don't block the turn with `get_run_status`.** Setting
-`wait_for_terminal_only: true` (or a long `wait_for_change_ms`)
-holds the turn open until the run lands — the user can't chat,
-can't interrupt, can't redirect. Async-first dispatch exists so
-the captain stays available; the watcher overlay (Step 2 below)
-is how Claude Code captains surface a terminal result without
-blocking. The only legitimate in-turn waits are (1) the explicit
-foreground opt-in described further down, which applies only when the
-user said "wait for this" out loud, and (2) the bounded synchronous
-native subagent (host review is the canonical instance — see _"The
-host reviewer"_), which blocks one turn by design on hosts that can't
-background a native subagent, and only after crew is already
-dispatched async. Neither is an MCP long-poll on a crew run. On
-Codex / Gemini, default to a snapshot `get_run_status` at the next
-user turn —
-never a long-poll inside the dispatch turn.
+When a turn will do both independent Crew work and captain-side work
+(inline reasoning, local implementation, or native subagent delegation),
+call Crew first, then do captain-side work. Crew starts as soon as the
+tool call returns, so the work overlaps.
 
-### Dispatch order — crew first, then captain-side work
+Exception: if captain-side work produces the Crew prompt or context, do
+that prerequisite first. Examples: reading an implementer terminal summary
+before composing reviewer `peer_messages`, or analyzing locally to decide
+what to delegate.
 
-This is purely an *ordering* rule for turns where you've already
-decided (per _"Dispatch-vs-inline"_) to do both crew work and
-captain-side work. It never argues *for* dispatching crew — most
-turns shouldn't.
-
-When a turn will do BOTH — a crew dispatch AND captain-side work that
-takes real time (your own inline reasoning/implementation, or a
-delegation to a native subagent via `Agent` / `Task`) — **issue the
-crew dispatch first, then do the captain-side work**, provided the two
-are independent (see the exception below).
-
-`run_agent`, `run_panel`, and `continue_run` are async: they return
-immediately and the worker starts the moment you call them. Fire crew
-first and the worker runs concurrently with your captain-side work.
-The cost of firing it second depends on that work:
-
-- **Inline / foreground work** blocks the turn, so crew can't even
-  start until that work returns — the turn fully serializes
-  (wall-clock = captain work + crew work instead of max).
-- **A backgrounded native subagent** runs concurrently either way, so
-  ordering it after crew costs only the crew launch/setup overlap —
-  smaller, but still free to claim by dispatching crew first.
-
-When you delegate to a native subagent alongside crew, crew goes first
-and the subagent second, and **prefer `run_in_background: true`**
-(Claude Code) so the subagent also runs concurrently and chat stays
-available. If your host can't background a native subagent, you may
-launch it synchronously — but only after crew is already dispatched
-async, so the blocking subagent never stalls the crew worker (this is
-the bounded-wait carve-out the _"only legitimate in-turn waits"_
-paragraph above allows).
-
-**Exception — when captain-side work produces the dispatch.** "Crew
-first" applies only when the crew prompt/context is already known. If
-the captain-side work *produces* what you'd dispatch — composing a
-reviewer's `peer_messages` from an implementer's terminal output
-(_"The default flow"_ step 3, _"Pattern: implement-then-review"_), or
-analyzing locally to decide what to delegate — that work is a
-*prerequisite*, not a parallel peer. Do it first; the crew dispatch
-can't precede the input it consumes. Order crew first only across
-*independent* work streams.
-
-This is the general rule. The review-panel ordering in _"The host
-reviewer (native subagent)"_ — crew reviewers via `run_panel` first,
-host review via a backgrounded native subagent second — is this rule
-applied to reviews (and it dodges the exception because the host and
-crew reviewers share one pre-composed prompt).
+For review panels, dispatch crew reviewers first, then launch the host
+native reviewer. Prefer a backgrounded native subagent where the host
+supports it.
 
 ### Step 1 dispatch confirmation
 
-Confirm the run_id back to the user **once**, briefly, and **include
-a clickable tail link inline** so the user can open a side terminal
-without expanding the (collapsed-by-default) tool result. The
-`run_agent` envelope returns `tail_url` — a custom `crew-tail://`
-URL that opens Terminal.app running `tail -F` via the optional macOS
-handler (installed with `crew-mcp install-tail-handler`). Paste it
-verbatim into a markdown link.
-
-Always use `tail_url`, not `tail_command_url`: the `file://` variant
-gets intercepted by Claude Code and opens in the editor instead of a
-side terminal. (`tail_command_url` is available only to full-envelope
-legacy structured consumers; it is not the inline-link choice.)
-Format:
+Confirm once, briefly, and include visible `run_id` plus status. Use the
+`tail_url` from the envelope, not `tail_command_url`.
 
 ```
-Dispatched as `<run_id>` — [tail in side terminal](<tail_url>). Ended turn; chat freely.
+Dispatched as `<run_id>` (status: running) - [tail in side terminal](<tail_url>). Ended turn; chat freely.
 ```
 
-That's a single line. Don't relay the rest of the dispatch markdown
-(worktree path, status-read hints, etc.) — those are already in the
-tool result for the user who wants them.
+If several runs are in flight, add one compact ledger line:
+`live runs: <id>:running, <id>:running`. This makes compaction summaries
+preserve orchestration state. Every terminal synthesis must also name
+`run_id` and status in visible text.
 
-### Step 2 — background watcher overlay (Claude Code, mandatory)
+If the user says the tail link does nothing, suggest
+`crew-mcp install-tail-handler` or give `tail -F <events_log_path>` from
+the dispatch envelope.
 
-On Claude Code, immediately after `run_agent` / `continue_run`
-returns, complete this checklist before ending the turn:
+### Step 2 - background watcher overlay (Claude Code, mandatory)
+
+On Claude Code, immediately after `run_agent` / `continue_run` returns:
+
+Complete this checklist before ending the turn:
 
 1. Read the returned `run_id`.
 2. Spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
-3. For a batch, repeat step 2 for every crew run ID. N crew runs
-   means N watchers. A native `Agent` / `Task` subagent completion is
-   harness-tracked by the host, not by Crew, and tells you nothing
-   about crew runs, which are not harness-tracked.
+3. Repeat for each independent non-panel Crew run id. N crew runs means
+   N watchers.
 4. End your turn.
 
-The watcher polls `state.json` until the run reaches `success |
-partial | error | cancelled`, then exits. Claude Code turns that
-background completion into a synthetic captain turn.
+`{{CREW_WAIT_COMMAND}}` is rendered to the exact allowed command form for
+this install, such as `crew-wait` or `/usr/local/bin/crew-wait`; use it
+exactly.
 
-**Use `{{CREW_WAIT_COMMAND}}` exactly as rendered above** — the
-install picks the literal form your `Bash(...)` allowlist accepts
-(bare `crew-wait` when it's on PATH, or an absolute path like
-`/usr/local/bin/crew-wait` when the install fell back). Either form
-is correct in its own install; the wrong form for this install will
-miss the allowlist entry, the `Bash` call will be denied, and the
-watcher won't spawn. If you have to type it from memory, copy it
-from this section rather than guessing.
+A native `Agent` / `Task` subagent completion is host harness-tracked, not
+Crew-tracked, and tells you nothing about Crew runs.
 
-**Synthetic-turn handling.** When the watcher exits, Claude Code
-fires a synthetic turn whose tool-result body includes a single
-line of stdout:
+**Spawn failure is user-visible.** If the watcher fails to start (missing
+binary, allowlist denial, non-Claude host), tell the user the watcher did
+not start and that results will surface on their next message. Then end
+the turn and use turn-start recovery.
+
+**Synthetic-turn handling.** A successful watcher prints:
 
 ```
 CREW_WAIT_TERMINAL run_id=<id> agent=<agent> status=<status> worktree=<path>
 ```
 
-Parse `run_id` from that line and call
-`get_run_status({ run_id })` for the rich terminal payload
-(summary, `files_changed`, `events_tail`). Surface a tight
-synthesis to the user and ask the relevant follow-up
-(merge / iterate / discard for implementer runs;
-keep / cleanup for read-only and ephemeral reviews — never
-offer merge on an ephemeral review).
+Parse `run_id`, call `get_run_status({ run_id })`, and synthesize from
+`summary`, `filesChanged`, `warnings`, `commits`, and `events_tail`.
+Never dump the tail verbatim.
 
-If the synthetic turn arrives without the `CREW_WAIT_TERMINAL`
-line (host stdout-surfacing degrades, watcher killed by signal,
-etc.), fall back to discovery via `list_runs`:
+If the watcher exits with diagnostic code 3, the run id is unknown or
+`$CREW_HOME` is wrong/stale. Do not respawn in a loop. Use `list_runs`
+for the current repo, identify the run by visible conversation context,
+and continue from the recovered `run_id`.
+
+If a synthetic turn arrives without `CREW_WAIT_TERMINAL`, use
+`list_runs` without `completedAfter`, filter to terminal statuses, and
+dedupe by `run_id` against runs already surfaced. Only use
+`completedAfter` when the timestamp is confidently visible in the chat.
+
+### Foreground `{{CREW_WAIT_COMMAND}}` opt-in
+
+Foreground `crew-wait` is Claude Code-only. Use it only when the user
+explicitly says "wait for this" or equivalent:
 
 ```
-list_runs({
-  status: ["success", "partial", "error", "cancelled"],
-  completedAfter: <ISO timestamp of your last terminal surfacing>,
-})
+{{CREW_WAIT_COMMAND}} <run_id>
 ```
 
-That returns every newly-terminal run in the current repo,
-newest-first. Dedupe against run IDs you already surfaced earlier
-in the conversation, then process each remaining one as if its
-`CREW_WAIT_TERMINAL` line had arrived normally.
-
-**Spawn failure / non-Claude host.** If spawning the watcher
-fails (binary missing, allowlist rejects, host is not Claude
-Code), fall back to the portable baseline: end your turn after
-the dispatch and check pending runs at the next user turn.
-
-### Foreground `{{CREW_WAIT_COMMAND}}` opt-in (Claude Code only — Codex / Gemini blocked until empirical gates pass)
-
-When the user explicitly says they want to wait in-turn ("wait
-for this", "I'll wait"), call `{{CREW_WAIT_COMMAND}} <run_id>`
-as a foreground shell command. This blocks chat, but it uses one
-inference instead of an N-iteration MCP long-poll loop.
-
-**Hard gate: Claude Code only for now.** Phase 3 empirical tests
-#3 (Codex foreground ≥5min) and #4 (Gemini foreground ≥5min) are
-documented as deferred in
-`docs/status/captain-flow-review-2026-04-29.md`. Until that file
-records dated passing evidence for those gates, do NOT use
-foreground `{{CREW_WAIT_COMMAND}}` on Codex or Gemini — those
-hosts may silently kill long shell commands or behave
-inconsistently with ESC. Default to the portable baseline (end
-turn, check at next user turn) on Codex/Gemini.
-
-After foreground `{{CREW_WAIT_COMMAND}}` returns, call
-`get_run_status({ run_id })` for the rich terminal payload:
-summary, `files_changed`, prompts, warnings, and `events_tail`.
-The shell output is terminal metadata, not the full result.
+This blocks chat but uses one inference instead of an MCP long-poll loop.
+Do not use foreground `{{CREW_WAIT_COMMAND}}` on Codex or Gemini; Codex/Gemini hosts remain blocked for this path until dated empirical evidence says
+otherwise. On Codex/Gemini, end the turn and recover by snapshot at the
+next user turn.
 
 ### Checking pending runs at turn start
 
-At the start of every captain turn, before answering the user's new
-message, check pending run state:
+Codex and Gemini: at every turn start, check pending run state because
+there is no watcher overlay.
 
-1. For run IDs you remember from conversation context, call
-   `get_run_status({ run_id })`. If a run is still `running`, mention
-   it only when relevant; don't block the turn.
-2. Use `list_runs` as recovery after `/clear`, context loss, or when
-   the user references a run you don't recognize. It is implicitly
-   scoped to the current repo; use terminal status filters when you
-   need newly finished runs.
+Claude Code: check only when a watcher may be missing: spawn failure was
+reported, context was compacted or cleared, or the user mentions an
+unrecognized run.
 
-When a run reaches `success | partial | error | cancelled`, synthesize
-from `summary`, `files_changed`, and `events_tail`. Do not dump the
-tail verbatim. Ask about merge / iterate / discard for implementer
-runs, or cleanup / keep-around for read-only and ephemeral-review
-runs (an ephemeral review is never a merge candidate).
+With more than one pending run, use one repo-scoped `list_runs` call
+instead of N `get_run_status` calls. Reserve `get_run_status` for the
+rich payload of the run you are surfacing now.
 
-### Multiple terminations don't batch
+Use `list_runs` after `/clear`, compaction, context loss, or unknown-run
+references. Prefer omitting `completedAfter` and deduping by `run_id`;
+timestamps are optional, only when visible in the conversation.
 
-Claude Code watcher exits are not batched. If three crew runs are
-dispatched, spawn three watchers, even when you also launched a
-native `Agent` / `Task` subagent. If those runs finish close together,
-expect three separate synthetic turns. Handle each turn tightly:
-identify the run, summarize the terminal result, and ask the one
-relevant follow-up. Don't try to coalesce completions across synthetic
-turns; they don't queue together.
+When a run reaches `success | partial | error | cancelled`, synthesize a
+short result and ask merge / iterate / discard, or cleanup / keep for
+review-only runs. Ephemeral reviews are never merge candidates.
 
-### How users follow progress (not your problem)
+### Multiple independent terminations don't batch
 
-The inline `[tail in side terminal](<tail_url>)` link in your
-dispatch confirmation is the user's main live-progress channel.
-Don't duplicate it by rendering events into your reply. Inline
-MCP `notifications/progress` only fire while a tool call is in
-flight; the chat-available default flow ends the turn, so those
-don't apply here.
+Independent Claude Code watcher exits do not batch. If three independent
+Crew runs are dispatched, expect three synthetic turns. Handle each turn
+tightly: identify the run, summarize, ask the one relevant follow-up.
+Do not coalesce independent completions across synthetic turns.
+
+Panels are different: use the panel-level wait described in Review
+panels, because consolidation cannot start until all reviewer runs are
+terminal.
+
+### Progress
+
+The inline `[tail in side terminal](<tail_url>)` link is the user's live
+progress channel. Do not duplicate progress into chat unless the user asks.
 
 ### Worked shape
 
 ```
-run_agent(...)              → { run_id: R, tail_url: "crew-tail:///..." }
-"Dispatched as `R` — [tail in side terminal](crew-tail:///...). Ended turn; chat freely."
-Claude Code only:
+run_agent(...) -> { run_id: R, status: "running", tail_url: "crew-tail://..." }
+"Dispatched as `R` (status: running) - [tail in side terminal](crew-tail://...). Ended turn; chat freely."
+Claude Code:
   Bash("{{CREW_WAIT_COMMAND}} R", run_in_background: true)
 end turn
 
-later — Claude Code synthetic turn from watcher exit:
-  tool result contains: "CREW_WAIT_TERMINAL run_id=R agent=... status=success worktree=..."
+later synthetic/user turn:
+  CREW_WAIT_TERMINAL run_id=R agent=... status=success worktree=...
   get_run_status({ run_id: R })
-    → status: "success", summary: "...", files_changed: [...],
-      events_tail: [<last N events of full log>]
-  "Done. <one-paragraph synthesis informed by summary + events_tail>.
-  Merge / iterate / discard?"
-
-OR — later user turn (Codex/Gemini default; or Claude Code if synthetic-turn payload was empty):
-  list_runs({ status: ["success","partial","error","cancelled"],
-              completedAfter: <last surfaced timestamp> })
-    → runs: [{ run_id: R, agent_id, status, summary, ... }]
-  get_run_status({ run_id: R }) for the rich payload
-  surface as above; dedupe against already-surfaced run IDs.
+    -> status: "success", summary: "...", filesChanged: [...],
+       commits: [{sha, subject}], commit_count: N, events_tail: [...]
+  "Run `R` finished with status `success`. <tight synthesis>. Merge / iterate / discard?"
 ```
-
-The key is the turn break: after dispatch, the user can type
-anything while the worker runs. Terminal surfacing happens on a
-later user turn or on Claude Code's watcher-triggered synthetic turn.
 
 ### Cancellation
 
-`cancel_run({ run_id })` works any time while a dispatch is in
-flight. The run will land as `cancelled`; Claude Code's background
-watcher detects it like any other terminal status, and other hosts
-surface it on the next turn-start `get_run_status` / `list_runs`
-check. Surface a short note ("Cancelled.") and the partial summary if
-any.
+`cancel_run({ run_id })` works while a dispatch is in flight. The run
+lands as `cancelled`; watchers and turn-start checks surface it like any
+terminal state.
 
 ## The tools
 
-You have these `mcp__crew__*` tools. Names and shapes are stable
-within a crew minor version; if a tool seems to have changed, ask
-the user to run `crew-mcp verify` (per the escape-hatch rule, you don't
-shell out to the `crew-mcp` binary yourself — even for diagnostics).
+Use these `mcp__crew__*` tools. If a tool seems missing or changed, ask
+the user to run `crew-mcp verify`; do not shell out yourself.
 
 {{TOOL_LIST}}
 
@@ -596,352 +350,168 @@ shell out to the `crew-mcp` binary yourself — even for diagnostics).
 
 - **Never** call `merge_run` or `discard_run` without explicit user
   approval. For `merge_run`, include `confirmed: true` only after the
-  user's explicit "yes" in the immediate prior turn.
-- `agent_id` for `run_agent` must come from `list_agents`. Don't
-  invent agent names — you'll get a clear error and waste a turn.
-  Aliases (e.g., `"claude"` for `"claude-code"`) work too;
-  `list_agents` surfaces them per adapter under the `aliases`
-  field. **`continue_run` does NOT take `agent_id`** — it takes
-  `run_id` and reuses the run's recorded agent automatically.
-- **Skip agents where `list_agents` returns `available: false`.**
-  Their adapter healthcheck failed (binary missing, auth broken,
-  etc.); the `error` field tells you why. Tell the user the agent
-  isn't available rather than dispatching to it and discovering
-  the failure on a 30s timeout.
-- `list_agents` also returns optional `useWhen` routing prose,
-  `strengths[]` secondary tags, an optional `effort` default, and an
-  optional `model` default. Read `useWhen` first when picking between
-  adapters, then use `strengths` as tie-breaker nudges. Neither field
-  is a hard filter. The user tunes all four per-machine in
-  `~/.crew/agents.json`, so what you see is what they want.
-- **Model:** when `list_agents` shows a `model` for an agent,
-  dispatches use it automatically — you don't have to pass
-  `model:` unless the user names a specific model or alias to
-  override it ("use opus for this", "switch to gpt-5.4-mini").
-  When the field is absent, the adapter's CLI picks (its own
-  `~/.claude.json` / `~/.codex/config.toml` etc.) — don't invent
-  a model name. If the user's request is fuzzy and you can't map
-  it to a concrete name from `list_agents` or context, ask which
-  model they mean rather than guessing.
-- **Uncommitted host state is mirrored.** When `run_agent` allocates
-  a worktree, the user's untracked-non-gitignored files +
-  tracked-modified files are copied in automatically; tracked-deleted
-  files are removed. The agent sees the same in-progress state the
-  user does — no need to manually `cp` files into the worktree.
-  `continue_run` re-syncs each turn so user edits between turns
-  flow through. If that resync or dispatch start fails, `continue_run`
-  returns a clear error and marks the run terminal `error`; report it
-  and wait for user direction instead of retrying blindly. (read-only
-  runs don't allocate a worktree, so this doesn't apply — they already
-  operate on the host repo directly.)
-- **Read-only dispatches.** Pass `read_only: true` for review/triage/Q&A
-  work. Skips worktree allocation (~100ms–1s saved); the
-  reviewer-on-implementer pattern is `read_only: true` +
-  `working_directory: <implementer-worktree>`. Caveats:
-  - **Adapter-dependent enforcement.** Codex enforces read-only with an
-    OS filesystem sandbox. Gemini enforces it at the tool level — crew
-    dispatches it with a per-run `--policy` file that denies its
-    write_file/replace/run_shell_command/save_memory tools (blocks file
-    writes and git commits), backed by the dirty-tree probe. (Tool-level,
-    not an OS sandbox: a central admin Gemini policy could override the deny,
-    and project `.gemini` config/MCP/hooks loaded from a *trusted* dir run
-    outside it — crew only auto-trusts crew-controlled paths, so don't point
-    a read-only Gemini review at untrusted third-party code expecting a
-    sandbox.) Claude Code, generic, and OpenAI-compatible adapters treat
-    read-only as an advisory prompt contract plus Crew's best-effort
-    dirty-tree probe. Crew still runs them all for the reviewer-on-implementer
-    workflow, and the dispatch surfaces a `warnings` entry describing each
-    adapter's posture — relay it.
-  - If the agent ignores the prompt and writes, edits land in
-    `working_directory`. The post-run probe hashes pre-existing dirty
-    files too, so it can warn even when an agent edits a file that was
-    already dirty before the review.
-  - `merge_run` refuses on read-only with a clear reason;
-    `discard_run` works (metadata-only).
-  - **Discard reviewer runs once you've consumed their findings.**
-    Read-only runs don't auto-clean (only `merge_run` triggers
-    cleanup). A stack of N reviewers leaves N stale run-state
-    directories under `~/.crew/runs/` until explicit discard.
-    Cleanup is cheap (~20KB each) and idempotent.
-  - `continue_run` is sticky on read-only; to switch modes,
-    dispatch a fresh `run_agent`.
-  - Without the flag, dispatching a reviewer at another worktree
-    still works but allocates a wasted worktree — prefer the flag.
+  explicit "yes" in the immediate prior turn.
+- `agent_id` for `run_agent` comes from `list_agents`. Do not invent
+  agent names. `continue_run` takes `run_id`, not `agent_id`.
+- Skip agents where `list_agents` returns `available: false`; tell the
+  user the healthcheck error instead of dispatching into a known failure.
+- Use `useWhen`, `strengths`, default `model`, and default `effort` from
+  `list_agents` as routing guidance. Do not invent model names; ask if
+  the user's requested model is fuzzy.
+- Uncommitted host state is mirrored into write run worktrees. Do not
+  manually copy files. `continue_run` re-syncs user edits between turns.
+- Prefer inline reasoning for work you can answer yourself.
+- If the user pushes back on dispatch, answer inline.
 
-- **Ephemeral review dispatches (agy).** agy cannot honestly enforce
-  read-only (no OS sandbox, no tool-deny; absolute paths escape any
-  boundary), so `read_only: true` on agy is REJECTED, not weakly run.
-  To use agy as a reviewer, dispatch
-  `run_agent({ agent_id: "agy", run_mode: "ephemeral_review", prompt: "<review prompt>" })`,
-  or put it on a `run_panel` (the panel auto-routes it — see Review
-  panels):
-  - Crew allocates a **disposable snapshot worktree** (host HEAD +
-    your uncommitted changes copied in; on a bound panel, the
-    implementer worktree's HEAD + dirty state instead) and lets agy
-    run write-capable inside it. Only its TEXT findings are the
-    output.
-  - **Never mergeable.** `merge_run` refuses permanently;
-    `filesChanged` is always empty; any files agy touched are
-    discarded with the worktree. Review-capable ≠ read-only — treat
-    the findings as the entire deliverable.
-  - **Conversational.** The worktree is retained after the run, and
-    `continue_run` works for follow-ups ("why did you flag X?") —
-    against a FROZEN snapshot: unlike write runs, host edits between
-    turns are NOT re-synced in, so follow-ups reason about exactly
-    what was reviewed. Resume is stateful (same agy conversation).
-  - Do NOT pass `working_directory` (rejected — the snapshot is
-    crew-allocated), and don't combine with `read_only: true`
-    (conflicting pair is rejected).
-  - Cleanup: `discard_run` when you've consumed the findings (that
-    is what disposes the snapshot); the run-GC sweep is the backstop.
-  - Scope: trusted diffs (your own code, teammates' PRs). It is a
-    discard-all-writes lifecycle, not a sandbox — a hostile diff
-    could still steer agy to write outside the worktree by absolute
-    path, so don't use it on untrusted third-party code.
+### Read-only dispatches
 
-- **Effort.** `run_agent` / `continue_run` accept the canonical
-  `effort: "low" | "medium" | "high" | "xhigh" | "max"` scale. `list_agents` surfaces the per-machine default; accept it by passing nothing. **When you override**, do BOTH: (a) pass
-  `effort: "<level>"` (b) restate it in the prompt in one short line.
-  Mapping:
-  - `low` / `medium`: typo fixes through ordinary implementation or review.
-  - `high`: cross-file reasoning, non-trivial refactors, root-cause triage.
-  - `xhigh` / `max`: correctness-critical work (auth, money, migrations), architectural changes, or "exhaustive pass" requests.
+Use `read_only: true` for review, triage, and Q&A. It skips worktree
+allocation; reviewer-on-implementer is `read_only: true` plus
+`working_directory: <implementer-worktree>`.
 
-- Worktrees persist across crew-serve restarts. A `run_id` you got
-  yesterday is still resumable today (until merged or discarded).
-- Prefer inline reasoning over routing through agents for things you
-  can answer yourself. The dispatch flow exists for cross-agent work,
-  not as a way to defer thinking.
-- If the user pushes back on a dispatch ("just answer it yourself"),
-  do that. The skill is a default, not a contract.
+Caveats:
+
+- Codex enforces read-only with an OS filesystem sandbox. Gemini enforces
+  it through a per-run tool policy and dirty-tree probe. Claude Code,
+  generic, and OpenAI-compatible adapters treat it as advisory plus the
+  dirty-tree probe. Relay any `warnings`.
+- If the agent writes anyway, edits land in `working_directory`; the probe
+  can warn even for files dirty before review.
+- `merge_run` refuses read-only runs; `discard_run` works.
+- Prompt discard remains the habit after findings are consumed. Periodic
+  run GC is the backstop: terminal worktrees are eligible after 7 days and
+  run directories after 30 days, repo-scoped.
+- `continue_run` stays read-only; dispatch a fresh run to change mode.
+
+### Ephemeral review dispatches (agy)
+
+agy cannot honestly enforce read-only, so `read_only: true` is rejected.
+Use `run_mode: "ephemeral_review"` or put agy on a `run_panel`.
+
+- Crew allocates a disposable snapshot worktree. On a bound panel, the
+  snapshot comes from the implementer worktree.
+- Ephemeral review runs are never mergeable. `filesChanged` is always
+  empty; text findings are the deliverable.
+- `continue_run` works against the frozen snapshot for follow-up
+  questions.
+- Do not pass `working_directory` or combine with `read_only: true`.
+- Discard after use; run GC is only the backstop.
+- Use for trusted diffs, not hostile third-party code. It discards writes;
+  it is not a sandbox.
+
+### Effort
+
+`run_agent` / `continue_run` accept `effort: "low" | "medium" | "high" |
+"xhigh" | "max"`. Accept the agent default unless the user asks or the
+task clearly needs a different level. When overriding, pass `effort` and
+state it briefly in the prompt.
 
 ## Quota-aware routing
 
-- **Read quota before dispatch.** `list_agents` may return an
-  optional `quota` (`QuotaSnapshot`) per agent. Route on
-  `quota.state`: `limited` agents are excluded from candidates unless
-  the user explicitly forces them; `near_limit` agents are down-ranked
-  in favor of a cheaper model, lower effort, or a peer with known
-  headroom; `unknown` agents are allowed but penalized against a
-  comparable agent with headroom; `local_unmetered` agents are preferred
-  for cheap read-only triage when healthy. Quota is advisory: v1 has
-  no hard server-side gate, so the captain decides. `quota` is omitted
-  entirely when never observed; absence is not `limited`. If the user
-  resolves an upstream limit, call `list_agents({ refresh: true })` to
-  clear cached quota and re-probe so the agent can un-stick.
-- **React to typed failures.** When a run terminates with `failure`,
-  read `failure.kind` and `failure.recommendation`; the recommendation
-  (`reroute`, `backoff`, `downgrade`, or `ask_user`) is the hint, not a
-  substitute for judgment. **Never retry the same agent on a quota/rate
-  stop.** `rate_limited` means backoff to `resetAt` /
-  `retryAfterSeconds` and retry later; `quota_exhausted` means reroute
-  to a non-`limited` peer or ask the user; `auth` is distinct from
-  quota (re-auth, often misread as 429), not a quota reroute.
-  `transient`, `process`, and `unknown` are not quota; cancelled or
-  stalled runs are not `failure` at all.
-- **Choose remediation by run type.** For a read-only or review run,
-  auto-reroute to the best non-`limited` peer. For a write run with no
-  captured edits (`filesChanged` empty), reroute as a fresh run. For a
-  write run with any captured edits, ask the user whether to
-  wait/backoff, continue the same agent later, or discard+reroute fresh;
-  never auto-discard a half-done worktree. Use the host's
-  structured-question tool (AskUserQuestion on Claude Code) to present
-  those options and capture the choice when available; if the host
-  exposes no such tool, surface the options as prose and wait for a
-  free-text reply. Either way, **Silence is not consent.** If an agent
-  is near quota at dispatch, downgrade effort/model before sending
-  costly work.
-- **Surface the typed stop.** `failure` is visible on
-  `get_run_status`, `list_runs`, `run.json` receipts, and panel reviewer
-  snapshots (`failure: <kind> (<recommendation>)`), so a quota stop
-  inside a panel reviewer is not collapsed to a generic failure.
+Read `quota` from `list_agents` when present. Exclude `limited` agents
+unless forced by the user, down-rank `near_limit`, allow but penalize
+`unknown`, and prefer `local_unmetered` for cheap read-only triage.
+If the user resolves an upstream limit, call `list_agents({ refresh:
+true })` to clear cached quota and re-probe so the agent can un-stick.
 
-## Forwarding peer context
+When a run terminates with `failure`, read `failure.kind` and
+`failure.recommendation`. Never retry the same agent on quota or rate
+stops. `rate_limited` means back off until reset; `quota_exhausted` means
+reroute or ask; `auth` means re-auth, not quota routing. Reroute
+read-only/review runs to a non-limited peer. For write runs with no edits,
+reroute fresh. For write runs with captured edits, ask whether to
+wait/backoff, continue later, or discard and reroute. Never auto-discard a
+half-done worktree.
 
-You can pass structured peer context to a worker at dispatch time via
-the `peer_messages` parameter on `run_agent` and `continue_run`. Use
-it instead of pasting freeform strings into the prompt.
+**Ask gate:** quota remediation that may discard or abandon work uses the
+Ask protocol. **Silence is not consent.**
 
-### `peer_messages`: captain → worker context
+## Peer context
 
-Both `run_agent` and `continue_run` accept an optional `peer_messages`
-array. Each item is `{body, kind, from_label, files, excerpts}`. The
-dispatcher prepends a typed block to the worker's prompt.
+Pass structured context with `peer_messages` on `run_agent` and
+`continue_run` instead of pasting freeform blocks into the prompt. Items
+are `{body, kind, from_label, files, excerpts}` and are prepended as typed
+context.
 
-Use cases:
+### Implement then review
 
-- Forward run A's output to run B's review prompt.
-- Forward synthesized feedback from multiple reviewers back to the
-  implementer.
-- Provide structured "here's context you'll need" alongside a normal
-  prompt.
+1. `run_agent(implementer, "implement X")` -> run A.
+2. When A is terminal, call `get_run_status` and read `summary`,
+   `filesChanged`, and `worktree_path`.
+3. Dispatch reviewer B with `read_only: true`,
+   `working_directory: <A.worktree_path>`, and
+   `peer_messages: [{body: A.summary, kind: "review", from_label:
+   "A (implementer)", files: A.filesChanged}]`.
+4. If revisions are needed, `continue_run` A with B's review in
+   `peer_messages`.
 
-### Pattern: implement-then-review
+Worker findings return through terminal `summary`; there is no inbox or
+`send_message` return path.
 
-1. `run_agent(implementer, "implement X")` → run A. Dispatch and yield
-   per the §Dispatch lifecycle default flow.
-2. When A reaches terminal (via the watcher overlay on Claude Code, or
-   the next user-turn snapshot on Codex/Gemini), read `A.summary` and
-   `A.files_changed` via `get_run_status`.
-3. `run_agent(reviewer, "review this implementation", read_only: true,
-working_directory: <A.worktree_path>, peer_messages: [{body:
-A.summary, kind: 'review', from_label: "A (implementer)", files:
-A.files_changed}])` → run B. The `read_only` + `working_directory`
-   pair lets the reviewer read A's edits without allocating its own
-   worktree; the `peer_messages` array forwards A's synthesis as
-   typed context.
-4. When B reaches terminal, read `B.summary`.
-5. If revisions needed: `continue_run(A, peer_messages: [{body:
-B.summary, from_label: "B (reviewer)", kind: 'review'}],
-prompt: "revise per these findings")`.
-
-Worker findings flow back via the existing `terminal.summary` path.
-There is no `send_message` / inbox return path in this plan.
-
-### When NOT to use peer_messages
-
-- Single freeform string of context: just put it in the prompt.
-- One-shot forwarding where structure adds noise: prompt is fine.
-
-`peer_messages` is for STRUCTURED forwarding where typed labels,
-fenced excerpts, and audit records aid orchestration.
-
-### `kind` is advisory
-
-`note | review | question | answer | status`. Crew-mcp does NOT
-branch on `kind`. Use it as a hint to the worker.
-
-### Caps
-
-Default per-item body: 16 KB; per-excerpt: 4 KB; excerpts per item:
-8; items per call: 50; aggregate rendered: 64 KB; hard ceiling: 128
-KB; composed prompt total: 256 KB.
-
-Errors all use `peer_messages.<code>:` prefix. See plan for full
-list. Truncation and drops emit `warnings` on the envelope (non-fatal).
-Some adapters still pass prompts through argv; they may fail fast with
-an adapter-named byte-limit error even when the composed-prompt char cap
-passed. Treat that as actionable: reduce `peer_messages` / excerpts or
-choose a stdin-backed adapter.
+Use `peer_messages` for structured forwarding. For a single small context
+string, put it in the prompt. Common fatal error families are:
+`peer_messages.composed_prompt_too_large`, `peer_messages.item_too_large`,
+`peer_messages.too_many_items`, `peer_messages.run_unknown`,
+`peer_messages.run_in_flight`, and `peer_messages.run_terminal`. Reduce
+messages/excerpts or pick a stdin-backed adapter when size limits hit.
 
 ## Review panels
 
-When you want N agents to review the same implementer in parallel,
-`run_panel` collapses dispatch + collection into three calls.
-Agent-picking for iterate loops happens in `crew-iterate` Step 0.5;
-the gate below is the parallel flow for ad hoc review panels.
+Use `run_panel` when N agents should review the same target in parallel.
+Each distinct model reviews the full diff; do not split correctness to one
+reviewer and style to another. For very large diffs, partition files
+across multiple agents of the same model, then merge those into one
+per-model vote before cross-model consolidation.
 
 ### Confirm reviewer picks
 
 Before calling `run_panel` without an explicit reviewer list, confirm
-the reviewers with the user. **Preferences win over your own taste for
-model variety.** Call `list_agents`, then call
-`get_crew_preferences({scope: "panel"})` if that tool exists in this
-install.
+reviewers with the user. Call `list_agents`, then
+`get_crew_preferences({scope: "panel"})` if available.
 
-- **`panel.banList` is an absolute filter.** Every banned id is
-  removed from every candidate pool. A banned agent is NEVER proposed,
-  never offered as an alternative, and never used to satisfy
-  heterogeneity — even if it is the only remaining option. If bans
-  empty the pool, say so and ask the user to name an agent or lift a
-  ban; do NOT reach for a banned agent.
-- Use `panel.reviewers` as-is when present. Filter out unavailable
+- `panel.banList` is an absolute filter. A banned agent is NEVER
+  proposed, offered, or used. If bans empty the pool, say so and ask the
+  user to name an agent or lift a ban.
+- Use `panel.reviewers` as-is when present, after filtering unavailable
   and banned agents.
-- **Your own host product stays in the panel, but not via Crew.**
-  Remove it from the `run_panel` reviewer list (never Crew-dispatch
-  your own host) — but unless the user's preferences or this
-  conversation exclude it, keep it as a first-class reviewer through a
-  native subagent (see _"The host reviewer"_ below). A banned host is
-  excluded from the native slot too.
-- Fall back to the heterogeneity heuristic only for slots no user
-  preference covers.
+- **Own-host gate:** remove your own host product from `run_panel` and
+  include it only through the Own-host rule's native-review path.
+- Fall back to heterogeneity only for slots not covered by preferences.
 
-Surface to the user verbatim:
+Surface:
 
-> Agents for this panel:
->
-> - Crew reviewer(s): <id, id> <reason: "your default" | "heuristic: ...">
-> - Host reviewer: <host via native subagent | host foreground native |
->   host inline fallback | omitted>
->   <reason: "fresh same-host review" | "synchronous subagent → foreground" |
->   "no native subagent → inline fallback" | "excluded by preference">
->
-> Override (e.g., "add reviewer <id>", "drop reviewer <id>",
-> "drop host reviewer", "use only <id>") or OK.
+```
+Agents for this panel:
+- Crew reviewer(s): <ids> <reason>
+- Host reviewer: <native subagent | foreground native | inline fallback | omitted> <reason>
+Override (add/drop/use only/drop host reviewer) or OK.
+```
 
-Use the host's structured-question tool (AskUserQuestion on Claude
-Code) to present OK / Override options and capture the choice when
-available; Override must allow free-text details. If the host exposes
-no such tool, surface the options as prose and wait for a free-text
-reply. Either way, **Silence is not consent.** If the user overrides,
-restate the final reviewer list and ask again with the same
-structured-choice surface. Include the final reviewer-pick block in
-downstream panel prompts so later reviewers can audit agent-drift
-across rounds.
+**Ask gate:** reviewer-pick confirmation uses the Ask protocol; Override
+must allow free text. **Silence is not consent.** If the user overrides,
+restate the final reviewer list and ask again. Include the final
+reviewer-pick block in downstream panel prompts.
 
-#### Override grammar
+Override grammar: recognize `add reviewer <id>`, `drop reviewer <id>`,
+`use only <id>`, `drop host reviewer`, `no host reviewer`, and session
+scoped `no <id>` / `never <id>`.
 
-Recognize these phrases consistently:
+### Host reviewer
 
-- `add reviewer <id>` / `drop reviewer <id>` → mutate reviewer set.
-- `use only <id>` → collapse to a single reviewer.
-- `drop host reviewer` / `no host reviewer` → omit the host native
-  subagent for this panel.
-- `no <id>` / `never <id>` → session-scoped ban only; do not persist.
+The host model should review as one independent vote, but not through
+Crew. Dispatch crew reviewers first, then launch the host reviewer via the
+native subagent with the same full-review prompt, criteria, implementer
+summary, file list, and "review only; do not edit" instruction.
 
-### The host reviewer (native subagent)
+If the host can background native subagents, use that. If not, run it in
+foreground after Crew has already started; keep it bounded, and ask
+whether to drop the host reviewer on very large diffs. Inline review is
+last resort and must be labeled as inline fallback, not a fresh vote.
 
-Crew can't dispatch your own host product (see _"Don't dispatch to
-your own host product"_), but the host model should still review. Run
-it as a native subagent, not a `run_panel` reviewer:
+The captain's own diff read is still mandatory for consolidation, but it
+is not a second same-model vote.
 
-1. **Dispatch the crew reviewers first** (`run_agent` for one,
-   `run_panel` for ≥2) so they start async and the panel is underway
-   no matter what the host review does next. (This is the general
-   dispatch-order rule — see _"Dispatch order — crew first"_.)
-2. **Then launch the host reviewer via your native subagent**
-   (`Agent` / `Task`). Hand it the **same full-review prompt** the
-   crew reviewers got — same diff/worktree path, same schema,
-   review-only ("do not edit"). Native subagents have no
-   `peer_messages` channel, so inline the criteria and the implementer
-   summary into the subagent prompt.
-   - **If your host can background a native subagent** (e.g. Claude
-     Code's `run_in_background: true`), do that — chat stays available
-     while it reviews.
-   - **If it can't** (the native subagent is synchronous), run it in
-     the **foreground**. The crew panel is already async, so this
-     blocks only the current turn, not the panel — keep the review
-     bounded. On a very large diff, tell the user you're holding the
-     turn for it (or ask whether to drop the host reviewer for this
-     round). A foreground fresh-context vote still beats an inline
-     self-review.
-3. **Inline review is the last resort** — only when the host exposes
-   no native subagent tool at all. Note the host's vote then came from
-   inline, not a fresh subagent: it shares the captain's context, so it
-   carries the confirmation bias the subagent paths avoid.
-
-The native subagent is the host model's review **vote**. The captain's
-own inline read of the diff is a mandatory orchestration sanity check
-and the basis for consolidation — not a second same-model vote. Don't
-count both as independent host-model findings.
-
-### `run_panel`: parallel reviewers with shared context
-
-**Philosophy: full review per model.** Each distinct model in the
-panel does a **full review** of the entire diff — not a
-concern-sliced partial review (don't split "correctness" to one
-reviewer and "style" to another). The captain consolidates findings
-across models afterward, cross-checking for agreement and
-disagreement. Heterogeneity of models is the value; splitting by
-concern throws that away.
-
-When a diff is large enough that a single agent can't review it
-thoroughly in one pass, split that model's review across multiple
-agents of the same model — partition by file groups (keep
-module/directory boundaries, pair tests with implementation, share
-config files across partitions). Together those agents constitute
-one full review from that model. The captain merges their outputs
-into a single per-model review before cross-model consolidation.
+### `run_panel` shape
 
 Bound to an implementer:
 
@@ -949,137 +519,75 @@ Bound to an implementer:
 run_panel({
   implementer_run_id: "A",
   reviewers: [
-    // Single-agent review from claude-code (a CREW reviewer — only when
-    // the captain is NOT Claude Code; the host reviews via native subagent)
-    { agent_id: "claude-code", prompt: "<full review prompt>" },
-    // Split review from codex (large diff)
-    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files A–M]." },
-    { agent_id: "codex", prompt: "<full review prompt>\n\nYour partition: [files N–Z]." },
-  ],
+    { agent_id: "codex", prompt: "<full review prompt>" },
+    { agent_id: "gemini-cli", prompt: "<full review prompt>" }
+  ]
 })
 ```
 
-When bound: each reviewer is auto-dispatched with `read_only: true`,
-`working_directory: <A.worktree>`, and a prepended `peer_message`
-carrying A's summary + files_changed. The reviewers can READ A's
-edits directly. If you explicitly set `read_only: false` on a
-reviewer, you take responsibility for that reviewer's
-`working_directory` — the panel won't auto-point at A's worktree
-(prevents accidental mutation). Exception: an **agy reviewer is
-auto-routed to `run_mode: "ephemeral_review"`** — the panel snapshots
-A's worktree (its commits AND uncommitted state) into a disposable
-per-reviewer worktree, so agy reviews the same diff the in-place
-reviewers see without being able to mutate A's keeper work. Give an
-agy panelist just `agent_id` + `prompt`: an explicit `read_only` or
-`working_directory` on it is rejected (that reviewer fails with the
-fix named; the rest of the panel proceeds). Its findings consolidate
-like any other reviewer's; its run is never a merge candidate, and
-panel cleanup / `discard_run` disposes its snapshot.
+Bound reviewers get `read_only: true`, `working_directory: <A.worktree>`,
+and a peer message with A's summary/files. agy reviewers are auto-routed
+to `run_mode: "ephemeral_review"` and snapshot A's worktree.
 
-Standalone (no implementer):
+Standalone panels run like plain `run_agent` calls. `read_only: true`
+defaults to the host repo; write reviewers allocate worktrees unless you
+override `working_directory`.
+
+### Panel lifecycle
+
+`run_panel` returns `panel_id`, reviewer `run_id`s, and a panel-level
+`required_next_action` for Claude Code:
 
 ```
-run_panel({
-  reviewers: [
-    // crew reviewers only — drop whichever id is your own host (it
-    // reviews via native subagent, not run_panel)
-    { agent_id: "claude-code", prompt: "<full review prompt>", read_only: true },
-    { agent_id: "gemini", prompt: "<full review prompt>", read_only: true },
-  ],
-})
+Bash("{{CREW_WAIT_COMMAND}} <id1> <id2> ...", run_in_background: true)
 ```
 
-When unbound: each reviewer is a plain `run_agent` call.
-`read_only: true` reviewers default to running in the host repo
-root (no worktree allocated). `read_only: false` or unset
-reviewers allocate a fresh run worktree (the standard `run_agent`
-default). You can override either with explicit `working_directory`.
+Spawn one watcher for the panel, not one per reviewer, because
+consolidation waits for all reviewers. The reviewer envelopes still carry
+per-run commands for selective/degraded waits.
 
-Same principle applies: each model does a full review. The captain
-consolidates cross-model findings afterward.
+On Codex/Gemini, use next-turn snapshots. For selective/degraded watcher
+turns, call `get_panel_status({ panel_id })`. If `running_count > 0`, end
+with at most one short status line and no reviewer findings dump. When
+`running_count` is 0, call `aggregate_panel` and consolidate. Never
+discover panel completeness by intentionally calling `aggregate_panel` and
+handling `run_panel.aggregate_not_ready`.
 
-### Lifecycle
-
-`run_panel` returns immediately with `panel_id` and per-reviewer
-`run_id` + `tail_url`. Each reviewer follows the existing dispatch
-lifecycle independently. On Claude Code, spawn the watcher overlay
-per reviewer:
-
-```
-Bash("{{CREW_WAIT_COMMAND}} <reviewer.run_id>", run_in_background: true)
-```
-
-On Codex / Gemini, rely on the next-user-turn snapshot.
-
-### Aggregating and consolidating findings
+### Aggregation and consolidation
 
 Once all reviewers are terminal:
 
 ```
-aggregate_panel({ panel_id })
-  → { peer_messages: [...] }   // one message per reviewer
-
+aggregate_panel({ panel_id }) -> { peer_messages: [...] }
 continue_run({
   run_id: "A",
-  peer_messages: <aggregated>,
-  prompt: "revise per these findings",
+  peer_messages: <aggregated plus host reviewer>,
+  prompt: "revise per these findings"
 })
 ```
 
-**Fold in the host reviewer.** `aggregate_panel` only returns the
-crew-dispatched reviewers — it has no record of the native subagent.
-Append the host reviewer's output to the aggregated `peer_messages` as
-a synthetic entry before `continue_run`:
+`aggregate_panel` only includes crew-dispatched reviewers. Append the host
+reviewer as `{kind: "review", from_label: "<host> native subagent review",
+body: <output>, files: A.filesChanged}`. Label inline fallback as
+"captain inline review".
 
-```
-{ kind: "review", from_label: "<host> native subagent review",
-  body: <native review output>, files: A.files_changed }
-```
-
-If the host vote came from the inline fallback instead, append it the
-same way, labeled "captain inline review".
-
-`aggregate_panel` rejects with `run_panel.aggregate_not_ready:` if
-any reviewer is still running. It emits all reviewer messages
-even when they're identical — different reviewers reaching the
-same conclusion is signal, not noise.
-
-**Captain consolidation (mandatory before acting on panel results).**
-After `aggregate_panel` returns and you've appended the host reviewer,
-the captain produces a consolidated review report over all of them —
-crew reviewers plus the host native subagent — before forwarding to
-the implementer or surfacing to the user:
-
-1. **Cross-model agreement.** Group findings that multiple models
-   flagged independently — these are high-confidence issues.
-2. **Single-source findings.** Note findings only one model raised.
-   Still valid, but lower confidence.
-3. **Disagreements.** Where models disagree (one says the code is
-   correct, another flags a bug), surface both arguments. The
-   captain does not silently pick a winner.
-4. **Keep the panel running** until every model's review covers the
-   full diff. If a reviewer's output is incomplete or malformed,
-   re-dispatch before consolidating.
+**Captain consolidation contract.** Before forwarding panel results or
+acting on them, produce compact findings. Each finding gets:
+severity, `file:line`, one-line description, and which models agree. Note
+single-source findings and disagreements. Full reviewer text stays in run
+records and `peer_messages`, not chat. If any review is incomplete or
+malformed, re-dispatch before consolidation.
 
 ### Partial dispatch
 
-If any reviewer fails to dispatch (agent unavailable, worktree
-allocation failure, etc.), the rest still run. The response
-envelope includes a `failed_reviewers` array; `aggregate_panel`
-emits an inline "(reviewer dispatch failed: ...)" message so the
-implementer sees what happened. You decide whether to proceed.
+If a reviewer fails to dispatch, the rest still run. The envelope includes
+`failed_reviewers`; `aggregate_panel` emits an inline failed-reviewer
+message. Decide whether to proceed based on coverage and user urgency.
 
-### When NOT to use run_panel
+### Do not use `run_panel` when
 
-- One crew reviewer only: just `run_agent` with `read_only: true` +
-  `working_directory` (or `run_mode: "ephemeral_review"` for agy).
-  `run_panel` is overhead for a single crew dispatch. (The host
-  reviewer still runs as a native subagent alongside it — "one crew
-  reviewer" isn't "no host review"; fold the host vote in by hand,
-  since there's no `panel_id` to aggregate.)
-- You want auto-cancel-on-blocker: not supported (yet). Cancel
-  per-reviewer with `cancel_run`.
-- Anti-pattern: don't use `run_panel` to split a review by concern
-  (one reviewer for correctness, one for style). Each reviewer does
-  a full review; the panel's value is cross-model perspective, not
-  concern partitioning.
+- There is only one crew reviewer. Use `run_agent` and fold in the host
+  vote manually.
+- You need auto-cancel-on-blocker; cancel per reviewer.
+- You are splitting a review by concern instead of asking each model for a
+  full review.
