@@ -156,6 +156,10 @@ npx crew-mcp install --scope project --target claude-code,codex
 git add .mcp.json .claude .codex .crew/install.project.json package.json package-lock.json
 ```
 
+If your repo ignores `.crew/`, allow the install marker before committing:
+for example, use `.crew/*` plus `!.crew/install.project.json` in
+`.gitignore`, or run a one-off `git add -f .crew/install.project.json`.
+
 Antigravity CLI (`agy`) is **project-scope only** — it loads MCP servers
 solely from `<repo>/.agents/mcp_config.json`, so there is no global
 `--target agy`. Install it per repo:
