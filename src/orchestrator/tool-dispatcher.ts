@@ -2,7 +2,8 @@
 // AbortController. This is the mechanism that lets a captain turn complete
 // (returning a pending placeholder tool_result) while the underlying agent
 // work runs in the background. When the work finishes, the dispatcher emits
-// a terminal event that the session loop uses to schedule the next turn.
+// a terminal event consumed by the run-lifecycle listeners and the serve
+// long-poll waiters.
 //
 // Lifecycle per tool-call:
 //   start(id, task) -> run:start
@@ -101,11 +102,12 @@ export class ToolDispatcher {
       throw new Error(`ToolDispatcher already has an in-flight task for ${task.toolCallId}`);
     }
     const controller = new AbortController();
-    this.inFlight.set(task.toolCallId, {
+    const entry: InFlight = {
       controller,
       toolName: task.toolName,
       runId: task.runId,
-    });
+    };
+    this.inFlight.set(task.toolCallId, entry);
     this.emitter.emit('run:start', {
       toolCallId: task.toolCallId,
       toolName: task.toolName,
@@ -134,6 +136,11 @@ export class ToolDispatcher {
         if (Date.now() - lastActivity >= this.streamingIdleTimeoutMs) {
           clearWatchdog();
           controller.abort(new StallTimeoutError(this.streamingIdleTimeoutMs));
+          // A watchdog abort must arm the same force-release escalation as
+          // cancel(): if the child survives the group kill and the task
+          // promise never settles, the in-flight slot and lifecycle
+          // listeners would otherwise be pinned until server exit.
+          this.armCancelEscalation(task.toolCallId, entry);
         }
       }, watchdogIntervalMs(this.streamingIdleTimeoutMs));
       watchdog.unref?.();
@@ -142,6 +149,7 @@ export class ToolDispatcher {
         if (controller.signal.aborted) return;
         clearWatchdog();
         controller.abort(new BufferedAbsoluteTimeoutError(this.bufferedAbsoluteTimeoutMs));
+        this.armCancelEscalation(task.toolCallId, entry);
       }, this.bufferedAbsoluteTimeoutMs);
       watchdog.unref?.();
     }

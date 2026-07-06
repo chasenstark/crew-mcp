@@ -6,7 +6,7 @@ import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { errorContent, jsonContent } from './shared.js';
+import { errorContent, isTerminalRunStatus, jsonContent } from './shared.js';
 
 export const getPanelStatusInputSchema = z.object({
   panel_id: z.string().min(1),
@@ -178,18 +178,6 @@ function statusFromSnapshot(
     ...(snapshot.failure !== undefined ? { failure: snapshot.failure } : {}),
     dispatch_warnings: reviewer.dispatchWarnings,
   };
-}
-
-export function isTerminalRunStatus(status: RunStateV1['status']): boolean {
-  return (
-    status === 'success'
-    || status === 'partial'
-    || status === 'error'
-    || status === 'cancelled'
-    || status === 'merged'
-    || status === 'merge_conflict'
-    || status === 'discarded'
-  );
 }
 
 function isFailedReviewerRecord(

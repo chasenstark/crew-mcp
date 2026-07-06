@@ -515,10 +515,6 @@ export function serializeWorkflowYaml(config: FullConfig): string {
   });
 }
 
-export function getDefaultWorkflowYamlTemplate(): string {
-  return serializeWorkflowYaml(getDefaultConfig());
-}
-
 export function getDefaultConfig(): FullConfig {
   return structuredClone(DEFAULT_CONFIG);
 }

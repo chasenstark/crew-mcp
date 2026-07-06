@@ -30,14 +30,13 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { createReadStream } from 'fs';
-import { access, stat } from 'fs/promises';
+import { stat } from 'fs/promises';
 import { resolve, sep } from 'path';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
 import { clampEffortToSupported, resolveReviewDispatchMode } from '../../adapters/types.js';
 import {
-  isMergeable,
   ownsWorktree,
   runModeFromInput,
   RUN_MODES,
@@ -66,9 +65,8 @@ import {
 } from './shared.js';
 
 /**
- * Minimal registry surface for run_agent. Accepts either AdapterRegistry or
- * the minimal AgentRegistry shape (src/captain/events.ts) that exposes only
- * `get` + `list`.
+ * Minimal registry surface for run_agent — anything exposing `get` (plus
+ * optional lazy `load`) works, so tests can pass lightweight fakes.
  */
 export interface RegistryForRunAgent {
   get(name: string): AgentAdapter | undefined;
@@ -263,9 +261,9 @@ export type RunAgentPlan = RunAgentDispatchPlan | RunAgentErrorPlan;
 
 /**
  * Resolve a run_agent call into either a dispatch plan or a synchronous
- * error. The scheduler calls this; on a dispatch plan it returns a
- * `DispatchedToolCall` to the session-loop, on an error plan it returns a
- * synchronous error tool_result.
+ * error. The serve handler (via dispatch-run-agent-internal) starts the
+ * plan's task on the ToolDispatcher; an error plan becomes a synchronous
+ * error tool_result.
  *
  * The returned task's `run()` returns the raw `TaskResult` — including
  * output + filesModified + status — so the captain sees exactly what the
@@ -994,7 +992,6 @@ async function pathSignature(workingDirectory: string, relativePath: string): Pr
     return 'outside-worktree';
   }
   try {
-    await access(abs);
     const st = await stat(abs);
     if (!st.isFile()) return `non-file:${st.size}:${Math.trunc(st.mtimeMs)}`;
     if (st.size > HASH_FILE_MAX_BYTES) {

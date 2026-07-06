@@ -13,8 +13,6 @@ import {
   loadEffectiveConfig,
   readActiveProfilePreference,
   readActiveScopePreference,
-  saveActiveProfilePreference,
-  saveActiveScopePreference,
   saveConfigByScope,
 } from '../../src/workflow/config-repository.js';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
@@ -148,17 +146,17 @@ describe('config-repository', () => {
     expect(() => loadEffectiveConfig(cwd)).toThrow(/Failed to parse .*workflow\.yaml/);
   });
 
-  it('reads and writes active scope preference', () => {
+  it('reads a user-managed active scope preference file', () => {
     expect(readActiveScopePreference(cwd)).toBeNull();
-    const scopeFile = saveActiveScopePreference(cwd, 'global');
-    expect(scopeFile).toBe(join(cwd, '.crew', 'config-scope'));
+    mkdirSync(join(cwd, '.crew'), { recursive: true });
+    writeFileSync(join(cwd, '.crew', 'config-scope'), 'global\n', 'utf-8');
     expect(readActiveScopePreference(cwd)).toBe('global');
   });
 
-  it('reads and writes active profile preference', () => {
+  it('reads a user-managed active profile preference file', () => {
     expect(readActiveProfilePreference(cwd)).toBeNull();
-    const profileFile = saveActiveProfilePreference(cwd, 'codex-first');
-    expect(profileFile).toBe(getProfilePreferencePath(cwd));
+    mkdirSync(join(cwd, '.crew'), { recursive: true });
+    writeFileSync(getProfilePreferencePath(cwd), 'codex-first\n', 'utf-8');
     expect(readActiveProfilePreference(cwd)).toBe('codex-first');
   });
 

@@ -100,13 +100,6 @@ export interface InstallManifestV2 {
   _extras?: Record<string, unknown>;
 }
 
-/**
- * Back-compat alias — call sites that still import the v1 type get a
- * v2 manifest with the v1-shaped fields preserved. Safe because v2 is
- * a superset of v1 for everything those callers touch.
- */
-export type InstallManifestV1 = InstallManifestV2;
-
 const SCHEMA_VERSION = 2 as const;
 
 export function manifestPath(home: string): string {

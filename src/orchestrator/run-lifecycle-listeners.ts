@@ -98,9 +98,7 @@ export function installRunLifecycleListeners(args: {
         if (settled || info.toolCallId !== args.toolCallId) return;
         const progressLines = formatProgressLines(args.agentName, info.chunk);
         try {
-          for (const line of progressLines) {
-            args.runStateStore.appendEvent(args.runId, line);
-          }
+          args.runStateStore.appendEvents(args.runId, progressLines);
         } catch (err) {
           logBestEffortFailure('run-lifecycle.append-event', err);
           // Log writes are best-effort; never let a write failure break dispatch.

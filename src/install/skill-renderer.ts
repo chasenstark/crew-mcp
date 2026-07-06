@@ -209,14 +209,6 @@ export async function loadSkillBody(
 }
 
 /**
- * Back-compat alias for the umbrella body. Existing callers (and tests)
- * that load `crew-captain.body.md` directly keep working.
- */
-export async function loadCanonicalBody(packageRoot: string): Promise<string> {
-  return loadSkillBody(packageRoot, 'crew-captain.body.md');
-}
-
-/**
  * Strip `<!-- ... -->` blocks (including multi-line) from markdown.
  * Used to keep meta-documentation in the body source out of the
  * rendered skill that ships into the host CLI's context. Squeezes

@@ -6,7 +6,6 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readlinkSync,
   realpathSync,
   rmdirSync,
   rmSync,
@@ -122,6 +121,8 @@ export class WorktreeManager {
   private runBasePath: string;
   private runMetadataPath: string;
   private runLockPath: string;
+  private repoCommonDirRealpathPromise?: Promise<string>;
+  private mergeTreeSupportConfirmed = false;
   /**
    * Absolute path of the host repo this manager was constructed against.
    * Exposed via `getProjectRoot()` so callers (e.g., run-agent's
@@ -591,6 +592,10 @@ export class WorktreeManager {
             await rm(dst, { recursive: true, force: true });
             await symlink(target, dst);
           } else if (st.isFile()) {
+            // No metadata short-circuit here, deliberately: size+mtime+mode
+            // cannot prove "same content" against timestamp-restoring tools
+            // (patch/rsync-style rewrites), and a content check would cost
+            // as much as the copy. Every dirty path is re-copied.
             await copyFile(src, dst);
             await chmod(dst, st.mode);
           } else {
@@ -734,7 +739,15 @@ export class WorktreeManager {
     await options.assertCanMutateInsideLock?.();
 
     const record = this.requireRunWorktreeRecord(runId);
-    const target = await this.resolveMergeTargetBranch(options.targetBranch);
+    // One host `--abbrev-ref HEAD` serves both the checkout capture and
+    // the default merge-target resolution; the resolver only runs (and
+    // spawns) for the detached-HEAD case. Truthiness (not ??) on the
+    // explicit target so an empty string keeps meaning "default", as it
+    // did when resolveMergeTargetBranch owned this check.
+    const originalCheckout = await this.captureHostCheckout();
+    const target = options.targetBranch
+      || (originalCheckout.branchName
+        ?? await this.resolveMergeTargetBranch(undefined));
 
     const wGit = simpleGit(record.worktreePath);
     const [worktreeStatus, mainStatus] = await Promise.all([
@@ -772,7 +785,6 @@ export class WorktreeManager {
     ]);
     const worktreeHead = worktreeHeadRaw.trim();
     const targetHead = targetHeadRaw.trim();
-    const originalCheckout = await this.captureHostCheckout();
     if (worktreeHead === targetHead) {
       return this.withMergeCheckoutInfo({ status: 'no-changes' }, target, originalCheckout);
     }
@@ -993,12 +1005,22 @@ export class WorktreeManager {
   }
 
   private async assertMergeTreeWriteTreeSupported(): Promise<void> {
+    // The git binary can't change under a live process; memoize so repeat
+    // merges don't re-spawn `git --version`. A rejected probe (or an
+    // unsupported version) is not cached so a transient failure retries.
+    if (this.mergeTreeSupportConfirmed) return;
     const raw = (await this.git.raw(['--version'])).trim();
     const match = raw.match(/git version (\d+)\.(\d+)/);
-    if (!match) return;
-    const major = match ? Number(match[1]) : 0;
-    const minor = match ? Number(match[2]) : 0;
-    if (major > 2 || (major === 2 && minor >= 38)) return;
+    if (!match) {
+      this.mergeTreeSupportConfirmed = true;
+      return;
+    }
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    if (major > 2 || (major === 2 && minor >= 38)) {
+      this.mergeTreeSupportConfirmed = true;
+      return;
+    }
     throw new Error(
       `merge_run.unsupported_git_version: squash merge requires git >= 2.38 for merge-tree --write-tree; found ${raw || 'unknown'}.`,
     );
@@ -1179,16 +1201,21 @@ export class WorktreeManager {
       'rebase-apply',
       'sequencer',
     ];
-    const checks = await Promise.all(markers.map(async (marker) => {
-      const markerPath = await this.resolveHostGitPath(marker);
-      return existsSync(markerPath) ? marker : undefined;
-    }));
-    return checks.filter((marker): marker is string => marker !== undefined);
-  }
-
-  private async resolveHostGitPath(path: string): Promise<string> {
-    const raw = (await this.git.raw(['rev-parse', '--git-path', path])).trim();
-    return resolve(this.projectRoot, raw.length > 0 ? raw : join('.git', path));
+    // One spawn resolves every marker: rev-parse echoes one line per
+    // --git-path flag, in argument order.
+    const raw = await this.git.raw([
+      'rev-parse',
+      ...markers.flatMap((marker) => ['--git-path', marker]),
+    ]);
+    const resolvedLines = raw.split('\n').map((line) => line.trim());
+    return markers.filter((marker, index) => {
+      const line = resolvedLines[index] ?? '';
+      const markerPath = resolve(
+        this.projectRoot,
+        line.length > 0 ? line : join('.git', marker),
+      );
+      return existsSync(markerPath);
+    });
   }
 
   private async captureHostCheckout(): Promise<HostCheckout> {
@@ -1314,22 +1341,6 @@ export class WorktreeManager {
         + `Restore failed: ${this.errorMessage(restoreErr)}`,
       );
     }
-  }
-
-  private buildDirtyHostHardResetSkippedWarning(args: {
-    runId: string;
-    targetBranch: string;
-    targetHead: string;
-    originalCheckout: HostCheckout;
-    reason: string;
-  }): string {
-    return `merge_run ${args.runId}: ${args.reason}, but the host repo was `
-      + `dirty when merge_run started with force=true. Crew did not run `
-      + `git reset --hard ${args.targetHead} because that could delete `
-      + `pre-existing tracked or staged changes. The host repo is left on `
-      + `${args.targetBranch}; inspect git status, preserve your changes, `
-      + `then commit, stash, or reset them before checking out `
-      + `${this.describeHostCheckout(args.originalCheckout)}.`;
   }
 
   private destructiveRecoveryBlockedError(
@@ -1727,10 +1738,19 @@ export class WorktreeManager {
     }
   }
 
-  private async resolveRepoCommonDirRealpath(): Promise<string> {
-    const raw = (await this.git.raw(['rev-parse', '--git-common-dir'])).trim();
-    const commonDir = raw.length > 0 ? raw : '.git';
-    return realpathSync(resolve(this.projectRoot, commonDir));
+  private resolveRepoCommonDirRealpath(): Promise<string> {
+    // Immutable per manager instance (one manager per host repo); memoize
+    // so every lock acquisition doesn't re-spawn `rev-parse --git-common-dir`.
+    // A rejection clears the memo so transient git failures retry.
+    this.repoCommonDirRealpathPromise ??= (async () => {
+      const raw = (await this.git.raw(['rev-parse', '--git-common-dir'])).trim();
+      const commonDir = raw.length > 0 ? raw : '.git';
+      return realpathSync(resolve(this.projectRoot, commonDir));
+    })().catch((err: unknown) => {
+      this.repoCommonDirRealpathPromise = undefined;
+      throw err;
+    });
+    return this.repoCommonDirRealpathPromise;
   }
 
   private async withLock<T>(

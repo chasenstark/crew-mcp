@@ -10,7 +10,6 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { extractJson } from '../utils/json-parse.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 import {
@@ -190,38 +189,6 @@ function getItemOfType(event: CodexEvent, itemType: string): CodexItem | undefin
 }
 
 /**
- * Extracts file paths that were changed from Codex events.
- * Recognizes the 0.121+ `{type: 'item.completed', item: {type: 'file_change', ...}}`
- * shape.
- */
-export function extractFileChanges(events: CodexEvent[]): string[] {
-  const files: string[] = [];
-  for (const event of events) {
-    const item = getItemOfType(event, 'file_change');
-    if (!item) continue;
-    if (typeof item.path !== 'string') continue;
-    if (item.action === 'none') continue;
-    files.push(item.path);
-  }
-  return files;
-}
-
-/**
- * Gets the final agent message text from events. Uses the modern
- * `item.completed` → `item.type === 'agent_message'` envelope.
- */
-export function getLastAgentMessage(events: CodexEvent[]): string {
-  let lastMessage = '';
-  for (const event of events) {
-    const item = getItemOfType(event, 'agent_message');
-    if (item && typeof item.text === 'string') {
-      lastMessage = item.text;
-    }
-  }
-  return lastMessage;
-}
-
-/**
  * Formats a single Codex event as a bounded semantic markdown progress line.
  * Event shapes drift between Codex CLI versions, so unexpected payloads fall
  * back to a non-empty event line instead of breaking the stream.
@@ -304,22 +271,6 @@ export function findError(events: CodexEvent[]): string | undefined {
     if (event.type === 'turn.failed' && event.reason) {
       return `Turn failed: ${event.reason}`;
     }
-  }
-  return undefined;
-}
-
-function classifyCodexFailure(events: CodexEvent[]): TaskFailure | undefined {
-  for (const event of events) {
-    if (event.type !== 'error' && event.type !== 'turn.failed') continue;
-    const message = event.type === 'error' ? event.message : event.reason;
-    const providerCode = codexProviderCode(event);
-    return classifyTextFailure(
-      [message, providerCode].filter((part): part is string => typeof part === 'string').join('\n'),
-      {
-        defaultKind: 'unknown',
-        ...(providerCode ? { providerCode, confidence: 'high' } : {}),
-      },
-    );
   }
   return undefined;
 }

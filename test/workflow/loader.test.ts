@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { getDefaultConfig, loadWorkflowConfig } from '../../src/workflow/loader.js';
 import {
   parseWorkflowYaml,
   serializeWorkflowYaml,
-  getDefaultConfig,
-  getDefaultWorkflowYamlTemplate,
   mergeConfigs,
-  loadWorkflowConfig,
-  getGlobalConfigPath,
-} from '../../src/workflow/loader.js';
+} from '../../src/workflow/config-codec.js';
+import { getGlobalConfigPath } from '../../src/workflow/config-repository.js';
 import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { ModelId } from '../../src/workflow/models.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
@@ -48,7 +46,7 @@ function legacyConfig(): FullConfig {
 
 describe('Workflow Loader', () => {
   it('serializes and parses code-defined defaults', () => {
-    const yaml = getDefaultWorkflowYamlTemplate();
+    const yaml = serializeWorkflowYaml(getDefaultConfig());
     const config = parseWorkflowYaml(yaml);
 
     expect(config.workflow.name).toBe('default');

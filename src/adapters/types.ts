@@ -5,32 +5,6 @@ export interface CaptainCapabilities {
   supportsPauseForUserInput: boolean;
 }
 
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-}
-
-export interface ToolCall {
-  name: string;
-  input: Record<string, unknown>;
-}
-
-/** Per-invocation MCP projection payloads used by catalog converter tests. */
-export type McpRegistrationPayload =
-  | {
-      readonly kind: 'claude-code';
-      readonly inlineConfigJson?: string;
-    }
-  | {
-      readonly kind: 'gemini-cli';
-      readonly allowedServerNames: readonly string[];
-    }
-  | {
-      readonly kind: 'codex';
-      readonly configOverrideArgv: readonly string[];
-    };
-
 export interface AgentAdapter {
   readonly name: string;
   /**

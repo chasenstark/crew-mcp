@@ -220,14 +220,15 @@ describe('listAgents', () => {
   });
 
   it('surfaces useWhen for a lazy-loaded custom agent', async () => {
-    const { createRegistryFromConfig } = await import('../../../src/adapters/registry.js');
-    const registry = createRegistryFromConfig({
+    const { AdapterRegistry, mergeCustomAgents } = await import('../../../src/adapters/registry.js');
+    const registry = new AdapterRegistry();
+    mergeCustomAgents(registry, {
       shell: {
         adapter: 'generic',
         command: 'node',
         strengths: ['scriptable'],
         useWhen: 'Use for local scripted checks.',
-      } as never,
+      },
     });
 
     const out = await listAgents({ registry });

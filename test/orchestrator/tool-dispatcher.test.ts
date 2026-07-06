@@ -198,6 +198,75 @@ describe('ToolDispatcher', () => {
     }
   });
 
+  it('escalates a watchdog-aborted task that does not settle and releases the in-flight slot', async () => {
+    vi.useFakeTimers();
+    try {
+      const d = new ToolDispatcher({
+        streamingIdleTimeoutMs: 20,
+        bufferedAbsoluteTimeoutMs: 0,
+        cancelEscalationTimeoutMs: 25,
+      });
+      let aborted = false;
+      d.start(makeTask(
+        'w-zombie',
+        (signal) => new Promise(() => {
+          signal.addEventListener('abort', () => {
+            aborted = true;
+          });
+        }),
+        'run_agent',
+        'run-watchdog-zombie',
+        true,
+      ));
+
+      const cancelledP = waitForEvent(d, 'run:cancelled');
+      // Watchdog sampling cadence is clamped to >= 1s; one tick past it
+      // observes the 20ms idle timeout exceeded and aborts.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(aborted).toBe(true);
+      expect(d.inFlightCount()).toBe(1);
+
+      // The task promise never settles — the escalation timer armed by the
+      // watchdog abort must force-release the slot and flag the zombie.
+      await vi.advanceTimersByTimeAsync(25);
+      const info = (await cancelledP) as { reason: string; runId?: string };
+      expect(info.runId).toBe('run-watchdog-zombie');
+      expect(info.reason).toContain('process did not exit after abort; flagged as zombie');
+      expect(d.inFlightCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('escalates a buffered-cap-aborted task that does not settle and releases the in-flight slot', async () => {
+    vi.useFakeTimers();
+    try {
+      const d = new ToolDispatcher({
+        streamingIdleTimeoutMs: 0,
+        bufferedAbsoluteTimeoutMs: 30,
+        cancelEscalationTimeoutMs: 25,
+      });
+      d.start(makeTask(
+        'b-zombie',
+        () => new Promise(() => {}),
+        'run_agent',
+        'run-buffered-zombie',
+        false,
+      ));
+
+      const cancelledP = waitForEvent(d, 'run:cancelled');
+      await vi.advanceTimersByTimeAsync(30);
+      expect(d.inFlightCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(25);
+      const info = (await cancelledP) as { reason: string; runId?: string };
+      expect(info.runId).toBe('run-buffered-zombie');
+      expect(info.reason).toContain('process did not exit after abort; flagged as zombie');
+      expect(d.inFlightCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('cancelAll() terminates N concurrent tasks', async () => {
     const d = new ToolDispatcher();
     const cancellations: string[] = [];

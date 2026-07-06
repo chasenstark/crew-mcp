@@ -408,21 +408,20 @@ interface PollingWaitContext extends WaitContext {
 
 async function waitForRunTerminalByPolling(context: PollingWaitContext): Promise<void> {
   let stateAppeared = context.stateAppeared;
-  let previousRaw: string | undefined;
+  let previousSnapshot: StateSnapshot | undefined;
   let hasPreviousSnapshot = false;
   let sleepMs = context.pollIntervalMs;
 
   for (;;) {
-    const snapshot = await readStateSnapshotIfPresent(context.statePath);
-    const raw = snapshot?.raw;
-    const changed = !hasPreviousSnapshot || raw !== previousRaw;
+    const snapshot = await readStateSnapshotIfPresent(context.statePath, previousSnapshot);
+    const changed = !hasPreviousSnapshot || snapshot?.raw !== previousSnapshot?.raw;
     if (changed) {
       sleepMs = context.pollIntervalMs;
     } else {
       sleepMs = nextCrewWaitPollIntervalMs(sleepMs, context.pollIntervalMs);
     }
     hasPreviousSnapshot = true;
-    previousRaw = raw;
+    previousSnapshot = snapshot;
 
     if (snapshot) {
       stateAppeared = true;
@@ -512,7 +511,10 @@ function defaultWatch(
   });
 }
 
-async function readStateSnapshotIfPresent(path: string): Promise<StateSnapshot | undefined> {
+async function readStateSnapshotIfPresent(
+  path: string,
+  previous?: StateSnapshot,
+): Promise<StateSnapshot | undefined> {
   let raw: string;
   try {
     raw = await readFile(path, 'utf-8');
@@ -520,6 +522,8 @@ async function readStateSnapshotIfPresent(path: string): Promise<StateSnapshot |
     if (isNodeError(err) && err.code === 'ENOENT') return undefined;
     throw err;
   }
+  // Polling ticks mostly observe unchanged bytes; reuse the previous parse.
+  if (previous && previous.raw === raw) return previous;
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`Invalid crew run state at ${path}: expected JSON object`);

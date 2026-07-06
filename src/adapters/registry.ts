@@ -521,55 +521,6 @@ export function mergeCustomAgents(
   return { warnings };
 }
 
-export function createRegistryFromConfig(
-  agents: Record<string, AgentConfig>,
-): AdapterRegistry {
-  const registry = new AdapterRegistry();
-
-  for (const [name, config] of Object.entries(agents)) {
-    const adapterType = config.adapter ?? name;
-
-    if (adapterType === AdapterId.GENERIC) {
-      if (!config.command) {
-        throw new Error(
-          `Agent "${name}" uses adapter "${AdapterId.GENERIC}" but no command is configured.`,
-        );
-      }
-      registerGenericAdapter(registry, name, config);
-      continue;
-    }
-
-    if (adapterType === AdapterId.OPENAI_COMPATIBLE) {
-      registerOpenAiCompatibleAdapter(registry, name, config);
-      continue;
-    }
-
-    if (
-      adapterType === AdapterId.CLAUDE_CODE
-      || adapterType === AdapterId.CODEX
-      || adapterType === AdapterId.GEMINI_CLI
-      || adapterType === AdapterId.AGY
-    ) {
-      if (name !== adapterType) {
-        throw new Error(
-          `Built-in adapter "${adapterType}" must be configured under key "${adapterType}" (received "${name}").`,
-        );
-      }
-      registry.registerLazy(
-        BUILTIN_ADAPTER_METADATA[adapterType],
-        createBuiltinAdapterLoader(adapterType),
-      );
-      continue;
-    }
-
-    throw new Error(
-      `Unsupported adapter "${adapterType}" for agent "${name}".`,
-    );
-  }
-
-  return registry;
-}
-
 function createBuiltinAdapterLoader(adapterType: BuiltinAdapterId): LazyAdapterLoader {
   switch (adapterType) {
     case AdapterId.CLAUDE_CODE:

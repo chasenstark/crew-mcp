@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { appendFileSync, mkdirSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { closeSync, mkdirSync, openSync, writeSync } from 'fs';
+import { dirname } from 'path';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -39,21 +39,37 @@ function resolveInitialFileLevel(): LogLevel {
 let currentLevel: LogLevel = resolveInitialConsoleLevel();
 let fileLevel: LogLevel = resolveInitialFileLevel();
 let logFilePath: string | null = null;
+// Persistent append fd for file logging — at the default file level
+// (debug) every log line hits the file, and open+write+close per line
+// (appendFileSync) is 3 syscalls where 1 suffices on a long-lived server.
+// Trade-off: external rotation/deletion of the log file leaves writes
+// going to the unlinked inode until the path is re-pinned — acceptable
+// for this opt-in diagnostic capture.
+let logFileFd: number | null = null;
+
+function closeLogFileFd(): void {
+  if (logFileFd === null) return;
+  const fd = logFileFd;
+  logFileFd = null;
+  try {
+    closeSync(fd);
+  } catch {
+    // Best-effort; never crash logging.
+  }
+}
+
+function appendToLogFileRaw(text: string): void {
+  if (!logFilePath) return;
+  try {
+    logFileFd ??= openSync(logFilePath, 'a');
+    writeSync(logFileFd, text, undefined, 'utf-8');
+  } catch {
+    // Best-effort; never crash logging.
+  }
+}
 
 export function setLogLevel(level: LogLevel): void {
   currentLevel = level;
-}
-
-export function getLogLevel(): LogLevel {
-  return currentLevel;
-}
-
-export function setFileLogLevel(level: LogLevel): void {
-  fileLevel = level;
-}
-
-export function getFileLogLevel(): LogLevel {
-  return fileLevel;
 }
 
 function shouldLogConsole(level: LogLevel): boolean {
@@ -115,14 +131,10 @@ function serializeArg(arg: unknown): string {
 function appendToLogFile(level: LogLevel, message: string, args: unknown[]): void {
   if (!logFilePath) return;
   if (!shouldLogFile(level)) return;
-  try {
-    const serializedArgs = args.length > 0
-      ? ` ${args.map(serializeArg).join(' ')}`
-      : '';
-    appendFileSync(logFilePath, `[${formatFileTimestamp()}] ${level.toUpperCase()} ${message}${serializedArgs}\n`);
-  } catch {
-    // Best-effort; never crash logging.
-  }
+  const serializedArgs = args.length > 0
+    ? ` ${args.map(serializeArg).join(' ')}`
+    : '';
+  appendToLogFileRaw(`[${formatFileTimestamp()}] ${level.toUpperCase()} ${message}${serializedArgs}\n`);
 }
 
 function log(level: LogLevel, colorizedLevel: string, message: string, args: unknown[]): void {
@@ -136,30 +148,19 @@ function log(level: LogLevel, colorizedLevel: string, message: string, args: unk
   );
 }
 
-export function enableFileLogging(projectRoot: string): string {
-  const logsDir = join(projectRoot, '.crew', 'logs');
-  mkdirSync(logsDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const path = join(logsDir, `run-${timestamp}.log`);
-  writeFileSync(path, `[${formatFileTimestamp()}] INFO Log file created\n`);
-  logFilePath = path;
-  return path;
-}
-
 /**
- * Direct file-logging override. Unlike `enableFileLogging` (which auto-names a
- * timestamped file under `<projectRoot>/.crew/logs/`), this lets the caller
- * pin the log to an explicit absolute path — used by `crew-mcp serve` to honor
- * `--log-file` / `CREW_LOG_FILE` for diagnostic captures when the host CLI
- * (e.g. Conductor) doesn't surface the server's stderr. Parent dirs are
- * created; a header line records the takeover. Subsequent calls overwrite
- * the path field (last writer wins) but do not truncate the file — log lines
- * append.
+ * File-logging override: pins the log to an explicit absolute path — used by
+ * `crew-mcp serve` to honor `--log-file` / `CREW_LOG_FILE` for diagnostic
+ * captures when the host CLI (e.g. Conductor) doesn't surface the server's
+ * stderr. Parent dirs are created; a header line records the takeover.
+ * Subsequent calls overwrite the path field (last writer wins) but do not
+ * truncate the file — log lines append.
  */
 export function setLogFilePath(path: string): void {
   mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `[${formatFileTimestamp()}] INFO Log file opened (pid=${process.pid})\n`);
+  closeLogFileFd();
   logFilePath = path;
+  appendToLogFileRaw(`[${formatFileTimestamp()}] INFO Log file opened (pid=${process.pid})\n`);
 }
 
 export function getLogFilePath(): string | null {

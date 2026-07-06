@@ -1,4 +1,4 @@
-> **Current as of 2026-05-09.**
+> **Current as of 2026-07-05.**
 
 # Repository Guidelines
 
@@ -10,7 +10,7 @@ There are no production users, so we do not have to worry about being backward c
   baseline for captain-flow state, responsiveness work, smoke evidence, and
   next priorities.
 - Before starting substantial work on the MCP server runtime, adapters,
-  dispatch lifecycle, progress reporting, MCP/tool-loop behavior, or related
+  dispatch lifecycle, progress reporting, MCP tool behavior, or related
   architecture docs, read that status file and reconcile the work against its
   current findings.
 - Update the status file in the same change when work materially changes any of
@@ -41,29 +41,33 @@ There are no production users, so we do not have to worry about being backward c
 ## Project Structure & Module Organization
 - `src/` contains production TypeScript code.
 - `src/index.ts` defines the `crew-mcp` binary and the live command surface:
-  `serve`, `status`, `install`, `install-tail-handler`, `verify`,
-  `agents edit`, and `uninstall`. The old v0.1 `crew run`, `init`,
-  `config`, `profile`, `state reset`, and `resume` commands are retired.
-- `src/cli/` holds command entrypoints in `commands/` plus
-  `step-status.ts`. There is no Ink UI or `src/cli/ui/` tree.
-- `src/orchestrator/` owns the MCP tool schemas/barrel, dispatcher-facing
-  tool implementations, run state, event filtering, catalog lock helpers, and
-  legacy MCP registration converters. Production dispatch for `run_agent`
-  uses `adapter.execute()`; `executeWithTools` is a legacy/fallback path.
-- `src/orchestrator/tools/` is the seven-tool surface:
-  `list_agents`, `run_agent`, `continue_run`, `merge_run`, `discard_run`,
-  `get_run_status`, and `cancel_run`. The retired v0.1 tools
-  `ask_user`, `message_user`, `finish`, `plan_tasks`, `analyze_output`, and
-  `compress_context` are documented in `src/orchestrator/tools/index.ts:6`
-  through `src/orchestrator/tools/index.ts:8`.
+  `serve`, `status`, `cleanup`, `config` (`show`/`set`/`unset` — per-machine
+  crew settings, unrelated to the retired v0.1 config), `install`,
+  `install-tail-handler`, `verify`, `agents` (`edit`/`list`/`add`/`remove`),
+  and `uninstall`. The old v0.1 `crew run`, `init`, `profile`,
+  `state reset`, and `resume` commands are retired. `src/cli/wait.ts` is the
+  second bin (`crew-wait`, the captain's terminal-status watcher).
+- `src/cli/` holds command entrypoints in `commands/` plus `wait.ts` and
+  `version.ts`. There is no Ink UI or `src/cli/ui/` tree.
+- `src/orchestrator/` owns dispatcher-facing tool implementations, the tool
+  barrel, run state, event filtering, panels, criteria, and peer messages.
+  Production dispatch for `run_agent` uses `adapter.execute()`; the old
+  tool-loop / `executeWithTools` layer is deleted.
+- `src/orchestrator/tools/` is the sixteen-tool surface:
+  `list_agents`, `get_crew_preferences`, `list_runs`, `run_agent`,
+  `continue_run`, `merge_run`, `discard_run`, `get_run_status`,
+  `cancel_run`, `run_panel`, `get_panel_status`, `aggregate_panel`,
+  `create_criteria`, `confirm_criteria`, `get_criteria`, and
+  `revise_criteria` (mirrored by `CATALOG_TOOLS` in
+  `src/install/tool-catalog.ts`).
 - `src/install/` handles install-time host wiring: host adapters under
   `hosts/`, skill rendering, install manifests, binary resolution, interactive
   target selection, and tool-catalog parity for `crew-mcp install` /
   `crew-mcp verify`.
 - `src/adapters/` contains agent integrations (Claude Code, Codex, Gemini,
-  generic, openai-compatible) plus legacy tool-loop abstractions.
-- `src/agent-prefs/` stores per-machine agent preferences, and
-  `src/provider-session.ts` contains provider session compatibility helpers.
+  agy/Antigravity, generic, openai-compatible).
+- `src/agent-prefs/` stores per-machine agent preferences
+  (`~/.crew/agents.json`).
 - `src/workflow/` handles the remaining `.crew/workflow.yaml` compatibility
   layer for agent defaults, loading, defaults, codecs, and config path
   registry logic. Code-defined defaults replaced the deleted
@@ -129,7 +133,7 @@ explicitly when the envelope or workflow shifts.
 - Naming:
   - `camelCase` for variables/functions.
   - `PascalCase` for types, interfaces, and classes.
-  - kebab-case filenames for most modules (for example `step-status.ts`).
+  - kebab-case filenames for most modules (for example `tool-catalog.ts`).
 - Keep functions small and composable; centralize shared logic in `src/utils/`
   or domain modules.
 
@@ -160,9 +164,9 @@ explicitly when the envelope or workflow shifts.
   `docs/architecture/README.md`
 - MCP tool surface and add-a-tool workflow:
   `docs/architecture/tools.md`
-- Adapter dispatch and legacy tool-loop abstractions:
+- Adapter dispatch:
   `docs/architecture/adapters.md`
-- Install-time host wiring and legacy converter helpers:
+- Install-time host wiring:
   `docs/architecture/captain-portability.md`
 - Workflow config path registry contract:
   `docs/architecture/config-registry.md`

@@ -756,7 +756,8 @@ describe('CodexAdapter', () => {
         } as any);
 
       await adapter.healthCheck();
-      vi.setSystemTime(new Date('2026-05-10T00:00:30.001Z'));
+      // Success TTL is 5 minutes; one tick past it must re-probe.
+      vi.setSystemTime(new Date('2026-05-10T00:05:00.001Z'));
       const result = await adapter.healthCheck();
 
       expect(result.version).toBe('0.122.0');

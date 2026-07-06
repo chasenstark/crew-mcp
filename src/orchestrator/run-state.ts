@@ -25,6 +25,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   writeFileSync,
   chmodSync,
   openSync,
@@ -43,7 +44,7 @@ import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import type { TaskFailure } from '../adapters/types.js';
-import { filterEventsTailNoise } from './events-filter.js';
+import { filterEventsTailNoise, isEventsTailNoiseLine } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
 import { writeRunReceipt } from './receipts.js';
 import {
@@ -411,6 +412,24 @@ export class RunStateStore {
   private readonly resolvedCaps: ResolvedCaps;
   private readonly eventAppendFds = new Map<string, number>();
   private readonly eventReadCursors = new Map<string, { lineCount: number; byteOffset: number }>();
+  // Terminal events.log files are immutable (the append fd closes at
+  // markTerminal), so the filtered tail is cached per run keyed on file
+  // size + requested limit; a size change (external truncation/append)
+  // invalidates. Pruned in deleteRunDir.
+  private readonly terminalTailCache = new Map<
+    string,
+    { size: number; limit: number; tail: FilteredEventsTail }
+  >();
+  // Test seams: count the O(file-size) scan paths so regression tests can
+  // assert the incremental-cursor and tail-cache paths actually bypass them.
+  private fullEventLogReads = 0;
+  private terminalTailScans = 0;
+  // mtimeMs-keyed parse cache for state.json (same shape as the list_runs
+  // cache). Writers replace the file via rename, so a changed mtime is the
+  // invalidation signal — including writes from sibling server processes.
+  // Cached objects are shared references: read() callers must treat the
+  // result as immutable (all current callers do; updaters spread-copy).
+  private readonly parsedStateCache = new Map<string, { mtimeMs: number; state: RunStateV1 }>();
   private overridesInvalidPending: boolean;
 
   constructor(options: RunStateStoreOptions) {
@@ -559,11 +578,28 @@ export class RunStateStore {
    */
   read(runId: string): RunStateV1 | undefined {
     const path = this.statePath(runId);
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch (err) {
+      if (isEnoent(err)) {
+        this.parsedStateCache.delete(runId);
+        return undefined;
+      }
+      throw err;
+    }
+    const cached = this.parsedStateCache.get(runId);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      return cached.state;
+    }
     let raw: string;
     try {
       raw = readFileSync(path, 'utf-8');
     } catch (err) {
-      if (isEnoent(err)) return undefined;
+      if (isEnoent(err)) {
+        this.parsedStateCache.delete(runId);
+        return undefined;
+      }
       throw err;
     }
     let parsed: unknown;
@@ -588,7 +624,9 @@ export class RunStateStore {
         }`,
       );
     }
-    return parsed as RunStateV1;
+    const state = parsed as RunStateV1;
+    this.parsedStateCache.set(runId, { mtimeMs, state });
+    return state;
   }
 
   /**
@@ -843,13 +881,32 @@ export class RunStateStore {
   /**
    * Append a single line to the run's events.log. Used by adapters'
    * onStream hook for live progress. Lines are written atomically (single
-   * fs.appendFileSync) but no framing — the host CLI gets raw stdout-style
-   * chunks.
+   * writeSync on a persistent append fd) but no framing — the host CLI
+   * gets raw stdout-style chunks.
    */
   appendEvent(runId: string, line: string): void {
     const path = this.eventsLogPath(runId);
     const fd = this.eventAppendFd(runId, path);
     writeSync(fd, line.endsWith('\n') ? line : `${line}\n`, undefined, 'utf-8');
+  }
+
+  /**
+   * Append several lines in one syscall. Byte-identical to calling
+   * appendEvent per line — multi-line stream chunks shouldn't cost one
+   * writeSync per rendered progress line.
+   */
+  appendEvents(runId: string, lines: readonly string[]): void {
+    if (lines.length === 0) return;
+    if (lines.length === 1) {
+      this.appendEvent(runId, lines[0]);
+      return;
+    }
+    const path = this.eventsLogPath(runId);
+    const fd = this.eventAppendFd(runId, path);
+    const payload = lines
+      .map((line) => (line.endsWith('\n') ? line : `${line}\n`))
+      .join('');
+    writeSync(fd, payload, undefined, 'utf-8');
   }
 
   private eventAppendFd(runId: string, path: string): number {
@@ -861,6 +918,10 @@ export class RunStateStore {
   }
 
   private closeEventAppendFd(runId: string): void {
+    // The read cursor is only useful while the run can still append; drop
+    // it with the fd so terminal runs don't accumulate cursor entries for
+    // the server's lifetime.
+    this.eventReadCursors.delete(runId);
     const fd = this.eventAppendFds.get(runId);
     if (fd === undefined) return;
     this.eventAppendFds.delete(runId);
@@ -935,6 +996,12 @@ export class RunStateStore {
       }
 
       const limit = n > 0 ? Math.floor(n) : 0;
+      const cached = this.terminalTailCache.get(runId);
+      if (cached && cached.size === size && cached.limit === limit) {
+        return cached.tail;
+      }
+
+      this.terminalTailScans += 1;
       const tail: string[] = [];
       let totalLineCount = 0;
       let totalFilteredCount = 0;
@@ -946,12 +1013,11 @@ export class RunStateStore {
       const recordLine = (line: string): void => {
         if (line.length === 0) return;
         totalLineCount += 1;
-        const filtered = filterEventsTailNoise([line]);
-        if (filtered.length === 0) return;
+        if (isEventsTailNoiseLine(line)) return;
         totalFilteredCount += 1;
         if (limit === 0) return;
         if (tail.length === limit) tail.shift();
-        tail.push(filtered[0]);
+        tail.push(line);
       };
 
       while (offset < size) {
@@ -973,12 +1039,14 @@ export class RunStateStore {
         recordLine(finalText);
       }
 
-      return {
+      const result: FilteredEventsTail = {
         lines: tail,
         totalLineCount,
         totalFilteredCount,
         filteredOutCount: totalLineCount - totalFilteredCount,
       };
+      this.terminalTailCache.set(runId, { size, limit, tail: result });
+      return result;
     } finally {
       closeSync(fd);
     }
@@ -1015,6 +1083,7 @@ export class RunStateStore {
       }
       throw err;
     }
+    this.fullEventLogReads += 1;
     const all = content.split('\n').filter((l) => l.length > 0);
     this.eventReadCursors.set(runId, {
       lineCount: all.length,
@@ -1094,6 +1163,41 @@ export class RunStateStore {
   }
 
   /**
+   * Total events.log line count for a run. The running-status branch of
+   * `get_run_status` needs ONLY this number (its `events_tail` is always
+   * empty), and captains typically omit `since_event_line`, so reading
+   * from the caller's cursor would re-scan the whole file on every poll.
+   * Reading from the store's own cursor instead makes the incremental
+   * fast path engage regardless of what the caller passed: the first
+   * call per run seeds the cursor with one full read; every later call
+   * reads only appended bytes (or nothing, when the size is unchanged).
+   * Shrink/ENOENT self-healing matches `readEventsSince`.
+   */
+  getEventLineCount(runId: string): number {
+    const cursorLine = this.eventReadCursors.get(runId)?.lineCount ?? 0;
+    return this.readEventsSince(runId, cursorLine).nextLine;
+  }
+
+  /**
+   * Test seam: counters for the O(file-size) event-log scan paths plus
+   * live map sizes, so regression tests can assert the cursor/cache fast
+   * paths hold and terminal runs release their cursor entries.
+   */
+  eventReadDiagnosticsForTest(): {
+    readonly fullEventLogReads: number;
+    readonly terminalTailScans: number;
+    readonly eventReadCursorCount: number;
+    readonly terminalTailCacheCount: number;
+  } {
+    return {
+      fullEventLogReads: this.fullEventLogReads,
+      terminalTailScans: this.terminalTailScans,
+      eventReadCursorCount: this.eventReadCursors.size,
+      terminalTailCacheCount: this.terminalTailCache.size,
+    };
+  }
+
+  /**
    * Path to a run's directory under .crew/runs/.
    */
   runDir(runId: string): string {
@@ -1108,6 +1212,9 @@ export class RunStateStore {
    * the host repo's git, not under the run dir, so history survives.
    */
   deleteRunDir(runId: string): void {
+    this.eventReadCursors.delete(runId);
+    this.terminalTailCache.delete(runId);
+    this.parsedStateCache.delete(runId);
     rmSync(this.runDir(runId), { recursive: true, force: true });
   }
 
@@ -1125,10 +1232,17 @@ export class RunStateStore {
   /**
    * Atomic write via tmp + rename. Prevents partial writes from leaving
    * state.json half-parsed if the process is interrupted mid-flush.
+   * Primes the parse cache with the just-written state so the next
+   * read() is stat-only instead of a full re-parse.
    */
   private writeAtomic(runId: string, state: RunStateV1): void {
     const path = this.statePath(runId);
     atomicWrite(path, JSON.stringify(state, null, 2));
+    try {
+      this.parsedStateCache.set(runId, { mtimeMs: statSync(path).mtimeMs, state });
+    } catch {
+      this.parsedStateCache.delete(runId);
+    }
   }
 }
 

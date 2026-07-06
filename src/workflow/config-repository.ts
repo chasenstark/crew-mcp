@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { homedir } from 'os';
 import type { FullConfig } from './types.js';
 import { getDefaultConfig, mergeConfigs, parseWorkflowYaml, serializeWorkflowYaml } from './config-codec.js';
@@ -121,73 +121,6 @@ export function saveConfigByScope(
   return targetPath;
 }
 
-function listProfilesFromRoot(root: string): string[] {
-  if (!existsSync(root)) return [];
-  return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name)
-    .filter((name) => {
-      try {
-        normalizeProfileName(name);
-      } catch {
-        return false;
-      }
-      return existsSync(join(root, name, 'workflow.yaml'));
-    });
-}
-
-export function listConfigProfileNames(cwd: string): string[] {
-  const names = new Set<string>([DEFAULT_CONFIG_PROFILE]);
-  for (const profile of listProfilesFromRoot(getProjectProfilesRoot(cwd))) {
-    names.add(profile);
-  }
-  for (const profile of listProfilesFromRoot(getGlobalProfilesRoot())) {
-    names.add(profile);
-  }
-  return [...names].sort((a, b) => {
-    if (a === DEFAULT_CONFIG_PROFILE) return -1;
-    if (b === DEFAULT_CONFIG_PROFILE) return 1;
-    return a.localeCompare(b);
-  });
-}
-
-export function configProfileExists(cwd: string, profile: string): boolean {
-  const normalized = normalizeProfileName(profile);
-  if (normalized === DEFAULT_CONFIG_PROFILE) return true;
-  return existsSync(getProjectProfileConfigPath(cwd, normalized))
-    || existsSync(getGlobalProfileConfigPath(normalized));
-}
-
-export function configProfileExistsInScope(scope: ConfigScope, cwd: string, profile: string): boolean {
-  const normalized = normalizeProfileName(profile);
-  const path = scope === 'project'
-    ? getProjectProfileConfigPath(cwd, normalized)
-    : getGlobalProfileConfigPath(normalized);
-  return existsSync(path);
-}
-
-export function deleteConfigProfileByScope(scope: ConfigScope, cwd: string, profile: string): string {
-  const normalized = normalizeProfileName(profile);
-  if (normalized === DEFAULT_CONFIG_PROFILE) {
-    throw new Error('The default profile cannot be deleted.');
-  }
-
-  const targetPath = scope === 'project'
-    ? getProjectProfileConfigPath(cwd, normalized)
-    : getGlobalProfileConfigPath(normalized);
-  if (!existsSync(targetPath)) {
-    throw new Error(`Profile "${normalized}" does not exist in ${scope} scope.`);
-  }
-
-  rmSync(targetPath, { force: true });
-  try {
-    rmSync(dirname(targetPath));
-  } catch {
-    // Leave the profile directory when it contains user-managed files.
-  }
-  return targetPath;
-}
-
 export function loadEffectiveConfig(cwd: string, options: { profile?: string } = {}): FullConfig {
   const profile = normalizeProfileName(options.profile ?? readActiveProfilePreference(cwd) ?? DEFAULT_CONFIG_PROFILE);
   const projectConfig = loadConfigByScope('project', cwd, { profile });
@@ -217,14 +150,6 @@ export function readActiveProfilePreference(cwd: string): string | null {
   }
 }
 
-export function saveActiveProfilePreference(cwd: string, profile: string): string {
-  const normalizedProfile = normalizeProfileName(profile);
-  const profilePath = getProfilePreferencePath(cwd);
-  mkdirSync(dirname(profilePath), { recursive: true });
-  writeFileSync(profilePath, `${normalizedProfile}\n`, 'utf-8');
-  return profilePath;
-}
-
 export function readActiveScopePreference(cwd: string): ConfigScope | null {
   const scopePath = getScopePreferencePath(cwd);
   if (!existsSync(scopePath)) return null;
@@ -233,12 +158,6 @@ export function readActiveScopePreference(cwd: string): ConfigScope | null {
   return null;
 }
 
-export function saveActiveScopePreference(cwd: string, scope: ConfigScope): string {
-  const scopePath = getScopePreferencePath(cwd);
-  mkdirSync(dirname(scopePath), { recursive: true });
-  writeFileSync(scopePath, `${scope}\n`, 'utf-8');
-  return scopePath;
-}
 function loadRawConfig(configPath: string): FullConfig | null {
   if (!existsSync(configPath)) return null;
   try {

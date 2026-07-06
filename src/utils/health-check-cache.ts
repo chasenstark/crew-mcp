@@ -1,6 +1,11 @@
 import type { HealthCheckOptions, HealthCheckResult } from '../adapters/types.js';
 
-const DEFAULT_SUCCESS_TTL_MS = 30_000;
+// Success TTL: probes are expensive (claude's is a real LLM round-trip) and
+// availability rarely flips outside a deliberate login/logout, so successes
+// cache for 5 minutes; a stale "available" self-corrects at dispatch time
+// with a classified auth failure. Failures stay short so a fresh login is
+// picked up quickly. Override via CREW_HEALTHCHECK_TTL_MS.
+const DEFAULT_SUCCESS_TTL_MS = 5 * 60_000;
 const FAILURE_TTL_MS = 5_000;
 
 export function healthCheckTtlMs(): number {

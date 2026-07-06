@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { atomicWrite } from '../../utils/atomic-write.js';
@@ -9,6 +9,14 @@ import {
   type PanelStateV1,
 } from './schema.js';
 
+// mtimeMs-keyed parse cache: get_panel_status re-reads panel.json per poll
+// and run_panel re-reads it per reviewer transition, all of which zod-parse
+// the whole file. Writers replace via rename, so a changed mtime (including
+// from a sibling server process) invalidates; writePanelStateAtomic primes
+// the cache with the just-written object so self-writes skip the re-parse.
+// Callers treat panel state as immutable (all updates spread-copy).
+const parsedPanelStateCache = new Map<string, { mtimeMs: number; state: PanelStateV1 }>();
+
 export function panelDir(crewHome: string, panelId: string): string {
   return join(crewHome, 'panels', encodeURIComponent(panelId));
 }
@@ -16,15 +24,37 @@ export function panelDir(crewHome: string, panelId: string): string {
 export function writePanelStateAtomic(targetPanelDir: string, state: PanelStateV1): void {
   const finalPath = join(targetPanelDir, 'panel.json');
   atomicWrite(finalPath, `${JSON.stringify(state, null, 2)}\n`, { makeDirs: false });
+  try {
+    parsedPanelStateCache.set(finalPath, { mtimeMs: statSync(finalPath).mtimeMs, state });
+  } catch {
+    parsedPanelStateCache.delete(finalPath);
+  }
 }
 
 export function readPanelState(targetPanelDir: string): PanelStateV1 | undefined {
   const path = join(targetPanelDir, 'panel.json');
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(path).mtimeMs;
+  } catch (err) {
+    if (isEnoent(err)) {
+      parsedPanelStateCache.delete(path);
+      return undefined;
+    }
+    throw err;
+  }
+  const cached = parsedPanelStateCache.get(path);
+  if (cached && cached.mtimeMs === mtimeMs) {
+    return cached.state;
+  }
   let raw: string;
   try {
     raw = readFileSync(path, 'utf-8');
   } catch (err) {
-    if (isEnoent(err)) return undefined;
+    if (isEnoent(err)) {
+      parsedPanelStateCache.delete(path);
+      return undefined;
+    }
     throw err;
   }
 
@@ -51,7 +81,9 @@ export function readPanelState(targetPanelDir: string): PanelStateV1 | undefined
   }
 
   try {
-    return panelStateSchemaV1.parse(parsed);
+    const state = panelStateSchemaV1.parse(parsed);
+    parsedPanelStateCache.set(path, { mtimeMs, state });
+    return state;
   } catch (err) {
     throw new Error(
       `run_panel.unparsable: invalid panel state at ${path}: ${
@@ -59,10 +91,6 @@ export function readPanelState(targetPanelDir: string): PanelStateV1 | undefined
       }`,
     );
   }
-}
-
-export function ensurePanelRoot(crewHome: string): void {
-  mkdirSync(join(crewHome, 'panels'), { recursive: true });
 }
 
 export function snapshotPanelReviewerTerminal(

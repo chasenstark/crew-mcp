@@ -119,29 +119,6 @@ function getNumericField(
   return undefined;
 }
 
-function mergeUsage(
-  current: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-  },
-  next: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cachedInputTokens?: number;
-  },
-): {
-  inputTokens?: number;
-  outputTokens?: number;
-  cachedInputTokens?: number;
-} {
-  return {
-    inputTokens: next.inputTokens ?? current.inputTokens,
-    outputTokens: next.outputTokens ?? current.outputTokens,
-    cachedInputTokens: next.cachedInputTokens ?? current.cachedInputTokens,
-  };
-}
-
 /**
  * Extracts the final result envelope from claude's stream-json output, which
  * emits one JSON object per line. The last `type: "result"` line is the

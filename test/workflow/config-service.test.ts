@@ -1,27 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, rmSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import { AdapterId, AgentId } from '../../src/workflow/agents.js';
 import { getDefaultConfig, resolveCaptainModel } from '../../src/workflow/config-codec.js';
 import { ModelId } from '../../src/workflow/models.js';
-import { loadConfigByScope, readActiveProfilePreference, saveConfigByScope } from '../../src/workflow/config-repository.js';
+import { loadConfigByScope, saveConfigByScope } from '../../src/workflow/config-repository.js';
 import {
-  addAgent,
   applyConfigPatch,
-  copyConfigProfile,
-  createConfigProfile,
-  deleteConfigProfile,
   getConfigProfile,
-  getConfigProfileSummary,
   getConfigValueOptions,
   getConfigScope,
-  listConfigProfiles,
-  removeAgent,
-  resetConfig,
-  selectConfigProfile,
-  setConfigProfile,
-  setConfigScope,
   setConfigValue,
   showConfig,
 } from '../../src/workflow/config-service.js';
@@ -95,68 +84,21 @@ describe('config-service', () => {
     saveConfigByScope('project', cwd, legacyConfig());
   }
 
+  // The v0.1 `config agents add` surface is retired; tests that need a
+  // custom agent in scoped config stage it directly.
+  function stageAgent(name: string, agent: FullConfig['agents'][string]): void {
+    const current = loadConfigByScope('project', cwd) ?? getDefaultConfig();
+    const next = structuredClone(current);
+    next.agents[name] = agent;
+    saveConfigByScope('project', cwd, next);
+  }
+
   it('defaults active scope to project', () => {
     expect(getConfigScope(cwd)).toBe('project');
   });
 
-  it('persists active scope preference', () => {
-    const result = setConfigScope(cwd, 'global');
-    expect(result.scope).toBe('global');
-    expect(getConfigScope(cwd)).toBe('global');
-  });
-
   it('defaults active profile to default', () => {
     expect(getConfigProfile(cwd)).toBe('default');
-  });
-
-  it('persists active profile preference', () => {
-    const result = setConfigProfile(cwd, 'codex-first');
-    expect(result.profile).toBe('codex-first');
-    expect(getConfigProfile(cwd)).toBe('codex-first');
-  });
-
-  it('creates, lists, selects, copies, and deletes crew profiles', () => {
-    setConfigValue(cwd, 'captain.cli', 'codex');
-    setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);
-
-    const created = createConfigProfile(cwd, 'codex-first', { from: 'current' });
-    expect(created.profile).toBe('codex-first');
-    expect(created.scope).toBe('project');
-
-    let profiles = listConfigProfiles(cwd);
-    expect(profiles.map((profile) => profile.name)).toEqual(['default', 'codex-first']);
-    expect(profiles.find((profile) => profile.name === 'codex-first')?.captainCli).toBe('codex');
-
-    const selected = selectConfigProfile(cwd, 'codex-first');
-    expect(selected.profile).toBe('codex-first');
-    expect(readActiveProfilePreference(cwd)).toBe('codex-first');
-
-    const copied = copyConfigProfile(cwd, 'codex-first', 'codex-copy');
-    expect(copied.profile).toBe('codex-copy');
-    expect(loadConfigByScope('project', cwd, { profile: 'codex-copy' })?.captain.cli).toBe('codex');
-
-    const deleted = deleteConfigProfile(cwd, 'codex-first');
-    expect(deleted.activeProfile).toBe('default');
-    expect(readActiveProfilePreference(cwd)).toBe('default');
-    profiles = listConfigProfiles(cwd);
-    expect(profiles.map((profile) => profile.name)).toEqual(['default', 'codex-copy']);
-  });
-
-  it('rejects selecting or copying missing profiles', () => {
-    expect(() => selectConfigProfile(cwd, 'missing')).toThrow(/does not exist/);
-    expect(() => copyConfigProfile(cwd, 'missing', 'copy')).toThrow(/does not exist/);
-  });
-
-  it('rejects deleting the default profile', () => {
-    expect(() => deleteConfigProfile(cwd, 'default')).toThrow(/default profile cannot be deleted/);
-  });
-
-  it('shows profile details for a saved crew profile', () => {
-    createConfigProfile(cwd, 'review-heavy', { from: 'default' });
-    const summary = getConfigProfileSummary(cwd, 'review-heavy');
-    expect(summary.name).toBe('review-heavy');
-    expect(summary.projectExists).toBe(true);
-    expect(summary.captainCli).toBe(AgentId.CLAUDE_CODE);
   });
 
   it('applies patch for workflow reviewer max passes', () => {
@@ -199,7 +141,10 @@ describe('config-service', () => {
   });
 
   it('sets a config value in active scope', () => {
-    setConfigScope(cwd, 'global');
+    // Scope preference file is user-managed now that `config scope` is
+    // retired; stage it directly.
+    mkdirSync(join(cwd, '.crew'), { recursive: true });
+    writeFileSync(join(cwd, '.crew', 'config-scope'), 'global\n', 'utf-8');
     const result = setConfigValue(cwd, 'errorHandling.default.retry', '4');
     expect(result.scope).toBe('global');
     expect(result.profile).toBe('default');
@@ -235,7 +180,7 @@ describe('config-service', () => {
     const captainModelResult = setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);
     expect(captainModelResult.nextValue).toBe(ModelId.GPT_CODEX);
 
-    addAgent(cwd, 'local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
+    stageAgent('local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
     const adapterResult = setConfigValue(cwd, 'agents.local-gemma.adapter', 'OPENAI_COMPATIBLE');
     expect(adapterResult.nextValue).toBe(AdapterId.OPENAI_COMPATIBLE);
   });
@@ -247,14 +192,14 @@ describe('config-service', () => {
   });
 
   it('rejects unknown adapter aliases when setting adapter paths', () => {
-    addAgent(cwd, 'local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
+    stageAgent('local-gemma', { adapter: AdapterId.GENERIC, command: 'ollama' });
     expect(() =>
       setConfigValue(cwd, 'agents.local-gemma.adapter', 'NOT_A_ADAPTER_ALIAS'),
     ).toThrow(/Unknown adapter alias/);
   });
 
   it('can set generic agent fields', () => {
-    addAgent(cwd, 'local-gemma', { adapter: 'generic', command: 'ollama' });
+    stageAgent('local-gemma', { adapter: 'generic', command: 'ollama' });
 
     setConfigValue(cwd, 'agents.local-gemma.args', 'run,gemma4:latest,{{prompt}}');
 
@@ -386,7 +331,7 @@ describe('config-service', () => {
   });
 
   it('does not rewrite arbitrary openai-compatible models during unrelated edits', () => {
-    addAgent(cwd, 'local-llama', {
+    stageAgent('local-llama', {
       adapter: AdapterId.OPENAI_COMPATIBLE,
       model: 'llama3.2',
       apiBase: 'http://127.0.0.1:11434/v1',
@@ -460,25 +405,6 @@ describe('config-service', () => {
     ).toThrow(/workflow\.roleModels\.unknownRole/);
   });
 
-  it('adds and removes a custom agent', () => {
-    const addResult = addAgent(cwd, 'local-gemma', {
-      adapter: 'generic',
-      command: 'ollama',
-      strengths: ['code-review'],
-    });
-    expect(addResult.agent.command).toBe('ollama');
-    expect(loadConfigByScope('project', cwd)?.agents['local-gemma']).toBeDefined();
-
-    const removeResult = removeAgent(cwd, 'local-gemma');
-    expect(removeResult.name).toBe('local-gemma');
-    expect(loadConfigByScope('project', cwd)?.agents['local-gemma']).toBeUndefined();
-  });
-
-  it('prevents removing agent referenced by captain.cli', () => {
-    seedLegacyConfig();
-    expect(() => removeAgent(cwd, 'claude-code')).toThrow(/captain\.cli/i);
-  });
-
   it('rejects reviewer max passes when no review step exists', () => {
     const config = getDefaultConfig();
     config.workflow.steps = config.workflow.steps.filter(
@@ -487,28 +413,6 @@ describe('config-service', () => {
     expect(() =>
       applyConfigPatch(config, { path: 'workflow.reviewer.maxPasses', value: '3' }),
     ).toThrow(/no review step exists/i);
-  });
-
-  it('resets scoped config to defaults', () => {
-    setConfigValue(cwd, 'errorHandling.default.retry', '9');
-    const result = resetConfig(cwd);
-    expect(result.scope).toBe('project');
-    expect(result.config.errorHandling.default.retry).toBe(1);
-    const projectConfig = loadConfigByScope('project', cwd);
-    expect(projectConfig?.errorHandling.default.retry).toBe(1);
-  });
-
-  it('reset project config clears global legacy workflow surfaces from effective config', () => {
-    saveConfigByScope('global', cwd, legacyConfig());
-
-    resetConfig(cwd);
-
-    const shown = showConfig(cwd);
-    expect(shown.effectiveConfig.workflow.steps).toEqual([]);
-    expect(shown.effectiveConfig.workflow.roleModels).toBeUndefined();
-    expect(shown.effectiveConfig.agents).toEqual({});
-    expect(shown.effectiveConfig.captain.preset).toBeUndefined();
-    expect(shown.effectiveConfig.presets).toBeUndefined();
   });
 
   it('first project config set does not copy global legacy workflow surfaces', () => {
@@ -562,7 +466,10 @@ describe('config-service', () => {
   });
 
   it('writes to active profile when no profile option is provided', () => {
-    setConfigProfile(cwd, 'claude-first');
+    // The active-profile preference file is user-managed now that the v0.1
+    // `config profile` command surface is retired; stage it directly.
+    mkdirSync(join(cwd, '.crew'), { recursive: true });
+    writeFileSync(join(cwd, '.crew', 'config-profile'), 'claude-first\n', 'utf-8');
     const result = setConfigValue(cwd, 'captain.cli', 'codex');
     expect(result.profile).toBe('claude-first');
     setConfigValue(cwd, 'captain.model', ModelId.GPT_CODEX);

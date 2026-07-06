@@ -19,9 +19,6 @@ import {
   terminateProcessGroupOnAbort,
 } from './process-group.js';
 import { classifyTextFailure } from './failure-classifier.js';
-import {
-  assertArgvPromptWithinLimit,
-} from './prompt-transport.js';
 import type {
   AgentAdapter,
   AgentStrength,
@@ -31,57 +28,6 @@ import type {
   Task,
   TaskResult,
 } from './types.js';
-
-/**
- * Event shapes emitted by `gemini -o stream-json`. The CLI prints one JSON
- * object per newline-terminated line with a discriminated `type` field.
- *
- *   init    — { type: 'init', session_id: '<uuid>' }  (always the first line on a fresh session)
- *   message — { type: 'message', role: 'assistant'|'user', content?: string, delta?: string }
- *   result  — { type: 'result', stats?: {...}, ... }   (last line; summary)
- *
- * The CLI additionally emits an assistant `message` on resume turns
- * containing a `--prompt (-p) flag has been deprecated` notice. We filter
- * those out before accumulating assistant text — otherwise the captain
- * would see the deprecation warning as part of its reply.
- */
-export type GeminiEventType = 'init' | 'message' | 'result';
-
-export interface GeminiEvent {
-  type?: GeminiEventType | string;
-  session_id?: string;
-  role?: 'user' | 'assistant' | 'system';
-  content?: string;
-  text?: string;
-  message?: string;
-  delta?: string;
-  usage?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-/**
- * Parses `-o stream-json` output into its newline-delimited JSON events.
- * Malformed or non-object lines are logged and dropped. Exported for the
- * dedicated parser tests; end-to-end callers go through the adapter.
- */
-export function parseStreamJsonEvents(stdout: string): GeminiEvent[] {
-  const events: GeminiEvent[] = [];
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        events.push(parsed as GeminiEvent);
-      } else {
-        logger.warn('[adapter:gemini-cli] dropped non-object JSON line');
-      }
-    } catch {
-      logger.warn('[adapter:gemini-cli] dropped malformed JSON line');
-    }
-  }
-  return events;
-}
 
 /**
  * Parses `-o json` output, which is a single JSON object like
@@ -101,78 +47,6 @@ export function parseSingleJsonResponse(stdout: string): string {
     logger.warn('[adapter:gemini-cli] -o json output was not valid JSON');
   }
   return '';
-}
-
-/**
- * Gemini emits this exact assistant-role line on resume turns. It must be
- * filtered out before being surfaced to the captain.
- */
-const GEMINI_DEPRECATION_FRAGMENT = '--prompt (-p) flag has been deprecated';
-
-export function isGeminiDeprecationNotice(content: string | undefined): boolean {
-  return typeof content === 'string' && content.includes(GEMINI_DEPRECATION_FRAGMENT);
-}
-
-/**
- * Extracts the session id from a stream-json event stream. The `init` event
- * emitted on a fresh or resumed session carries it.
- */
-export function extractStreamJsonSessionId(events: GeminiEvent[]): string | undefined {
-  for (const event of events) {
-    if (event.type === 'init' && typeof event.session_id === 'string' && event.session_id.length > 0) {
-      return event.session_id;
-    }
-  }
-  for (const event of events) {
-    if (typeof event.session_id === 'string' && event.session_id.length > 0) {
-      return event.session_id;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Accumulates assistant text from stream-json `message` events. Handles both
- * full-content and delta-chunk shapes, drops the deprecation notice, and
- * returns an empty string when no assistant text was produced.
- *
- * The deprecation notice is filtered in two passes: (1) whole-message
- * `content` events that equal/contain the notice are skipped outright, and
- * (2) the final concatenation is post-scrubbed to catch cases where Gemini
- * streams the notice as a sequence of deltas instead of a single content
- * event. Both paths are exercised by the parser tests.
- */
-export function extractStreamJsonAssistantText(events: GeminiEvent[]): string {
-  const chunks: string[] = [];
-  for (const event of events) {
-    if (event.type !== 'message') continue;
-    if (event.role && event.role !== 'assistant') continue;
-
-    const content = typeof event.content === 'string' ? event.content : undefined;
-    const delta = typeof event.delta === 'string' ? event.delta : undefined;
-
-    if (content) {
-      if (isGeminiDeprecationNotice(content)) continue;
-      chunks.push(content);
-      continue;
-    }
-    if (delta) {
-      chunks.push(delta);
-    }
-  }
-  return stripDeprecationNoticeSentences(chunks.join(''));
-}
-
-function stripDeprecationNoticeSentences(text: string): string {
-  if (!text.includes(GEMINI_DEPRECATION_FRAGMENT)) return text;
-  // Drop the entire sentence/line that contains the notice. We remove
-  // characters up to (and including) the nearest terminating punctuation or
-  // newline after the fragment so a stray "<prefix>... deprecated." doesn't
-  // leak into the assistant's actual reply.
-  return text.replace(
-    /[^.\n]*--prompt \(-p\) flag has been deprecated[^.\n]*[.\n]?/g,
-    '',
-  ).trim();
 }
 
 function renderProcessFailureOutput(stdout: string, stderr: string, message: string): string {
@@ -243,54 +117,6 @@ export function renderReadOnlyPolicyToml(): string {
     (tool) => `[[rule]]\ntoolName = "${tool}"\ndecision = "deny"\npriority = 999`,
   ).join('\n\n');
   return `${header}\n\n${rules}\n`;
-}
-
-/**
- * Returns the argv fragment for a `gemini -o stream-json` resume invocation.
- * The prompt is passed via `--prompt` (not positional) on resume turns; seed
- * turns use positional since no `--resume` target exists yet.
- *
- * When the session-loop supplies an `allowedServerNames` list (via
- * `McpRegistrationPayload.kind === 'gemini-cli'`), the flag
- * `--allowed-mcp-server-names <csv>` is appended. Empty list → no flag so
- * argv stays clean when the catalog has no servers.
- */
-export function buildGeminiResumeArgs(
-  sessionId: string | undefined,
-  prompt: string,
-  options?: { readonly allowedServerNames?: readonly string[] },
-): string[] {
-  const base: string[] = sessionId
-    ? ['-o', 'stream-json', '--resume', sessionId, '--prompt', prompt]
-    : ['-o', 'stream-json', prompt];
-  const allowed = options?.allowedServerNames;
-  if (allowed && allowed.length > 0) {
-    // Allowed-names is a flag that precedes any positional prompt; we
-    // prepend it to the stream-json options to keep the prompt at the tail
-    // for both seed and resume calls.
-    return injectAllowedMcpNames(base, allowed);
-  }
-  return base;
-}
-
-function injectAllowedMcpNames(
-  args: string[],
-  allowed: readonly string[],
-): string[] {
-  // Insert after `-o stream-json` so the prompt (positional or via --prompt)
-  // stays at the end.
-  const out = [...args];
-  const csv = allowed.join(',');
-  // Find index right after `stream-json` token.
-  const idx = out.findIndex((t, i) => t === 'stream-json' && out[i - 1] === '-o');
-  const insertAt = idx === -1 ? 0 : idx + 1;
-  out.splice(insertAt, 0, '--allowed-mcp-server-names', csv);
-  return out;
-}
-
-export function isInvalidSessionStderr(stderr: string): boolean {
-  if (!stderr) return false;
-  return /invalid session identifier/i.test(stderr);
 }
 
 export function isVersionBelowFloor(

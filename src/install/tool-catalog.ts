@@ -50,7 +50,3 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'get_criteria', description: GET_CRITERIA_DESCRIPTION },
   { name: 'revise_criteria', description: REVISE_CRITERIA_DESCRIPTION },
 ];
-
-export function getCatalogToolNames(): readonly string[] {
-  return CATALOG_TOOLS.map((t) => t.name);
-}

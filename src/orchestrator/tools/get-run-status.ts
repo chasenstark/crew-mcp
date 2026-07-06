@@ -231,8 +231,11 @@ function buildGetRunStatusResponse(
       ? [`(${skipped} more events skipped)`, ...tailLines]
       : tail.lines;
   } else {
-    const { nextLine } = store.readEventsSince(runId, sinceLine);
-    cursorAfterDelta = nextLine;
+    // Running responses always ship an empty events_tail — only the
+    // cursor is needed, and getEventLineCount computes it from the
+    // store's own incremental cursor instead of re-reading the log
+    // from the caller's (usually 0) since_event_line.
+    cursorAfterDelta = store.getEventLineCount(runId);
   }
 
   const legacyLogTail = sinceLine === 0 && logLines !== undefined

@@ -20,7 +20,7 @@ import {
 import type { PromptIO } from '../../install/interactive-target.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
-import { agentsAddCommand, type AgentsAddOptions } from './agents/add.js';
+import type { AgentsAddOptions } from './agents/add.js';
 import { readRawAgentPrefsFile, writeRawAgentPrefsFile } from './agents/store.js';
 
 export function registerAgentsCommand(program: Command, applyDebugFlag: () => void): void {
@@ -63,6 +63,11 @@ export function registerAgentsCommand(program: Command, applyDebugFlag: () => vo
     .action(async (opts: AgentsAddOptions & { verify?: boolean }) => {
       applyDebugFlag();
       try {
+        // Lazy: the add wizard drags in the openai-compatible adapter
+        // (and zod with it); `crew-mcp --version`/`serve` shouldn't pay
+        // for it. agents.ts itself is the only eagerly-imported command
+        // module (registerAgentsCommand wires subcommands at build time).
+        const { agentsAddCommand } = await import('./agents/add.js');
         await agentsAddCommand({
           ...opts,
           noVerify: opts.verify === false,

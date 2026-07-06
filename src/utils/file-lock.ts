@@ -102,7 +102,10 @@ export async function withFileLock<T>(
 }
 
 export function writeFileLockRecord(lockDir: string, record: FileLockRecord): void {
-  atomicWrite(join(lockDir, 'owner.json'), JSON.stringify(record, null, 2));
+  // fsync skipped: owner.json is purely advisory diagnostics for stale-lock
+  // reclaim. Losing it in a crash degrades to the ownerless-reclaim path,
+  // which the timeout already handles — not worth an fsync per acquisition.
+  atomicWrite(join(lockDir, 'owner.json'), JSON.stringify(record, null, 2), { fsync: false });
 }
 
 export function readFileLockRecord(lockDir: string): FileLockRecord | undefined {

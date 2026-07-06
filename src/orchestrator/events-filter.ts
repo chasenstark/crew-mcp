@@ -51,10 +51,19 @@ export const NOISE_PATTERNS: readonly NoiseRule[] = [
 ];
 
 /**
+ * True when a single line matches any rule in `NOISE_PATTERNS`. The
+ * per-line form exists for hot loops (the terminal-tail scan tests every
+ * log line) that shouldn't allocate a single-element array per line.
+ */
+export function isEventsTailNoiseLine(line: string): boolean {
+  return NOISE_PATTERNS.some((rule) => rule.pattern.test(line));
+}
+
+/**
  * Filter out lines matching any rule in `NOISE_PATTERNS`. Order is
  * preserved; non-matching lines pass through unchanged. Pure function;
  * does not modify the input array.
  */
 export function filterEventsTailNoise(lines: readonly string[]): string[] {
-  return lines.filter((line) => !NOISE_PATTERNS.some((rule) => rule.pattern.test(line)));
+  return lines.filter((line) => !isEventsTailNoiseLine(line));
 }

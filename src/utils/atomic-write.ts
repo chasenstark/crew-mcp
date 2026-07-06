@@ -4,6 +4,15 @@ import { dirname } from 'node:path';
 
 export interface AtomicWriteOptions {
   readonly makeDirs?: boolean;
+  /**
+   * fsync the temp file before the rename (default true). Durable state
+   * (state.json, receipts, panel/criteria records) must keep this on so a
+   * crash can't land the rename with unflushed bytes. Ephemeral records
+   * that a crash is ALLOWED to lose — lock owner.json files, whose stale
+   * entries are reclaimed by timeout anyway — pass false to skip the
+   * ms-scale fsync on every acquisition.
+   */
+  readonly fsync?: boolean;
 }
 
 export function atomicWrite(
@@ -19,7 +28,9 @@ export function atomicWrite(
   try {
     fd = openSync(tempPath, 'w', 0o666);
     writeSync(fd, data, undefined, 'utf-8');
-    fsyncSync(fd);
+    if (options.fsync ?? true) {
+      fsyncSync(fd);
+    }
     closeSync(fd);
     fd = undefined;
     renameSync(tempPath, filePath);

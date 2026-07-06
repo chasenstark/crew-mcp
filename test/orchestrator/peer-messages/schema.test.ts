@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   PEER_MESSAGES_SCHEMA_VERSION,
   peerMessageInputSchema,
-  peerMessagesInputSchema,
 } from '../../../src/orchestrator/peer-messages/schema.js';
 
 describe('peerMessageInputSchema', () => {
@@ -102,13 +101,4 @@ describe('peerMessageInputSchema', () => {
     expect(parsed.excerpts?.[0].text).toHaveLength(64 * 1024);
   });
 
-  it('exports a top-level anti-DOS array ceiling of 10000', () => {
-    expect(peerMessagesInputSchema.parse(
-      Array.from({ length: 10000 }, () => ({ body: 'hello' })),
-    )).toHaveLength(10000);
-
-    expect(() => peerMessagesInputSchema.parse(
-      Array.from({ length: 10001 }, () => ({ body: 'hello' })),
-    )).toThrow();
-  });
 });

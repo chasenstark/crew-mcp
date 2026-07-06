@@ -500,6 +500,44 @@ describe('WorktreeManager', () => {
       expect(readlinkSync(copiedLink)).toBe('target.txt');
     });
 
+    it('sync re-copies every dirty path even when destination metadata matches', async () => {
+      // Pins the withdrawn P2.5 optimization OUT: size+mtime+mode cannot
+      // prove content identity (timestamp-restoring tools defeat it), so a
+      // metadata-identical destination with different bytes must still be
+      // overwritten by the sync.
+      mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager } = createManager();
+
+      const srcRoot = mkdtempSync(join(tmpdir(), 'crew-sync-src-'));
+      const dstRoot = mkdtempSync(join(tmpdir(), 'crew-sync-dst-'));
+      try {
+        // Same byte length, same mtime, same mode — different content.
+        writeFileSync(join(srcRoot, 'f.txt'), 'dirty content\n', 'utf-8');
+        writeFileSync(join(dstRoot, 'f.txt'), 'stale content\n', 'utf-8');
+        const stamp = new Date('2026-07-01T00:00:00.000Z');
+        utimesSync(join(srcRoot, 'f.txt'), stamp, stamp);
+        utimesSync(join(dstRoot, 'f.txt'), stamp, stamp);
+        chmodSync(join(srcRoot, 'f.txt'), 0o644);
+        chmodSync(join(dstRoot, 'f.txt'), 0o644);
+
+        const srcGit = getGitClient(srcRoot);
+        srcGit.status.mockResolvedValueOnce({
+          modified: ['f.txt'],
+          created: [],
+          not_added: [],
+          deleted: [],
+          renamed: [],
+        });
+
+        const result = await manager.syncUncommittedFromPathToWorktree(srcRoot, dstRoot);
+        expect(result.copied).toBe(1);
+        expect(readFileSync(join(dstRoot, 'f.txt'), 'utf-8')).toBe('dirty content\n');
+      } finally {
+        rmSync(srcRoot, { recursive: true, force: true });
+        rmSync(dstRoot, { recursive: true, force: true });
+      }
+    });
+
     it('skips uncommitted symlinks that point outside the project root', async () => {
       mockRandomUUID.mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
@@ -678,11 +716,10 @@ describe('WorktreeManager', () => {
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('worktree-sha'); // wGit revparse(['HEAD'])
       rootGit.revparse
-        .mockResolvedValueOnce('main')        // resolveMergeTargetBranch → target='main'
-        .mockResolvedValueOnce('target-sha')  // no-changes check: revparse([target])
-        .mockResolvedValueOnce('main')        // capture original branch
+        .mockResolvedValueOnce('main')          // capture original branch (also default target)
         .mockResolvedValueOnce('pre-merge-sha') // capture original HEAD
-        .mockResolvedValueOnce('merged-sha'); // post-merge commitSha
+        .mockResolvedValueOnce('target-sha')    // no-changes check: revparse([target])
+        .mockResolvedValueOnce('merged-sha');   // post-landing probe
 
       const result = await manager.mergeRunWorktree('run-1');
 
@@ -777,10 +814,9 @@ describe('WorktreeManager', () => {
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('worktree-sha');
       rootGit.revparse
-        .mockResolvedValueOnce('main')
-        .mockResolvedValueOnce('target-sha')
-        .mockResolvedValueOnce('main')
-        .mockResolvedValueOnce('pre-merge-sha')
+        .mockResolvedValueOnce('main')          // capture original branch (also default target)
+        .mockResolvedValueOnce('pre-merge-sha') // capture original HEAD
+        .mockResolvedValueOnce('target-sha')    // no-changes check
         .mockResolvedValueOnce('merged-sha');
 
       const result = await manager.mergeRunWorktree('run-1', {
@@ -812,9 +848,9 @@ describe('WorktreeManager', () => {
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('worktree-sha');
       rootGit.revparse
-        .mockResolvedValueOnce('main')
-        .mockResolvedValueOnce('target-sha')
-        .mockResolvedValueOnce('main')
+        .mockResolvedValueOnce('main')          // capture original branch (also default target)
+        .mockResolvedValueOnce('pre-merge-sha') // capture original HEAD
+        .mockResolvedValueOnce('target-sha')    // no-changes check
         .mockResolvedValueOnce('merged-sha');
 
       await manager.mergeRunWorktree('run-1', {
@@ -860,6 +896,31 @@ describe('WorktreeManager', () => {
       expect(wGit.commit).toHaveBeenCalledWith('feat(api): add /v2/health endpoint');
     });
 
+    it('mergeRunWorktree treats an empty target_branch as "use the default"', async () => {
+      // Regression: `options.targetBranch ?? checkout` would accept "" as an
+      // explicit target and feed `git rev-parse ''`; truthiness must keep ""
+      // meaning default resolution, as it did in resolveMergeTargetBranch.
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager, rootGit } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.revparse.mockResolvedValueOnce('worktree-sha');
+      rootGit.revparse
+        .mockResolvedValueOnce('main')          // capture original branch (becomes target)
+        .mockResolvedValueOnce('pre-merge-sha') // capture original HEAD
+        .mockResolvedValueOnce('target-sha')    // no-changes check: revparse(['main'])
+        .mockResolvedValueOnce('merged-sha');
+
+      const result = await manager.mergeRunWorktree('run-1', { targetBranch: '' });
+
+      expect(result).toMatchObject({ status: 'merged', commitSha: 'merged-sha' });
+      expect(rootGit.raw).toHaveBeenCalledWith(['update-ref', 'refs/heads/main', 'merged-sha', 'target-sha']);
+      expect(rootGit.revparse).toHaveBeenCalledWith(['main']);
+      expect(rootGit.revparse).not.toHaveBeenCalledWith(['']);
+    });
+
     it('mergeRunWorktree returns no-changes when worktree HEAD matches target', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-1')
@@ -869,8 +930,9 @@ describe('WorktreeManager', () => {
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('same-sha'); // wGit revparse(['HEAD'])
       rootGit.revparse
-        .mockResolvedValueOnce('main')      // resolveMergeTargetBranch
-        .mockResolvedValueOnce('same-sha'); // my no-changes check: revparse([target])
+        .mockResolvedValueOnce('main')      // capture original branch (also default target)
+        .mockResolvedValueOnce('host-head') // capture original HEAD
+        .mockResolvedValueOnce('same-sha'); // no-changes check: revparse([target])
       const result = await manager.mergeRunWorktree('run-1');
       expect(result).toMatchObject({ status: 'no-changes' });
       expect(rootGit.merge).not.toHaveBeenCalled();
@@ -896,11 +958,10 @@ describe('WorktreeManager', () => {
       // agent actually committed.
       wGit.revparse.mockResolvedValueOnce('actual-work-sha');
       rootGit.revparse
-        .mockResolvedValueOnce('main')              // resolveMergeTargetBranch
-        .mockResolvedValueOnce('main-head-sha')     // no-changes check: != actual-work-sha
-        .mockResolvedValueOnce('main')              // capture original branch
+        .mockResolvedValueOnce('main')              // capture original branch (also default target)
         .mockResolvedValueOnce('pre-merge-sha')     // capture original HEAD
-        .mockResolvedValueOnce('post-merge-sha');   // commitSha after merge
+        .mockResolvedValueOnce('main-head-sha')     // no-changes check: != actual-work-sha
+        .mockResolvedValueOnce('post-merge-sha');   // post-landing probe
 
       const result = await manager.mergeRunWorktree('run-1');
 
@@ -976,11 +1037,10 @@ describe('WorktreeManager', () => {
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('work-head'); // HEAD (no-changes check)
       rootGit.revparse
-        .mockResolvedValueOnce('main')         // resolveMergeTargetBranch
-        .mockResolvedValueOnce('target-head')  // no-changes check (!= work-head)
-        .mockResolvedValueOnce('main')         // capture original branch
+        .mockResolvedValueOnce('main')          // capture original branch (also default target)
         .mockResolvedValueOnce('pre-merge-sha') // capture original HEAD
-        .mockResolvedValueOnce('ff-sha');      // final HEAD
+        .mockResolvedValueOnce('target-head')   // no-changes check (!= work-head)
+        .mockResolvedValueOnce('ff-sha');       // final HEAD
       // merge-base === targetHead → the target is an ancestor → fast-forward.
       rootGit.raw.mockImplementation(async (args: string[]) =>
         args[0] === 'merge-base' ? 'target-head' : '');
@@ -1002,11 +1062,10 @@ describe('WorktreeManager', () => {
       const wGit = getGitClient(wPath);
       wGit.revparse.mockResolvedValueOnce('work-head');
       rootGit.revparse
-        .mockResolvedValueOnce('main')         // target
-        .mockResolvedValueOnce('target-head')  // no-changes check
-        .mockResolvedValueOnce('main')         // capture original branch
+        .mockResolvedValueOnce('main')          // capture original branch (also default target)
         .mockResolvedValueOnce('pre-merge-sha') // capture original HEAD
-        .mockResolvedValueOnce('picked-sha');  // final HEAD
+        .mockResolvedValueOnce('target-head')   // no-changes check
+        .mockResolvedValueOnce('picked-sha');   // final HEAD
       const cherryCalls: string[][] = [];
       rootGit.raw.mockImplementation(async (args: string[]) => {
         // base differs from BOTH target and work head → diverged → cherry-pick.

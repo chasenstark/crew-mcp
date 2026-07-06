@@ -636,7 +636,12 @@ describe('RunStateStore', () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     chmodSync(join(crewHome, 'runs', 'r-1', 'state.json'), 0o000);
 
-    expect(() => store.read('r-1')).toThrow(/EACCES|permission/i);
+    // chmod changes ctime but not mtime, so the writing store's mtime-keyed
+    // parse cache still (correctly) serves the last-known state. A cold
+    // store — a recycled server process — must surface the EACCES rather
+    // than swallow it.
+    const coldStore = new RunStateStore({ crewHome, repoRoot });
+    expect(() => coldStore.read('r-1')).toThrow(/EACCES|permission/i);
   });
 
   it('read() throws for unknown schemaVersion', async () => {

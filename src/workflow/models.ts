@@ -21,13 +21,6 @@ const MODEL_ALIASES: Record<string, ModelId> = {
   QWEN_MINI: ModelId.QWEN_MINI,
 };
 
-export function resolveModelAlias(value: string): string {
-  const trimmed = value.trim();
-  const token = toAliasToken(trimmed);
-  if (!token) return trimmed;
-  return MODEL_ALIASES[token] ?? trimmed;
-}
-
 export function resolveModelAliasOrThrow(value: string, contextPath?: string): string {
   const trimmed = value.trim();
   const token = toAliasToken(trimmed);
@@ -55,14 +48,6 @@ export const CODEX_MODEL_PRESETS: readonly ModelId[] = [
 export const OPENAI_COMPATIBLE_MODEL_PRESETS: readonly ModelId[] = [
   ModelId.QWEN,
   ModelId.QWEN_MINI,
-];
-
-export const CAPTAIN_MODEL_PRESETS: readonly ModelId[] = [
-  ModelId.CLAUDE_SONNET,
-  ModelId.CLAUDE_OPUS,
-  ModelId.GPT,
-  ModelId.GPT_CODEX,
-  ModelId.QWEN,
 ];
 
 export function modelPresetsForAdapter(adapterType?: string): readonly string[] {

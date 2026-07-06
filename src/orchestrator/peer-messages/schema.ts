@@ -22,8 +22,6 @@ export const peerMessageInputSchema = z.object({
   })).max(1000).optional(),
 });
 
-export const peerMessagesInputSchema = z.array(peerMessageInputSchema).max(10000);
-
 export type PeerMessageInput = z.infer<typeof peerMessageInputSchema>;
 
 export interface PeerMessageRendered {

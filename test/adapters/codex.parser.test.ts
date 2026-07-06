@@ -3,10 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  extractFileChanges,
   findError,
   formatEventForStream,
-  getLastAgentMessage,
   parseJsonl,
   type CodexEvent,
 } from '../../src/adapters/codex.js';
@@ -18,53 +16,6 @@ function loadFixture(name: string): string {
 }
 
 describe('codex parser (live 0.121.0 item.completed envelope)', () => {
-  describe('getLastAgentMessage', () => {
-    it('returns the text of the last agent_message item.completed event', () => {
-      const { events } = parseJsonl(loadFixture('codex-live-0.121.jsonl'));
-      expect(getLastAgentMessage(events)).toBe(
-        'Renamed the variable across src/. Two files were modified and one was created.',
-      );
-    });
-
-    it('ignores unrelated item.completed types', () => {
-      const events: CodexEvent[] = [
-        { type: 'item.completed', item: { type: 'reasoning', text: 'thinking' } },
-        { type: 'item.completed', item: { type: 'file_change', path: 'src/a.ts', action: 'modified' } },
-      ];
-      expect(getLastAgentMessage(events)).toBe('');
-    });
-
-    it('ignores legacy flat envelopes (old 0.120 and earlier shape)', () => {
-      const legacy: CodexEvent[] = [
-        { type: 'item.agent_message', content: 'stale shape' } as unknown as CodexEvent,
-      ];
-      expect(getLastAgentMessage(legacy)).toBe('');
-    });
-
-    it('returns the most recent agent message when several are present', () => {
-      const events: CodexEvent[] = [
-        { type: 'item.completed', item: { type: 'agent_message', text: 'first' } },
-        { type: 'item.completed', item: { type: 'agent_message', text: 'second' } },
-      ];
-      expect(getLastAgentMessage(events)).toBe('second');
-    });
-  });
-
-  describe('extractFileChanges', () => {
-    it('collects file_change paths and drops action=none entries', () => {
-      const { events } = parseJsonl(loadFixture('codex-live-0.121.jsonl'));
-      expect(extractFileChanges(events)).toEqual(['src/foo.ts', 'src/bar.ts']);
-    });
-
-    it('ignores file_change events missing a path string', () => {
-      const events: CodexEvent[] = [
-        { type: 'item.completed', item: { type: 'file_change', action: 'modified' } },
-        { type: 'item.completed', item: { type: 'file_change', path: 'kept.ts', action: 'modified' } },
-      ];
-      expect(extractFileChanges(events)).toEqual(['kept.ts']);
-    });
-  });
-
   describe('formatEventForStream', () => {
     it('formats top-level lifecycle and error events as semantic lines', () => {
       expect(formatEventForStream({ type: 'thread.started', thread_id: 't1' })).toBe(

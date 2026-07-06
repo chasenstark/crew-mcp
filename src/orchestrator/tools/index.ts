@@ -1,12 +1,9 @@
-// v2 tool barrel — the tool surface.
-//
-// run_agent + list_agents survive from v0.1 (with run_agent's auto-merge
-// removed in M1). list_runs adds repo-scoped run recovery. The lifecycle
-// tools (continue_run, merge_run, discard_run, get_run_status, cancel_run)
-// hand worktree lifecycle control to the host CLI explicitly. The retired v0.1 tools
-// (ask_user, message_user, finish, plan_tasks, analyze_output,
-// compress_context) move to the host CLI's responsibility — see
-// HISTORICAL_CONTEXT.md.
+// Tool barrel for the sixteen-tool MCP surface (run lifecycle, panels,
+// criteria, preferences). Live registration happens in
+// src/cli/commands/serve.ts; src/install/tool-catalog.ts mirrors this
+// surface for install-time parity, and the parity test consumes this
+// barrel via a namespace import. Retired v0.1 tool history:
+// docs/plans/completed/mcp-pivot/HISTORICAL_CONTEXT.md.
 export {
   planRunAgent,
   runAgentInputSchema,
@@ -87,7 +84,6 @@ export {
   getPanelStatusHandler,
   getPanelStatusInputSchema,
   GET_PANEL_STATUS_DESCRIPTION,
-  isTerminalRunStatus,
   type GetPanelStatusHandlerContext,
   type GetPanelStatusInput,
   type GetPanelStatusOutput,

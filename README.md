@@ -294,6 +294,31 @@ preview, `--all-repos` to sweep every repo). Tune the windows in
 `CREW_WORKTREE_TTL_DAYS` / `CREW_RUNDIR_TTL_DAYS` (accept `off`) override
 config for a given process.
 
+### Environment variables
+
+All tunables have sane defaults; these exist for diagnostics and unusual
+setups. Milliseconds unless noted.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `CREW_LOG_LEVEL` / `CREW_FILE_LOG_LEVEL` | `info` / `debug` | Console / file log thresholds |
+| `CREW_LOG_FILE` | unset | Append server logs to a file (also `serve --log-file`) |
+| `CREW_OS_NOTIFICATIONS` | on | `off` disables terminal-run OS notifications |
+| `CREW_CONFIRM_BEFORE_MERGE` | on | `off` skips the `merge_run` confirmation gate |
+| `CREW_WORKTREE_TTL_DAYS` / `CREW_RUNDIR_TTL_DAYS` / `CREW_CRITERIA_SET_TTL_DAYS` | 7 / 30 / 30 (days) | GC retention windows (`off` or `-1` disables) |
+| `CREW_RUN_GC_INTERVAL_MS` | 24h | Periodic run-GC cadence on a live server |
+| `CREW_STALE_RUN_GRACE_MS` | 30s | Age before a stale `running` run from a dead server is swept to `error` |
+| `CREW_SHUTDOWN_GRACE_MS` | 10s | Drain window for in-flight dispatches at shutdown |
+| `CREW_DISPATCH_STALL_TIMEOUT_MS` | 12m | Streaming-adapter idle watchdog (0 disables) |
+| `CREW_DISPATCH_ABSOLUTE_TIMEOUT_MS` | 60m | Buffered-adapter absolute watchdog (0 disables) |
+| `CREW_CANCEL_ESCALATION_TIMEOUT_MS` | 30s | Force-release window after an abort if the child won't die |
+| `CREW_PROCESS_GROUP_FORCE_KILL_AFTER_MS` | 5s | SIGTERM→SIGKILL escalation for dispatched process groups |
+| `CREW_OPENAI_COMPATIBLE_TIMEOUT_MS` | 10m | HTTP timeout for openai-compatible adapters |
+| `CREW_HEALTHCHECK_TTL_MS` | 5m | `list_agents` health-probe success cache TTL |
+| `CREW_CRITERIA_LOCK_TIMEOUT_MS` / `CREW_CRITERIA_LOCK_STALE_MS` | 30s / 60s | Criteria-store lock acquisition / stale-reclaim windows |
+| `CREW_OPENAI_BASE_URL` | unset | Default API base for openai-compatible agents without an explicit `apiBase` |
+| `CREW_TAIL_INSTALL_DIR` | `~/Applications` | Handler-app location for direct `scripts/tail-handler/install.sh` runs (`crew-mcp install-tail-handler` always uses `~/Applications`) |
+
 ## 👥 Managing agents
 
 Agents live in `~/.crew/agents.json`. Each entry can carry `useWhen`
