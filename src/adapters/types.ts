@@ -269,6 +269,15 @@ export function clampEffortToSupported(
 
 export interface Task {
   prompt: string;
+  /**
+   * Per-dispatch MCP identity for worker-scoped crew-mcp servers. Phase 1
+   * issues and stores these values; adapter argv/config serializers consume
+   * them in Phase 2.
+   */
+  dispatchMcpEnv?: {
+    CREW_RUN_ID: string;
+    CREW_RUN_TOKEN: string;
+  };
   context: {
     workingDirectory: string;
     files?: string[];

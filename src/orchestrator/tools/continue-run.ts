@@ -19,6 +19,8 @@ import { z } from 'zod';
 import {
   criteriaPeerMessageBypassWarnings,
   DispatchError,
+  revokeSidecarBestEffort,
+  revokeSidecarOnTerminal,
 } from '../dispatch-run-agent-internal.js';
 import {
   resolveConfirmedCriteriaContract,
@@ -28,6 +30,12 @@ import { validatePeerMessagesPreflight } from '../peer-messages/preflight.js';
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
+import {
+  deleteWorkerReadyMarker,
+  issueRunAuthSidecar,
+  startWorkerReadyHandshake,
+  type DispatchMcpEnv,
+} from '../auth/index.js';
 import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import {
   buildAdapterDispatchTask,
@@ -184,10 +192,14 @@ export async function continueRunToolHandler(
   const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
     const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
     await markContinueDispatchFailed(deps, args.run_id, message);
+    revokeSidecarBestEffort(deps.crewHome, args.run_id, 'continue_run rollback');
+    deleteWorkerReadyMarker(deps.crewHome, args.run_id);
     return new DispatchError(message, { warnings: [...dispatchWarnings, ...criteriaWarnings] });
   };
 
   let appendResult: Awaited<ReturnType<typeof deps.runStateStore.appendPrompt>>;
+  revokeSidecarBestEffort(deps.crewHome, args.run_id, 'new continue_run dispatch');
+  deleteWorkerReadyMarker(deps.crewHome, args.run_id);
   // Source re-sync runs ONLY for write continues: an ephemeral_review
   // continue keeps a FROZEN snapshot, so the follow-up reasons about exactly
   // what was reviewed rather than a moved target (read_only has no worktree
@@ -219,12 +231,29 @@ export async function continueRunToolHandler(
     ownsWorktree(runMode)
       ? await captureRunBranchPointSnapshot(deps.worktreeManager, args.run_id, state.worktreePath)
       : undefined;
+  let dispatchMcpEnv: DispatchMcpEnv;
+  try {
+    const issued = issueRunAuthSidecar({
+      crewHome: deps.crewHome,
+      runId: args.run_id,
+      agentId: state.agentId,
+      repoRoot: deps.runStateStore.repoRoot,
+      captainServeInstance: deps.captainServeInstance ?? 'unknown-captain-serve',
+      writeMode: 'replace-existing',
+    });
+    dispatchMcpEnv = issued.dispatchMcpEnv;
+    await deps.runStateStore.setWorkerReady(args.run_id, { status: 'pending' });
+  } catch (err) {
+    const dispatchErr = await rollbackContinuation(err);
+    return errorContent(dispatchErr.message);
+  }
 
   const task = buildAdapterDispatchTask({
     toolCallId,
     runId: args.run_id,
     adapter,
     prompt: composedPrompt,
+    dispatchMcpEnv,
     effectiveWorkingDirectory: state.worktreePath,
     worktreePath: state.worktreePath,
     runMode,
@@ -251,7 +280,15 @@ export async function continueRunToolHandler(
       runStateStore: deps.runStateStore,
       warnings: [...dispatchWarnings, ...warnings],
       progress: progressNotifierFrom(continueExtra, state.agentId, deps.progressTokenSeen),
-      onTerminalPersisted: deps.onTerminalPersisted,
+      onTerminalPersisted: async (terminalState) => {
+        revokeSidecarOnTerminal(deps.crewHome)(terminalState);
+        await deps.onTerminalPersisted?.(terminalState);
+      },
+      onDispatchStarted: () => startWorkerReadyHandshake({
+        crewHome: deps.crewHome,
+        runId: args.run_id,
+        runStateStore: deps.runStateStore,
+      }),
       clientKind: deps.getClientKind(),
       crewWaitCommand: deps.getCrewWaitCommand(),
       onStartFailure: rollbackContinuation,

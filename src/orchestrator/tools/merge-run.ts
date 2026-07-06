@@ -48,6 +48,7 @@
 import { z } from 'zod';
 
 import { logger } from '../../utils/logger.js';
+import { revokeRunAuthSidecar } from '../auth/index.js';
 import { readConfigFile } from '../../utils/config-store.js';
 import { isMergeable, runModeFromState } from '../run-mode.js';
 import type { ToolCallReturn, ToolHandlerDeps, MergeEnvelope } from './shared.js';
@@ -214,6 +215,15 @@ export async function mergeRunToolHandler(
           target: result.targetBranch,
           commitSha: result.commitSha,
         });
+      }
+      try {
+        revokeRunAuthSidecar(deps.crewHome, args.run_id);
+      } catch (err) {
+        logger.warn(
+          `merge_run ${args.run_id}: failed to revoke run auth sidecar: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
       try {
         const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id);

@@ -37,6 +37,20 @@ const SLUG_STOPWORDS = new Set([
 
 const DEFAULT_MAX_WORDS = 3;
 const DEFAULT_MAX_LEN = 20;
+const RUN_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
+
+/**
+ * True when `runId` is a single safe run-directory path segment.
+ *
+ * Accepted shape: non-empty lowercase ASCII, starts and ends with
+ * `[a-z0-9]`, middle characters may be `[a-z0-9._-]`, and `..` is
+ * forbidden. This preserves the `toRunToken(runId) === runId` invariant
+ * while rejecting path traversal, absolute paths, separators, NUL, and
+ * hidden-dot segments before any filesystem join.
+ */
+export function isValidRunId(runId: string): boolean {
+  return RUN_ID_PATTERN.test(runId) && !runId.includes('..');
+}
 
 /**
  * Turn arbitrary text into a `toRunToken`-stable slug fragment: lowercase,

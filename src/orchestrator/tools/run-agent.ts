@@ -52,6 +52,7 @@ import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
 import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
 import { makeRunId } from '../run-id.js';
+import type { DispatchMcpEnv } from '../auth/sidecar-schema.js';
 import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra, FullRunEnvelope } from './shared.js';
 import {
   errorContent,
@@ -249,7 +250,7 @@ export interface RunAgentDispatchPlan {
   readonly branchPointBefore?: ReadonlyMap<string, string>;
   readonly adapter: AgentAdapter;
   readonly toolCallId: string;
-  readonly buildTask: (composedPrompt: string) => DispatchTask;
+  readonly buildTask: (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv) => DispatchTask;
 }
 
 export interface RunAgentErrorPlan {
@@ -397,12 +398,13 @@ export async function planRunAgent(
   const toolCallId = randomUUID();
   await ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
-  const buildTask = (composedPrompt: string): DispatchTask =>
+  const buildTask = (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv): DispatchTask =>
     buildAdapterDispatchTask({
       toolCallId,
       runId,
       adapter,
       prompt: composedPrompt,
+      dispatchMcpEnv,
       effectiveWorkingDirectory,
       worktreePath,
       runMode,
@@ -516,6 +518,7 @@ export function buildAdapterDispatchTask(args: {
   readonly runId: string;
   readonly adapter: AgentAdapter;
   readonly prompt: string;
+  readonly dispatchMcpEnv?: DispatchMcpEnv;
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
   /**
@@ -591,6 +594,7 @@ export function buildAdapterDispatchTask(args: {
         : undefined;
       const result = await args.adapter.execute({
         prompt: args.prompt,
+        dispatchMcpEnv: args.dispatchMcpEnv,
         context: {
           workingDirectory: args.effectiveWorkingDirectory,
         },

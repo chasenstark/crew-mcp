@@ -58,6 +58,7 @@ import type {
 } from './peer-messages/schema.js';
 import { legacyReadOnlyShim, type RunMode } from './run-mode.js';
 import { withStateLock } from './run-state-lock.js';
+import type { WorkerReadyStatus } from './auth/sidecar-schema.js';
 
 export type RunStatus =
   | 'running'
@@ -183,6 +184,7 @@ export interface RunStateV1 {
    * state.json files load without migration.
    */
   readonly warnings?: readonly string[];
+  readonly workerReady?: WorkerReadyStatus;
 }
 
 const SCHEMA_VERSION = 1 as const;
@@ -822,6 +824,16 @@ export class RunStateStore {
     this.closeEventAppendFd(runId);
     writeRunReceipt(this.runDir(runId), next);
     return next;
+  }
+
+  async setWorkerReady(
+    runId: string,
+    workerReady: WorkerReadyStatus,
+  ): Promise<RunStateV1> {
+    return this.update(runId, (s) => ({
+      ...s,
+      workerReady,
+    }));
   }
 
   async markMerged(

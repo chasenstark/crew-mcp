@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 
+import { deleteRunAuthSidecar, deleteWorkerReadyMarker } from '../auth/index.js';
 import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import type { DiscardEnvelope, ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import {
@@ -31,7 +32,7 @@ export const DISCARD_RUN_DESCRIPTION =
 
 export async function discardRunToolHandler(
   args: DiscardRunInput,
-  deps: Pick<ToolHandlerDeps, 'runStateStore' | 'worktreeManager' | 'dispatcher'>,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore' | 'worktreeManager' | 'dispatcher'>,
 ): Promise<ToolCallReturn> {
   const state = deps.runStateStore.read(args.run_id);
   if (state?.status === 'running') {
@@ -58,6 +59,8 @@ export async function discardRunToolHandler(
         if (fresh.status !== 'discarded') {
           await deps.runStateStore.markDiscarded(args.run_id);
         }
+        deleteRunAuthSidecar(deps.crewHome, args.run_id);
+        deleteWorkerReadyMarker(deps.crewHome, args.run_id);
         // Worktree removal for every mode that OWNS one (write and
         // ephemeral_review — discarding an ephemeral review is what actually
         // throws its disposable snapshot away); read_only runs have no

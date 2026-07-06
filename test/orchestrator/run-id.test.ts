@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { makeRunId, slugifyRunIdPart } from '../../src/orchestrator/run-id.js';
+import { isValidRunId, makeRunId, slugifyRunIdPart } from '../../src/orchestrator/run-id.js';
 
 /**
  * Mirror of WorktreeManager.toRunToken (private). The whole human-readable
@@ -75,5 +75,28 @@ describe('makeRunId', () => {
       expect(encodeURIComponent(id)).toBe(id);
       expect(id).toMatch(/^[a-z0-9][a-z0-9-]*[0-9a-f]$/);
     }
+  });
+});
+
+describe('isValidRunId', () => {
+  it('accepts canonical run path segments', () => {
+    expect(isValidRunId('codex-refactor-auth-token-1234abcd')).toBe(true);
+    expect(isValidRunId('agent.r1_task-1234abcd')).toBe(true);
+  });
+
+  it.each([
+    '',
+    '../escape',
+    'escape/child',
+    'escape\\child',
+    '/tmp/evil',
+    '.hidden',
+    'has..dots',
+    'UPPER',
+    'nul\0byte',
+    '-leading-dash',
+    'trailing-dash-',
+  ])('rejects unsafe run id %j', (runId) => {
+    expect(isValidRunId(runId)).toBe(false);
   });
 });

@@ -25,11 +25,13 @@
 // project's logger (src/utils/logger.ts) emits to stderr via console.error,
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import {
@@ -53,6 +55,13 @@ import {
 } from '../../orchestrator/quota-cache.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRunsAndCriteriaSets, type RunGcArgs } from '../../orchestrator/run-gc.js';
+import {
+  RunAuthError,
+  validateRunAuthSidecar,
+  writeWorkerReadyMarker,
+  type RunAuthSidecar,
+} from '../../orchestrator/auth/index.js';
+import { isValidRunId } from '../../orchestrator/run-id.js';
 import {
   listAgentsInputSchema,
   listAgentsToolHandler,
@@ -472,6 +481,8 @@ function inferInstallManifestHome(crewHome: string): string {
 export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerInstance {
   const projectRoot = options.cwd ?? process.cwd();
   const crewHome = options.crewHome ?? resolveCrewHome();
+  const captainServeInstance = randomUUID();
+  const workerAuth = resolveWorkerServeAuth(crewHome);
   const installManifestHome = options.home ?? inferInstallManifestHome(crewHome);
   const registry = options.registry ?? createBuiltinRegistry();
   if (!options.registry) {
@@ -578,6 +589,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     getClientKind,
     getCrewWaitCommand,
     progressTokenSeen,
+    captainServeInstance,
     readAgentPrefs: () => readAgentPrefsFile(crewHome),
     quotaProbe: async (agentName) =>
       probeQuota(quotaCache, agentName, { unmetered: registry.get(agentName)?.unmetered === true }),
@@ -586,6 +598,18 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       resolveCanonicalAgentId: (agentId) => registry.get(agentId)?.name ?? agentId,
     }),
   };
+
+  if (workerAuth !== undefined) {
+    server.server.registerCapabilities({ tools: { listChanged: true } });
+    server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
+    writeWorkerReadyMarker({
+      crewHome,
+      runId: workerAuth.run_id,
+      serverInstance: captainServeInstance,
+      registeredTools: [],
+    });
+    return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
+  }
 
   // ---- list_agents -----------------------------------------------------
   server.registerTool(
@@ -748,6 +772,23 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
+}
+
+function resolveWorkerServeAuth(crewHome: string): RunAuthSidecar | undefined {
+  const runId = process.env.CREW_RUN_ID;
+  const token = process.env.CREW_RUN_TOKEN;
+  // Both unset is the intended captain path; worker env-less serve is blocked
+  // by agy's MCP-config quarantine and Phase 2's gemini MCP allowlist defense.
+  if (runId === undefined && token === undefined) return undefined;
+  if (!runId || !token) {
+    throw new Error(
+      'crew-mcp: partial worker env (CREW_RUN_ID xor CREW_RUN_TOKEN); refusing to start',
+    );
+  }
+  if (!isValidRunId(runId)) {
+    throw new RunAuthError('run_id_invalid', `run_id_invalid: ${runId}`);
+  }
+  return validateRunAuthSidecar({ crewHome, runId, token });
 }
 
 /**

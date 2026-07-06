@@ -49,6 +49,10 @@ import { buildPrependBlock } from '../../../src/orchestrator/peer-messages/prepe
 import type { PeerMessageRendered } from '../../../src/orchestrator/peer-messages/schema.js';
 import { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import {
+  issueRunAuthSidecar,
+  workerReadyMarkerPath,
+} from '../../../src/orchestrator/auth/index.js';
+import {
   getRunStatusInputSchema,
   MAX_EVENTS_TAIL_CAP,
 } from '../../../src/orchestrator/tools/get-run-status.js';
@@ -512,6 +516,106 @@ describe('crew serve — listTools surface', () => {
     expect(schema.properties).toHaveProperty('criteria_set_id');
     expect(schema.required).toContain('run_id');
     expect(schema.required ?? []).not.toContain('prompt');
+  });
+});
+
+describe('crew serve — restricted worker mode', () => {
+  it('valid worker credentials expose zero captain tools in Phase 1 and write a ready marker', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-worker-serve-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-worker-serve-home-'));
+    const home = mkdtempSync(join(tmpdir(), 'crew-worker-serve-os-home-'));
+    execSync('git init -q', { cwd: root });
+    execSync('git config user.email test@crew.local', { cwd: root });
+    execSync('git config user.name test', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
+    execSync('git commit -q -m init', { cwd: root });
+    const issued = issueRunAuthSidecar({
+      crewHome,
+      runId: 'worker-run',
+      agentId: 'codex',
+      repoRoot: root,
+      captainServeInstance: 'captain-test',
+      writeMode: 'must-not-exist',
+    });
+    const restoreEnv = withEnv({
+      CREW_RUN_ID: 'worker-run',
+      CREW_RUN_TOKEN: issued.sidecar.token,
+    });
+    let builtServer: { close(): Promise<void> } | undefined;
+    let client: Client | undefined;
+    try {
+      const built = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        home,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+      });
+      builtServer = built.server;
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      client = new Client({ name: 'crew-test-client', version: '0.0.0' });
+      await Promise.all([built.server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const result = await client.listTools();
+      expect(result.tools.map((tool) => tool.name)).toEqual([]);
+      const marker = JSON.parse(
+        readFileSync(workerReadyMarkerPath(crewHome, 'worker-run'), 'utf-8'),
+      ) as { registered_tools: string[] };
+      expect(marker.registered_tools).toEqual([]);
+    } finally {
+      await client?.close();
+      await builtServer?.close();
+      restoreEnv();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for partial or invalid worker credentials', () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-worker-serve-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-worker-serve-home-'));
+    const home = mkdtempSync(join(tmpdir(), 'crew-worker-serve-os-home-'));
+    try {
+      let restoreEnv = withEnv({ CREW_RUN_ID: 'worker-run', CREW_RUN_TOKEN: undefined });
+      try {
+        expect(() => buildCrewMcpServer({ cwd: root, crewHome, home })).toThrow(/partial worker env/);
+      } finally {
+        restoreEnv();
+      }
+
+      restoreEnv = withEnv({ CREW_RUN_ID: 'worker-run', CREW_RUN_TOKEN: 'f'.repeat(64) });
+      try {
+        expect(() => buildCrewMcpServer({ cwd: root, crewHome, home })).toThrow(/sidecar_missing/);
+      } finally {
+        restoreEnv();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    '../escape',
+    '/tmp/evil',
+    'escape/child',
+    'escape\\child',
+    '.hidden',
+  ])('fails closed for unsafe CREW_RUN_ID %j before sidecar lookup', (runId) => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-worker-serve-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-worker-serve-home-'));
+    const home = mkdtempSync(join(tmpdir(), 'crew-worker-serve-os-home-'));
+    const restoreEnv = withEnv({ CREW_RUN_ID: runId, CREW_RUN_TOKEN: 'f'.repeat(64) });
+    try {
+      expect(() => buildCrewMcpServer({ cwd: root, crewHome, home })).toThrow(/run_id_invalid/);
+    } finally {
+      restoreEnv();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2074,6 +2178,49 @@ describe('crew serve — continue_run tool', () => {
       expect(append).not.toHaveBeenCalled();
       expect(readPersistedState(h, env.run_id).status).toBe('success');
     } finally {
+      await h.close();
+    }
+  });
+
+  it('clears stale worker-ready marker before a fresh continue_run handshake', async () => {
+    const terminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => terminal.promise,
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const initial = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'first' },
+      });
+      const env = initial.structuredContent as FullRunEnvelope;
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const markerPath = workerReadyMarkerPath(h.crewHome, env.run_id);
+      writeFileSync(markerPath, JSON.stringify({
+        schema_version: 1,
+        server_pid: 12345,
+        server_instance: 'stale-worker',
+        started_at: '2026-01-01T00:00:00.000Z',
+        registered_tools: [],
+      }, null, 2), 'utf-8');
+
+      const secondTerminal = createDeferred<TaskResult>();
+      vi.spyOn(adapter, 'execute').mockImplementationOnce(async () => secondTerminal.promise);
+      const res = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'next' },
+      });
+
+      expect(res.isError).not.toBe(true);
+      expect(existsSync(markerPath)).toBe(false);
+      expect(readPersistedState(h, env.run_id).workerReady).toEqual({ status: 'pending' });
+      secondTerminal.resolve({ output: 'done again', filesModified: [], status: 'success', metadata: {} });
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      terminal.resolve({ output: 'done', filesModified: [], status: 'success', metadata: {} });
       await h.close();
     }
   });

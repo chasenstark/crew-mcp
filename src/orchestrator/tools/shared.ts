@@ -163,6 +163,7 @@ export interface ToolHandlerDeps {
   readonly getClientKind: () => ClientKind;
   readonly getCrewWaitCommand: () => string;
   readonly progressTokenSeen: ProgressTokenSeen;
+  readonly captainServeInstance?: string;
   readonly readAgentPrefs: () => AgentPrefsMap;
   readonly quotaProbe?: (agentName: string) => Promise<QuotaSnapshot | undefined>;
   readonly clearQuotaCache?: () => void;
@@ -180,6 +181,7 @@ interface DispatchAndRespondArgs {
   warnings?: readonly string[];
   progress?: ProgressNotifier;
   onStartFailure?: (err: unknown) => Promise<Error>;
+  onDispatchStarted?: () => void;
   onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
   clientKind: ClientKind;
   crewWaitCommand: string;
@@ -199,6 +201,7 @@ export async function runDispatchAndRespond(
   });
   try {
     args.dispatcher.start(args.task);
+    args.onDispatchStarted?.();
   } catch (err) {
     if (args.onStartFailure) {
       throw await args.onStartFailure(err);

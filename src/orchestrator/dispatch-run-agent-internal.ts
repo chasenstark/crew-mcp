@@ -4,6 +4,13 @@ import type { EphemeralSnapshotSource, WorktreeManager } from '../git/worktree.j
 import { crewTailUrl } from '../cli/commands/tail-url.js';
 import { logger } from '../utils/logger.js';
 import {
+  deleteWorkerReadyMarker,
+  issueRunAuthSidecar,
+  revokeRunAuthSidecar,
+  startWorkerReadyHandshake,
+  type DispatchMcpEnv,
+} from './auth/index.js';
+import {
   linkCriteriaSetImplementerRun,
   resolveConfirmedCriteriaContract,
   type CriteriaContractResolution,
@@ -30,6 +37,7 @@ export interface DispatchContext {
   readonly crewHome: string;
   readonly repoRoot: string;
   readonly projectRoot: string;
+  readonly captainServeInstance?: string;
   readonly onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
 }
 
@@ -117,6 +125,7 @@ export async function dispatchRunAgentInternal(
   }
 
   let createResult: Awaited<ReturnType<RunStateStore['create']>>;
+  let dispatchMcpEnv: DispatchMcpEnv | undefined;
   let warnings: readonly string[] = [];
   try {
     createResult = await ctx.runStateStore.create({
@@ -151,6 +160,35 @@ export async function dispatchRunAgentInternal(
     throw new DispatchError(errorMessage(err));
   }
 
+  try {
+    const issued = issueRunAuthSidecar({
+      crewHome: ctx.crewHome,
+      runId: plan.runId,
+      agentId: input.agent_id,
+      repoRoot: ctx.repoRoot,
+      captainServeInstance: ctx.captainServeInstance ?? 'unknown-captain-serve',
+      writeMode: 'must-not-exist',
+    });
+    dispatchMcpEnv = issued.dispatchMcpEnv;
+    await ctx.runStateStore.setWorkerReady(plan.runId, { status: 'pending' });
+  } catch (err) {
+    const message = errorMessage(err);
+    try {
+      await ctx.runStateStore.markTerminal(plan.runId, {
+        status: 'error',
+        summary: message,
+        filesChanged: [],
+        lastError: message,
+      });
+    } catch (markErr) {
+      logger.warn(
+        `run_agent terminal rollback failed for ${plan.runId}: ${errorMessage(markErr)}`,
+      );
+    }
+    await cleanupAllocatedWorktree(ctx, plan, 'auth issue failure');
+    throw new DispatchError(message, { warnings });
+  }
+
   void installRunLifecycleListeners({
     dispatcher: ctx.dispatcher,
     runStateStore: ctx.runStateStore,
@@ -159,14 +197,20 @@ export async function dispatchRunAgentInternal(
     toolCallId: plan.toolCallId,
     progress: args.progress,
     onTerminalPersisted: composeTerminalPersistedHooks(
+      revokeSidecarOnTerminal(ctx.crewHome),
       ctx.onTerminalPersisted,
       args.onTerminalPersisted,
     ),
   });
 
   try {
-    const task = plan.buildTask(createResult.composedPrompt);
+    const task = plan.buildTask(createResult.composedPrompt, dispatchMcpEnv);
     ctx.dispatcher.start(task);
+    startWorkerReadyHandshake({
+      crewHome: ctx.crewHome,
+      runId: plan.runId,
+      runStateStore: ctx.runStateStore,
+    });
   } catch (err) {
     const message = errorMessage(err);
     try {
@@ -180,6 +224,8 @@ export async function dispatchRunAgentInternal(
         `run_agent terminal rollback failed for ${plan.runId}: ${errorMessage(markErr)}`,
       );
     }
+    revokeSidecarBestEffort(ctx.crewHome, plan.runId, 'run_agent start failure');
+    deleteWorkerReadyMarker(ctx.crewHome, plan.runId);
     await cleanupAllocatedWorktree(ctx, plan, 'start failure');
     throw new DispatchError(message, { warnings });
   }
@@ -196,6 +242,32 @@ export async function dispatchRunAgentInternal(
     toolCallId: plan.toolCallId,
     warnings,
   };
+}
+
+export function revokeSidecarOnTerminal(
+  crewHome: string,
+): (state: RunStateV1) => void {
+  return (state) => {
+    deleteWorkerReadyMarker(crewHome, state.runId);
+    if (state.status === 'cancelled') return;
+    if (
+      state.status === 'success'
+      || state.status === 'partial'
+      || state.status === 'error'
+    ) {
+      revokeSidecarBestEffort(crewHome, state.runId, `terminal ${state.status}`);
+    }
+  };
+}
+
+export function revokeSidecarBestEffort(crewHome: string, runId: string, reason: string): void {
+  try {
+    revokeRunAuthSidecar(crewHome, runId);
+  } catch (err) {
+    logger.warn(
+      `failed to revoke run auth sidecar for ${runId} after ${reason}: ${errorMessage(err)}`,
+    );
+  }
 }
 
 export function criteriaPeerMessageBypassWarnings(
@@ -234,13 +306,12 @@ async function cleanupAllocatedWorktree(
 }
 
 function composeTerminalPersistedHooks(
-  first: ((state: RunStateV1) => void | Promise<void>) | undefined,
-  second: ((state: RunStateV1) => void | Promise<void>) | undefined,
+  ...hooks: Array<((state: RunStateV1) => void | Promise<void>) | undefined>
 ): ((state: RunStateV1) => Promise<void>) | undefined {
-  if (first === undefined && second === undefined) return undefined;
+  if (hooks.every((hook) => hook === undefined)) return undefined;
   return async (state) => {
     let failure: unknown;
-    for (const hook of [first, second]) {
+    for (const hook of hooks) {
       if (hook === undefined) continue;
       try {
         await hook(state);

@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +19,7 @@ import {
 import { RunStateStore } from '../../src/orchestrator/run-state.js';
 import { drainPendingTerminalPersists } from '../../src/orchestrator/run-lifecycle-listeners.js';
 import { ToolDispatcher, type DispatchTask } from '../../src/orchestrator/tool-dispatcher.js';
+import { readRunAuthSidecar, runAuthSidecarPath } from '../../src/orchestrator/auth/index.js';
 import { crewTailUrl } from '../../src/cli/commands/tail-url.js';
 import { confirmCriteriaHandler } from '../../src/orchestrator/tools/confirm-criteria.js';
 import { createCriteriaHandler } from '../../src/orchestrator/tools/create-criteria.js';
@@ -250,6 +251,118 @@ describe('dispatchRunAgentInternal', () => {
       metadata: {},
     });
     await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+  });
+
+  it('issues a sidecar and revokes it on success terminal', async () => {
+    const terminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'mock',
+      execute: async () => terminal.promise,
+    });
+    const h = makeHarness([adapter]);
+    cleanups.push(h.cleanup);
+
+    const result = await dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'do work' },
+      ctx: h.ctx,
+    });
+    const issued = readRunAuthSidecar(h.crewHome, result.runId);
+    expect(issued.revoked).toBe(false);
+    expect(issued.agent_id).toBe('mock');
+    expect(issued.repo_root).toBe(h.runStateStore.repoRoot);
+
+    terminal.resolve({
+      output: 'done',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    });
+    await waitFor(() => readRunAuthSidecar(h.crewHome, result.runId).revoked === true);
+  });
+
+  it('revokes sidecars for error terminals but not cancelled terminals', async () => {
+    const errorAdapter = makeMockAdapter({
+      name: 'mock-error',
+      execute: async () => ({
+        output: 'failed',
+        filesModified: [],
+        status: 'error',
+        metadata: {},
+      }),
+    });
+    const cancelTerminal = createDeferred<TaskResult>();
+    const cancelAdapter = makeMockAdapter({
+      name: 'mock-cancel',
+      execute: async () => cancelTerminal.promise,
+    });
+    const h = makeHarness([errorAdapter, cancelAdapter]);
+    cleanups.push(h.cleanup);
+
+    const errorResult = await dispatchRunAgentInternal({
+      input: { agent_id: 'mock-error', prompt: 'fail' },
+      ctx: h.ctx,
+    });
+    await waitFor(() => readRunAuthSidecar(h.crewHome, errorResult.runId).revoked === true);
+
+    const cancelResult = await dispatchRunAgentInternal({
+      input: { agent_id: 'mock-cancel', prompt: 'cancel' },
+      ctx: h.ctx,
+    });
+    h.dispatcher.cancel(cancelResult.toolCallId, 'test cancel');
+    cancelTerminal.resolve({
+      output: 'late',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    });
+    await waitFor(() => h.runStateStore.read(cancelResult.runId)?.status === 'cancelled');
+    expect(readRunAuthSidecar(h.crewHome, cancelResult.runId).revoked).toBe(false);
+  });
+
+  it('creates sidecars for ephemeral_review dispatches', async () => {
+    const terminal = createDeferred<TaskResult>();
+    const adapter = makeMockAdapter({
+      name: 'agy-review',
+      rejectsReadOnly: true,
+      reviewDispatchMode: 'ephemeral-worktree',
+      execute: async () => terminal.promise,
+    });
+    const h = makeHarness([adapter]);
+    cleanups.push(h.cleanup);
+
+    const result = await dispatchRunAgentInternal({
+      input: { agent_id: 'agy-review', prompt: 'review', run_mode: 'ephemeral_review' },
+      ctx: h.ctx,
+    });
+
+    expect(existsSync(runAuthSidecarPath(h.crewHome, result.runId))).toBe(true);
+    terminal.resolve({
+      output: 'done',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    });
+  });
+
+  it('revokes the issued sidecar when dispatcher.start fails after state creation', async () => {
+    const adapter = makeMockAdapter({ name: 'mock' });
+    const h = makeHarness([adapter]);
+    cleanups.push(h.cleanup);
+    vi.spyOn(h.dispatcher, 'start').mockImplementation(() => {
+      throw new Error('boom');
+    });
+
+    await expect(dispatchRunAgentInternal({
+      input: { agent_id: 'mock', prompt: 'do work' },
+      ctx: h.ctx,
+    })).rejects.toThrow(/boom/);
+
+    const runId = userRunDirs(h.crewHome)[0];
+    const sidecar = JSON.parse(
+      readFileSync(runAuthSidecarPath(h.crewHome, runId), 'utf-8'),
+    ) as { revoked: boolean };
+    expect(sidecar.revoked).toBe(true);
+    expect(h.runStateStore.read(runId)?.status).toBe('error');
   });
 
   it('throws DispatchError for peer_messages preflight failures without state mutation', async () => {

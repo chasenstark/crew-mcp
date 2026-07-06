@@ -20,6 +20,11 @@ import {
   resolveWorktreeTtlMs,
   terminalAtMs,
 } from '../../src/orchestrator/run-gc.js';
+import {
+  issueRunAuthSidecar,
+  workerReadyMarkerPath,
+  writeWorkerReadyMarker,
+} from '../../src/orchestrator/auth/index.js';
 import { logger } from '../../src/utils/logger.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -205,6 +210,20 @@ describe('gcTerminalRuns', () => {
   it('deletes the whole run-dir past the run-dir TTL', async () => {
     const runId = 'aaaaaaaa-0000-0000-0000-000000000002';
     await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });
+    issueRunAuthSidecar({
+      crewHome,
+      runId,
+      agentId: 'mock',
+      repoRoot,
+      captainServeInstance: 'serve-test',
+      writeMode: 'must-not-exist',
+    });
+    writeWorkerReadyMarker({
+      crewHome,
+      runId,
+      serverInstance: 'worker-test',
+      registeredTools: [],
+    });
 
     await gcTerminalRuns({
       crewHome,
@@ -217,6 +236,7 @@ describe('gcTerminalRuns', () => {
     });
 
     expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+    expect(existsSync(workerReadyMarkerPath(crewHome, runId))).toBe(false);
   });
 
   it('dry-run marks a run-dir blocked behind a worktree reclaim as pending, not deleted', async () => {
