@@ -154,52 +154,6 @@ export class WorktreeManager {
     return this.projectRoot;
   }
 
-  /**
-   * True when `candidate` is a path Crew controls and can therefore safely
-   * auto-trust for a headless dispatch: the host repo root itself, or anything
-   * under the run-worktree base (`<crewHome>/runs`). Both hold the user's own
-   * code (the host checkout, or a worktree checkout of it). A caller-supplied
-   * working directory outside both is NOT crew-controlled — crew must not force
-   * a CLI's folder-trust gate open on it, because trusting a directory loads
-   * its project config (`.gemini/settings.json`, MCP servers, hooks, `.env`),
-   * which would execute untrusted third-party config outside a read-only tool
-   * policy. Consumed by the read-only dispatch path to scope Gemini's
-   * `GEMINI_CLI_TRUST_WORKSPACE` injection.
-   */
-  isCrewControlledPath(candidate: string): boolean {
-    if (!candidate) return false;
-    // Resolve symlinks on BOTH sides before the containment check. A lexical
-    // check (resolve only) would auto-trust a link planted inside the repo /
-    // run base that points OUTSIDE — e.g. `<repo>/vendor/link -> /tmp/untrusted`
-    // — letting Gemini load the external tree's `.gemini` config outside the
-    // policy. realpathSync collapses the link to its real target so the escape
-    // is rejected (mirrors isSafeSymlinkTarget below). A path that can't
-    // be resolved (nonexistent / broken link) fails closed to false — it isn't
-    // a usable working directory anyway.
-    let realTarget: string;
-    try {
-      realTarget = realpathSync(resolve(candidate));
-    } catch {
-      return false;
-    }
-    // Crew-controlled = the host repo root or any descendant (the user's own
-    // checkout), or the run-worktree base or any descendant (crew-owned
-    // checkouts of that repo). Anything else is an external dir we must not
-    // auto-trust. `relative()` is '' for the base itself and a non-`..`,
-    // non-absolute path for descendants.
-    for (const base of [this.projectRoot, this.runBasePath]) {
-      let realBase: string;
-      try {
-        realBase = realpathSync(resolve(base));
-      } catch {
-        continue;
-      }
-      const rel = relative(realBase, realTarget);
-      if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return true;
-    }
-    return false;
-  }
-
   hasOwnedRunWorktreeRecord(runId: string): boolean {
     return this.readRunWorktreeRecord(runId) !== undefined;
   }

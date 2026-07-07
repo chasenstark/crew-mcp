@@ -20,7 +20,6 @@
 import type { HostAdapter } from './types.js';
 import { claudeCodeAdapter } from './claude-code.js';
 import { codexAdapter } from './codex.js';
-import { geminiAdapter } from './gemini.js';
 import { agyAdapter } from './agy.js';
 
 export type HostId = HostAdapter['id'];
@@ -28,12 +27,11 @@ export type HostId = HostAdapter['id'];
 export const HOST_ADAPTERS: Record<HostId, HostAdapter> = {
   'claude-code': claudeCodeAdapter,
   codex: codexAdapter,
-  gemini: geminiAdapter,
   agy: agyAdapter,
 };
 
-export const ALL_HOST_IDS: readonly HostId[] = ['claude-code', 'codex', 'gemini', 'agy'];
-export const GLOBAL_HOST_IDS: readonly HostId[] = ['claude-code', 'codex', 'gemini'];
+export const ALL_HOST_IDS: readonly HostId[] = ['claude-code', 'codex', 'agy'];
+export const GLOBAL_HOST_IDS: readonly HostId[] = ['claude-code', 'codex'];
 export const PROJECT_HOST_IDS: readonly HostId[] = ['claude-code', 'codex', 'agy'];
 
 export function isProjectHostId(id: HostId): boolean {
@@ -45,4 +43,4 @@ export function isGlobalHostId(id: HostId): boolean {
 }
 
 export type { HostAdapter };
-export { claudeCodeAdapter, codexAdapter, geminiAdapter, agyAdapter };
+export { claudeCodeAdapter, codexAdapter, agyAdapter };

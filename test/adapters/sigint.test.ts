@@ -20,7 +20,6 @@ const { execa } = await import('execa');
 const mockExeca = vi.mocked(execa);
 
 const { CodexAdapter } = await import('../../src/adapters/codex.js');
-const { GeminiCliAdapter } = await import('../../src/adapters/gemini-cli.js');
 const { ClaudeCodeAdapter } = await import('../../src/adapters/claude-code.js');
 
 function abortedController(reason = 'Cancelled by test'): AbortController {
@@ -75,44 +74,6 @@ describe('adapter cancellation plumbing (CI, mock subprocess)', () => {
       // Codex records the cancel error in metadata.rawEvents[0].error.
       const rawEvents = result.metadata.rawEvents as Array<{ error?: string }> | undefined;
       expect(rawEvents?.[0]?.error).toMatch(/SIGTERM/);
-    });
-  });
-
-  describe('GeminiCliAdapter.execute', () => {
-    it('forwards the AbortSignal to execa as cancelSignal', async () => {
-      mockExeca.mockResolvedValueOnce({
-        stdout: JSON.stringify({ response: 'ok' }),
-        stderr: '',
-        exitCode: 0,
-      } as any);
-
-      const adapter = new GeminiCliAdapter();
-      const controller = new AbortController();
-
-      await adapter.execute({
-        prompt: 'hi',
-        context: { workingDirectory: '/tmp/project' },
-        constraints: { signal: controller.signal },
-      });
-
-      const call = mockExeca.mock.calls[0];
-      expect(call).toBeDefined();
-      const options = call![2] as { cancelSignal?: AbortSignal };
-      expect(options.cancelSignal).toBe(controller.signal);
-    });
-
-    it('surfaces the subprocess error message when gemini is killed', async () => {
-      mockExeca.mockRejectedValueOnce(new Error('Command was killed with SIGTERM'));
-
-      const adapter = new GeminiCliAdapter();
-      const result = await adapter.execute({
-        prompt: 'hi',
-        context: { workingDirectory: '/tmp/project' },
-        constraints: { signal: abortedController().signal },
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.output).toMatch(/SIGTERM/);
     });
   });
 

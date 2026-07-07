@@ -19,7 +19,7 @@ import {
 const HOSTS: DetectedHost[] = [
   { id: 'claude-code', displayName: 'Claude Code', installed: true, version: '1.0.23' },
   { id: 'codex', displayName: 'Codex', installed: true, version: '0.128.0' },
-  { id: 'gemini', displayName: 'Gemini CLI', installed: false },
+  { id: 'agy', displayName: 'Antigravity', installed: false },
 ];
 
 function stubIO(answers: string[]): PromptIO & { writes: string[] } {
@@ -52,7 +52,7 @@ describe('selectTargets', () => {
   it('returns all detected hosts when the user types "a"', async () => {
     const io = stubIO(['a']);
     const out = await selectTargets({ hosts: HOSTS, io });
-    expect(out).toEqual(['claude-code', 'codex']); // gemini is not installed
+    expect(out).toEqual(['claude-code', 'codex']); // agy is not installed
   });
 
   it('returns [] when the user enters blank input (cancel)', async () => {
@@ -88,7 +88,7 @@ describe('selectTargets', () => {
     const text = io.writes.join('');
     expect(text).toContain('[✓] Claude Code   detected (1.0.23)');
     expect(text).toContain('[✓] Codex         detected (0.128.0)');
-    expect(text).toContain('[ ] Gemini CLI    not on PATH');
+    expect(text).toContain('[ ] Antigravity   not on PATH');
   });
 
   it('throws on a programmer error (zero hosts passed)', async () => {
@@ -118,7 +118,7 @@ describe('parseSelection (unit)', () => {
   it('parses comma-separated with whitespace', () => {
     expect(parseSelection(' 1 , 3 ', HOSTS)).toEqual({
       kind: 'ok',
-      targets: ['claude-code', 'gemini'],
+      targets: ['claude-code', 'agy'],
     });
   });
 

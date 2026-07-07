@@ -2570,7 +2570,7 @@ describe('crew serve — peer_messages integration', () => {
     }
   });
 
-  it.each(['codex', 'claude-code', 'gemini-cli', 'generic', 'openai-compatible'])(
+  it.each(['codex', 'claude-code', 'generic', 'openai-compatible'])(
     'passes the composed peer_messages prompt to the %s adapter',
     async (agentName) => {
       let observedPrompt = '';
@@ -4632,7 +4632,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
 
   // The dispatch envelope's "next step" sentence is keyed off the MCP
   // `clientInfo.name` carried in the initialize handshake. These cases
-  // guard the three branches (codex/gemini → "dispatch returns",
+  // guard the non-Claude-Code branches (codex → "dispatch returns",
   // unknown → neutral) so a future copy edit can't silently drift on
   // non-Claude-Code hosts.
   it('codex client gets "after this dispatch returns" copy', async () => {
@@ -4659,31 +4659,6 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(text).toContain('after this dispatch returns');
       expect(text).toContain('- Next:');
       expect(text).not.toContain('REQUIRED before you end this turn');
-    } finally {
-      await h.close();
-    }
-  });
-
-  it('gemini client omits required_next_action', async () => {
-    const adapter = makeMockAdapter({
-      name: 'mock-fast',
-      execute: async () => ({
-        output: 'instant',
-        filesModified: [],
-        status: 'success',
-        metadata: {},
-      }),
-    });
-    const h = await startHarness([adapter], { clientName: 'gemini-cli' });
-    try {
-      const run = await h.client.callTool({
-        name: 'run_agent',
-        arguments: { agent_id: 'mock-fast', prompt: 'go' },
-      });
-      const env = run.structuredContent as FullRunEnvelope;
-      expect(env.summary).toContain('after this dispatch returns');
-      expect(env.required_next_action).toBeUndefined();
-      expect(toolText(run)).not.toContain('REQUIRED before you end this turn');
     } finally {
       await h.close();
     }
@@ -4731,7 +4706,6 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
 
   it.each([
     ['codex-cli', 'codex'],
-    ['gemini-cli', 'gemini'],
     ['some-future-host', 'unknown'],
   ] as const)('continue_run omits required_next_action for %s', async (clientName) => {
     const adapter = makeMockAdapter({
@@ -6027,9 +6001,7 @@ describe('classifyClient', () => {
     ['Codex CLI', 'codex'],
     ['codex_cli', 'codex'],
     ['CODEX', 'codex'],
-    ['gemini', 'gemini'],
-    ['gemini-cli', 'gemini'],
-    ['Gemini CLI', 'gemini'],
+    ['gemini-cli', 'unknown'],
     ['some-future-host', 'unknown'],
     ['', 'unknown'],
     [undefined, 'unknown'],
@@ -6050,11 +6022,6 @@ describe('nextStepSentence', () => {
   });
   it('returns the dispatch-returns phrasing for codex', () => {
     expect(nextStepSentence('codex')).toBe(
-      'End your turn after this dispatch returns; user is free to chat.',
-    );
-  });
-  it('returns the dispatch-returns phrasing for gemini', () => {
-    expect(nextStepSentence('gemini')).toBe(
       'End your turn after this dispatch returns; user is free to chat.',
     );
   });

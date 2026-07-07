@@ -115,20 +115,20 @@ export interface SkillInstallSpec {
   /** Literal value written to the frontmatter `name:` field. */
   readonly frontmatterName: string;
   /**
-   * Legacy paths the install must remove (v1 SKILL.md locations).
-   * Empty for Claude/Codex (their current v1 paths ARE canonical);
-   * populated for Gemini (relocates from `~/.gemini/extensions/crew/SKILL.md`
-   * to `~/.gemini/skills/crew/SKILL.md`).
+   * Legacy paths the install must remove (stale SKILL.md copies at
+   * deprecated locations from earlier layouts). Empty for Claude/Codex
+   * (their current paths ARE canonical).
    */
   readonly legacyPathsToRemove: readonly string[];
   /**
    * When true, the install renders nothing to `skillPath` for this
    * host — it only processes `legacyPathsToRemove`. Used when the host
    * already discovers the skill from a shared location on its search
-   * path (e.g. Gemini natively scans `~/.agents/skills/`, which Claude
-   * Code populates), so a per-host copy would be a duplicate the host
-   * warns about. The skipped skill is excluded from the install
-   * manifest's written-paths and skills map.
+   * path (`~/.agents/skills/`), so a per-host copy would be a duplicate
+   * the host warns about. No current host adapter produces this (the
+   * retired gemini host did); kept because old install manifests still
+   * carry the sharedSkills entries it recorded. The skipped skill is
+   * excluded from the install manifest's written-paths and skills map.
    */
   readonly skip?: boolean;
 }
@@ -155,7 +155,7 @@ export interface RenderSkillArgs {
    * `crew-wait` when the install detected it on PATH, or an absolute
    * path like `/usr/local/bin/crew-wait` when install used the
    * absolute-path fallback. Hosts that don't run the watcher (Codex,
-   * Gemini) still receive the literal so the prose reads sensibly,
+   * agy) still receive the literal so the prose reads sensibly,
    * but they default to the portable baseline anyway.
    */
   readonly crewWaitCommand?: string;

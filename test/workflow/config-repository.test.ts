@@ -16,7 +16,6 @@ import {
   saveConfigByScope,
 } from '../../src/workflow/config-repository.js';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
-import { ModelId } from '../../src/workflow/models.js';
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -53,13 +52,13 @@ describe('config-repository', () => {
 
   it('saves and loads scoped config', () => {
     const config = getDefaultConfig();
-    config.workflow.name = 'repo-test';
+    config.workflow.agentDefaults = { iterate: { implementer: 'repo-test' } };
 
     const filePath = saveConfigByScope('project', cwd, config);
     expect(existsSync(filePath)).toBe(true);
 
     const loaded = loadConfigByScope('project', cwd);
-    expect(loaded?.workflow.name).toBe('repo-test');
+    expect(loaded?.workflow.agentDefaults?.iterate?.implementer).toBe('repo-test');
 
     const dirEntries = readdirSync(join(cwd, '.crew'));
     expect(dirEntries.some((entry) => entry.startsWith('workflow.yaml.tmp-'))).toBe(false);
@@ -67,81 +66,50 @@ describe('config-repository', () => {
 
   it('saves and loads scoped config for a named profile', () => {
     const config = getDefaultConfig();
-    config.workflow.name = 'codex-first';
+    config.workflow.agentDefaults = { iterate: { implementer: 'codex' } };
 
     const filePath = saveConfigByScope('project', cwd, config, { profile: 'codex-first' });
     expect(filePath).toBe(getProjectProfileConfigPath(cwd, 'codex-first'));
     expect(existsSync(filePath)).toBe(true);
 
     const loaded = loadConfigByScope('project', cwd, { profile: 'codex-first' });
-    expect(loaded?.workflow.name).toBe('codex-first');
+    expect(loaded?.workflow.agentDefaults?.iterate?.implementer).toBe('codex');
   });
 
   it('loads effective config by merging project over global', () => {
     const global = getDefaultConfig();
-    global.workflow.name = 'global';
-    global.captain.model = 'global-model';
-    saveConfigByScope('global', cwd, global);
-
-    const project = getDefaultConfig();
-    project.workflow.name = 'project';
-    project.errorHandling.default.retry = 3;
-    project.captain.model = undefined;
-    saveConfigByScope('project', cwd, project);
-
-    const effective = loadEffectiveConfig(cwd);
-    expect(effective.workflow.name).toBe('project');
-    expect(effective.captain.model).toBe('global-model');
-    expect(effective.errorHandling.default.retry).toBe(3);
-  });
-
-  it('project defaults clear global legacy workflow surfaces while inheriting agent defaults', () => {
-    const global = getDefaultConfig();
-    global.workflow.steps = [
-      { role: 'coder', agents: ['codex'], action: 'implement' },
-    ];
-    global.workflow.roleModels = { coder: ModelId.GPT_CODEX };
-    global.workflow.completion = { strategy: 'judge_approval', fallback: 'max_passes' };
-    global.workflow.agentDefaults = { panel: { reviewers: ['claude-code'] } };
-    global.agents = {
-      codex: { adapter: 'codex', model: ModelId.GPT_CODEX },
+    global.workflow.agentDefaults = {
+      iterate: { implementer: 'codex', banList: ['agy'] },
     };
-    global.captain.model = ModelId.CLAUDE_SONNET;
-    global.captain.preset = 'default';
-    global.presets = { default: { hint: 'legacy hint' } };
-    global.errorHandling.default.retry = 7;
     saveConfigByScope('global', cwd, global);
 
     const project = getDefaultConfig();
-    project.workflow.name = 'project';
+    project.workflow.agentDefaults = { iterate: { implementer: 'claude-code' } };
     saveConfigByScope('project', cwd, project);
 
     const effective = loadEffectiveConfig(cwd);
-    expect(effective.workflow.name).toBe('project');
-    expect(effective.workflow.steps).toEqual([]);
-    expect(effective.workflow.roleModels).toBeUndefined();
-    expect(effective.workflow.completion).toEqual({ strategy: 'manual', fallback: 'manual' });
-    expect(effective.workflow.agentDefaults).toEqual({ panel: { reviewers: ['claude-code'] } });
-    expect(effective.agents).toEqual({});
-    expect(effective.captain.model).toBe(ModelId.CLAUDE_SONNET);
-    expect(effective.captain.preset).toBeUndefined();
-    expect(effective.presets).toBeUndefined();
-    expect(effective.errorHandling.default.retry).toBe(1);
+    expect(effective.workflow.agentDefaults).toEqual({
+      iterate: { implementer: 'claude-code', banList: ['agy'] },
+    });
   });
 
   it('falls back to default profile config when named profile file is missing', () => {
     const project = getDefaultConfig();
-    project.workflow.name = 'default-profile-project';
+    project.workflow.agentDefaults = { iterate: { implementer: 'codex' } };
     saveConfigByScope('project', cwd, project);
 
     const loaded = loadConfigByScope('project', cwd, { profile: 'missing-profile' });
-    expect(loaded?.workflow.name).toBe('default-profile-project');
+    expect(loaded?.workflow.agentDefaults?.iterate?.implementer).toBe('codex');
   });
 
   it('throws with path context on parse failures', () => {
     const projectConfigDir = join(cwd, '.crew');
     mkdirSync(projectConfigDir, { recursive: true });
-    writeFileSync(join(projectConfigDir, 'workflow.yaml'), 'workflow:\n  steps: "bad"', 'utf-8');
+    writeFileSync(
+      join(projectConfigDir, 'workflow.yaml'),
+      'workflow:\n  agent_defaults:\n    iterate:\n      reviewers: "bad"',
+      'utf-8',
+    );
 
     expect(() => loadEffectiveConfig(cwd)).toThrow(/Failed to parse .*workflow\.yaml/);
   });

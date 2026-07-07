@@ -19,13 +19,11 @@ export interface RegistryHealthReport {
 type BuiltinAdapterId =
   | AdapterId.CLAUDE_CODE
   | AdapterId.CODEX
-  | AdapterId.GEMINI_CLI
   | AdapterId.AGY;
 
 export const BUILTIN_ADAPTER_NAMES: readonly BuiltinAdapterId[] = [
   AdapterId.CLAUDE_CODE,
   AdapterId.CODEX,
-  AdapterId.GEMINI_CLI,
   AdapterId.AGY,
 ];
 
@@ -96,28 +94,6 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsResume: true,
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
-    hasExecuteWithSchema: true,
-    hasGetCliVersionTag: true,
-  },
-  [AdapterId.GEMINI_CLI]: {
-    name: AdapterId.GEMINI_CLI,
-    strengths: BUILTIN_AGENT_ROUTING[AdapterId.GEMINI_CLI].strengths,
-    useWhen: BUILTIN_AGENT_ROUTING[AdapterId.GEMINI_CLI].useWhen,
-    supportsJsonSchema: false,
-    enforcesReadOnly: false,
-    reviewDispatchMode: 'read-only-dispatch',
-    captainCapabilities: GENERIC_CAPABILITIES,
-    // gemini-cli auth/dispatchability is dead for this path today, so resume
-    // remains deliberately unwired; buffering runs use dispatcher absolute caps.
-    // KNOWN COLLISION: this prefix regex also matches agy's "Gemini 3.1 Pro
-    // (High)" labels (AgyAdapter pins exact labels instead). It is harmless
-    // today because recognizesModel has NO production routing consumer —
-    // routing is by agent id/alias, not model string — but it would mis-route
-    // if model-string routing is ever added. The standing mitigation is
-    // "select agy by agent id/alias". Do not widen this without also
-    // disambiguating agy. See docs/plans/active/agy-adapter.md (criterion 7).
-    recognizesModel: (modelId) =>
-      typeof modelId === 'string' && /^(gemini|qwen)/i.test(modelId),
     hasExecuteWithSchema: true,
     hasGetCliVersionTag: true,
   },
@@ -533,11 +509,6 @@ function createBuiltinAdapterLoader(adapterType: BuiltinAdapterId): LazyAdapterL
         const { CodexAdapter } = await import('./codex.js');
         return new CodexAdapter();
       };
-    case AdapterId.GEMINI_CLI:
-      return async () => {
-        const { GeminiCliAdapter } = await import('./gemini-cli.js');
-        return new GeminiCliAdapter();
-      };
     case AdapterId.AGY:
       return async () => {
         const { AgyAdapter } = await import('./agy.js');
@@ -555,10 +526,6 @@ export function createBuiltinRegistry(): AdapterRegistry {
   registry.registerLazy(
     BUILTIN_ADAPTER_METADATA[AdapterId.CODEX],
     createBuiltinAdapterLoader(AdapterId.CODEX),
-  );
-  registry.registerLazy(
-    BUILTIN_ADAPTER_METADATA[AdapterId.GEMINI_CLI],
-    createBuiltinAdapterLoader(AdapterId.GEMINI_CLI),
   );
   registry.registerLazy(
     BUILTIN_ADAPTER_METADATA[AdapterId.AGY],

@@ -36,8 +36,8 @@ export interface AgentAdapter {
   readonly useWhen?: string;
   /**
    * Default reasoning effort for dispatches to this adapter. Omitted when
-   * the underlying CLI has no reasoning-effort knob (gemini-cli today,
-   * openai-compatible/generic by definition). Surfaced via `list_agents`
+   * the underlying CLI has no reasoning-effort knob
+   * (openai-compatible/generic by definition). Surfaced via `list_agents`
    * so the captain can see the per-machine default; users override via
    * `~/.crew/agents.json`. The captain may also pass a per-call `effort`
    * to `run_agent` / `continue_run`, which wins over both.
@@ -57,7 +57,7 @@ export interface AgentAdapter {
    * theoretical case we don't expect to hit today.
    *
    * Omit when the adapter has no native effort knob (claude-code,
-   * gemini-cli, generic, openai-compatible) — those ignore the value
+   * generic, openai-compatible) — those ignore the value
    * regardless, so the clamp would be wasted work.
    */
   readonly supportedEfforts?: readonly EffortLevel[];
@@ -66,21 +66,17 @@ export interface AgentAdapter {
    * True only when this adapter's execution environment can enforce a
    * read-only FILESYSTEM sandbox itself (e.g. codex `--sandbox read-only`,
    * kernel-enforced). False means `read_only` is not OS-sandboxed: it relies
-   * on the dispatch layer's dirty-tree probe plus either a prompt contract
-   * (claude-code, generic, openai-compatible) or per-run TOOL-level denial
-   * that blocks the CLI's own write/shell tools (gemini `--policy`). Tool
-   * denial is strong but deliberately NOT reported as `true` here, because it
-   * is not a filesystem sandbox and a tool outside the deny set could still
-   * mutate — so the dirty-tree probe stays on and the dispatch surfaces an
-   * adapter-specific advisory describing the actual posture.
+   * on the dispatch layer's dirty-tree probe plus a prompt contract
+   * (claude-code, generic, openai-compatible) — so the dirty-tree probe
+   * stays on and the dispatch surfaces an advisory describing the actual
+   * posture.
    */
   readonly enforcesReadOnly?: boolean;
   /**
    * True when this adapter must refuse a read-only dispatch outright rather
    * than run it. Set by adapters whose read-only contract cannot be enforced
-   * by any means (neither an OS sandbox like `enforcesReadOnly`, nor tool-level
-   * denial like gemini's `--policy`) — running them read-only would be
-   * fail-open. The dispatch PLAN layer (`planRunAgent` / `continue_run`)
+   * by any means (no OS sandbox like `enforcesReadOnly`, no tool-level
+   * denial) — running them read-only would be fail-open. The dispatch PLAN layer (`planRunAgent` / `continue_run`)
    * short-circuits to an error before allocating or running anything, and the
    * generic read-only advisory is NOT emitted (the run never starts). agy is
    * the first such adapter; review/triage routes to codex/claude instead.
@@ -89,8 +85,8 @@ export interface AgentAdapter {
   /**
    * HOW this adapter is placed for a review dispatch — orthogonal to
    * whether read-only is actually ENFORCED (that truth stays in
-   * `enforcesReadOnly`; claude/gemini are `read-only-dispatch` yet
-   * enforce nothing at the FS level).
+   * `enforcesReadOnly`; claude-code is `read-only-dispatch` yet
+   * enforces nothing at the FS level).
    *
    *   - `read-only-dispatch` (default when omitted): reviews run in
    *     place via `run_mode:'read_only'` — no owned worktree.
@@ -298,20 +294,9 @@ export interface Task {
      * Sandbox policy for adapters that natively sandbox shell commands
      * (codex). Mirrors Codex's `--sandbox` enum verbatim — keep these
      * strings in sync with the CLI or the spawn fails. Other adapters
-     * (claude-code, gemini, generic) ignore this.
+     * (claude-code, generic) ignore this.
      */
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
-    /**
-     * Force the CLI's workspace-trust gate open for this dispatch. Only
-     * gemini-cli consumes it (sets GEMINI_CLI_TRUST_WORKSPACE=true) so a
-     * read-only review can run headless in a directory Gemini hasn't been
-     * told to trust. The dispatch layer sets this true ONLY for crew-controlled
-     * paths (host repo / crew run worktrees — the user's own code), never for
-     * arbitrary caller-supplied directories: trusting a folder also loads its
-     * project `.gemini` config/MCP/hooks/.env, which execute outside the
-     * read-only tool policy. Other adapters ignore this.
-     */
-    trustWorkspace?: boolean;
     /**
      * Allow network egress from inside the sandbox. Codex's
      * `workspace-write` default blocks localhost, which silently breaks

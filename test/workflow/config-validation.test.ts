@@ -1,163 +1,54 @@
 import { describe, expect, it } from 'vitest';
 import { getDefaultConfig } from '../../src/workflow/config-codec.js';
-import { ModelId } from '../../src/workflow/models.js';
 import { validateConfig } from '../../src/workflow/config-validation.js';
-import type { FullConfig } from '../../src/workflow/types.js';
-
-function legacyConfig(): FullConfig {
-  const config = getDefaultConfig();
-  config.workflow.steps = [
-    { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review' },
-    { role: 'judge', agents: ['captain'], action: 'evaluate_review' },
-    { role: 'coder', agents: ['codex'], action: 'fix_review_issues' },
-  ];
-  config.agents = {
-    'claude-code': { adapter: 'claude-code', model: ModelId.CLAUDE_SONNET },
-    codex: { adapter: 'codex', model: ModelId.GPT_CODEX },
-  };
-  return config;
-}
 
 describe('config-validation', () => {
   it('accepts default config', () => {
-    const diagnostics = validateConfig(getDefaultConfig());
-    expect(diagnostics).toEqual([]);
+    expect(validateConfig(getDefaultConfig())).toEqual([]);
   });
 
-  it('rejects unsupported adapter values', () => {
-    const config = legacyConfig();
-    config.agents.codex.adapter = 'unknown-adapter';
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.codex.adapter')).toBe(true);
-  });
-
-  it('requires command for generic adapter', () => {
-    const config = legacyConfig();
-    config.agents.codex.adapter = 'generic';
-    delete config.agents.codex.command;
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.codex.command')).toBe(true);
-  });
-
-  it('accepts arbitrary strength strings (no enum gate)', () => {
-    // Strengths are free-form soft routing hints — the validator should
-    // accept any non-empty string, including ones that the captain has
-    // never seen before. Used for user-defined hints like "k8s-ops".
-    const config = legacyConfig();
-    config.agents.codex.strengths = ['code-review', 'made-up-strength'];
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.codex.strengths')).toBe(false);
-  });
-
-  it('rejects empty/whitespace-only strength entries', () => {
-    const config = legacyConfig();
-    config.agents.codex.strengths = ['code-review', '   '];
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.codex.strengths')).toBe(true);
-  });
-
-  it('rejects built-in adapters under non-built-in keys', () => {
-    const config = legacyConfig();
-    config.agents['custom-codex'] = { adapter: 'codex' };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.custom-codex.adapter')).toBe(true);
-  });
-
-  it('accepts openai-compatible adapters without a command field', () => {
-    const config = legacyConfig();
-    config.agents.local = {
-      adapter: 'openai-compatible',
-      model: ModelId.QWEN,
-      apiBase: 'http://127.0.0.1:11434/v1',
+  it('accepts a fully-populated agentDefaults block', () => {
+    const config = getDefaultConfig();
+    config.workflow.agentDefaults = {
+      iterate: {
+        implementer: 'codex',
+        reviewers: ['claude-code'],
+        banList: ['agy'],
+      },
+      panel: { reviewers: ['codex'] },
     };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.local.command')).toBe(false);
+    expect(validateConfig(config)).toEqual([]);
   });
 
-  it('accepts role model keys that exist in workflow roles/actions', () => {
-    const config = legacyConfig();
-    config.workflow.roleModels = {
-      reviewer: ModelId.GPT,
-      fix_review_issues: ModelId.CLAUDE_OPUS,
+  it('rejects empty implementer ids', () => {
+    const config = getDefaultConfig();
+    config.workflow.agentDefaults = { iterate: { implementer: '  ' } };
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].path).toBe('workflow.agentDefaults.iterate.implementer');
+    expect(diagnostics[0].message).toContain('non-empty string agent id');
+  });
+
+  it('rejects non-array reviewer lists and empty entries', () => {
+    const config = getDefaultConfig();
+    config.workflow.agentDefaults = {
+      iterate: { reviewers: 'codex' as unknown as string[] },
+      panel: { banList: ['', 'codex'] },
     };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path.startsWith('workflow.roleModels'))).toBe(false);
+    const paths = validateConfig(config).map((d) => d.path);
+    expect(paths).toContain('workflow.agentDefaults.iterate.reviewers');
+    expect(paths).toContain('workflow.agentDefaults.panel.banList[0]');
   });
 
-  it('rejects unknown role model keys', () => {
-    const config = legacyConfig();
-    config.workflow.roleModels = { unknown: ModelId.GPT };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.unknown')).toBe(true);
-  });
-
-  it('rejects empty role model values', () => {
-    const config = legacyConfig();
-    config.workflow.roleModels = { reviewer: '   ' };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.reviewer')).toBe(true);
-  });
-
-  it('rejects captain models that are incompatible with the configured captain adapter', () => {
+  it('rejects reviewer/banList collisions per scope', () => {
     const config = getDefaultConfig();
-    config.captain.model = ModelId.GPT_CODEX;
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'captain.model')).toBe(true);
-  });
-
-  it('rejects agent models that are incompatible with the agent adapter', () => {
-    const config = legacyConfig();
-    config.agents['claude-code'].model = ModelId.GPT_CODEX;
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.claude-code.model')).toBe(true);
-  });
-
-  it('rejects captain-owned role models that are incompatible with the captain adapter', () => {
-    const config = getDefaultConfig();
-    config.workflow.roleModels = { judge: ModelId.GPT_CODEX };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.judge')).toBe(true);
-  });
-
-  it('rejects incompatible judge role models even without an explicit judge step', () => {
-    const config = getDefaultConfig();
-    config.workflow.steps = config.workflow.steps.filter((step) => step.role !== 'judge');
-    config.workflow.roleModels = { judge: ModelId.GPT_CODEX };
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'workflow.roleModels.judge')).toBe(true);
-  });
-
-  it('allows arbitrary model names for openai-compatible adapters', () => {
-    const config = getDefaultConfig();
-    config.agents.local = {
-      adapter: 'openai-compatible',
-      model: 'llama3.2',
-      apiBase: 'http://127.0.0.1:11434/v1',
+    config.workflow.agentDefaults = {
+      iterate: { reviewers: ['codex'], banList: ['codex'] },
+      panel: { reviewers: ['claude-code'], banList: ['agy'] },
     };
-
     const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'agents.local.model')).toBe(false);
-  });
-
-  it('rejects unsupported workflow execution mode', () => {
-    const config = getDefaultConfig();
-    config.workflow.execution = { mode: 'linear' };
-    config.workflow.execution.mode = 'invalid' as 'linear';
-
-    const diagnostics = validateConfig(config);
-    expect(diagnostics.some((d) => d.path === 'workflow.execution.mode')).toBe(true);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0].path).toBe('workflow.agentDefaults.iterate.banList');
+    expect(diagnostics[0].received).toBe('codex');
   });
 });

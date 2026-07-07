@@ -409,7 +409,6 @@ describe('reviewDispatchMode — capability matrix + proxy/instance parity', () 
     const expected: Record<string, string> = {
       'claude-code': 'read-only-dispatch',
       codex: 'read-only-dispatch',
-      'gemini-cli': 'read-only-dispatch',
       agy: 'ephemeral-worktree',
     };
     const registry = createBuiltinRegistry();

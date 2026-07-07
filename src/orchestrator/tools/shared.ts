@@ -25,10 +25,10 @@ export const MAX_LONG_POLL_MS = 60_000;
  * Classification of the MCP host CLI that initialized this server, derived
  * from the `clientInfo.name` carried in the MCP `initialize` request. Used
  * to tailor the dispatch envelope's "next step" copy: Claude Code captains
- * need to spawn a watcher overlay before ending the turn, while Codex /
- * Gemini captains just end the turn after the dispatch tool returns.
+ * need to spawn a watcher overlay before ending the turn, while Codex
+ * captains just end the turn after the dispatch tool returns.
  */
-export type ClientKind = 'claude-code' | 'codex' | 'gemini' | 'unknown';
+export type ClientKind = 'claude-code' | 'codex' | 'unknown';
 
 /**
  * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
@@ -43,7 +43,6 @@ export function classifyClient(name: string | undefined): ClientKind {
   const n = name.toLowerCase().replace(/[\s_]+/g, '-');
   if (n.includes('claude-code') || n === 'claude') return 'claude-code';
   if (n.includes('codex')) return 'codex';
-  if (n.includes('gemini')) return 'gemini';
   return 'unknown';
 }
 
@@ -56,7 +55,6 @@ export function nextStepSentence(kind: ClientKind): string {
     case 'claude-code':
       return 'One required action: spawn the crew-wait watcher before ending your turn; user is free to chat.';
     case 'codex':
-    case 'gemini':
       return 'End your turn after this dispatch returns; user is free to chat.';
     case 'unknown':
       return 'End your turn after dispatch; user is free to chat.';
@@ -69,8 +67,6 @@ export function agentIdForClientKind(kind: ClientKind): string | undefined {
       return 'claude-code';
     case 'codex':
       return 'codex';
-    case 'gemini':
-      return 'gemini-cli';
     case 'unknown':
       return undefined;
   }

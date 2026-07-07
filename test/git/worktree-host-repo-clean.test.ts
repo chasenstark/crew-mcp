@@ -42,43 +42,6 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(existsSync(join(repoRoot, '.crew'))).toBe(false);
   });
 
-  it('isCrewControlledPath recognizes the host repo and crew worktrees, rejects external dirs', async () => {
-    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
-    const worktree = await manager.createRunWorktree('run-1');
-    mkdirSync(join(repoRoot, 'src'));
-    // Host repo root + descendant + crew-owned worktree → trust is safe.
-    expect(manager.isCrewControlledPath(repoRoot)).toBe(true);
-    expect(manager.isCrewControlledPath(join(repoRoot, 'src'))).toBe(true);
-    expect(manager.isCrewControlledPath(worktree)).toBe(true);
-    expect(manager.isCrewControlledPath(join(crewHome, 'runs'))).toBe(true);
-    // Arbitrary external dirs → NOT crew-controlled (don't auto-trust).
-    expect(manager.isCrewControlledPath('/tmp')).toBe(false);
-    expect(manager.isCrewControlledPath('/etc')).toBe(false);
-    expect(manager.isCrewControlledPath('')).toBe(false);
-  });
-
-  it('isCrewControlledPath rejects prefix-sibling, parent-traversal, and symlink-escape paths', () => {
-    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
-    // Prefix sibling: "<repoRoot>-evil" shares a string prefix but is NOT inside.
-    const sibling = `${repoRoot}-evil`;
-    mkdirSync(sibling);
-    // Parent-traversal that escapes the repo entirely.
-    const escape = join(repoRoot, '..', 'definitely-outside');
-    // Symlink planted inside the repo pointing at an external dir: a lexical
-    // check would auto-trust it; realpath collapses it to the external target.
-    const external = mkdtempSync(join(tmpdir(), 'crew-external-link-'));
-    const link = join(repoRoot, 'vendor-link');
-    symlinkSync(external, link);
-    try {
-      expect(manager.isCrewControlledPath(sibling)).toBe(false);
-      expect(manager.isCrewControlledPath(escape)).toBe(false);
-      expect(manager.isCrewControlledPath(link)).toBe(false);
-    } finally {
-      rmSync(sibling, { recursive: true, force: true });
-      rmSync(external, { recursive: true, force: true });
-    }
-  });
-
   it('host repo .gitignore is never created or modified by crew', async () => {
     expect(existsSync(join(repoRoot, '.gitignore'))).toBe(false);
     const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });

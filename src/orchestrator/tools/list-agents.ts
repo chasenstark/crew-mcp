@@ -94,8 +94,8 @@ export interface ListAgentsAgentEntry {
   /**
    * Default effort level applied to dispatches that don't pass an
    * explicit `effort`. Omitted when the adapter has no native
-   * reasoning-effort knob (currently gemini-cli, openai-compatible,
-   * generic). Captain may override per-call via `run_agent`.
+   * reasoning-effort knob (currently openai-compatible, generic).
+   * Captain may override per-call via `run_agent`.
    */
   readonly effort?: EffortLevel;
   /**

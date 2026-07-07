@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-type AdapterName = 'claude-code' | 'codex' | 'gemini-cli';
+type AdapterName = 'claude-code' | 'codex';
 
 function mockAdapterModule(
   exportName: string,
@@ -37,7 +37,6 @@ describe('AdapterRegistry lazy loading', () => {
   afterEach(() => {
     vi.doUnmock('../../src/adapters/claude-code.js');
     vi.doUnmock('../../src/adapters/codex.js');
-    vi.doUnmock('../../src/adapters/gemini-cli.js');
     vi.resetModules();
   });
 
@@ -56,7 +55,6 @@ describe('AdapterRegistry lazy loading', () => {
 
     expect(proxyValues.get('claude-code')).toBe(true);
     expect(proxyValues.get('codex')).toBe(true);
-    expect(proxyValues.get('gemini-cli')).toBeUndefined();
     expect(loadedValues).toEqual(proxyValues);
   });
 
@@ -65,7 +63,6 @@ describe('AdapterRegistry lazy loading', () => {
     const constructed = {
       'claude-code': 0,
       codex: 0,
-      'gemini-cli': 0,
     };
     vi.doMock('../../src/adapters/claude-code.js', () =>
       mockAdapterModule('ClaudeCodeAdapter', 'claude-code', () => {
@@ -77,18 +74,12 @@ describe('AdapterRegistry lazy loading', () => {
         constructed.codex += 1;
       }),
     );
-    vi.doMock('../../src/adapters/gemini-cli.js', () =>
-      mockAdapterModule('GeminiCliAdapter', 'gemini-cli', () => {
-        constructed['gemini-cli'] += 1;
-      }),
-    );
 
     const { createBuiltinRegistry } = await import('../../src/adapters/registry.js');
     const registry = createBuiltinRegistry();
     expect(constructed).toEqual({
       'claude-code': 0,
       codex: 0,
-      'gemini-cli': 0,
     });
 
     expect(registry.get('codex')?.name).toBe('codex');
@@ -96,7 +87,6 @@ describe('AdapterRegistry lazy loading', () => {
     expect(constructed).toEqual({
       'claude-code': 0,
       codex: 1,
-      'gemini-cli': 0,
     });
 
     await registry.load('codex');
@@ -109,7 +99,6 @@ describe('AdapterRegistry lazy loading', () => {
     expect(constructed).toEqual({
       'claude-code': 1,
       codex: 1,
-      'gemini-cli': 1,
     });
   });
 

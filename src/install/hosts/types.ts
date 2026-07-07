@@ -1,7 +1,7 @@
 /**
  * HostAdapter — per-host CLI install/uninstall surface.
  *
- * Each host (Claude Code, Codex, Gemini) has its own config-file format
+ * Each host (Claude Code, Codex, agy) has its own config-file format
  * and skill location. The adapter pattern lets `crew-mcp install` and
  * `crew-mcp uninstall` stay generic; each adapter knows:
  *
@@ -22,7 +22,7 @@ import type { SkillInstallSpec, SkillManifestEntry } from '../skill-renderer.js'
 
 export interface HostAdapter {
   /** Stable id used in CLI args (--target=<id>) and install.json. */
-  readonly id: 'claude-code' | 'codex' | 'gemini' | 'agy';
+  readonly id: 'claude-code' | 'codex' | 'agy';
 
   /** Human-readable name for log output. */
   readonly displayName: string;
@@ -46,8 +46,8 @@ export interface HostAdapter {
   /**
    * Per-skill install spec — where to write the rendered SKILL.md and
    * which frontmatter `name:` to bake in. Plus any legacy on-disk
-   * paths the install must remove (e.g., Gemini's deprecated
-   * `~/.gemini/extensions/crew/SKILL.md`). Adapters compute this from
+   * paths the install must remove (stale copies at deprecated
+   * locations from earlier layouts). Adapters compute this from
    * the skill's `slug` plus host-specific path conventions.
    */
   skillInstallSpecFor(home: string, skill: SkillManifestEntry): SkillInstallSpec;
@@ -111,8 +111,8 @@ export interface HostAdapter {
   /**
    * Path to a SECOND file holding tool-approval state, when the host
    * stores approval separately from the MCP config. Today only Claude
-   * Code returns a value here (`~/.claude/settings.json`); Codex and
-   * Gemini co-locate approval state inside `configPath` and leave this
+   * Code returns a value here (`~/.claude/settings.json`); Codex
+   * co-locates approval state inside `configPath` and leaves this
    * undefined. The install command reads the right file based on what
    * the adapter returns.
    */

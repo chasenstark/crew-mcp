@@ -65,8 +65,10 @@ There are no production users, so we do not have to worry about being backward c
   `hosts/`, skill rendering, install manifests, binary resolution, interactive
   target selection, and tool-catalog parity for `crew-mcp install` /
   `crew-mcp verify`.
-- `src/adapters/` contains agent integrations (Claude Code, Codex, Gemini,
-  agy/Antigravity, generic, openai-compatible).
+- `src/adapters/` contains agent integrations (Claude Code, Codex,
+  agy/Antigravity, generic, openai-compatible). The gemini-cli adapter and
+  gemini install host were retired 2026-07-07 (Antigravity auth cutoff killed
+  the standalone gemini CLI; agy is the Google-side adapter).
 - `src/agent-prefs/` stores per-machine agent preferences
   (`~/.crew/agents.json`).
 - `src/workflow/` handles the remaining `.crew/workflow.yaml` compatibility

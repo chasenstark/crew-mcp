@@ -6,12 +6,9 @@ import {
   mergeConfigs,
 } from '../../src/workflow/config-codec.js';
 import { getGlobalConfigPath } from '../../src/workflow/config-repository.js';
-import { AdapterId, AgentId } from '../../src/workflow/agents.js';
-import { ModelId } from '../../src/workflow/models.js';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, homedir } from 'os';
-import type { FullConfig } from '../../src/workflow/types.js';
 
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
@@ -21,378 +18,128 @@ vi.mock('os', async (importOriginal) => {
   };
 });
 
-function legacyConfig(): FullConfig {
-  const config = getDefaultConfig();
-  config.workflow.steps = [
-    { role: 'coder', agents: ['codex', 'claude-code'], action: 'implement' },
-    { role: 'reviewer', agents: ['claude-code', 'codex'], action: 'review', maxPasses: 3 },
-  ];
-  config.agents = {
-    'claude-code': {
-      adapter: 'claude-code',
-      auth: 'subscription',
-      model: ModelId.CLAUDE_OPUS,
-      strengths: ['implementation'],
-    },
-    codex: {
-      adapter: 'codex',
-      auth: 'subscription',
-      model: ModelId.GPT_CODEX,
-      strengths: ['review'],
-    },
-  };
-  return config;
-}
-
 describe('Workflow Loader', () => {
   it('serializes and parses code-defined defaults', () => {
     const yaml = serializeWorkflowYaml(getDefaultConfig());
     const config = parseWorkflowYaml(yaml);
-
-    expect(config.workflow.name).toBe('default');
-    expect(config.workflow.execution?.mode).toBe('judgment');
-    expect(config.workflow.steps).toEqual([]);
-    expect(config.agents).toEqual({});
-    expect(config.captain.cli).toBe('claude-code');
+    expect(config).toEqual({ workflow: {} });
   });
 
-  it('parses optional model fields for agents and captain', () => {
-    const yaml = `
-workflow:
-  name: model-config
-  steps: []
-agents:
-  claude-code:
-    model: ${ModelId.CLAUDE_SONNET}
-captain:
-  cli: claude-code
-  model: ${ModelId.CLAUDE_OPUS}
-`;
-    const config = parseWorkflowYaml(yaml);
-    expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
-    expect(config.captain.model).toBe(ModelId.CLAUDE_OPUS);
-    // M4-4: execution.mode is hard-coded to 'judgment' regardless of YAML input.
-    expect(config.workflow.execution?.mode).toBe('judgment');
+  it('round-trips agent defaults through serialize/parse', () => {
+    const config = getDefaultConfig();
+    config.workflow.agentDefaults = {
+      iterate: {
+        implementer: 'codex',
+        reviewers: ['claude-code'],
+        banList: ['agy'],
+      },
+      panel: {
+        reviewers: ['codex', 'claude-code'],
+      },
+    };
+
+    const yaml = serializeWorkflowYaml(config);
+    expect(yaml).toContain('agent_defaults');
+    expect(yaml).toContain('ban_list');
+    expect(parseWorkflowYaml(yaml)).toEqual(config);
   });
 
-  it('resolves model aliases in YAML', () => {
-    const yaml = `
+  it('accepts camelCase agentDefaults/banList keys too (defensive)', () => {
+    const config = parseWorkflowYaml(`
 workflow:
-  name: model-aliases
-  role_models:
-    reviewer: GPT
-    fix_review_issues: "\${CLAUDE_OPUS}"
-  steps: []
-agents:
-  claude-code:
-    model: CLAUDE_SONNET
-captain:
-  cli: claude-code
-  model: "\${GPT_CODEX}"
-`;
-
-    const config = parseWorkflowYaml(yaml);
-    expect(config.agents['claude-code'].model).toBe(ModelId.CLAUDE_SONNET);
-    expect(config.captain.model).toBe(ModelId.GPT_CODEX);
-    expect(config.workflow.roleModels).toEqual({
-      reviewer: ModelId.GPT,
-      fix_review_issues: ModelId.CLAUDE_OPUS,
+  agentDefaults:
+    iterate:
+      implementer: codex
+      banList: [agy]
+`);
+    expect(config.workflow.agentDefaults).toEqual({
+      iterate: { implementer: 'codex', banList: ['agy'] },
     });
   });
 
-  it('throws for unknown model aliases in YAML', () => {
-    const yaml = `
+  it('ignores retired v0.1 blocks (steps, agents, captain, presets, error_handling)', () => {
+    const config = parseWorkflowYaml(`
 workflow:
-  name: bad-model-alias
-  steps: []
-agents:
-  codex:
-    model: NOT_A_MODEL_ALIAS
-`;
-
-    expect(() => parseWorkflowYaml(yaml)).toThrow(/Unknown model alias "NOT_A_MODEL_ALIAS"/);
-  });
-
-  it('resolves agent and adapter aliases in YAML', () => {
-    const yaml = `
-workflow:
-  name: agent-aliases
+  name: legacy
+  execution:
+    mode: linear
   steps:
     - role: coder
-      agents: [CODEX]
+      agents: [codex]
       action: implement
-agents:
-  CLAUDE_CODE:
-    adapter: CLAUDE_CODE
-    model: ${ModelId.CLAUDE_SONNET}
-  CODEX:
-    adapter: CODEX
-    model: ${ModelId.GPT_CODEX}
-  local:
-    adapter: "\${GENERIC}"
-    command: ollama
-captain:
-  cli: "\${CLAUDE_CODE}"
-`;
-
-    const config = parseWorkflowYaml(yaml);
-    expect(config.workflow.steps[0].agents).toEqual([AgentId.CODEX]);
-    expect(config.agents[AgentId.CLAUDE_CODE]?.adapter).toBe(AdapterId.CLAUDE_CODE);
-    expect(config.agents[AgentId.CODEX]?.adapter).toBe(AdapterId.CODEX);
-    expect(config.agents.local?.adapter).toBe(AdapterId.GENERIC);
-    expect(config.captain.cli).toBe(AgentId.CLAUDE_CODE);
-  });
-
-  it('throws for unknown adapter aliases in YAML', () => {
-    const yaml = `
-workflow:
-  name: bad-adapter-alias
-  steps: []
-agents:
-  bad:
-    adapter: NOT_A_ADAPTER_ALIAS
-`;
-
-    expect(() => parseWorkflowYaml(yaml)).toThrow(/Unknown adapter alias "NOT_A_ADAPTER_ALIAS"/);
-  });
-
-  it('parses workflow execution mode', () => {
-    const yaml = `
-workflow:
-  name: execution-mode
-  execution:
-    mode: judgment
-  steps: []
-captain:
-  cli: claude-code
-`;
-    const config = parseWorkflowYaml(yaml);
-    expect(config.workflow.execution?.mode).toBe('judgment');
-  });
-
-  it('parses workflow role_models', () => {
-    const yaml = `
-workflow:
-  name: role-models
   role_models:
-    reviewer: ${ModelId.GPT}
-    fix_review_issues: ${ModelId.CLAUDE_OPUS}
-  steps: []
+    reviewer: sonnet
+  completion:
+    strategy: manual
+    fallback: manual
+agents:
+  codex:
+    adapter: codex
 captain:
   cli: claude-code
-`;
-    const config = parseWorkflowYaml(yaml);
-    expect(config.workflow.roleModels).toEqual({
-      reviewer: ModelId.GPT,
-      fix_review_issues: ModelId.CLAUDE_OPUS,
-    });
+presets:
+  default:
+    hint: default
+error_handling:
+  default:
+    retry: 2
+`);
+    expect(config).toEqual({ workflow: {} });
   });
 
-  it('parses generic agent command/args/strengths fields', () => {
-    const yaml = `
+  it('rejects malformed agent_defaults values', () => {
+    expect(() => parseWorkflowYaml(`
 workflow:
-  name: generic-config
-  steps: []
-agents:
-  custom-agent:
-    adapter: generic
-    command: my-tool
-    args: ["--prompt", "{{prompt}}"]
-    strengths: [code-review, fast-iteration]
-captain:
-  cli: claude-code
-`;
-    const config = parseWorkflowYaml(yaml);
-    const generic = config.agents['custom-agent'];
-    expect(generic.adapter).toBe('generic');
-    expect(generic.command).toBe('my-tool');
-    expect(generic.args).toEqual(['--prompt', '{{prompt}}']);
-    expect(generic.strengths).toEqual(['code-review', 'fast-iteration']);
-  });
-
-  it('accepts the legacy `capabilities:` key as a strengths alias (v0.1 compat)', () => {
-    // Existing on-disk workflow.yaml configs from v0.1 still use
-    // `capabilities:`; the codec maps them onto `strengths` so users
-    // don't have to migrate by hand. Drop in v0.3.
-    const yaml = `
+  agent_defaults:
+    iterate:
+      reviewers: not-a-list
+`)).toThrow(/must be an array of strings/);
+    expect(() => parseWorkflowYaml(`
 workflow:
-  name: legacy-config
-  steps: []
-agents:
-  custom-agent:
-    adapter: generic
-    command: my-tool
-    capabilities: [code-review]
-captain:
-  cli: claude-code
-`;
-    const config = parseWorkflowYaml(yaml);
-    expect(config.agents['custom-agent'].strengths).toEqual(['code-review']);
+  agent_defaults:
+    iterate:
+      implementer: [not-a-string]
+`)).toThrow(/must be a string/);
   });
 
   it('returns default config', () => {
-    const config = getDefaultConfig();
-    expect(config.workflow.name).toBe('default');
-    expect(config.workflow.execution?.mode).toBe('judgment');
-    expect(config.workflow.steps).toEqual([]);
-    expect(config.agents).toEqual({});
+    expect(getDefaultConfig()).toEqual({ workflow: {} });
   });
 
   it('handles minimal YAML', () => {
-    const yaml = 'workflow:\n  name: minimal\n  steps: []';
-    const config = parseWorkflowYaml(yaml);
-    expect(config.workflow.name).toBe('minimal');
-    expect(config.workflow.steps).toEqual([]);
+    expect(parseWorkflowYaml('workflow: {}\n')).toEqual({ workflow: {} });
+    expect(parseWorkflowYaml('')).toEqual({ workflow: {} });
   });
 });
 
 describe('mergeConfigs', () => {
-  const baseConfig = legacyConfig();
-
-  it('override agents replace base agents', () => {
-    const override = {
-      ...getDefaultConfig(),
-      agents: {
-        'custom-agent': { adapter: 'custom', auth: 'api-key', strengths: ['analysis'] },
-      },
-    };
-
-    const merged = mergeConfigs(baseConfig, override);
-
-    expect(merged.agents['claude-code']).toBeUndefined();
-    expect(merged.agents['codex']).toBeUndefined();
-    expect(merged.agents['custom-agent']).toEqual({
-      adapter: 'custom',
-      auth: 'api-key',
-      strengths: ['analysis'],
-    });
-  });
-
-  it('override agent replaces base agent with same key', () => {
-    const override = {
-      ...getDefaultConfig(),
-      agents: {
-        'claude-code': { adapter: 'claude-code', auth: 'api-key', strengths: ['security'] },
-      },
-    };
-
-    const merged = mergeConfigs(baseConfig, override);
-
-    expect(merged.agents['claude-code'].strengths).toEqual(['security']);
-    expect(merged.agents['codex']).toBeUndefined();
-  });
-
-  it('override agent does not inherit base agent fields', () => {
-    const override = {
-      ...getDefaultConfig(),
-      agents: {
-        'claude-code': { model: ModelId.CLAUDE_SONNET },
-      },
-    };
-
-    const merged = mergeConfigs(baseConfig, override);
-
-    expect(merged.agents['claude-code']).toEqual({ model: ModelId.CLAUDE_SONNET });
-  });
-
-  it('override captain can set model while preserving cli', () => {
-    const override = parseWorkflowYaml(`
-workflow:
-  name: override
-  steps: []
-captain:
-  model: ${ModelId.CLAUDE_SONNET}
-`);
-
-    const merged = mergeConfigs(baseConfig, override);
-    expect(merged.captain.model).toBe(ModelId.CLAUDE_SONNET);
-    expect(merged.captain.cli).toBe(baseConfig.captain.cli);
-  });
-
-  it('override workflow role models replace base role models', () => {
+  it('merges agent defaults field-by-field within iterate/panel', () => {
     const base = getDefaultConfig();
-    base.workflow.roleModels = {
-      reviewer: ModelId.GPT_CODEX,
-      coder: ModelId.CLAUDE_OPUS,
+    base.workflow.agentDefaults = {
+      iterate: { implementer: 'codex', banList: ['agy'] },
+      panel: { reviewers: ['codex'] },
     };
-
     const override = getDefaultConfig();
-    override.workflow.roleModels = {
-      reviewer: ModelId.GPT,
-      judge: ModelId.CLAUDE_SONNET,
+    override.workflow.agentDefaults = {
+      iterate: { implementer: 'claude-code' },
     };
 
     const merged = mergeConfigs(base, override);
-    expect(merged.workflow.roleModels).toEqual({
-      reviewer: ModelId.GPT,
-      judge: ModelId.CLAUDE_SONNET,
+    expect(merged.workflow.agentDefaults).toEqual({
+      iterate: { implementer: 'claude-code', banList: ['agy'] },
+      panel: { reviewers: ['codex'] },
     });
   });
 
-  it('serializes workflow role models as role_models', () => {
-    const config = getDefaultConfig();
-    config.workflow.roleModels = {
-      reviewer: ModelId.GPT,
-      judge: ModelId.CLAUDE_OPUS,
-    };
-
-    const yaml = serializeWorkflowYaml(config);
-    expect(yaml).toContain('role_models:');
-    expect(yaml).toContain(`reviewer: ${ModelId.GPT}`);
-    expect(yaml).toContain(`judge: ${ModelId.CLAUDE_OPUS}`);
-  });
-
-  it('override steps replace base steps entirely', () => {
-    const override = {
-      ...getDefaultConfig(),
-      workflow: {
-        name: 'custom',
-        steps: [{ role: 'coder', agents: ['claude-code'], action: 'implement' }],
-        completion: { strategy: 'simple', fallback: 'none' },
-      },
-    };
-
-    const merged = mergeConfigs(baseConfig, override);
-
-    expect(merged.workflow.steps).toHaveLength(1);
-    expect(merged.workflow.steps[0].role).toBe('coder');
-  });
-
-  it('empty override steps clear base steps', () => {
-    const override = {
-      ...getDefaultConfig(),
-      workflow: {
-        name: 'custom',
-        steps: [],
-        completion: { strategy: 'simple', fallback: 'none' },
-      },
-    };
-
-    const merged = mergeConfigs(baseConfig, override);
-
-    expect(merged.workflow.steps).toEqual([]);
-  });
-
-  it('errorHandling fields merge at field level', () => {
-    const override = {
-      ...getDefaultConfig(),
-      errorHandling: {
-        default: { retry: 5, fallback: null, onExhausted: 'ask_user' },
-      },
-    };
-
-    const merged = mergeConfigs(baseConfig, override);
-
-    expect(merged.errorHandling.default.retry).toBe(5);
-    expect(merged.errorHandling.default.onExhausted).toBe('ask_user');
+  it('drops agentDefaults entirely when neither side has any', () => {
+    const merged = mergeConfigs(getDefaultConfig(), getDefaultConfig());
+    expect(merged.workflow.agentDefaults).toBeUndefined();
   });
 });
 
 describe('getGlobalConfigPath', () => {
   it('returns path under home directory', () => {
-    const path = getGlobalConfigPath();
-    expect(path).toContain('.crew');
-    expect(path).toMatch(/workflow\.yaml$/);
+    expect(getGlobalConfigPath()).toContain('.crew/workflow.yaml');
   });
 });
 
@@ -418,15 +165,13 @@ describe('loadWorkflowConfig', () => {
     mkdirSync(orchestraDir, { recursive: true });
     writeFileSync(join(orchestraDir, 'workflow.yaml'), `
 workflow:
-  name: project-workflow
-  steps:
-    - role: coder
-      agents: [claude-code]
-      action: implement
+  agent_defaults:
+    iterate:
+      implementer: codex
 `, 'utf-8');
 
     const config = loadWorkflowConfig(projectDir);
-    expect(config.workflow.name).toBe('project-workflow');
+    expect(config.workflow.agentDefaults?.iterate?.implementer).toBe('codex');
   });
 
   it('uses global config when no project config exists', () => {
@@ -435,64 +180,44 @@ workflow:
     mkdirSync(globalDir, { recursive: true });
     writeFileSync(join(globalDir, 'workflow.yaml'), `
 workflow:
-  name: global-workflow
-  steps:
-    - role: coder
-      agents: [claude-code]
-      action: implement
+  agent_defaults:
+    panel:
+      reviewers: [claude-code]
 `, 'utf-8');
 
     const emptyProject = join(tmpDir, 'empty-project');
     mkdirSync(emptyProject, { recursive: true });
 
     const config = loadWorkflowConfig(emptyProject);
-    expect(config.workflow.name).toBe('global-workflow');
+    expect(config.workflow.agentDefaults?.panel?.reviewers).toEqual(['claude-code']);
   });
 
   it('merges project config over global config', () => {
-    // Set up global config with agents
     const fakeHome = join(tmpDir, 'fake-home');
     const globalDir = join(fakeHome, '.crew');
     mkdirSync(globalDir, { recursive: true });
     writeFileSync(join(globalDir, 'workflow.yaml'), `
 workflow:
-  name: global
-  steps:
-    - role: coder
-      agents: [claude-code]
-      action: implement
-agents:
-  claude-code:
-    adapter: claude-code
-    auth: subscription
-    strengths:
-      - implementation
-  codex:
-    adapter: codex
-    auth: subscription
-    strengths:
-      - review
+  agent_defaults:
+    iterate:
+      implementer: codex
+      ban_list: [agy]
 `, 'utf-8');
 
-    // Set up project config that replaces the legacy workflow/agent surface.
     const projectDir = join(tmpDir, 'merge-project');
     const projectOrchDir = join(projectDir, '.crew');
     mkdirSync(projectOrchDir, { recursive: true });
     writeFileSync(join(projectOrchDir, 'workflow.yaml'), `
 workflow:
-  name: project-override
-  steps:
-    - role: reviewer
-      agents: [codex]
-      action: review
+  agent_defaults:
+    iterate:
+      implementer: claude-code
 `, 'utf-8');
 
     const config = loadWorkflowConfig(projectDir);
-    // Project workflow overrides global
-    expect(config.workflow.name).toBe('project-override');
-    expect(config.workflow.steps).toHaveLength(1);
-    expect(config.workflow.steps[0].role).toBe('reviewer');
-    expect(config.agents).toEqual({});
+    expect(config.workflow.agentDefaults).toEqual({
+      iterate: { implementer: 'claude-code', banList: ['agy'] },
+    });
   });
 
   it('returns default config when no configs exist', () => {
@@ -500,9 +225,7 @@ workflow:
     mkdirSync(emptyDir, { recursive: true });
 
     const config = loadWorkflowConfig(emptyDir);
-    expect(config.workflow.name).toBe('default');
-    expect(config.workflow.steps).toEqual([]);
-    expect(config.agents).toEqual({});
+    expect(config).toEqual({ workflow: {} });
   });
 
   it('throws with path context on YAML parse error', () => {
@@ -511,7 +234,9 @@ workflow:
     mkdirSync(orchestraDir, { recursive: true });
     writeFileSync(join(orchestraDir, 'workflow.yaml'), `
 workflow:
-  steps: "not an array"
+  agent_defaults:
+    iterate:
+      reviewers: "not an array"
 `, 'utf-8');
 
     expect(() => loadWorkflowConfig(projectDir)).toThrow(

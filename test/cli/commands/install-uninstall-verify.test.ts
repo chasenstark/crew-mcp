@@ -128,9 +128,9 @@ describe('install / verify / uninstall — happy path', () => {
       ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(new Set(result.installed)).toEqual(
-      new Set(['claude-code', 'codex', 'gemini']),
+      new Set(['claude-code', 'codex']),
     );
-    for (const id of ['claude-code', 'codex', 'gemini'] as const) {
+    for (const id of ['claude-code', 'codex'] as const) {
       const adapter = HOST_ADAPTERS[id];
       expect(existsSync(adapter.skillPath(home))).toBe(true);
       expect(existsSync(adapter.configPath(home))).toBe(true);
@@ -155,7 +155,7 @@ describe('install / verify / uninstall — happy path', () => {
       // they open the file.
       expect(parsed['claude-code']).toBeDefined();
       expect(parsed.codex).toBeDefined();
-      expect(parsed['gemini-cli']).toBeDefined();
+      expect(parsed.agy).toBeDefined();
       expect(parsed.codex.effort).toBe('medium');
       expect(parsed.codex.useWhen).toBe(
         'Prefer for well-scoped implementation and long unattended loops — fast at churning through mechanical changes.',
@@ -708,22 +708,6 @@ describe('install / verify / uninstall — happy path', () => {
     expect(permissions.permissions.allow.filter((entry) => entry === 'Bash(crew-wait:*)')).toHaveLength(1);
   });
 
-  it('install (default) sets trust:true on Gemini', async () => {
-    const adapter = HOST_ADAPTERS.gemini;
-    await installCommand({
-      target: 'gemini',
-      home,
-      skipRunningCheck: true,
-      forceWithoutBinary: true,
-      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
-      ...CLAUDE_CREW_WAIT_ON_PATH,
-    });
-    const config = JSON.parse(readFileSync(adapter.configPath(home), 'utf-8')) as {
-      mcpServers: { crew: { trust?: boolean } };
-    };
-    expect(config.mcpServers.crew.trust).toBe(true);
-  });
-
   it('uninstall clears auto-approval (Codex tool blocks gone)', async () => {
     await installCommand({
       target: 'codex',
@@ -838,8 +822,8 @@ describe('install / verify / uninstall — happy path', () => {
       },
     });
     expect(result.installed).toEqual(['claude-code']);
-    // Selector saw all 3 registered hosts with detection results.
-    expect(receivedHosts.map((h) => h.id).sort()).toEqual(['claude-code', 'codex', 'gemini']);
+    // Selector saw all registered global hosts with detection results.
+    expect(receivedHosts.map((h) => h.id).sort()).toEqual(['claude-code', 'codex']);
     // The forced install path should still write even if the host wasn't on PATH.
     expect(existsSync(HOST_ADAPTERS['claude-code'].skillPath(home))).toBe(true);
   });
@@ -1164,8 +1148,6 @@ describe('project-scope install / verify / uninstall', () => {
       .mockRejectedValue(new Error('should not detect claude'));
     const codexDetect = vi.spyOn(HOST_ADAPTERS.codex, 'detectInstalled')
       .mockRejectedValue(new Error('should not detect codex'));
-    const geminiDetect = vi.spyOn(HOST_ADAPTERS.gemini, 'detectInstalled')
-      .mockRejectedValue(new Error('should not detect gemini'));
 
     const allResult = await installCommand({
       scope: 'project',
@@ -1188,7 +1170,6 @@ describe('project-scope install / verify / uninstall', () => {
     expect(omittedResult.installed).toEqual(['claude-code', 'codex', 'agy']);
     expect(claudeDetect).not.toHaveBeenCalled();
     expect(codexDetect).not.toHaveBeenCalled();
-    expect(geminiDetect).not.toHaveBeenCalled();
   });
 
   it('project omitted TTY target offers all project-capable hosts to the selector', async () => {
@@ -1447,7 +1428,7 @@ describe('project-scope install / verify / uninstall', () => {
         home,
         repoRoot,
       }),
-    ).rejects.toThrow(/does not support project scope/);
+    ).rejects.toThrow(/unknown target "gemini"/);
   });
 });
 
@@ -1456,13 +1437,14 @@ describe('resolveTargets', () => {
     const home = mkdtempSync(join(tmpdir(), 'crew-install-'));
     try {
       const result = await installCommand({
-        target: 'codex,gemini',
+        target: 'codex,claude-code',
         home,
         skipRunningCheck: true,
         forceWithoutBinary: true,
         resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+        ...CLAUDE_CREW_WAIT_ON_PATH,
       });
-      expect(new Set(result.installed)).toEqual(new Set(['codex', 'gemini']));
+      expect(new Set(result.installed)).toEqual(new Set(['codex', 'claude-code']));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -1529,111 +1511,5 @@ describe('global verify ignores a project-only host in a stale manifest', () => 
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
-});
-
-describe('Gemini shared ~/.agents/skills/ dedupe', () => {
-  let home: string;
-
-  beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'crew-shared-skills-'));
-    // Replicate the real machine layout: Claude Code's skills dir is a
-    // symlink to the shared ~/.agents/skills/ dir that Gemini ALSO
-    // scans natively. Installing Claude therefore populates the shared
-    // dir, which Gemini then discovers.
-    mkdirSync(join(home, '.agents', 'skills'), { recursive: true });
-    mkdirSync(join(home, '.claude'), { recursive: true });
-    symlinkSync(join(home, '.agents', 'skills'), join(home, '.claude', 'skills'));
-  });
-  afterEach(() => {
-    rmSync(home, { recursive: true, force: true });
-    vi.restoreAllMocks();
-  });
-
-  async function installClaudeThenGemini(): Promise<void> {
-    await installCommand({
-      target: 'claude-code',
-      home,
-      skipRunningCheck: true,
-      forceWithoutBinary: true,
-      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
-      ...CLAUDE_CREW_WAIT_ON_PATH,
-    });
-    await installCommand({
-      target: 'gemini',
-      home,
-      skipRunningCheck: true,
-      forceWithoutBinary: true,
-      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
-      ...CLAUDE_CREW_WAIT_ON_PATH,
-    });
-  }
-
-  it('skips the per-host Gemini copy and records sharedSkills instead', async () => {
-    await installClaudeThenGemini();
-
-    // No per-host copy written under ~/.gemini/skills/.
-    expect(existsSync(join(home, '.gemini', 'skills', 'crew', 'SKILL.md'))).toBe(false);
-    expect(existsSync(join(home, '.gemini', 'skills', 'crew-iterate', 'SKILL.md'))).toBe(false);
-
-    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
-      targets: Record<string, {
-        skills: Record<string, string>;
-        sharedSkills?: Record<string, string>;
-        writtenPaths: string[];
-      }>;
-    };
-    const gemini = manifest.targets.gemini;
-    // The skill is recorded as shared (loaded from the ~/.agents/ dir),
-    // not as a crew-written per-host file.
-    expect(gemini.sharedSkills?.crew).toBe(
-      join(home, '.agents', 'skills', 'crew', 'SKILL.md'),
-    );
-    expect(gemini.sharedSkills?.['crew:iterate']).toBe(
-      join(home, '.agents', 'skills', 'crew-iterate', 'SKILL.md'),
-    );
-    expect(gemini.skills.crew).toBeUndefined();
-    // Shared paths are NOT in writtenPaths — Gemini doesn't own them.
-    for (const p of gemini.writtenPaths) {
-      expect(p.includes(join('.agents', 'skills'))).toBe(false);
-    }
-  });
-
-  it('removes a stale per-host Gemini duplicate left by an earlier install', async () => {
-    // Simulate a prior Gemini-only install that wrote a per-host copy
-    // before the shared dir existed.
-    const staleDir = join(home, '.gemini', 'skills', 'crew-iterate');
-    mkdirSync(staleDir, { recursive: true });
-    writeFileSync(join(staleDir, 'SKILL.md'), 'stale\n', 'utf-8');
-
-    await installClaudeThenGemini();
-
-    expect(existsSync(join(staleDir, 'SKILL.md'))).toBe(false);
-    // The now-empty per-host dir is pruned too — no leftover clutter.
-    expect(existsSync(staleDir)).toBe(false);
-  });
-
-  it('verify passes for Gemini using the shared skill copies', async () => {
-    await installClaudeThenGemini();
-    const report = await verifyCommand({ home });
-    const gemini = report.targets.find((t) => t.host === 'gemini');
-    expect(gemini).toBeDefined();
-    expect(gemini!.issues).toEqual([]);
-  });
-
-  it('uninstalling Gemini does NOT remove the shared skill Claude owns', async () => {
-    await installClaudeThenGemini();
-    const sharedIterate = join(home, '.agents', 'skills', 'crew-iterate', 'SKILL.md');
-    expect(existsSync(sharedIterate)).toBe(true);
-
-    const result = await uninstallCommand({ target: 'gemini', home });
-    expect(result.removed).toEqual(['gemini']);
-    // Claude's shared copy survives — another host owns it.
-    expect(existsSync(sharedIterate)).toBe(true);
-
-    // Claude still verifies clean.
-    const report = await verifyCommand({ home });
-    const claude = report.targets.find((t) => t.host === 'claude-code');
-    expect(claude!.issues).toEqual([]);
   });
 });

@@ -1,23 +1,3 @@
-export interface WorkflowStep {
-  role: string;
-  /**
-   * Candidate agents for this step, in preference order. The captain treats
-   * this as a hint, not a contract: it picks the first available candidate by
-   * default but may dispatch to an alternate when there's reason (unhealthy
-   * agent, strengths mismatch, user override). Must be non-empty after
-   * parsing.
-   */
-  agents: string[];
-  action: string;
-  maxPasses?: number;
-  condition?: string;
-  criteria?: string[];
-}
-
-export interface WorkflowExecutionConfig {
-  mode: 'linear' | 'judgment';
-}
-
 export interface IterateAgentDefaultsConfig {
   implementer?: string;
   reviewers?: string[];
@@ -34,6 +14,12 @@ export interface WorkflowAgentDefaultsConfig {
   panel?: PanelAgentDefaultsConfig;
 }
 
+/**
+ * Custom-agent entry shape. Not part of `workflow.yaml` anymore — this is
+ * the shape `mergeCustomAgents` consumes from per-machine agent prefs
+ * (`~/.crew/agents.json`) when registering `generic` / `openai-compatible`
+ * custom agents.
+ */
 export interface AgentConfig {
   adapter?: string;
   auth?: string;
@@ -50,75 +36,15 @@ export interface AgentConfig {
   apiKey?: string;
 }
 
-export interface WorkflowConfig {
-  name: string;
-  execution?: WorkflowExecutionConfig;
-  steps: WorkflowStep[];
-  roleModels?: Record<string, string>;
-  agentDefaults?: WorkflowAgentDefaultsConfig;
-  completion: {
-    strategy: string;
-    fallback: string;
-  };
-}
-
 /**
- * Captain-model specification. Either a single model name (applied to every
- * captain CLI) or a per-CLI map that lets the user keep models pinned across
- * `captain.cli` swaps without editing two places.
+ * The surviving `.crew/workflow.yaml` surface. Everything else the v0.1
+ * config carried (steps, roleModels, captain.*, presets, errorHandling,
+ * an `agents:` block) had no runtime readers and was pruned 2026-07-07 —
+ * `workflow.agentDefaults` is the only block the runtime consumes
+ * (get_crew_preferences, run_panel).
  */
-export type CaptainModelMap = Partial<Record<'claude-code' | 'codex' | 'gemini-cli', string>>;
-
-export type CaptainModelSpec = string | CaptainModelMap;
-
-/**
- * Preset-config shape. A preset bundles a `hint` paragraph that the
- * captain-system prompt can render, plus a human-readable description.
- * Built-in presets no longer ship by default; this shape remains only so
- * old local `workflow.yaml` files with user-defined `presets:` continue to
- * parse.
- *
- * `hint` is intentionally a free-form soft-policy nudge, not a runtime rule —
- * it lives in the prompt, not in the tool-schema, so editing a hint between
- * turns does NOT invalidate providerSessionRef.
- */
-export interface PresetConfig {
-  name?: string;
-  description?: string;
-  hint?: string;
-  /**
-   * Soft-policy role suggestions, rendered as prose in the hint section of
-   * the captain-system prompt. These are NOT `agent_id` values — the captain
-   * still dispatches to the registered agent adapters via `list_agents`.
-   * The renderer qualifies unregistered roles as "(intent — no adapter
-   * registered)" to prevent the captain from hallucinating
-   * `run_agent(agent_id='X')` for a role that does not exist in the
-   * inventory.
-   *
-   * Scope note (M5 §7.5): the preset schema is intentionally tiny —
-   * name, description, hint, suggestedAgentRoles. Any proposal to add
-   * `steps`, `conditions`, `max_passes`, or `maxIterations` gets rejected
-   * with a pointer at the "preset format balloons into a workflow DSL"
-   * risk line.
-   */
-  suggestedAgentRoles?: string[];
-}
-
 export interface FullConfig {
-  workflow: WorkflowConfig;
-  agents: Record<string, AgentConfig>;
-  captain: {
-    cli: string;
-    model?: CaptainModelSpec;
-    /** Name key into FullConfig.presets; missing → "no hint injected". */
-    preset?: string;
-  };
-  presets?: Record<string, PresetConfig>;
-  errorHandling: {
-    default: {
-      retry: number;
-      fallback: string | null;
-      onExhausted: string;
-    };
+  workflow: {
+    agentDefaults?: WorkflowAgentDefaultsConfig;
   };
 }

@@ -216,9 +216,9 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
     expect(out).toContain('Synthetic-turn handling');
     expect(out).toContain('list_runs');
-    // Foreground crew-wait hard gate: Codex/Gemini blocked until
+    // Foreground crew-wait hard gate: the Codex host stays blocked until
     // empirical evidence lands. (Phase 2 review's major finding.)
-    expect(out).toMatch(/Codex.*Gemini.*blocked|blocked.*Codex.*Gemini/);
+    expect(out).toMatch(/Codex(?:\s+host)?[\s\S]{0,40}blocked/);
     expect(out).not.toContain('docs/status/captain-flow-review-2026-04-29.md');
     expect(out).toContain('panel-level');
     expect(out).toContain('commits');
@@ -251,25 +251,6 @@ describe('renderSkill (codex template)', () => {
   });
 });
 
-describe('renderSkill (gemini template)', () => {
-  it('emits SKILL.md frontmatter with name + description', async () => {
-    // Phase 0 outcome: Gemini relocates to ~/.gemini/skills/<dir>/SKILL.md
-    // and the template now carries a frontmatter block.
-    const templatePath = templatePathForHost(REPO_ROOT, 'gemini');
-    const out = await renderSkill({
-      templatePath,
-      tools: TOOLS,
-      packageRoot: REPO_ROOT,
-    });
-
-    expect(out).toMatch(/^---\nname: crew\ndescription: /);
-    expect(out).toContain(SKILL_DESCRIPTION);
-    expect(out).toContain('## Crew orchestration playbook');
-    expect(out).toContain('mcp__crew__merge_run');
-    expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
-  });
-});
-
 describe('renderSkill frontmatter — YAML parses cleanly (regression guard)', () => {
   // The description string contains colon-space sequences ("TRIGGER
   // when the user: asks...") that break unquoted YAML scalars. The
@@ -285,7 +266,7 @@ describe('renderSkill frontmatter — YAML parses cleanly (regression guard)', (
     return parseYaml(match[1]) as Record<string, unknown>;
   }
 
-  it.each(['claude-code', 'codex', 'gemini'] as const)(
+  it.each(['claude-code', 'codex', 'agy'] as const)(
     '%s template renders description as a YAML scalar matching SKILL_DESCRIPTION',
     async (host) => {
       const templatePath = templatePathForHost(REPO_ROOT, host);
@@ -300,7 +281,7 @@ describe('renderSkill frontmatter — YAML parses cleanly (regression guard)', (
     },
   );
 
-  it.each(['claude-code', 'codex', 'gemini'] as const)(
+  it.each(['claude-code', 'codex', 'agy'] as const)(
     '%s template renders crew-iterate description matching ITERATE_SKILL_DESCRIPTION',
     async (host) => {
       const iterate = SKILL_MANIFEST.find((s) => s.id === 'crew:iterate')!;

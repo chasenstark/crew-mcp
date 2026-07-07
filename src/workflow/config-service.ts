@@ -1,4 +1,4 @@
-import { getDefaultConfig, resolveCaptainModel } from './config-codec.js';
+import { getDefaultConfig } from './config-codec.js';
 import type { FullConfig } from './types.js';
 import type { ConfigScope } from './config-repository.js';
 import {
@@ -16,9 +16,7 @@ import {
   SUPPORTED_CONFIG_SET_PATHS,
 } from './config-path-registry.js';
 import { validateConfig } from './config-validation.js';
-import { AgentId } from './agents.js';
 import { normalizeProfileName, parseConfigScope } from './config-normalization.js';
-import { isModelCompatibleWithAdapter, modelPresetsForAdapter } from './models.js';
 
 export interface ConfigPatch {
   path: string;
@@ -88,60 +86,6 @@ function readConfigValue(config: FullConfig, path: string): unknown {
   return resolved.descriptor.read(config, resolved.params);
 }
 
-function resolveCaptainAdapterType(config: FullConfig): string | undefined {
-  const captainAgent = config.agents[config.captain.cli];
-  return captainAgent?.adapter ?? config.captain.cli;
-}
-
-function firstCompatibleModel(adapterType: string | undefined): string | undefined {
-  return modelPresetsForAdapter(adapterType)[0];
-}
-
-function roleTargetsCaptain(config: FullConfig, role: string): boolean {
-  if (role === 'judge') {
-    return true;
-  }
-  return config.workflow.steps.some(
-    (step) => (step.role === role || step.action === role) && step.agents.includes(AgentId.CAPTAIN),
-  );
-}
-
-function normalizeIncompatibleModels(config: FullConfig): void {
-  const captainAdapterType = resolveCaptainAdapterType(config);
-  const resolvedCaptainModel = resolveCaptainModel(config.captain);
-  if (!isModelCompatibleWithAdapter(captainAdapterType, resolvedCaptainModel)) {
-    const replacement = firstCompatibleModel(captainAdapterType);
-    const current = config.captain.model;
-    if (current && typeof current === 'object') {
-      // Preserve the map shape; only overwrite the current CLI's entry.
-      const key = config.captain.cli as keyof typeof current;
-      config.captain.model = replacement === undefined
-        ? { ...current, [key]: undefined }
-        : { ...current, [key]: replacement };
-    } else {
-      config.captain.model = replacement;
-    }
-  }
-
-  const normalizedCaptainModel = resolveCaptainModel(config.captain);
-  for (const [role, model] of Object.entries(config.workflow.roleModels ?? {})) {
-    if (!roleTargetsCaptain(config, role)) {
-      continue;
-    }
-    if (!isModelCompatibleWithAdapter(captainAdapterType, model)) {
-      config.workflow.roleModels![role] =
-        normalizedCaptainModel ?? firstCompatibleModel(captainAdapterType) ?? model;
-    }
-  }
-
-  for (const [name, agent] of Object.entries(config.agents)) {
-    const adapterType = agent.adapter ?? name;
-    if (!isModelCompatibleWithAdapter(adapterType, agent.model)) {
-      agent.model = firstCompatibleModel(adapterType);
-    }
-  }
-}
-
 export function getConfigValueOptions(config: FullConfig, path: string): string[] {
   const resolved = resolveConfigPath(path);
   if (!resolved) return [];
@@ -183,7 +127,6 @@ export function applyConfigPatch(config: FullConfig, patch: ConfigPatch): FullCo
   const resolvedValue = resolveConfigInput(next, path, patch.value);
   const parsedValue = resolved.descriptor.parse(resolvedValue, next, resolved.params, path);
   resolved.descriptor.write(next, resolved.params, parsedValue, path);
-  normalizeIncompatibleModels(next);
   return next;
 }
 
@@ -302,7 +245,6 @@ export function unsetConfigValue(
   const previousValue = readConfigValue(effective, path);
   const next = structuredClone(current);
   deleteConfigValue(next, path.trim());
-  normalizeIncompatibleModels(next);
 
   validateConfigOrThrow(next);
   const filePath = saveConfigByScope(scope, cwd, next, { profile });

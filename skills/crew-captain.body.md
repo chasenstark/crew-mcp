@@ -8,7 +8,8 @@
 ## Crew orchestration playbook
 
 Use Crew when the user wants work delegated to another AI agent: "have
-Claude review this", "send this to Codex", "ask Gemini to triage", or
+Claude review this", "send this to Codex", "ask Gemini to triage"
+(Gemini models run via the `agy` agent), or
 parallel exploration. Crew is an MCP server. The tools allocate run state
 and worktrees; you remain the captain who decides what to dispatch, when
 to ask, and when to merge or discard.
@@ -46,8 +47,8 @@ consent.**
 ### Own-host rule
 
 Crew bridges between products. Do not Crew-dispatch to the same product
-you are already running in: Claude Code -> Claude Code, Codex -> Codex,
-Gemini -> Gemini. Use the host's native subagent mechanism instead. The
+you are already running in: Claude Code -> Claude Code, Codex -> Codex.
+Use the host's native subagent mechanism instead. The
 only exception is when the user explicitly asks for same-product worktree
 isolation; then Crew is appropriate. For review panels, the host model is
 still a reviewer, but it reviews through a native subagent or inline
@@ -82,9 +83,9 @@ worse than a short clarifying question.
    required watcher:
    `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
    For independent non-panel Crew runs, spawn N watchers for N run ids.
-   On Codex and Gemini, end the turn; no watcher overlay.
+   On Codex, end the turn; no watcher overlay.
 3. **Read terminal state later.** Claude Code gets a watcher-triggered
-   synthetic turn; Codex/Gemini read snapshots at the next user turn.
+   synthetic turn; Codex reads snapshots at the next user turn.
    Use `get_run_status` for the rich terminal payload. For Tier-2
    workers (`codex`, `claude-code`), also `check_captain_inbox` on the
    terminal turn (see "Worker messages").
@@ -277,14 +278,15 @@ explicitly says "wait for this" or equivalent:
 ```
 
 This blocks chat but uses one inference instead of an MCP long-poll loop.
-Do not use foreground `{{CREW_WAIT_COMMAND}}` on Codex or Gemini; Codex/Gemini hosts remain blocked for this path until dated empirical evidence says
-otherwise. On Codex/Gemini, end the turn and recover by snapshot at the
+Do not use foreground `{{CREW_WAIT_COMMAND}}` on Codex; the Codex host
+remains blocked for this path until dated empirical evidence says
+otherwise. On Codex, end the turn and recover by snapshot at the
 next user turn.
 
 ### Checking pending runs at turn start
 
-Codex and Gemini: at every turn start, check pending run state because
-there is no watcher overlay.
+Codex: at every turn start, check pending run state because there is
+no watcher overlay.
 
 Claude Code: check only when a watcher may be missing: spawn failure was
 reported, context was compacted or cleared, or the user mentions an
@@ -373,8 +375,7 @@ allocation; reviewer-on-implementer is `read_only: true` plus
 
 Caveats:
 
-- Codex enforces read-only with an OS filesystem sandbox. Gemini enforces
-  it through a per-run tool policy and dirty-tree probe. Claude Code,
+- Codex enforces read-only with an OS filesystem sandbox. Claude Code,
   generic, and OpenAI-compatible adapters treat it as advisory plus the
   dirty-tree probe. Relay any `warnings`.
 - If the agent writes anyway, edits land in `working_directory`; the probe
@@ -463,8 +464,8 @@ Workers on Tier-2 adapters (`codex`, `claude-code`) automatically get a
 worker-only `send_message` tool and a dispatcher-appended footer telling
 them to deliver finalized results with it. Messages land in a durable,
 repo-scoped captain inbox with server-stamped sender identity
-(`from.run_id`, `from.agent_id`). Non-Tier-2 adapters (`gemini-cli`,
-`agy`, `generic`, `openai-compatible`) have no `send_message`; their
+(`from.run_id`, `from.agent_id`). Non-Tier-2 adapters (`agy`,
+`generic`, `openai-compatible`) have no `send_message`; their
 findings arrive only via terminal `summary`, so write those prompts to
 ask for a thorough summary.
 
@@ -573,7 +574,7 @@ run_panel({
   implementer_run_id: "A",
   reviewers: [
     { agent_id: "codex", prompt: "<full review prompt>" },
-    { agent_id: "gemini-cli", prompt: "<full review prompt>" }
+    { agent_id: "agy", prompt: "<full review prompt>" }
   ]
 })
 ```

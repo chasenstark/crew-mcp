@@ -1,6 +1,6 @@
 // `crew-mcp serve` — the v2 stdio MCP server entry point.
 //
-// The host CLI (Claude Code / Codex / Gemini) spawns this command at session
+// The host CLI (Claude Code / Codex / agy) spawns this command at session
 // start via its MCP config block. We expose v2's MCP tool surface over
 // stdio:
 //
@@ -205,7 +205,7 @@ export interface ServeOptions {
 
   /**
    * Test seam: inject a pre-built adapter registry. Defaults to the built-in
-   * registry (claude-code, codex, gemini). M3 swaps this for a registry
+   * registry (claude-code, codex, agy). M3 swaps this for a registry
    * loaded from `~/.crew/agents.yaml`.
    */
   registry?: AdapterRegistry;
@@ -443,8 +443,6 @@ function hostIdForClientKind(kind: ClientKind): HostId | undefined {
       return 'claude-code';
     case 'codex':
       return 'codex';
-    case 'gemini':
-      return 'gemini';
     case 'unknown':
       return undefined;
   }
@@ -831,7 +829,7 @@ function resolveWorkerServeAuth(crewHome: string): RunAuthSidecar | undefined {
   const runId = process.env.CREW_RUN_ID;
   const token = process.env.CREW_RUN_TOKEN;
   // Both unset is the intended captain path; worker env-less serve is blocked
-  // by agy's MCP-config quarantine and Phase 2's gemini MCP allowlist defense.
+  // by agy's MCP-config quarantine.
   if (runId === undefined && token === undefined) return undefined;
   if (!runId || !token) {
     throw new Error(

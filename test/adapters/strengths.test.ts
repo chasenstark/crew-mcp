@@ -44,11 +44,6 @@ describe('curated strengths', () => {
         useWhen:
           'Prefer for well-scoped implementation and long unattended loops — fast at churning through mechanical changes.',
       },
-      'gemini-cli': {
-        strengths: ['long-context', 'codebase-triage', 'multimodal'],
-        useWhen:
-          'Prefer for orienting in large or unfamiliar codebases and tasks with screenshots or diagrams — the largest context window.',
-      },
       agy: {
         strengths: ['bulk-implementation', 'fast-iteration', 'long-context', 'code-review'],
         useWhen:

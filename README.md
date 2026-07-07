@@ -1,15 +1,16 @@
 # 🚢 crew-mcp
 
 An MCP server that turns your AI coding CLI into the **orchestrator of a
-multi-agent crew**. Dispatch work to Claude Code, Codex, Gemini CLI, or
-local models — each run gets its own git worktree, so your working
-directory stays clean and merges happen only when you say so.
+multi-agent crew**. Dispatch work to Claude Code, Codex, Antigravity
+(`agy`, Gemini models), or local models — each run gets its own git
+worktree, so your working directory stays clean and merges happen only
+when you say so.
 
 ## 💡 The vision — no API keys, just the CLIs you already have
 
 Crew drives the AI coding CLIs you've **already installed and logged in**.
-Every dispatched run goes through Claude Code, Codex, or Gemini on **your
-existing subscription** — 🔑 no API keys to wrangle, 💸 no per-token
+Every dispatched run goes through Claude Code, Codex, or Antigravity on
+**your existing subscription** — 🔑 no API keys to wrangle, 💸 no per-token
 billing, no second bill for the same models. Want it fully private? 🏠 Add
 local models (Ollama, LM Studio) and those runs never leave your machine.
 
@@ -18,7 +19,7 @@ already paying for. 🤝
 
 ```
 you ── Claude Code (captain) ──┬── run_agent → Codex (worktree A)
-                                ├── run_agent → Gemini (worktree B)
+                                ├── run_agent → agy (worktree B)
                                 └── run_panel → Claude + Codex (parallel review)
 ```
 
@@ -32,7 +33,7 @@ The captain derives acceptance criteria, dispatches Codex into an
 isolated worktree, runs review, folds the findings back, and asks before
 merging — all while you stay in one conversation.
 
-Prefer to drive explicitly? Name the agent ("send this to Gemini"), ask
+Prefer to drive explicitly? Name the agent ("send this to Codex"), ask
 for a panel ("have Claude and Codex both review this"), or kick off the
 ship-quality loop directly with `/crew-iterate`.
 
@@ -77,7 +78,7 @@ criteria-gated loop instead of a one-shot dispatch.
 
 Trigger it by intent — "keep working on X with review", "iterate until
 it's good", "ship-quality loop" — or invoke it directly: `/crew-iterate`
-on Claude Code (`crew-iterate` on Codex / Gemini).
+on Claude Code (`crew-iterate` on Codex).
 
 The loop:
 
@@ -99,7 +100,7 @@ The loop:
 
 Set persistent defaults so you don't re-pick every run — a default
 implementer, default reviewers, and a per-scope ban list (e.g. "never
-use Gemini"):
+use Codex"):
 
 ```sh
 crew-mcp config   # → "Agent defaults…"
@@ -109,10 +110,10 @@ crew-mcp config   # → "Agent defaults…"
 
 - **Node.js ≥ 20**
 - **git** (worktrees are how runs stay isolated)
-- **At least one host CLI** — [Claude Code](https://claude.com/claude-code),
-  [Codex CLI](https://github.com/openai/codex), or
-  [Gemini CLI](https://github.com/google-gemini/gemini-cli) — installed
-  and authenticated. Local models (Ollama, LM Studio, …) work too.
+- **At least one host CLI** — [Claude Code](https://claude.com/claude-code)
+  or [Codex CLI](https://github.com/openai/codex) — installed and
+  authenticated. Antigravity (`agy`) is supported as a project-scope host
+  and as a worker. Local models (Ollama, LM Studio, …) work too.
 
 ## 📦 Install
 
@@ -133,7 +134,6 @@ Install into your host CLI:
 ```sh
 crew-mcp install --target claude-code   # Claude Code
 crew-mcp install --target codex         # OpenAI Codex CLI
-crew-mcp install --target gemini        # Gemini CLI
 crew-mcp install --target all           # auto-detect installed hosts
 ```
 
@@ -347,7 +347,6 @@ valid; the curated list is only the default picker and seed set.
 |------|---------|----------------|
 | Claude Code | `claude-code` | `--target claude-code` |
 | Codex CLI | `codex` | `--target codex` |
-| Gemini CLI | `gemini-cli` | `--target gemini` |
 | Antigravity CLI (`agy`) | `agy` | `--scope project --target agy` |
 | Ollama / LM Studio / vLLM | `openai-compatible` | `crew-mcp agents add` |
 | Any CLI with a command interface | `generic` | `crew-mcp agents add` |
@@ -362,10 +361,6 @@ after install — the MCP server is loaded at startup. Then run
 `crew-mcp install --target <host>` and restart the session. `crew-mcp
 verify` reports exactly which host is missing the MCP block or skill.
 
-**Gemini warns about a skill conflict.** Harmless if it persists, but
-re-running `crew-mcp install --target gemini` resolves duplicate skill
-copies (Gemini also reads the shared `~/.agents/skills/` directory).
-
 **A run is stuck or unwanted.** `crew-mcp` exposes `cancel_run` (stop a
 running agent) and `discard_run` (throw away its worktree); ask the
 captain, or inspect runs under `~/.crew/runs/`.
@@ -374,7 +369,7 @@ captain, or inspect runs under `~/.crew/runs/`.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Host CLI (Claude Code / Codex / Gemini)    │
+│  Host CLI (Claude Code / Codex / agy)       │
 │  ┌───────────────────────────────────────┐  │
 │  │  Captain skill (markdown playbook)    │  │
 │  └──────────────┬────────────────────────┘  │

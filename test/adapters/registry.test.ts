@@ -13,14 +13,12 @@ describe('createBuiltinRegistry', () => {
 
     expect(registry.get('claude-code')?.unmetered).toBeFalsy();
     expect(registry.get('codex')?.unmetered).toBeFalsy();
-    expect(registry.get('gemini-cli')?.unmetered).toBeFalsy();
   });
 
   it('pre-registers all built-in adapters for diagnostic use', () => {
     const registry = createBuiltinRegistry();
     expect(registry.get('claude-code')).toBeDefined();
     expect(registry.get('codex')).toBeDefined();
-    expect(registry.get('gemini-cli')).toBeDefined();
     expect(registry.get('claude-code')?.strengths).toEqual(
       BUILTIN_AGENT_ROUTING['claude-code'].strengths,
     );
@@ -29,12 +27,6 @@ describe('createBuiltinRegistry', () => {
     );
     expect(registry.get('codex')?.strengths).toEqual(BUILTIN_AGENT_ROUTING.codex.strengths);
     expect(registry.get('codex')?.useWhen).toBe(BUILTIN_AGENT_ROUTING.codex.useWhen);
-    expect(registry.get('gemini-cli')?.strengths).toEqual(
-      BUILTIN_AGENT_ROUTING['gemini-cli'].strengths,
-    );
-    expect(registry.get('gemini-cli')?.useWhen).toBe(
-      BUILTIN_AGENT_ROUTING['gemini-cli'].useWhen,
-    );
   });
 });
 

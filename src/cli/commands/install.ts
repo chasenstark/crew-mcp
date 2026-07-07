@@ -413,7 +413,7 @@ export async function installSingleTarget(args: {
   // `Bash(<this>:*)` — the two MUST match exactly or the captain's
   // Bash invocation won't pass the matcher.
   //
-  // Only Claude Code actually uses the watcher; for Codex/Gemini we
+  // Only Claude Code actually uses the watcher; for the other hosts we
   // pass the bare name so the rendered prose still reads correctly,
   // but those captains default to the portable baseline anyway.
   let crewWaitCommand = 'crew-wait';
@@ -617,7 +617,7 @@ export async function installSingleProjectTarget(args: {
  *      throws BEFORE any final-path mutation; staging files are
  *      cleaned up in finally.
  *   3. Remove `legacyPathsToRemove` (different paths from finals —
- *      Gemini's old `extensions/` location). Doing this after Phase 1
+ *      stale copies at deprecated locations). Doing this after Phase 1
  *      means a render failure never trashes the legacy file.
  *   4. Phase 2 — atomic-swap each staging file into its final
  *      destination. For each swap: back up any existing destination,
@@ -682,9 +682,12 @@ async function renderAndWriteSkills(args: {
   try {
     for (const { skill, spec } of specs) {
       // Skipped skills render nothing — the host already discovers
-      // them from a shared search-path location (e.g. Gemini's
-      // ~/.agents/skills/). Their legacyPathsToRemove still runs below,
-      // and the shared path they load from is recorded as a sharedSkill.
+      // them from a shared search-path location (~/.agents/skills/).
+      // No current host adapter produces skip:true (the retired gemini
+      // host did); the machinery stays because install manifests on
+      // disk may still carry sharedSkills entries that verify/uninstall
+      // read. Their legacyPathsToRemove still runs below, and the
+      // shared path they load from is recorded as a sharedSkill.
       if (spec.skip) {
         logger.info(
           `crew install: ${adapter.displayName} — '${skill.id}' already on the host's shared skill `
@@ -961,7 +964,7 @@ export function resolveTargets(input: string, scope: InstallScope = 'global'): H
   const trimmed = input.trim();
   const allowed = scope === 'project' ? PROJECT_HOST_IDS : GLOBAL_HOST_IDS;
   if (trimmed.length === 0) {
-    throw new Error('crew install: --target is required (e.g., codex, claude-code, gemini, all)');
+    throw new Error('crew install: --target is required (e.g., codex, claude-code, all)');
   }
   if (trimmed === 'all') return [...allowed];
   const parts = trimmed

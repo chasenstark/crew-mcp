@@ -17,7 +17,6 @@
 import { describe, expect, it } from 'vitest';
 import { ClaudeCodeAdapter } from '../../src/adapters/claude-code.js';
 import { CodexAdapter } from '../../src/adapters/codex.js';
-import { GeminiCliAdapter } from '../../src/adapters/gemini-cli.js';
 
 const runPortability = process.env.RUN_PORTABILITY_TESTS === '1';
 
@@ -35,20 +34,6 @@ describe.skipIf(!runPortability)('captain adapter SIGINT portability (real CLIs)
 
     // We expect either a success (CLI wrapped up before cancel) or an error
     // with a cancel-flavored message — NOT a hang or process leak.
-    expect(['success', 'error', 'partial']).toContain(result.status);
-  }, 15_000);
-
-  it('Gemini: abort mid-turn → execute returns error and frees the process group', async () => {
-    const adapter = new GeminiCliAdapter();
-    const controller = new AbortController();
-    setTimeout(() => controller.abort('portability test cancel'), 500);
-
-    const result = await adapter.execute({
-      prompt: 'Count slowly from 1 to 100.',
-      context: { workingDirectory: process.cwd() },
-      constraints: { signal: controller.signal, timeout: 10_000 },
-    });
-
     expect(['success', 'error', 'partial']).toContain(result.status);
   }, 15_000);
 
