@@ -63,6 +63,16 @@ export const AGY_MIN_VERSION = { major: 1, minor: 0, patch: 14 } as const;
  * only the backstop if agy ignores its own limit.
  */
 const PRINT_TIMEOUT_EXECA_BUFFER_MS = 15_000;
+/**
+ * agy's built-in print-mode wait defaults to 5m and fires per response wait,
+ * not per run: >5m-total multi-turn runs succeed, but a single slow model
+ * turn dies with a `timeout waiting for response` ERROR envelope (observed
+ * three times at ~300s on heavy review dispatches, 2026-07-07). So when the
+ * caller supplies no budget we still pass an explicit --print-timeout with
+ * this more patient default instead of inheriting agy's 5m; cancellation in
+ * that case stays with cancelSignal + the crew watchdogs (no execa timeout).
+ */
+const AGY_DEFAULT_PRINT_TIMEOUT_MS = 15 * 60_000;
 // agy returns a single JSON envelope, so this adapter intentionally buffers
 // stdout. Keep the cap explicit instead of inheriting execa's default.
 const AGY_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
@@ -401,15 +411,14 @@ export class AgyAdapter implements AgentAdapter {
       args.push('--conversation', resumeSessionId);
     }
 
-    // Optional wall-clock budget. When undefined (the crew dispatch default),
-    // omit --print-timeout so agy uses its own default and rely on cancelSignal
-    // for cancellation. When set, pass it to agy AND give execa a slightly
-    // larger hard timeout so agy returns a clean ERROR envelope before execa
-    // SIGKILLs it.
+    // Wall-clock budget. Always pass an explicit --print-timeout: the
+    // caller's budget when set, else AGY_DEFAULT_PRINT_TIMEOUT_MS — agy's own
+    // 5m default kills slow single turns (see the constant's doc). Only a
+    // caller-supplied budget also gets an execa hard timeout (slightly above,
+    // so agy returns a clean ERROR envelope before execa SIGKILLs it); the
+    // default case relies on cancelSignal + crew watchdogs.
     const timeout = task.constraints?.timeout;
-    if (timeout) {
-      args.push('--print-timeout', `${Math.ceil(timeout / 1000)}s`);
-    }
+    args.push('--print-timeout', `${Math.ceil((timeout ?? AGY_DEFAULT_PRINT_TIMEOUT_MS) / 1000)}s`);
 
     // Quarantine any project-scoped MCP config before spawning; fail closed
     // when the quarantine itself fails — never run agy with crew captain

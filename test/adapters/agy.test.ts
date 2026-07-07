@@ -188,9 +188,11 @@ describe('AgyAdapter', () => {
         '--output-format', 'json',
         '--add-dir', '/crew/wt',
         '--dangerously-skip-permissions',
+        // No caller budget: still pin --print-timeout to the 15m adapter
+        // default so agy's own 5m per-response wait can't kill slow turns.
+        '--print-timeout', '900s',
       ]);
       expect(args).not.toContain('-p');
-      expect(args).not.toContain('--print-timeout');
       // Prompt is delivered on stdin, wrapped in the workspace-contract preamble
       // (never argv). The raw prompt survives verbatim; the preamble pins the
       // worktree root so agy writes with absolute paths instead of escaping.
