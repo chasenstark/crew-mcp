@@ -54,6 +54,12 @@ type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
 const PROGRESS_LINE_MAX_LEN = 240;
 const CAPTURED_STDOUT_MAX_CHARS = 64 * 1024;
 const CAPTURED_STDERR_MAX_CHARS = 16 * 1024;
+const syntheticClaudeResponses = new WeakSet<ClaudeResponse>();
+
+function markSyntheticEnvelope(envelope: ClaudeResponse): ClaudeResponse {
+  syntheticClaudeResponses.add(envelope);
+  return envelope;
+}
 
 function preview(text: string | undefined, max = 600): string {
   if (!text) return '';
@@ -126,15 +132,14 @@ function getNumericField(
  * emits one JSON object per line. The last `type: "result"` line is the
  * summary equivalent to non-streaming `--output-format json`.
  *
- * When the process is killed before completing (timeout, cancellation), no
- * result line is emitted. In that case we fall back to constructing a
- * synthetic envelope from whatever assistant text was streamed so upstream
- * code can still surface partial output instead of losing it entirely.
+ * When stream-json exits without a terminal result line, we fall back to a
+ * synthetic envelope from the last assistant message so upstream code can
+ * still surface partial output instead of losing it entirely.
  */
 function extractStreamEnvelope(stdout: string): ClaudeResponse | undefined {
   if (!stdout) return undefined;
   const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-  const assistantChunks: string[] = [];
+  let assistantText = '';
   let sessionId: string | undefined;
 
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -153,20 +158,20 @@ function extractStreamEnvelope(stdout: string): ClaudeResponse | undefined {
       const obj = JSON.parse(line) as { type?: string; session_id?: string };
       if (obj.session_id && !sessionId) sessionId = obj.session_id;
       const chunk = extractAssistantTextFromStreamLine(line);
-      if (chunk) assistantChunks.push(chunk);
+      if (chunk) assistantText = chunk;
     } catch {
       // non-JSON line, skip
     }
   }
 
-  if (assistantChunks.length === 0) return undefined;
-  return {
+  if (!assistantText) return undefined;
+  return markSyntheticEnvelope({
     type: 'result',
     subtype: 'partial',
-    result: assistantChunks.join(''),
+    result: assistantText,
     session_id: sessionId,
     is_error: true,
-  };
+  });
 }
 
 function appendBounded(existing: string, next: string, maxChars = CAPTURED_STDOUT_MAX_CHARS): string {
@@ -214,7 +219,7 @@ function createClaudeStreamCapture(): {
       return;
     }
     const chunk = extractAssistantTextFromStreamLine(trimmed);
-    if (chunk) assistantText = appendBounded(assistantText, chunk);
+    if (chunk) assistantText = appendBounded('', chunk);
   };
 
   return {
@@ -231,16 +236,29 @@ function createClaudeStreamCapture(): {
         }
       }
       if (!assistantText) return undefined;
-      return {
+      return markSyntheticEnvelope({
         type: 'result',
         subtype: 'partial',
         result: assistantText,
         session_id: sessionId,
         is_error: true,
-      };
+      });
     },
     capturedText: () => captured,
   };
+}
+
+function isMissingResultEnvelope(parsed: ClaudeResponse): boolean {
+  return syntheticClaudeResponses.has(parsed);
+}
+
+function missingResultEnvelopeFailure(): TaskFailure {
+  return buildTaskFailure({
+    kind: 'unknown',
+    confidence: 'low',
+    providerCode: 'missing_result_envelope',
+    rawSignal: 'missing_result_envelope',
+  });
 }
 
 function classifyClaudeFailure(
@@ -827,13 +845,20 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     const filesModified = extractFilePaths(parsed.result ?? '');
 
+    const missingResultEnvelope = isMissingResultEnvelope(parsed);
+    const status = missingResultEnvelope && result.exitCode === 0
+      ? 'partial'
+      : parsed.is_error ? 'error' : 'success';
+
     return {
       output: parsed.result ?? '',
       filesModified,
-      status: parsed.is_error ? 'error' : 'success',
+      status,
       sessionId: parsed.session_id,
-      ...(parsed.is_error
-        ? { failure: classifyClaudeFailure(parsed, stdoutText, stderrText) }
+      ...(status === 'partial'
+        ? { failure: missingResultEnvelopeFailure() }
+        : status === 'error'
+          ? { failure: classifyClaudeFailure(parsed, stdoutText, stderrText) }
         : {}),
       metadata: {
         costUsd: parsed.total_cost_usd ?? parsed.cost_usd,

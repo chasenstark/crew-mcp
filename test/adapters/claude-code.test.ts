@@ -399,6 +399,105 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.filesModified).toEqual([]);
     });
 
+    it('classifies clean stream exits with assistant text but no result envelope as partial', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'First assistant message' }],
+            },
+            session_id: 'missing-result-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'rate-limit',
+            rate_limit_info: { status: 'allowed', window: 'five_hour' },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Final worker summary' }],
+            },
+            session_id: 'missing-result-session',
+          })}\n`,
+        ],
+        exitCode: 0,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('partial');
+      expect(result.output).toBe('Final worker summary');
+      expect(result.sessionId).toBe('missing-result-session');
+      expect(result.failure).toMatchObject({
+        kind: 'unknown',
+        confidence: 'low',
+        providerCode: 'missing_result_envelope',
+        rawSignal: 'missing_result_envelope',
+      });
+      expect(result.failure?.rawSignal).not.toContain('Final worker summary');
+      expect(result.failure?.recommendation).toBeUndefined();
+    });
+
+    it('does not treat provider result subtype partial as a missing result envelope', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'partial',
+            is_error: false,
+            result: 'Provider supplied partial result',
+            session_id: 'provider-partial-session',
+          })}\n`,
+        ],
+        exitCode: 0,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.output).toBe('Provider supplied partial result');
+      expect(result.failure).toBeUndefined();
+    });
+
+    it('keeps nonzero stream exits without a result envelope classified as errors', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              content: [{ type: 'text', text: 'Partial output before crash' }],
+            },
+            session_id: 'nonzero-missing-result-session',
+          })}\n`,
+        ],
+        stderrChunks: ['process exited badly'],
+        exitCode: 1,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Do something',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toBe('Partial output before crash');
+      expect(result.failure).toMatchObject({
+        kind: 'unknown',
+        rawSignal: expect.stringContaining('Partial output before crash'),
+      });
+    });
+
     it('handles timeout when execa rejects', async () => {
       const timeoutError = new Error('Timed out');
       timeoutError.name = 'TimeoutError';

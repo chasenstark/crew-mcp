@@ -132,6 +132,60 @@ describe('installRunLifecycleListeners', () => {
     });
   });
 
+  it('persists typed failure from partial task results without setting lastError', async () => {
+    await store.create({
+      runId: 'r-partial',
+      agentId: 'mock',
+      worktreePath: '/wt',
+      initialPrompt: 'go',
+    });
+
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore: store,
+      runId: 'r-partial',
+      agentName: 'mock',
+      toolCallId: 'tc-partial',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+
+    emitter.emitter.emit('run:complete', {
+      toolCallId: 'tc-partial',
+      toolName: 'run_agent',
+      result: {
+        status: 'partial',
+        output: 'final worker summary',
+        filesModified: [],
+        failure: {
+          kind: 'unknown',
+          confidence: 'low',
+          providerCode: 'missing_result_envelope',
+          rawSignal: 'missing_result_envelope',
+        },
+        metadata: {},
+      },
+      runId: 'r-partial',
+    });
+
+    await expect(terminal).resolves.toMatchObject({ kind: 'complete' });
+    await waitFor(() => store.read('r-partial')?.status === 'partial');
+
+    expect(store.read('r-partial')).toMatchObject({
+      status: 'partial',
+      prompts: [expect.objectContaining({ summary: 'final worker summary' })],
+      failure: {
+        kind: 'unknown',
+        providerCode: 'missing_result_envelope',
+        rawSignal: 'missing_result_envelope',
+      },
+    });
+    expect(store.read('r-partial')?.lastError).toBeUndefined();
+  });
+
   it('tracks detached terminal persist promises until they settle', async () => {
     let resolvePersist!: () => void;
     const persistPromise = new Promise<void>((resolve) => {

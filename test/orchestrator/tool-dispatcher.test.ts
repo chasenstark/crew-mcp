@@ -151,6 +151,54 @@ describe('ToolDispatcher', () => {
     expect(d.cancel('nope')).toBe(false);
   });
 
+  it('emits cancelled when an aborted task later resolves cleanly with partial output', async () => {
+    const d = new ToolDispatcher();
+    let resolveTask!: (value: unknown) => void;
+    d.onEvent('run:complete', () => {
+      throw new Error('cancelled task must not emit complete');
+    });
+
+    d.start(makeTask(
+      'c-late-partial',
+      (signal) => new Promise((resolve) => {
+        resolveTask = resolve;
+        signal.addEventListener('abort', () => {
+          resolve({
+            output: 'Final worker summary',
+            filesModified: [],
+            status: 'partial',
+            failure: {
+              kind: 'unknown',
+              confidence: 'low',
+              providerCode: 'missing_result_envelope',
+              rawSignal: 'missing_result_envelope',
+            },
+            metadata: {},
+          });
+        });
+      }),
+      'run_agent',
+      'run-late-partial',
+    ));
+
+    const cancelledP = waitForEvent(d, 'run:cancelled');
+    expect(d.cancel('c-late-partial', 'user-requested')).toBe(true);
+    resolveTask({
+      output: 'Final worker summary',
+      filesModified: [],
+      status: 'partial',
+      metadata: {},
+    });
+
+    const info = (await cancelledP) as { toolCallId: string; reason: string; runId?: string };
+    expect(info).toMatchObject({
+      toolCallId: 'c-late-partial',
+      reason: 'user-requested',
+      runId: 'run-late-partial',
+    });
+    expect(d.inFlightCount()).toBe(0);
+  });
+
   it('escalates a cancelled task that does not settle and releases the in-flight slot', async () => {
     vi.useFakeTimers();
     try {
