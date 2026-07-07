@@ -79,6 +79,7 @@ import {
   type DetectedHost,
 } from '../../install/interactive-target.js';
 import {
+  captainSkillTools,
   renderSkill,
   resolvePackageRoot,
   SKILL_MANIFEST,
@@ -88,6 +89,8 @@ import {
 } from '../../install/skill-renderer.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import { logger } from '../../utils/logger.js';
+
+const CAPTAIN_CATALOG_TOOLS = captainSkillTools(CATALOG_TOOLS);
 
 /**
  * Test seam for the interactive target picker. Production uses
@@ -446,7 +449,7 @@ export async function installSingleTarget(args: {
       ? await readFile(approvalFile, 'utf-8')
       : '';
     const approvalUpdated = autoApprove
-      ? adapter.writeAutoApproval(approvalExisting, CATALOG_TOOLS.map((t) => t.name))
+      ? adapter.writeAutoApproval(approvalExisting, CAPTAIN_CATALOG_TOOLS.map((t) => t.name))
       : adapter.clearAutoApproval(approvalExisting);
     if (approvalUpdated !== approvalExisting) {
       writeFileAtomic(approvalFile, approvalUpdated);
@@ -543,7 +546,7 @@ export async function installSingleProjectTarget(args: {
       ? await readFile(approvalFile, 'utf-8')
       : '';
     const approvalUpdated = autoApprove
-      ? adapter.writeAutoApproval(approvalExisting, CATALOG_TOOLS.map((t) => t.name))
+      ? adapter.writeAutoApproval(approvalExisting, CAPTAIN_CATALOG_TOOLS.map((t) => t.name))
       : adapter.clearAutoApproval(approvalExisting);
     if (approvalUpdated !== approvalExisting) {
       writeFileAtomic(approvalFile, approvalUpdated);
@@ -686,7 +689,7 @@ async function renderAndWriteSkills(args: {
         templatePath,
         skill,
         spec,
-        tools: CATALOG_TOOLS,
+        tools: CAPTAIN_CATALOG_TOOLS,
         crewWaitCommand,
         packageRoot,
       });

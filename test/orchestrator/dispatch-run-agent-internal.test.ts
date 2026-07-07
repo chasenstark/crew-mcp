@@ -20,9 +20,11 @@ import { RunStateStore } from '../../src/orchestrator/run-state.js';
 import { drainPendingTerminalPersists } from '../../src/orchestrator/run-lifecycle-listeners.js';
 import { ToolDispatcher, type DispatchTask } from '../../src/orchestrator/tool-dispatcher.js';
 import { readRunAuthSidecar, runAuthSidecarPath } from '../../src/orchestrator/auth/index.js';
+import { WORKER_SEND_MESSAGE_FOOTER } from '../../src/orchestrator/peer-messages/worker-footer.js';
 import { crewTailUrl } from '../../src/cli/commands/tail-url.js';
 import { confirmCriteriaHandler } from '../../src/orchestrator/tools/confirm-criteria.js';
 import { createCriteriaHandler } from '../../src/orchestrator/tools/create-criteria.js';
+import { sendMessageToolHandler } from '../../src/orchestrator/tools/send-message.js';
 
 function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
   return {
@@ -50,6 +52,11 @@ function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
 
 function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
   const map = new Map<string, AgentAdapter>(adapters.map((a) => [a.name, a]));
+  for (const adapter of adapters) {
+    for (const alias of adapter.aliases ?? []) {
+      map.set(alias, adapter);
+    }
+  }
   return {
     register: () => undefined,
     get: (name: string) => map.get(name),
@@ -311,7 +318,7 @@ describe('dispatchRunAgentInternal', () => {
     expect(eventsLog).not.toContain('CREW_RUN_TOKEN');
   });
 
-  it('revokes sidecars for error terminals but not cancelled terminals', async () => {
+  it('revokes sidecars for error and cancelled terminals', async () => {
     const errorAdapter = makeMockAdapter({
       name: 'mock-error',
       execute: async () => ({
@@ -339,6 +346,7 @@ describe('dispatchRunAgentInternal', () => {
       input: { agent_id: 'mock-cancel', prompt: 'cancel' },
       ctx: h.ctx,
     });
+    const cancelSidecar = readRunAuthSidecar(h.crewHome, cancelResult.runId);
     h.dispatcher.cancel(cancelResult.toolCallId, 'test cancel');
     cancelTerminal.resolve({
       output: 'late',
@@ -347,7 +355,16 @@ describe('dispatchRunAgentInternal', () => {
       metadata: {},
     });
     await waitFor(() => h.runStateStore.read(cancelResult.runId)?.status === 'cancelled');
-    expect(readRunAuthSidecar(h.crewHome, cancelResult.runId).revoked).toBe(false);
+    await waitFor(() => readRunAuthSidecar(h.crewHome, cancelResult.runId).revoked === true);
+    const sendResult = await sendMessageToolHandler(
+      { body: 'late report', kind: 'note', to: { kind: 'captain' } },
+      {
+        crewHome: h.crewHome,
+        workerAuth: cancelSidecar,
+        env: { CREW_RUN_TOKEN: cancelSidecar.token } as NodeJS.ProcessEnv,
+      },
+    );
+    expect(sendResult.structuredContent).toEqual({ error: 'token_revoked' });
   });
 
   it('creates sidecars for ephemeral_review dispatches', async () => {
@@ -629,6 +646,86 @@ describe('dispatchRunAgentInternal', () => {
     } finally {
       restore();
     }
+  });
+
+  it.each(['codex', 'claude-code'])('appends the worker footer last for Tier-2 %s run_agent dispatches', async (agentId) => {
+    let capturedPrompt = '';
+    const h = makeHarness([makeMockAdapter({
+      name: agentId,
+      execute: async (task) => {
+        capturedPrompt = task.prompt;
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    })]);
+    cleanups.push(h.cleanup);
+    await createConfirmedCriteria(h);
+
+    const result = await dispatchRunAgentInternal({
+      input: {
+        agent_id: agentId,
+        criteria_set_id: 'criteria-1',
+        prompt: 'user prompt',
+        peer_messages: [{ body: 'peer context', kind: 'note', from_label: 'reviewer' }],
+      },
+      ctx: h.ctx,
+    });
+    await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+
+    expect(capturedPrompt.endsWith(WORKER_SEND_MESSAGE_FOOTER)).toBe(true);
+    expect(capturedPrompt.indexOf('Acceptance Criteria Contract')).toBeLessThan(
+      capturedPrompt.indexOf('## Peer messages'),
+    );
+    expect(capturedPrompt.indexOf('## Peer messages')).toBeLessThan(
+      capturedPrompt.indexOf('user prompt'),
+    );
+    expect(capturedPrompt.indexOf('user prompt')).toBeLessThan(
+      capturedPrompt.indexOf(WORKER_SEND_MESSAGE_FOOTER),
+    );
+  });
+
+  it.each(['gemini-cli', 'generic', 'openai-compatible', 'agy'])(
+    'does not append the worker footer for non-Tier-2 %s run_agent dispatches',
+    async (agentId) => {
+      let capturedPrompt = '';
+      const h = makeHarness([makeMockAdapter({
+        name: agentId,
+        execute: async (task) => {
+          capturedPrompt = task.prompt;
+          return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+        },
+      })]);
+      cleanups.push(h.cleanup);
+
+      const result = await dispatchRunAgentInternal({
+        input: { agent_id: agentId, prompt: 'user prompt' },
+        ctx: h.ctx,
+      });
+      await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+
+      expect(capturedPrompt).toBe('user prompt');
+      expect(capturedPrompt).not.toContain('send_message');
+    },
+  );
+
+  it('uses the canonical adapter name for Tier-2 footer decisions when dispatched by alias', async () => {
+    let capturedPrompt = '';
+    const h = makeHarness([makeMockAdapter({
+      name: 'codex',
+      aliases: ['cx'],
+      execute: async (task) => {
+        capturedPrompt = task.prompt;
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    })]);
+    cleanups.push(h.cleanup);
+
+    const result = await dispatchRunAgentInternal({
+      input: { agent_id: 'cx', prompt: 'alias prompt' },
+      ctx: h.ctx,
+    });
+    await waitFor(() => h.runStateStore.read(result.runId)?.status === 'success');
+
+    expect(capturedPrompt).toBe(`alias prompt\n\n${WORKER_SEND_MESSAGE_FOOTER}`);
   });
 
   it('refuses unknown, unconfirmed, and cross-repo criteria before creating state', async () => {

@@ -27,6 +27,7 @@ import {
   type CriteriaContractResolution,
 } from '../criteria/store.js';
 import { validatePeerMessagesPreflight } from '../peer-messages/preflight.js';
+import { appendWorkerFooterForAdapter } from '../peer-messages/worker-footer.js';
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
@@ -252,7 +253,7 @@ export async function continueRunToolHandler(
     toolCallId,
     runId: args.run_id,
     adapter,
-    prompt: composedPrompt,
+    prompt: appendWorkerFooterForAdapter(composedPrompt, adapter),
     dispatchMcpEnv,
     effectiveWorkingDirectory: state.worktreePath,
     worktreePath: state.worktreePath,

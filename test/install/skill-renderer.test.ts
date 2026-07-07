@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 
 import {
+  captainSkillTools,
   ITERATE_SKILL_DESCRIPTION,
   renderSkill,
   renderToolList,
@@ -47,6 +48,24 @@ describe('renderToolList', () => {
       '- `mcp__crew__list_agents` — list agents.\n' +
         '- `mcp__crew__run_agent` — dispatch a fresh run.',
     );
+  });
+});
+
+describe('captainSkillTools', () => {
+  it('excludes worker-only tools from captain-rendered skill surfaces', () => {
+    expect(captainSkillTools([
+      ...TOOLS,
+      { name: 'send_message', description: 'worker report.', mode: 'worker' },
+      { name: 'shared_tool', description: 'shared.', mode: 'both' },
+    ]).map((tool) => tool.name)).toEqual([
+      'list_agents',
+      'run_agent',
+      'continue_run',
+      'merge_run',
+      'discard_run',
+      'get_run_status',
+      'shared_tool',
+    ]);
   });
 });
 
@@ -88,7 +107,10 @@ describe('renderSkill (claude-code template)', () => {
     const templatePath = templatePathForHost(REPO_ROOT, 'claude-code');
     const out = await renderSkill({
       templatePath,
-      tools: TOOLS,
+      tools: [
+        ...TOOLS,
+        { name: 'send_message', description: 'worker report.', mode: 'worker' },
+      ],
       packageRoot: REPO_ROOT,
     });
 
@@ -111,6 +133,7 @@ describe('renderSkill (claude-code template)', () => {
     for (const tool of TOOLS) {
       expect(out).toContain(`mcp__crew__${tool.name}`);
     }
+    expect(out).not.toContain('mcp__crew__send_message');
 
     // No leftover placeholders
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);

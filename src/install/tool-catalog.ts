@@ -29,6 +29,7 @@ import {
   REVISE_CRITERIA_DESCRIPTION,
   RUN_PANEL_DESCRIPTION,
   RUN_AGENT_DESCRIPTION,
+  SEND_MESSAGE_DESCRIPTION,
 } from '../orchestrator/tools/index.js';
 import type { SkillTool } from './skill-renderer.js';
 
@@ -49,4 +50,5 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'confirm_criteria', description: CONFIRM_CRITERIA_DESCRIPTION },
   { name: 'get_criteria', description: GET_CRITERIA_DESCRIPTION },
   { name: 'revise_criteria', description: REVISE_CRITERIA_DESCRIPTION },
+  { name: 'send_message', description: SEND_MESSAGE_DESCRIPTION, mode: 'worker' },
 ];

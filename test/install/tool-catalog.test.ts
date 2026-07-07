@@ -20,6 +20,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { buildCrewMcpServer } from '../../src/cli/commands/serve.js';
 import { CATALOG_TOOLS } from '../../src/install/tool-catalog.js';
+import { captainSkillTools } from '../../src/install/skill-renderer.js';
 import { CONTINUE_RUN_DESCRIPTION } from '../../src/orchestrator/tools/continue-run.js';
 import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run-status.js';
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
@@ -41,12 +42,20 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     try {
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      const expected = CATALOG_TOOLS.map((t) => t.name).sort();
+      const expected = captainSkillTools(CATALOG_TOOLS).map((t) => t.name).sort();
       expect(names).toEqual(expected);
+      expect(names).not.toContain('send_message');
     } finally {
       await client.close();
       rmSync(crewHome, { recursive: true, force: true });
     }
+  });
+
+  it('declares send_message as a worker-only catalog tool', () => {
+    const entry = CATALOG_TOOLS.find((tool) => tool.name === 'send_message');
+    expect(entry).toBeDefined();
+    expect(entry?.mode).toBe('worker');
+    expect(captainSkillTools(CATALOG_TOOLS).map((tool) => tool.name)).not.toContain('send_message');
   });
 
   it('declares panel tools in both the catalog and tools/index barrel', () => {

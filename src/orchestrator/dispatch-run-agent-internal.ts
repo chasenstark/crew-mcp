@@ -16,6 +16,7 @@ import {
   type CriteriaContractResolution,
 } from './criteria/store.js';
 import { validatePeerMessagesPreflight } from './peer-messages/preflight.js';
+import { appendWorkerFooterForAdapter } from './peer-messages/worker-footer.js';
 import { type ProgressNotifier } from './progress.js';
 import { installRunLifecycleListeners } from './run-lifecycle-listeners.js';
 import { ownsWorktree, type RunMode } from './run-mode.js';
@@ -204,7 +205,10 @@ export async function dispatchRunAgentInternal(
   });
 
   try {
-    const task = plan.buildTask(createResult.composedPrompt, dispatchMcpEnv);
+    const task = plan.buildTask(
+      appendWorkerFooterForAdapter(createResult.composedPrompt, plan.adapter),
+      dispatchMcpEnv,
+    );
     ctx.dispatcher.start(task);
     startWorkerReadyHandshake({
       crewHome: ctx.crewHome,
@@ -249,11 +253,11 @@ export function revokeSidecarOnTerminal(
 ): (state: RunStateV1) => void {
   return (state) => {
     deleteWorkerReadyMarker(crewHome, state.runId);
-    if (state.status === 'cancelled') return;
     if (
       state.status === 'success'
       || state.status === 'partial'
       || state.status === 'error'
+      || state.status === 'cancelled'
     ) {
       revokeSidecarBestEffort(crewHome, state.runId, `terminal ${state.status}`);
     }

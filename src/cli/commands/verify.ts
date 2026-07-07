@@ -32,6 +32,7 @@ import {
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
+import { captainSkillTools } from '../../install/skill-renderer.js';
 import { resolvePeerMessageCaps } from '../../orchestrator/peer-messages/caps.js';
 import { runPeerMessagesPipeline } from '../../orchestrator/peer-messages/pipeline.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
@@ -39,6 +40,8 @@ import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.j
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 import { resolveTargets } from './install.js';
+
+const CAPTAIN_CATALOG_TOOLS = captainSkillTools(CATALOG_TOOLS);
 
 export interface VerifyOptions {
   /** Install scope. Defaults to global. */
@@ -117,7 +120,7 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
     };
   }
 
-  const expectedNames = CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
+  const expectedNames = CAPTAIN_CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
   const reports: VerifyTargetReport[] = [];
 
   for (const targetId of installedTargets) {
@@ -239,7 +242,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     return { ok: true, probes: [], targets: [], note };
   }
 
-  const expectedNames = CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
+  const expectedNames = CAPTAIN_CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
   const probes: VerifyProbeReport[] = [];
   const reports: VerifyTargetReport[] = [];
   let codexTrustChecked = false;
@@ -516,7 +519,7 @@ async function verifyProjectAutoApproval(args: {
   }
 
   if (args.targetId === 'codex') {
-    for (const tool of CATALOG_TOOLS) {
+    for (const tool of CAPTAIN_CATALOG_TOOLS) {
       const block = extractTomlBlock(args.config, `[mcp_servers.crew.tools.${tool.name}]`);
       if (!block || !/^approval_mode\s*=\s*"approve"/m.test(block)) {
         issues.push(`Codex config missing approval_mode = "approve" for ${tool.name}`);

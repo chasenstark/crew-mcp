@@ -47,9 +47,11 @@ import { installRunLifecycleListeners } from '../../../src/orchestrator/run-life
 import { DEFAULT_PEER_MESSAGE_CAPS } from '../../../src/orchestrator/peer-messages/caps.js';
 import { buildPrependBlock } from '../../../src/orchestrator/peer-messages/prepend.js';
 import type { PeerMessageRendered } from '../../../src/orchestrator/peer-messages/schema.js';
+import { WORKER_SEND_MESSAGE_FOOTER } from '../../../src/orchestrator/peer-messages/worker-footer.js';
 import { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import {
   issueRunAuthSidecar,
+  readRunAuthSidecar,
   workerReadyMarkerPath,
 } from '../../../src/orchestrator/auth/index.js';
 import {
@@ -462,7 +464,7 @@ describe('crew serve — listTools surface', () => {
     await h.close();
   });
 
-  it('exposes the v2 tool surface (16 tools incl. preferences, panel, and criteria tools)', async () => {
+  it('exposes the captain tool surface without worker-only tools', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual([
@@ -483,6 +485,7 @@ describe('crew serve — listTools surface', () => {
       'run_agent',
       'run_panel',
     ]);
+    expect(names).not.toContain('send_message');
   });
 
   it('run_agent declares its input schema (agent_id + prompt required, peer_messages optional)', async () => {
@@ -520,7 +523,7 @@ describe('crew serve — listTools surface', () => {
 });
 
 describe('crew serve — restricted worker mode', () => {
-  it('valid worker credentials expose zero captain tools in Phase 1 and write a ready marker', async () => {
+  it('valid worker credentials expose only send_message and write a ready marker', async () => {
     const root = mkdtempSync(join(tmpdir(), 'crew-worker-serve-'));
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-worker-serve-home-'));
     const home = mkdtempSync(join(tmpdir(), 'crew-worker-serve-os-home-'));
@@ -557,11 +560,11 @@ describe('crew serve — restricted worker mode', () => {
       await Promise.all([built.server.connect(serverTransport), client.connect(clientTransport)]);
 
       const result = await client.listTools();
-      expect(result.tools.map((tool) => tool.name)).toEqual([]);
+      expect(result.tools.map((tool) => tool.name)).toEqual(['send_message']);
       const marker = JSON.parse(
         readFileSync(workerReadyMarkerPath(crewHome, 'worker-run'), 'utf-8'),
       ) as { registered_tools: string[] };
-      expect(marker.registered_tools).toEqual([]);
+      expect(marker.registered_tools).toEqual(['send_message']);
     } finally {
       await client?.close();
       await builtServer?.close();
@@ -2531,6 +2534,39 @@ describe('crew serve — peer_messages integration', () => {
     }
   });
 
+  it('appends the worker footer to Tier-2 continue_run dispatch prompts', async () => {
+    const prompts: string[] = [];
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      execute: async (task) => {
+        prompts.push(task.prompt);
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'codex', prompt: 'turn one' },
+      });
+      const env = first.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const second = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: env.run_id, prompt: 'turn two' },
+      });
+      expect(second.isError).toBeUndefined();
+      await pollUntilTerminal(h.client, env.run_id);
+
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toBe(`turn one\n\n${WORKER_SEND_MESSAGE_FOOTER}`);
+      expect(prompts[1]).toBe(`turn two\n\n${WORKER_SEND_MESSAGE_FOOTER}`);
+    } finally {
+      await h.close();
+    }
+  });
+
   it.each(['codex', 'claude-code', 'gemini-cli', 'generic', 'openai-compatible'])(
     'passes the composed peer_messages prompt to the %s adapter',
     async (agentName) => {
@@ -2559,7 +2595,10 @@ describe('crew serve — peer_messages integration', () => {
           state.prompts[0].peer_messages_input ?? [],
           h,
         );
-        expect(observedPrompt).toBe(`${expectedBlock}review this`);
+        const expectedPrompt = ['codex', 'claude-code'].includes(agentName)
+          ? `${expectedBlock}review this\n\n${WORKER_SEND_MESSAGE_FOOTER}`
+          : `${expectedBlock}review this`;
+        expect(observedPrompt).toBe(expectedPrompt);
       } finally {
         await h.close();
       }
@@ -4127,6 +4166,7 @@ describe('crew serve — cancel_run tool', () => {
         return (r.structuredContent as { status: string }).status === 'cancelled';
       });
       expect(abortFired).toBe(true);
+      expect(readRunAuthSidecar(h.crewHome, env.run_id).revoked).toBe(true);
     } finally {
       await h.close();
     }

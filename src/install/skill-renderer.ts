@@ -61,6 +61,7 @@ export const ITERATE_SKILL_DESCRIPTION =
 export interface SkillTool {
   readonly name: string;
   readonly description: string;
+  readonly mode?: 'captain' | 'worker' | 'both';
 }
 
 /**
@@ -247,7 +248,7 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
   const body = await loadSkillBody(packageRoot, skill.bodyFile);
   const templateRaw = await readFile(args.templatePath, 'utf-8');
 
-  const toolList = renderToolList(args.tools);
+  const toolList = renderToolList(captainSkillTools(args.tools));
   const crewWaitCommand = args.crewWaitCommand ?? 'crew-wait';
   const bodyWithTools = body
     .replace('{{TOOL_LIST}}', toolList)
@@ -276,6 +277,10 @@ export function renderToolList(tools: readonly SkillTool[]): string {
   return tools
     .map((t) => `- \`mcp__crew__${t.name}\` — ${t.description}`)
     .join('\n');
+}
+
+export function captainSkillTools(tools: readonly SkillTool[]): readonly SkillTool[] {
+  return tools.filter((tool) => tool.mode === undefined || tool.mode === 'captain' || tool.mode === 'both');
 }
 
 /**

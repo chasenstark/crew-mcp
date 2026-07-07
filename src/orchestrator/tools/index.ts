@@ -129,3 +129,10 @@ export {
   type ReviseCriteriaInput,
   type ReviseCriteriaOutput,
 } from './revise-criteria.js';
+export {
+  sendMessageInputSchema,
+  sendMessageToolHandler,
+  SEND_MESSAGE_DESCRIPTION,
+  type SendMessageInput,
+  type SendMessageToolDeps,
+} from './send-message.js';

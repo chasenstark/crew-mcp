@@ -31,7 +31,6 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import {
@@ -142,6 +141,11 @@ import {
   reviseCriteriaToolHandler,
   REVISE_CRITERIA_DESCRIPTION,
 } from '../../orchestrator/tools/revise-criteria.js';
+import {
+  sendMessageInputSchema,
+  sendMessageToolHandler,
+  SEND_MESSAGE_DESCRIPTION,
+} from '../../orchestrator/tools/send-message.js';
 import {
   classifyClient,
   type ClientKind,
@@ -600,13 +604,19 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   };
 
   if (workerAuth !== undefined) {
-    server.server.registerCapabilities({ tools: { listChanged: true } });
-    server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
+    server.registerTool(
+      'send_message',
+      {
+        description: SEND_MESSAGE_DESCRIPTION,
+        inputSchema: sendMessageInputSchema.shape,
+      },
+      async (args) => sendMessageToolHandler(args, { crewHome, workerAuth }),
+    );
     writeWorkerReadyMarker({
       crewHome,
       runId: workerAuth.run_id,
       serverInstance: captainServeInstance,
-      registeredTools: [],
+      registeredTools: ['send_message'],
     });
     return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
   }
