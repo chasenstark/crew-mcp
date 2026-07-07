@@ -10,6 +10,7 @@ import {
   setListRunsFsForTest,
 } from '../../../src/orchestrator/tools/list-runs.js';
 import type { RunStateV1, RunStatus } from '../../../src/orchestrator/run-state.js';
+import { appendMessage, transitionMessages } from '../../../src/orchestrator/captain-inbox/store.js';
 
 describe('listRuns', () => {
   let crewHome: string;
@@ -100,7 +101,10 @@ describe('listRuns', () => {
       },
     });
 
-    expect(listRuns({}, { crewHome, repoRoot })).toEqual({ runs: [] });
+    expect(listRuns({}, { crewHome, repoRoot })).toEqual({
+      runs: [],
+      captain_inbox_summary: { total_unread: 0, total_in_inbox: 0 },
+    });
   });
 
   it('sorts by completedAt, falls back to startedAt, and breaks ties by run_id descending', () => {
@@ -281,6 +285,33 @@ describe('listRuns', () => {
     expect(readFileCalls).toHaveLength(1);
   });
 
+  it('always includes captain inbox summary', async () => {
+    writeState({ runId: 'run-1', status: 'running', repoRoot });
+    const unread = await appendMessage({
+      crewHome,
+      message: inboxMessage(repoRoot, 1),
+      now: new Date('2026-07-06T00:00:01.000Z'),
+    });
+    const read = await appendMessage({
+      crewHome,
+      message: inboxMessage(repoRoot, 2),
+      now: new Date('2026-07-06T00:00:02.000Z'),
+    });
+    await transitionMessages({
+      crewHome,
+      repoRoot,
+      msgIds: [read.msg_id],
+      action: 'read',
+      now: new Date('2026-07-06T00:00:03.000Z'),
+    });
+
+    expect(listRuns({}, { crewHome, repoRoot }).captain_inbox_summary).toEqual({
+      total_unread: 1,
+      total_in_inbox: 2,
+      oldest_unread_at: unread.created_at,
+    });
+  });
+
   function writeState(args: {
     runId: string;
     status: RunStatus;
@@ -322,4 +353,16 @@ describe('listRuns', () => {
 
 function iso(minute: number): string {
   return `2026-05-09T00:${String(minute).padStart(2, '0')}:00.000Z`;
+}
+
+function inboxMessage(repoRoot: string, index: number) {
+  return {
+    to: { kind: 'captain' as const },
+    from: { kind: 'run' as const, run_id: `run-${index}`, agent_id: 'codex' },
+    kind: 'note' as const,
+    body: `body ${index}`,
+    worker_run_id_at_send: `run-${index}`,
+    worker_agent_id_at_send: 'codex',
+    repo_root_at_send: repoRoot,
+  };
 }

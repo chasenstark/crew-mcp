@@ -467,9 +467,12 @@ describe('crew serve — listTools surface', () => {
   it('exposes the captain tool surface without worker-only tools', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
+    expect(names).toHaveLength(18);
     expect(names).toEqual([
+      'acknowledge_messages',
       'aggregate_panel',
       'cancel_run',
+      'check_captain_inbox',
       'confirm_criteria',
       'continue_run',
       'create_criteria',
@@ -4061,6 +4064,7 @@ describe('crew serve — get_run_status tool', () => {
         commits: Array<{ sha: string; subject: string }>;
         commit_count: number;
         summary?: string;
+        worker_ready?: unknown;
       };
       expect(s.status).toBe('success');
       expect(s.filesChanged).toEqual([]);
@@ -4076,6 +4080,7 @@ describe('crew serve — get_run_status tool', () => {
         commits: [],
         commit_count: 0,
         summary: 'all done',
+        ...(s.worker_ready !== undefined ? { worker_ready: s.worker_ready } : {}),
       });
       // Verbatim prompt text AND per-turn summary are intentionally
       // elided from the wire payload — captains have what they sent
@@ -4950,6 +4955,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         status: string;
         events_tail: string[];
         next_event_line: number;
+        worker_ready?: unknown;
       };
       expect(s.status).toBe('running');
       expect(s.events_tail).toEqual([]);
@@ -5443,6 +5449,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         status: 'running',
         events_tail: [],
         next_event_line: 1,
+        ...(s.worker_ready !== undefined ? { worker_ready: s.worker_ready } : {}),
       });
 
       // Cleanup: complete the dispatch and verify the terminal

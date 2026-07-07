@@ -218,6 +218,7 @@ describe('CodexAdapter', () => {
       expect(args[0]).toBe('exec');
       expect(args).not.toContain('mcp_servers.crew.env.CREW_RUN_ID="codex-run-123"');
       expect(args).not.toContain(`mcp_servers.crew.env.CREW_RUN_TOKEN="${dispatchMcpEnv.CREW_RUN_TOKEN}"`);
+      expect(args).not.toContain('mcp_servers.crew.tools.send_message.approval_mode="approve"');
       expect(args).not.toContain(composedPrompt);
       expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
         buffer: false,
@@ -255,6 +256,8 @@ describe('CodexAdapter', () => {
         'mcp_servers.crew.env.CREW_RUN_ID="codex-run-123"',
         '-c',
         tokenOverride,
+        '-c',
+        'mcp_servers.crew.tools.send_message.approval_mode="approve"',
       ]);
       expect(tokenOverride).not.toContain('\\');
     });
@@ -344,6 +347,8 @@ describe('CodexAdapter', () => {
         'mcp_servers.crew.env.CREW_RUN_ID="codex-run-123"',
         '-c',
         `mcp_servers.crew.env.CREW_RUN_TOKEN="${dispatchMcpEnv.CREW_RUN_TOKEN}"`,
+        '-c',
+        'mcp_servers.crew.tools.send_message.approval_mode="approve"',
         'thread-1',
         '-',
       ]);

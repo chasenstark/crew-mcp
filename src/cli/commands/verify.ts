@@ -180,13 +180,22 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
     }
 
     // 2. Host config still has crew MCP block.
+    let config = '';
     if (!existsSync(entry.configPath)) {
       issues.push(`host config missing: ${entry.configPath}`);
     } else {
-      const config = await readFile(entry.configPath, 'utf-8');
+      config = await readFile(entry.configPath, 'utf-8');
       if (!adapter.hasMcpBlock(config)) {
         issues.push(`host config missing crew MCP block: ${entry.configPath}`);
       }
+    }
+
+    if (entry.autoApproved !== false) {
+      issues.push(...await verifyAutoApproval({
+        targetId,
+        config,
+        permissionsPath: adapter.permissionsPath?.(home),
+      }));
     }
 
     if (targetId === 'claude-code') {
@@ -325,7 +334,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     }
 
     if (entry.autoApproved !== false) {
-      issues.push(...await verifyProjectAutoApproval({
+      issues.push(...await verifyAutoApproval({
         targetId,
         config,
         permissionsPath: entry.permissionsPath,
@@ -502,7 +511,7 @@ function verifyProjectCommandPortable(args: {
   return issues;
 }
 
-async function verifyProjectAutoApproval(args: {
+async function verifyAutoApproval(args: {
   readonly targetId: HostId;
   readonly config: string;
   readonly permissionsPath?: string;
@@ -519,7 +528,7 @@ async function verifyProjectAutoApproval(args: {
   }
 
   if (args.targetId === 'codex') {
-    for (const tool of CAPTAIN_CATALOG_TOOLS) {
+    for (const tool of CATALOG_TOOLS) {
       const block = extractTomlBlock(args.config, `[mcp_servers.crew.tools.${tool.name}]`);
       if (!block || !/^approval_mode\s*=\s*"approve"/m.test(block)) {
         issues.push(`Codex config missing approval_mode = "approve" for ${tool.name}`);

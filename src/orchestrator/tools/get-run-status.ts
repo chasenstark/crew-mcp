@@ -203,6 +203,7 @@ type TerminalPromptRecord = {
   readonly turn: number;
   readonly startedAt: string;
   readonly completedAt?: string;
+  readonly peer_messages_count: number;
 };
 
 function buildGetRunStatusResponse(
@@ -247,6 +248,7 @@ function buildGetRunStatusResponse(
       status,
       events_tail: cappedLines,
       next_event_line: cursorAfterDelta,
+      ...(state.workerReady !== undefined ? { worker_ready: state.workerReady } : {}),
       ...legacyLogTail,
     };
     return getRunStatusContent(runId, payload);
@@ -256,6 +258,7 @@ function buildGetRunStatusResponse(
     turn: p.turn,
     startedAt: p.startedAt,
     ...(p.completedAt !== undefined ? { completedAt: p.completedAt } : {}),
+    peer_messages_count: p.peer_messages_input?.length ?? 0,
   }));
   const lastSummary = state.prompts.length > 0
     ? state.prompts[state.prompts.length - 1]?.summary
@@ -275,6 +278,7 @@ function buildGetRunStatusResponse(
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
     ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
     ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
+    ...(state.workerReady !== undefined ? { worker_ready: state.workerReady } : {}),
     // run_mode only when it isn't the default lifecycle; readOnly kept for
     // legacy consumers (it is the persisted !isMergeable shim, so it also
     // reads true for ephemeral_review — run_mode is the discriminator).

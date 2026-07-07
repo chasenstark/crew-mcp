@@ -7,6 +7,8 @@
 //   list_agents      — synchronous probe of the agent registry
 //   get_crew_preferences — read configured agent defaults
 //   list_runs        — recover persisted run records for the current repo
+//   check_captain_inbox / acknowledge_messages
+//                    — read and acknowledge worker messages to the captain
 //   run_agent        — dispatch into a fresh worktree (block-and-stream
 //                      with 60s async-fallback)
 //   continue_run     — re-invoke the agent in an existing worktree
@@ -54,6 +56,7 @@ import {
 } from '../../orchestrator/quota-cache.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRunsAndCriteriaSets, type RunGcArgs } from '../../orchestrator/run-gc.js';
+import { sweepExpiredMessages } from '../../orchestrator/captain-inbox/store.js';
 import {
   RunAuthError,
   validateRunAuthSidecar,
@@ -76,6 +79,16 @@ import {
   listRunsToolHandler,
   LIST_RUNS_DESCRIPTION,
 } from '../../orchestrator/tools/list-runs.js';
+import {
+  acknowledgeMessagesInputSchema,
+  acknowledgeMessagesToolHandler,
+  ACKNOWLEDGE_MESSAGES_DESCRIPTION,
+} from '../../orchestrator/tools/acknowledge-messages.js';
+import {
+  checkCaptainInboxInputSchema,
+  checkCaptainInboxToolHandler,
+  CHECK_CAPTAIN_INBOX_DESCRIPTION,
+} from '../../orchestrator/tools/check-captain-inbox.js';
 import {
   runAgentToolHandler,
   runAgentInputSchema,
@@ -621,6 +634,16 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
   }
 
+  void sweepExpiredMessages({
+    crewHome,
+    repoRoot: projectRoot,
+    force: true,
+  }).catch((err) => {
+    logger.warn(
+      `captain inbox sweep: failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+
   // ---- list_agents -----------------------------------------------------
   server.registerTool(
     'list_agents',
@@ -649,6 +672,26 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: listRunsInputSchema.shape,
     },
     async (args) => listRunsToolHandler(args, toolDeps),
+  );
+
+  // ---- check_captain_inbox --------------------------------------------
+  server.registerTool(
+    'check_captain_inbox',
+    {
+      description: CHECK_CAPTAIN_INBOX_DESCRIPTION,
+      inputSchema: checkCaptainInboxInputSchema.shape,
+    },
+    async (args) => checkCaptainInboxToolHandler(args, toolDeps),
+  );
+
+  // ---- acknowledge_messages -------------------------------------------
+  server.registerTool(
+    'acknowledge_messages',
+    {
+      description: ACKNOWLEDGE_MESSAGES_DESCRIPTION,
+      inputSchema: acknowledgeMessagesInputSchema.shape,
+    },
+    async (args) => acknowledgeMessagesToolHandler(args, toolDeps),
   );
 
   // ---- run_agent -------------------------------------------------------

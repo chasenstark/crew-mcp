@@ -58,6 +58,15 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     expect(captainSkillTools(CATALOG_TOOLS).map((tool) => tool.name)).not.toContain('send_message');
   });
 
+  it('declares captain inbox tools as captain catalog tools', () => {
+    for (const toolName of ['check_captain_inbox', 'acknowledge_messages']) {
+      const entry = CATALOG_TOOLS.find((tool) => tool.name === toolName);
+      expect(entry).toBeDefined();
+      expect(entry?.mode).toBe('captain');
+      expect(captainSkillTools(CATALOG_TOOLS).map((tool) => tool.name)).toContain(toolName);
+    }
+  });
+
   it('declares panel tools in both the catalog and tools/index barrel', () => {
     const catalogNames = CATALOG_TOOLS.map((tool) => tool.name);
     for (const toolName of ['run_panel', 'get_panel_status', 'aggregate_panel']) {
@@ -69,6 +78,10 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     expect(toolsIndex.getPanelStatusHandler).toBeDefined();
     expect(toolsIndex.aggregatePanelInputSchema).toBeDefined();
     expect(toolsIndex.aggregatePanelHandler).toBeDefined();
+    expect(toolsIndex.checkCaptainInboxInputSchema).toBeDefined();
+    expect(toolsIndex.checkCaptainInboxToolHandler).toBeDefined();
+    expect(toolsIndex.acknowledgeMessagesInputSchema).toBeDefined();
+    expect(toolsIndex.acknowledgeMessagesToolHandler).toBeDefined();
   });
 
   it('uses the on-demand get_run_status description from the tool source', () => {

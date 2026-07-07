@@ -13,8 +13,10 @@
  */
 
 import {
+  ACKNOWLEDGE_MESSAGES_DESCRIPTION,
   AGGREGATE_PANEL_DESCRIPTION,
   CANCEL_RUN_DESCRIPTION,
+  CHECK_CAPTAIN_INBOX_DESCRIPTION,
   CONFIRM_CRITERIA_DESCRIPTION,
   CONTINUE_RUN_DESCRIPTION,
   CREATE_CRITERIA_DESCRIPTION,
@@ -37,6 +39,8 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'list_agents', description: LIST_AGENTS_DESCRIPTION },
   { name: 'get_crew_preferences', description: GET_CREW_PREFERENCES_DESCRIPTION },
   { name: 'list_runs', description: LIST_RUNS_DESCRIPTION },
+  { name: 'check_captain_inbox', description: CHECK_CAPTAIN_INBOX_DESCRIPTION, mode: 'captain' },
+  { name: 'acknowledge_messages', description: ACKNOWLEDGE_MESSAGES_DESCRIPTION, mode: 'captain' },
   { name: 'run_agent', description: RUN_AGENT_DESCRIPTION },
   { name: 'continue_run', description: CONTINUE_RUN_DESCRIPTION },
   { name: 'merge_run', description: MERGE_RUN_DESCRIPTION },

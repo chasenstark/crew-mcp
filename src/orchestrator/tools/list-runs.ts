@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import { runModeFromState } from '../run-mode.js';
+import { summarizeInbox, type InboxSummary } from '../captain-inbox/store.js';
 import {
   quarantineCorruptRunState,
   type RunStateV1,
@@ -71,6 +72,7 @@ export interface ListRunsEntry {
 
 export interface ListRunsOutput {
   readonly runs: readonly ListRunsEntry[];
+  readonly captain_inbox_summary: InboxSummary;
 }
 
 export interface ListRunsContext {
@@ -118,8 +120,9 @@ export function listRuns(
   ctx: ListRunsContext,
 ): ListRunsOutput {
   const runsBasePath = join(ctx.crewHome, 'runs');
+  const captainInboxSummary = summarizeInbox({ crewHome: ctx.crewHome, repoRoot: ctx.repoRoot });
   if (!listRunsFs.existsSync(runsBasePath)) {
-    return { runs: [] };
+    return { runs: [], captain_inbox_summary: captainInboxSummary };
   }
 
   const repoRoot = resolveRepoRoot(ctx.repoRoot);
@@ -133,7 +136,7 @@ export function listRuns(
   try {
     entries = listRunsFs.readdirSync(runsBasePath, { withFileTypes: true });
   } catch {
-    return { runs: [] };
+    return { runs: [], captain_inbox_summary: captainInboxSummary };
   }
   const seenRunIds = new Set<string>();
   for (const entry of entries) {
@@ -153,6 +156,7 @@ export function listRuns(
   states.sort(compareRunStateNewestFirst);
 
   return {
+    captain_inbox_summary: captainInboxSummary,
     runs: states.slice(0, limit).map((state) => ({
       run_id: state.runId,
       agent_id: state.agentId,

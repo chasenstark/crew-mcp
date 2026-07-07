@@ -543,6 +543,8 @@ export class CodexAdapter implements AgentAdapter {
           `mcp_servers.crew.env.CREW_RUN_ID="${task.dispatchMcpEnv.CREW_RUN_ID}"`,
           '-c',
           `mcp_servers.crew.env.CREW_RUN_TOKEN="${task.dispatchMcpEnv.CREW_RUN_TOKEN}"`,
+          '-c',
+          'mcp_servers.crew.tools.send_message.approval_mode="approve"',
         );
       }
       if (resumeSessionId) {

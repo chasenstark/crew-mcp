@@ -91,6 +91,7 @@ import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import { logger } from '../../utils/logger.js';
 
 const CAPTAIN_CATALOG_TOOLS = captainSkillTools(CATALOG_TOOLS);
+const APPROVAL_CATALOG_TOOL_NAMES = CATALOG_TOOLS.map((t) => t.name);
 
 /**
  * Test seam for the interactive target picker. Production uses
@@ -448,8 +449,11 @@ export async function installSingleTarget(args: {
     const approvalExisting = existsSync(approvalFile)
       ? await readFile(approvalFile, 'utf-8')
       : '';
+    // Approval consent is per-install for the whole crew surface. Worker-only
+    // tools are inert in captain serve, but Codex workers share this installed
+    // entry and need their approval blocks for headless sends.
     const approvalUpdated = autoApprove
-      ? adapter.writeAutoApproval(approvalExisting, CAPTAIN_CATALOG_TOOLS.map((t) => t.name))
+      ? adapter.writeAutoApproval(approvalExisting, APPROVAL_CATALOG_TOOL_NAMES)
       : adapter.clearAutoApproval(approvalExisting);
     if (approvalUpdated !== approvalExisting) {
       writeFileAtomic(approvalFile, approvalUpdated);
@@ -545,8 +549,11 @@ export async function installSingleProjectTarget(args: {
     const approvalExisting = existsSync(approvalFile)
       ? await readFile(approvalFile, 'utf-8')
       : '';
+    // Approval consent is per-install for the whole crew surface. Worker-only
+    // tools are inert in captain serve, but Codex workers share this installed
+    // entry and need their approval blocks for headless sends.
     const approvalUpdated = autoApprove
-      ? adapter.writeAutoApproval(approvalExisting, CAPTAIN_CATALOG_TOOLS.map((t) => t.name))
+      ? adapter.writeAutoApproval(approvalExisting, APPROVAL_CATALOG_TOOL_NAMES)
       : adapter.clearAutoApproval(approvalExisting);
     if (approvalUpdated !== approvalExisting) {
       writeFileAtomic(approvalFile, approvalUpdated);

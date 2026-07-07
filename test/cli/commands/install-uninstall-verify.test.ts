@@ -258,6 +258,29 @@ describe('install / verify / uninstall — happy path', () => {
     expect(report.targets[0].issues).toEqual([]);
   });
 
+  it('verify reports drift when global Codex is missing send_message auto-approval', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const configPath = HOST_ADAPTERS.codex.configPath(home);
+    const config = readFileSync(configPath, 'utf-8').replace(
+      /\n?\[mcp_servers\.crew\.tools\.send_message\]\napproval_mode = "approve"\n?/,
+      '\n',
+    );
+    writeFileSync(configPath, config, 'utf-8');
+
+    const report = await verifyCommand({ target: 'codex', home });
+
+    expect(report.ok).toBe(false);
+    expect(report.targets[0].issues).toContain(
+      'Codex config missing approval_mode = "approve" for send_message',
+    );
+  });
+
   it('verify checks Claude Code crew-wait allowlist against the stored command', async () => {
     const adapter = HOST_ADAPTERS['claude-code'];
     await installCommand({
@@ -551,9 +574,10 @@ describe('install / verify / uninstall — happy path', () => {
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
     });
     const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
-    // All 6 catalog tools get pre-approval blocks.
-    for (const tool of ['list_agents', 'run_agent', 'continue_run', 'merge_run', 'discard_run', 'get_run_status']) {
-      expect(config).toContain(`[mcp_servers.crew.tools.${tool}]\napproval_mode = "approve"`);
+    // The full catalog gets pre-approval blocks, including worker-only tools
+    // that are inert for captains but required by headless Codex workers.
+    for (const tool of CATALOG_TOOLS) {
+      expect(config).toContain(`[mcp_servers.crew.tools.${tool.name}]\napproval_mode = "approve"`);
     }
     // Manifest records that auto-approval was applied.
     const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {

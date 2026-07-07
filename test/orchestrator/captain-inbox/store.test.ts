@@ -6,8 +6,10 @@ import { describe, expect, it } from 'vitest';
 import {
   appendMessage,
   CaptainInboxError,
+  clearCaptainInboxSweepStateForTest,
   inboxRepoDir,
   listMessages,
+  sweepExpiredMessages,
   transitionMessages,
 } from '../../../src/orchestrator/captain-inbox/store.js';
 
@@ -154,7 +156,7 @@ describe('captain inbox store', () => {
         .toEqual([good.msg_id]);
 
       const outsidePath = join(dir, '..', '..', 'outside.json');
-      await transitionMessages({
+      const result = await transitionMessages({
         crewHome: h.crewHome,
         repoRoot: h.repoRoot,
         msgIds: [good.msg_id, traversalName],
@@ -162,6 +164,11 @@ describe('captain inbox store', () => {
         now: new Date('2026-07-06T00:00:03.000Z'),
       });
 
+      expect(result).toEqual({
+        acknowledged: [good.msg_id],
+        not_found: [traversalName],
+        already_in_target_state: [],
+      });
       expect(existsSync(outsidePath)).toBe(false);
       expect(JSON.parse(readFileSync(mismatchedPath, 'utf-8'))).toMatchObject({
         msg_id: good.msg_id,
@@ -169,6 +176,135 @@ describe('captain inbox store', () => {
       });
     } finally {
       h.cleanup();
+    }
+  });
+
+  it('sweeps only expired read and dismissed messages', async () => {
+    clearCaptainInboxSweepStateForTest();
+    const h = tempRoot();
+    try {
+      const oldUnread = await appendMessage({
+        crewHome: h.crewHome,
+        message: { ...message(h.repoRoot, 1), created_at: '2026-06-01T00:00:00.000Z' },
+      });
+      const oldRead = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 2) });
+      const freshRead = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 3) });
+      const oldDismissed = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 4) });
+      await transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: [oldRead.msg_id],
+        action: 'read',
+        now: new Date('2026-06-01T00:00:00.000Z'),
+      });
+      await transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: [freshRead.msg_id],
+        action: 'read',
+        now: new Date('2026-07-05T00:00:00.000Z'),
+      });
+      await transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: [oldDismissed.msg_id],
+        action: 'dismiss',
+        now: new Date('2026-06-01T00:00:00.000Z'),
+      });
+
+      const sweep = await sweepExpiredMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        now: new Date('2026-07-06T00:00:00.000Z'),
+      });
+
+      expect(sweep).toEqual({ swept: 2, skipped: false });
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot }).map((m) => m.msg_id))
+        .toEqual([oldUnread.msg_id, freshRead.msg_id]);
+    } finally {
+      h.cleanup();
+      clearCaptainInboxSweepStateForTest();
+    }
+  });
+
+  it('honors retention env override and cooldown skips immediate second sweep', async () => {
+    clearCaptainInboxSweepStateForTest();
+    const h = tempRoot();
+    try {
+      const expired = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 1) });
+      await transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: [expired.msg_id],
+        action: 'read',
+        now: new Date('2026-07-04T00:00:00.000Z'),
+      });
+      expect(await sweepExpiredMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        now: new Date('2026-07-06T00:00:00.000Z'),
+        env: { CREW_CAPTAIN_INBOX_RETENTION_DAYS: '1' } as NodeJS.ProcessEnv,
+      })).toEqual({ swept: 1, skipped: false });
+
+      const secondExpired = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 2) });
+      await transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: [secondExpired.msg_id],
+        action: 'dismiss',
+        now: new Date('2026-07-04T00:00:00.000Z'),
+      });
+
+      expect(await sweepExpiredMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        now: new Date('2026-07-06T00:00:01.000Z'),
+        env: { CREW_CAPTAIN_INBOX_RETENTION_DAYS: '1' } as NodeJS.ProcessEnv,
+      })).toEqual({ swept: 0, skipped: true });
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot }).map((m) => m.msg_id))
+        .toEqual([secondExpired.msg_id]);
+    } finally {
+      h.cleanup();
+      clearCaptainInboxSweepStateForTest();
+    }
+  });
+
+  it('serializes sweep and transition without corrupting files', async () => {
+    clearCaptainInboxSweepStateForTest();
+    const h = tempRoot();
+    try {
+      const unread = await appendMessage({
+        crewHome: h.crewHome,
+        message: { ...message(h.repoRoot, 1), created_at: '2026-06-01T00:00:00.000Z' },
+      });
+
+      const [transition] = await Promise.all([
+        transitionMessages({
+          crewHome: h.crewHome,
+          repoRoot: h.repoRoot,
+          msgIds: [unread.msg_id],
+          action: 'read',
+          now: new Date('2026-07-06T00:00:00.000Z'),
+        }),
+        sweepExpiredMessages({
+          crewHome: h.crewHome,
+          repoRoot: h.repoRoot,
+          now: new Date('2026-07-06T00:00:00.000Z'),
+          force: true,
+        }),
+      ]);
+
+      expect([
+        transition.acknowledged.includes(unread.msg_id),
+        transition.not_found.includes(unread.msg_id),
+        transition.already_in_target_state.includes(unread.msg_id),
+      ].filter(Boolean)).toHaveLength(1);
+      const remaining = listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot });
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].msg_id).toBe(unread.msg_id);
+    } finally {
+      h.cleanup();
+      clearCaptainInboxSweepStateForTest();
     }
   });
 });

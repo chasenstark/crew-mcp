@@ -1,5 +1,5 @@
-// Tool barrel for the sixteen-tool MCP surface (run lifecycle, panels,
-// criteria, preferences). Live registration happens in
+// Tool barrel for the MCP surface (run lifecycle, panels, criteria,
+// preferences, and captain inbox). Live registration happens in
 // src/cli/commands/serve.ts; src/install/tool-catalog.ts mirrors this
 // surface for install-time parity, and the parity test consumes this
 // barrel via a namespace import. Retired v0.1 tool history:
@@ -25,6 +25,20 @@ export {
   type QuotaSnapshot,
   type QuotaState,
 } from './list-agents.js';
+export {
+  acknowledgeMessagesInputSchema,
+  acknowledgeMessagesToolHandler,
+  ACKNOWLEDGE_MESSAGES_DESCRIPTION,
+  type AcknowledgeMessagesInput,
+  type AcknowledgeMessagesOutput,
+} from './acknowledge-messages.js';
+export {
+  checkCaptainInboxInputSchema,
+  checkCaptainInboxToolHandler,
+  CHECK_CAPTAIN_INBOX_DESCRIPTION,
+  type CheckCaptainInboxInput,
+  type CheckCaptainInboxOutput,
+} from './check-captain-inbox.js';
 export {
   getCrewPreferencesHandler,
   getCrewPreferencesInputSchema,

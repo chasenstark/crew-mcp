@@ -157,4 +157,76 @@ describe('getRunStatusToolHandler', () => {
     expect(response.structuredContent).toMatchObject({ status: 'running' });
     releasePersist.resolve();
   });
+
+  it('surfaces peer message counts and worker_ready', async () => {
+    await store.create({
+      runId: 'r-peer-ready',
+      agentId: 'codex',
+      worktreePath: '/wt/r-peer-ready',
+      initialPrompt: 'go',
+      initialPeerMessagesInput: [
+        { kind: 'note', body: 'one', from_label: 'reviewer-a' },
+        { kind: 'status', body: 'two', from_label: 'reviewer-b' },
+      ],
+    });
+    await store.setWorkerReady('r-peer-ready', {
+      status: 'ready',
+      markerObservedAt: '2026-07-06T00:00:01.000Z',
+      markerServerPid: 12345,
+      markerServerInstance: 'worker-server',
+    });
+    await store.markTerminal('r-peer-ready', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: [],
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-peer-ready' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+
+    expect(response.structuredContent).toMatchObject({
+      status: 'success',
+      worker_ready: {
+        status: 'ready',
+        markerServerPid: 12345,
+        markerServerInstance: 'worker-server',
+      },
+      prompts: [
+        {
+          turn: 1,
+          peer_messages_count: 2,
+        },
+      ],
+    });
+  });
+
+  it('emits peer_messages_count as 0 when a prompt has no peer messages', async () => {
+    await store.create({
+      runId: 'r-no-peer',
+      agentId: 'codex',
+      worktreePath: '/wt/r-no-peer',
+      initialPrompt: 'go',
+    });
+    await store.markTerminal('r-no-peer', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: [],
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-no-peer' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+
+    expect(response.structuredContent).toMatchObject({
+      prompts: [
+        {
+          turn: 1,
+          peer_messages_count: 0,
+        },
+      ],
+    });
+  });
 });

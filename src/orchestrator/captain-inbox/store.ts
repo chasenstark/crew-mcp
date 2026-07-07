@@ -24,6 +24,8 @@ import {
 } from './schema.js';
 
 export type CaptainInboxErrorCode = 'inbox_full' | 'inbox_total_full';
+export const CAPTAIN_INBOX_RETENTION_DAYS = 7;
+export const CAPTAIN_INBOX_SWEEP_COOLDOWN_MS = 10 * 60 * 1000;
 
 export class CaptainInboxError extends Error {
   readonly code: CaptainInboxErrorCode;
@@ -51,6 +53,28 @@ export interface TransitionMessagesArgs {
   readonly action: 'read' | 'dismiss';
   readonly now?: Date;
 }
+
+export interface TransitionMessagesResult {
+  readonly acknowledged: readonly string[];
+  readonly not_found: readonly string[];
+  readonly already_in_target_state: readonly string[];
+}
+
+export interface InboxSummary {
+  readonly total_unread: number;
+  readonly total_in_inbox: number;
+  readonly oldest_unread_at?: string;
+}
+
+export interface SweepExpiredMessagesArgs {
+  readonly crewHome: string;
+  readonly repoRoot: string;
+  readonly now?: Date;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly force?: boolean;
+}
+
+let lastSweepAtMsByRepo = new Map<string, number>();
 
 export function inboxRepoDir(crewHome: string, repoRoot: string): string {
   return join(crewHome, 'captain-inbox', repoHash(repoRoot));
@@ -95,6 +119,13 @@ export function listMessages(args: {
   readonly crewHome: string;
   readonly repoRoot: string;
 }): readonly CaptainInboxMessage[] {
+  return collectMessages(args).sort((a, b) => a.msg_id.localeCompare(b.msg_id));
+}
+
+function collectMessages(args: {
+  readonly crewHome: string;
+  readonly repoRoot: string;
+}): CaptainInboxMessage[] {
   const dir = inboxRepoDir(args.crewHome, args.repoRoot);
   if (!existsSync(dir)) return [];
   const messages: CaptainInboxMessage[] = [];
@@ -102,31 +133,99 @@ export function listMessages(args: {
     const parsed = readMessageFile(dir, entry);
     if (parsed !== undefined) messages.push(parsed.message);
   }
-  return messages.sort((a, b) => a.msg_id.localeCompare(b.msg_id));
+  return messages;
 }
 
-export async function transitionMessages(args: TransitionMessagesArgs): Promise<readonly CaptainInboxMessage[]> {
+export function summarizeInbox(args: {
+  readonly crewHome: string;
+  readonly repoRoot: string;
+}): InboxSummary {
+  const summary = { total: 0, unread: 0, oldestUnreadAt: undefined as string | undefined };
+  for (const message of collectMessages(args)) {
+    summary.total += 1;
+    if (message.status === 'unread') {
+      summary.unread += 1;
+      if (summary.oldestUnreadAt === undefined || message.created_at < summary.oldestUnreadAt) {
+        summary.oldestUnreadAt = message.created_at;
+      }
+    }
+  }
+  return {
+    total_unread: summary.unread,
+    total_in_inbox: summary.total,
+    ...(summary.oldestUnreadAt !== undefined ? { oldest_unread_at: summary.oldestUnreadAt } : {}),
+  };
+}
+
+export async function transitionMessages(args: TransitionMessagesArgs): Promise<TransitionMessagesResult> {
   const dir = inboxRepoDir(args.crewHome, args.repoRoot);
   mkdirSync(dir, { recursive: true });
   const targetIds = new Set(args.msgIds);
-  if (targetIds.size === 0) return [];
+  if (targetIds.size === 0) {
+    return { acknowledged: [], not_found: [], already_in_target_state: [] };
+  }
   const timestamp = (args.now ?? new Date()).toISOString();
+  const targetStatus = args.action === 'read' ? 'read' : 'dismissed';
 
   return withInboxLock(dir, async () => {
-    const updated: CaptainInboxMessage[] = [];
+    const seen = new Set<string>();
+    const acknowledged: string[] = [];
+    const alreadyInTargetState: string[] = [];
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const parsed = readMessageFile(dir, entry);
       if (parsed === undefined || !targetIds.has(parsed.message.msg_id)) continue;
+      seen.add(parsed.message.msg_id);
+      if (parsed.message.status === targetStatus) {
+        alreadyInTargetState.push(parsed.message.msg_id);
+        continue;
+      }
 
       const next: CaptainInboxMessage = {
         ...parsed.message,
-        status: args.action === 'read' ? 'read' : 'dismissed',
+        status: targetStatus,
         ...(args.action === 'read' ? { read_at: timestamp } : { dismissed_at: timestamp }),
       };
       writeMessageAtomicAtPath(parsed.path, next);
-      updated.push(next);
+      acknowledged.push(next.msg_id);
     }
-    return updated.sort((a, b) => a.msg_id.localeCompare(b.msg_id));
+    const notFound = Array.from(targetIds).filter((id) => !seen.has(id));
+    return {
+      acknowledged: acknowledged.sort(),
+      not_found: notFound.sort(),
+      already_in_target_state: alreadyInTargetState.sort(),
+    };
+  });
+}
+
+export async function sweepExpiredMessages(args: SweepExpiredMessagesArgs): Promise<{
+  readonly swept: number;
+  readonly skipped: boolean;
+}> {
+  const dir = inboxRepoDir(args.crewHome, args.repoRoot);
+  if (!existsSync(dir)) return { swept: 0, skipped: false };
+  const now = args.now ?? new Date();
+  const nowMs = now.getTime();
+  const key = dir;
+  const lastSweepAtMs = lastSweepAtMsByRepo.get(key);
+  // Ten minutes keeps opportunistic checks cheap on hot inboxes while still
+  // making retention converge promptly during active captain sessions.
+  if (args.force !== true && lastSweepAtMs !== undefined && nowMs - lastSweepAtMs < CAPTAIN_INBOX_SWEEP_COOLDOWN_MS) {
+    return { swept: 0, skipped: true };
+  }
+  lastSweepAtMsByRepo.set(key, nowMs);
+  const cutoffMs = nowMs - getRetentionDays(args.env ?? process.env) * 24 * 60 * 60 * 1000;
+
+  return withInboxLock(dir, async () => {
+    let swept = 0;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const parsed = readMessageFile(dir, entry);
+      if (parsed === undefined) continue;
+      const timestamp = sweepTimestamp(parsed.message);
+      if (timestamp === undefined || Date.parse(timestamp) >= cutoffMs) continue;
+      unlinkSync(parsed.path);
+      swept += 1;
+    }
+    return { swept, skipped: false };
   });
 }
 
@@ -144,6 +243,12 @@ function countMessages(dir: string): { readonly total: number; readonly unread: 
     if (parsed.message.status === 'unread') unread += 1;
   }
   return { total, unread };
+}
+
+function sweepTimestamp(message: CaptainInboxMessage): string | undefined {
+  if (message.status === 'read') return message.read_at;
+  if (message.status === 'dismissed') return message.dismissed_at;
+  return undefined;
 }
 
 function writeMessageAtomic(dir: string, message: CaptainInboxMessage): void {
@@ -223,6 +328,18 @@ function getPositiveIntegerEnv(
     return fallback;
   }
   return Math.floor(parsed);
+}
+
+function getRetentionDays(env: NodeJS.ProcessEnv): number {
+  return getPositiveIntegerEnv(
+    'CREW_CAPTAIN_INBOX_RETENTION_DAYS',
+    CAPTAIN_INBOX_RETENTION_DAYS,
+    env,
+  );
+}
+
+export function clearCaptainInboxSweepStateForTest(): void {
+  lastSweepAtMsByRepo = new Map<string, number>();
 }
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
