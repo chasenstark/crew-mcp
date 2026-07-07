@@ -18,6 +18,9 @@ import { fileURLToPath } from 'url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
+import { CATALOG_TOOLS } from '../../../src/install/tool-catalog.js';
+import { captainSkillTools } from '../../../src/install/skill-renderer.js';
+
 const here = fileURLToPath(new URL('.', import.meta.url));
 const distPath = join(here, '..', '..', '..', 'dist', 'index.js');
 const hasBuild = existsSync(distPath);
@@ -33,24 +36,16 @@ describe.skipIf(!hasBuild)('crew-mcp serve — subprocess wire protocol', () => 
       await client.connect(transport);
       const result = await client.listTools();
       const names = result.tools.map((t) => t.name).sort();
-      expect(names).toEqual([
-        'aggregate_panel',
-        'cancel_run',
-        'confirm_criteria',
-        'continue_run',
-        'create_criteria',
-        'discard_run',
-        'get_crew_preferences',
-        'get_criteria',
-        'get_panel_status',
-        'get_run_status',
-        'list_agents',
-        'list_runs',
-        'merge_run',
-        'revise_criteria',
-        'run_agent',
-        'run_panel',
-      ]);
+      // Derived from the catalog (captain modes only) rather than a
+      // hand-copied list: this test proves the built dist speaks stdio
+      // framing and serves the current captain surface; name-level parity
+      // against explicit lists lives in serve.test.ts and
+      // tool-catalog.test.ts. A mismatch here usually means dist/ is stale
+      // relative to src/ — rebuild before publishing.
+      const expected = captainSkillTools(CATALOG_TOOLS)
+        .map((t) => t.name)
+        .sort();
+      expect(names).toEqual(expected);
     } finally {
       await client.close();
     }
