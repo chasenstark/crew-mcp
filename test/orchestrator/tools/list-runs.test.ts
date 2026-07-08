@@ -285,6 +285,38 @@ describe('listRuns', () => {
     expect(realpathCalls).toEqual([]);
   });
 
+  it('does not retain full parsed state for cross-repo records', () => {
+    const resolvedRepoRoot = realpathSync(repoRoot);
+    const resolvedOtherRepoRoot = realpathSync(otherRepoRoot);
+    writeState({ runId: 'current-repo-run', status: 'running', repoRoot: resolvedRepoRoot });
+    writeState({ runId: 'other-repo-run', status: 'running', repoRoot: resolvedOtherRepoRoot });
+    clearListRunsCachesForTest();
+    const readFileCalls: string[] = [];
+    resetListRunsFs = setListRunsFsForTest({
+      readFileSync(path, encoding) {
+        readFileCalls.push(path);
+        return fs.readFileSync(path, encoding);
+      },
+    });
+
+    expect(
+      listRuns({}, { crewHome, repoRoot: resolvedRepoRoot }).runs.map((run) => run.run_id),
+    ).toEqual(['current-repo-run']);
+    expect(readFileCalls).toHaveLength(2);
+
+    readFileCalls.length = 0;
+    expect(
+      listRuns({}, { crewHome, repoRoot: resolvedRepoRoot }).runs.map((run) => run.run_id),
+    ).toEqual(['current-repo-run']);
+    expect(readFileCalls).toEqual([]);
+
+    expect(
+      listRuns({}, { crewHome, repoRoot: resolvedOtherRepoRoot }).runs.map((run) => run.run_id),
+    ).toEqual(['other-repo-run']);
+    expect(readFileCalls).toHaveLength(1);
+    expect(readFileCalls[0]).toContain('other-repo-run');
+  });
+
   it('re-parses cached state when state.json mtime changes', () => {
     writeState({ runId: 'run-updated', status: 'running', repoRoot });
     clearListRunsCachesForTest();

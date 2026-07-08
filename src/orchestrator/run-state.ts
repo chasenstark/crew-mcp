@@ -634,6 +634,10 @@ export class RunStateStore {
     return state;
   }
 
+  dropParsedStateCache(runId: string): void {
+    this.parsedStateCache.delete(runId);
+  }
+
   /**
    * Locked atomic update: read, transform, write. Throws if the run doesn't
    * exist (callers should `read` first when they want soft-handling).

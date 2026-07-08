@@ -8,6 +8,7 @@ import {
   type PanelStateV1,
 } from '../../../src/orchestrator/panels/schema.js';
 import {
+  gcPanelStates,
   panelDir,
   readPanelState,
   snapshotPanelReviewerTerminal,
@@ -86,4 +87,98 @@ describe('panel store', () => {
       filesChanged: [],
     })).toThrow(/^run_panel\.snapshot_missing_reviewer:/);
   });
+
+  it('gcPanelStates deletes panels after the newest reviewer terminal snapshot TTL', () => {
+    const crewHome = root;
+    const oldDir = panelDir(crewHome, 'old-panel');
+    const freshDir = panelDir(crewHome, 'fresh-panel');
+    mkdirSync(oldDir, { recursive: true });
+    mkdirSync(freshDir, { recursive: true });
+    writePanelStateAtomic(oldDir, {
+      ...state('old-panel'),
+      reviewers: [
+        terminalReviewer('run-1', '2026-01-01T00:00:00.000Z'),
+        terminalReviewer('run-2', '2026-01-02T00:00:00.000Z'),
+      ],
+    });
+    writePanelStateAtomic(freshDir, {
+      ...state('fresh-panel'),
+      reviewers: [terminalReviewer('run-3', '2026-01-09T00:00:00.000Z')],
+    });
+
+    const deleted = gcPanelStates(
+      crewHome,
+      7 * 24 * 60 * 60 * 1000,
+      Date.parse('2026-01-10T00:00:00.000Z'),
+    );
+
+    expect(deleted).toBe(1);
+    expect(existsSync(oldDir)).toBe(false);
+    expect(existsSync(freshDir)).toBe(true);
+  });
+
+  it('gcPanelStates skips panels with incomplete reviewer terminal snapshots', () => {
+    const crewHome = root;
+    const dir = panelDir(crewHome, 'pending-panel');
+    mkdirSync(dir, { recursive: true });
+    writePanelStateAtomic(dir, {
+      ...state('pending-panel'),
+      reviewers: [
+        terminalReviewer('run-1', '2026-01-01T00:00:00.000Z'),
+        {
+          runId: null,
+          agentId: 'reviewer-2',
+          dispatched: false,
+          pending: true,
+          dispatchWarnings: [],
+        },
+      ],
+    });
+
+    const deleted = gcPanelStates(
+      crewHome,
+      7 * 24 * 60 * 60 * 1000,
+      Date.parse('2026-01-10T00:00:00.000Z'),
+    );
+
+    expect(deleted).toBe(0);
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('gcPanelStates evicts parsed panel cache entries after deletion', () => {
+    const crewHome = root;
+    const dir = panelDir(crewHome, 'cached-panel');
+    mkdirSync(dir, { recursive: true });
+    writePanelStateAtomic(dir, {
+      ...state('cached-panel'),
+      reviewers: [terminalReviewer('run-1', '2026-01-01T00:00:00.000Z')],
+    });
+    expect(readPanelState(dir)?.panelId).toBe('cached-panel');
+
+    expect(gcPanelStates(
+      crewHome,
+      7 * 24 * 60 * 60 * 1000,
+      Date.parse('2026-01-10T00:00:00.000Z'),
+    )).toBe(1);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'panel.json'), JSON.stringify(state('replacement-panel')), 'utf-8');
+
+    expect(readPanelState(dir)?.panelId).toBe('replacement-panel');
+  });
 });
+
+function terminalReviewer(runId: string, completedAt: string): PanelStateV1['reviewers'][number] {
+  return {
+    runId,
+    agentId: `agent-${runId}`,
+    dispatched: true,
+    dispatchedAt: '2026-01-01T00:00:00.000Z',
+    dispatchWarnings: [],
+    terminalSnapshot: {
+      status: 'success',
+      summary: 'done',
+      filesChanged: [],
+      completedAt,
+    },
+  };
+}

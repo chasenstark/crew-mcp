@@ -584,7 +584,6 @@ export class AgyAdapter implements AgentAdapter {
           ? Math.round(envelope.duration_seconds * 1000)
           : undefined,
         numTurns: typeof envelope.num_turns === 'number' ? envelope.num_turns : undefined,
-        rawEvents: [{ stdout: stdoutText, stderr: stderrText }],
       },
     };
   }

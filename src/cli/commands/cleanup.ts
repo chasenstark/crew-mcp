@@ -23,6 +23,7 @@ import {
   type RunGcOutcome,
 } from '../../orchestrator/run-gc.js';
 import { gcCriteriaSets } from '../../orchestrator/criteria/store.js';
+import { gcPanelStates } from '../../orchestrator/panels/store.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 
 export interface CleanupCommandOptions {
@@ -111,6 +112,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     runDirsDeleted: 0,
     runDirsPending: 0,
     criteriaSetsDeleted: 0,
+    panelStatesDeleted: 0,
   };
   const allOutcomes: RunGcOutcome[] = [];
 
@@ -135,6 +137,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
   }
   if (!opts.dryRun) {
     totals.criteriaSetsDeleted = gcCriteriaSets(crewHome, criteriaSetTtlMs, opts.now);
+    totals.panelStatesDeleted = gcPanelStates(crewHome, criteriaSetTtlMs, opts.now);
   }
 
   if (opts.dryRun && allOutcomes.length > 0) {
@@ -154,7 +157,8 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
       `\nWould reclaim: ${totals.worktreesReclaimed} worktree(s)`
       + ` (${totals.branchesDeleted} merged branch(es) deleted), `
       + `${totals.runDirsDeleted} run-dir(s) now, `
-      + `${totals.criteriaSetsDeleted} criteria set(s).\n`,
+      + `${totals.criteriaSetsDeleted} criteria set(s), `
+      + `${totals.panelStatesDeleted} panel state(s).\n`,
     );
     if (totals.runDirsPending > 0) {
       stdout.write(
@@ -167,12 +171,14 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
       `\nReclaimed: ${totals.worktreesReclaimed} worktree(s)`
       + ` (${totals.branchesDeleted} merged branch(es) deleted), `
       + `${totals.runDirsDeleted} run-dir(s) deleted, `
-      + `${totals.criteriaSetsDeleted} criteria set(s) deleted.\n`,
+      + `${totals.criteriaSetsDeleted} criteria set(s) deleted, `
+      + `${totals.panelStatesDeleted} panel state(s) deleted.\n`,
     );
     if (
       totals.worktreesReclaimed > 0
       || totals.runDirsDeleted > 0
       || totals.criteriaSetsDeleted > 0
+      || totals.panelStatesDeleted > 0
     ) {
       stdout.write('Tip: run `du -sh ~/.crew` to see reclaimed disk.\n');
     }

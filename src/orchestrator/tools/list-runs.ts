@@ -93,6 +93,7 @@ export function listRunsToolHandler(
 interface ParsedRunStateCacheEntry {
   readonly path: string;
   readonly mtimeMs: number;
+  readonly repoRoot?: string;
   readonly parsed?: RunStateV1;
 }
 
@@ -261,7 +262,13 @@ function readRunState(
 
   const cached = parsedRunStateCache.get(runId);
   if (cached && cached.path === path && cached.mtimeMs === mtimeMs) {
-    return cached.parsed;
+    if (cached.parsed !== undefined) {
+      return cached.parsed;
+    }
+    if (cached.repoRoot === undefined || cached.repoRoot !== options.repoRoot) {
+      return undefined;
+    }
+    // Lightweight cross-repo entry now matches this repo; parse on demand.
   }
 
   let parsed: unknown;
@@ -285,7 +292,14 @@ function readRunState(
     parsedRunStateCache.set(runId, { path, mtimeMs });
     return undefined;
   }
-  parsedRunStateCache.set(runId, { path, mtimeMs, parsed });
+  const parsedRepoRoot = typeof parsed.repoRoot === 'string'
+    ? resolveRepoRoot(parsed.repoRoot)
+    : undefined;
+  if (parsedRepoRoot !== undefined && parsedRepoRoot !== options.repoRoot) {
+    parsedRunStateCache.set(runId, { path, mtimeMs, repoRoot: parsedRepoRoot });
+    return undefined;
+  }
+  parsedRunStateCache.set(runId, { path, mtimeMs, repoRoot: parsedRepoRoot, parsed });
   return parsed;
 }
 

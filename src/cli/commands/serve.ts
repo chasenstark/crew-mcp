@@ -28,7 +28,8 @@
 // which is safe; do NOT introduce any console.log() calls in the hot path.
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, realpathSync, type Dirent } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, type Dirent } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -268,7 +269,7 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 export interface CrewMcpServerInstance {
   readonly server: McpServer;
   readonly dispatcher: ToolDispatcher;
-  readonly worktreeManager: WorktreeManager;
+  readonly worktreeManager?: WorktreeManager;
   readonly runStateStore: RunStateStore;
   /**
    * Stops the periodic run-GC timer. The timer is unref'd so it never keeps
@@ -500,6 +501,40 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const captainServeInstance = randomUUID();
   const workerAuth = resolveWorkerServeAuth(crewHome);
   const installManifestHome = options.home ?? inferInstallManifestHome(crewHome);
+
+  const server = new McpServer({
+    name: 'crew',
+    version: SERVE_VERSION,
+  });
+
+  if (workerAuth !== undefined) {
+    const dispatcher = new ToolDispatcher({
+      streamingIdleTimeoutMs: resolveDispatchStallTimeoutMs(),
+      bufferedAbsoluteTimeoutMs: resolveDispatchAbsoluteTimeoutMs(),
+    });
+    const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
+    server.registerTool(
+      'send_message',
+      {
+        description: SEND_MESSAGE_DESCRIPTION,
+        inputSchema: sendMessageInputSchema.shape,
+      },
+      async (args) => sendMessageToolHandler(args, { crewHome, workerAuth }),
+    );
+    writeWorkerReadyMarker({
+      crewHome,
+      runId: workerAuth.run_id,
+      serverInstance: captainServeInstance,
+      registeredTools: ['send_message'],
+    });
+    return {
+      server,
+      dispatcher,
+      runStateStore,
+      stopPeriodicRunGc: () => undefined,
+    };
+  }
+
   const registry = options.registry ?? createBuiltinRegistry();
   if (!options.registry) {
     const before = new Set(registry.listAvailable().map((adapter) => adapter.name));
@@ -552,11 +587,6 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     presentLogged: false,
     absentLogged: false,
   };
-
-  const server = new McpServer({
-    name: 'crew',
-    version: SERVE_VERSION,
-  });
 
   // Memoized host-CLI classification. `getClientVersion()` returns
   // `undefined` until the MCP `initialize` handshake completes, but tool
@@ -624,24 +654,6 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       }
     },
   };
-
-  if (workerAuth !== undefined) {
-    server.registerTool(
-      'send_message',
-      {
-        description: SEND_MESSAGE_DESCRIPTION,
-        inputSchema: sendMessageInputSchema.shape,
-      },
-      async (args) => sendMessageToolHandler(args, { crewHome, workerAuth }),
-    );
-    writeWorkerReadyMarker({
-      crewHome,
-      runId: workerAuth.run_id,
-      serverInstance: captainServeInstance,
-      registeredTools: ['send_message'],
-    });
-    return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
-  }
 
   void sweepExpiredMessages({
     crewHome,
@@ -958,6 +970,7 @@ function resolveStaleRunGraceMs(): number {
 }
 
 const STALE_RUN_GRACE_MS = resolveStaleRunGraceMs();
+const STALE_RUN_SWEEP_YIELD_EVERY = 50;
 
 function resolveShutdownGraceMs(): number {
   const raw = process.env.CREW_SHUTDOWN_GRACE_MS;
@@ -1083,7 +1096,7 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
   const initiallyInFlightRunIds = dispatcherInFlightRunIds(args.dispatcher);
   let entries: Dirent[];
   try {
-    entries = readdirSync(runsDir, { withFileTypes: true });
+    entries = await readdir(runsDir, { withFileTypes: true });
   } catch (err) {
     logger.warn(
       `stale-run sweeper: failed to read ${runsDir}: ${err instanceof Error ? err.message : String(err)}`,
@@ -1091,7 +1104,12 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
     return;
   }
 
+  let visited = 0;
   for (const entry of entries) {
+    visited += 1;
+    if (visited % STALE_RUN_SWEEP_YIELD_EVERY === 0) {
+      await yieldToEventLoop();
+    }
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     if (runId === '.meta' || runId === '.locks') continue;
@@ -1106,9 +1124,12 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
     }
     if (!state) continue;
 
-    if (state.status !== 'running') continue;
     if (state.repoRoot === undefined) continue;
-    if (resolveComparableRepoRoot(state.repoRoot) !== currentRepoRoot) continue;
+    if (resolveComparableRepoRoot(state.repoRoot) !== currentRepoRoot) {
+      args.runStateStore.dropParsedStateCache(runId);
+      continue;
+    }
+    if (state.status !== 'running') continue;
     // Skip if serverPid is missing (legacy records pre-dating the field —
     // we don't know if they're still owned, so don't kill them; user can
     // `discard_run` manually if truly stale).
@@ -1156,6 +1177,12 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
 
     await markRunAbandoned(args.runStateStore, runId, 'abandoned (server restart)');
   }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 async function markRunAbandoned(

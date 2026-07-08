@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -132,7 +132,7 @@ describe('gcTerminalRuns', () => {
   /** Allocate a real worktree+branch, then stamp a matching state.json. */
   const seedRun = async (
     runId: string,
-    state: { status: string; repoRoot: string; completedAt?: string },
+    state: { status: string; repoRoot: string; completedAt?: string; runMode?: string },
   ): Promise<string> => {
     await manager.createRunWorktree(runId);
     const dir = join(crewHome, 'runs', runId);
@@ -147,6 +147,7 @@ describe('gcTerminalRuns', () => {
         completedAt: state.completedAt,
         worktreePath: join(dir, 'worktree'),
         repoRoot: state.repoRoot,
+        ...(state.runMode ? { runMode: state.runMode } : {}),
         prompts: [{ turn: 1, prompt: 'go', startedAt: '2026-01-01T00:00:00.000Z', completedAt: state.completedAt }],
         filesChanged: [],
       }, null, 2),
@@ -181,6 +182,11 @@ describe('gcTerminalRuns', () => {
   const wtPath = (runId: string): string => join(crewHome, 'runs', runId, 'worktree');
   const statePath = (runId: string): string => join(crewHome, 'runs', runId, 'state.json');
   const metaPath = (runId: string): string => join(crewHome, 'runs', '.meta', `${runId}.json`);
+  const missingRootMarkerPath = (runId: string): string =>
+    join(crewHome, 'runs', runId, '.repo-root-missing-at');
+  const markMissingRootGraceElapsed = (runId: string): void => {
+    writeFileSync(missingRootMarkerPath(runId), `${T0}\n`, 'utf-8');
+  };
 
   it('reclaims worktree past the worktree TTL, keeps the branch and run-dir', async () => {
     const branch = await seedRun('aaaaaaaa-0000-0000-0000-000000000001', {
@@ -410,6 +416,186 @@ describe('gcTerminalRuns', () => {
 
     expect(existsSync(wtPath(runId))).toBe(false);
     expect(branchExists(branch)).toBe(false); // merged branch dropped
+  });
+
+  it.each([
+    ['merged', 'write'],
+    ['discarded', 'write'],
+    ['cancelled', 'write'],
+    ['error', 'write'],
+    ['success', 'ephemeral_review'],
+  ])('reclaims orphaned cross-repo %s/%s runs after TTL and grace', async (status, runMode) => {
+    const runId = `aaaaaaaa-0000-0000-0000-10000000000${status.length}`;
+    const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+    await seedRun(runId, {
+      status,
+      runMode,
+      repoRoot: missingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    rmSync(missingRoot, { recursive: true, force: true });
+    markMissingRootGraceElapsed(runId);
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 1,
+    });
+
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+    expect(existsSync(metaPath(runId))).toBe(false);
+    expect(result.outcomes).toMatchObject([
+      {
+        runId,
+        worktreeReclaimed: true,
+        branchDeleted: false,
+        runDirDeleted: true,
+      },
+    ]);
+  });
+
+  it('does not reclaim an orphaned WRITE-mode success worktree', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000101';
+    const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+    await seedRun(runId, {
+      status: 'success',
+      runMode: 'write',
+      repoRoot: missingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    rmSync(missingRoot, { recursive: true, force: true });
+    markMissingRootGraceElapsed(runId);
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 1,
+    });
+
+    expect(existsSync(wtPath(runId))).toBe(true);
+    expect(existsSync(metaPath(runId))).toBe(true);
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
+    expect(result.outcomes).toEqual([]);
+  });
+
+  it('respects the orphan missing-root grace window before deleting', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000102';
+    const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+    await seedRun(runId, {
+      status: 'error',
+      repoRoot: missingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    rmSync(missingRoot, { recursive: true, force: true });
+
+    await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 10_000,
+    });
+
+    expect(existsSync(wtPath(runId))).toBe(true);
+    expect(existsSync(missingRootMarkerPath(runId))).toBe(true);
+  });
+
+  it('resets the orphan missing-root grace marker when a cross-repo root reappears', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000104';
+    const flappingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-flapping-root-'));
+    await seedRun(runId, {
+      status: 'error',
+      repoRoot: flappingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    rmSync(flappingRoot, { recursive: true, force: true });
+
+    await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 10_000,
+    });
+    expect(existsSync(wtPath(runId))).toBe(true);
+    expect(existsSync(missingRootMarkerPath(runId))).toBe(true);
+
+    mkdirSync(flappingRoot, { recursive: true });
+    await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS + 5_000,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 10_000,
+    });
+    expect(existsSync(wtPath(runId))).toBe(true);
+    expect(existsSync(missingRootMarkerPath(runId))).toBe(false);
+
+    rmSync(flappingRoot, { recursive: true, force: true });
+    const secondMissingNow = T0 + 31 * DAY_MS + 15_000;
+    await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: secondMissingNow,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 10_000,
+    });
+
+    expect(existsSync(wtPath(runId))).toBe(true);
+    expect(Number(readFileSync(missingRootMarkerPath(runId), 'utf-8').trim()))
+      .toBe(secondMissingNow);
+  });
+
+  it('takes the per-run lock while reclaiming orphaned worktrees', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000103';
+    const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+    await seedRun(runId, {
+      status: 'error',
+      repoRoot: missingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    rmSync(missingRoot, { recursive: true, force: true });
+    markMissingRootGraceElapsed(runId);
+    const lockObservations: string[] = [];
+
+    await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 1,
+      onOrphanRunLockAcquired: (lockedRunId) => {
+        lockObservations.push(lockedRunId);
+        expect(existsSync(join(crewHome, 'runs', '.locks', encodeURIComponent(runId)))).toBe(true);
+      },
+    });
+
+    expect(lockObservations).toEqual([runId]);
   });
 
   it('skips running runs, other-repo runs, and fresh terminal runs', async () => {

@@ -550,13 +550,18 @@ describe('crew serve — restricted worker mode', () => {
     });
     let builtServer: { close(): Promise<void> } | undefined;
     let client: Client | undefined;
+    const staleRunSweeper = vi.fn();
+    const runGc = vi.fn();
     try {
       const built = buildCrewMcpServer({
         cwd: root,
         crewHome,
         home,
         registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+        staleRunSweeper,
+        runGc,
       });
+      expect(built.worktreeManager).toBeUndefined();
       builtServer = built.server;
       const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
       client = new Client({ name: 'crew-test-client', version: '0.0.0' });
@@ -568,6 +573,10 @@ describe('crew serve — restricted worker mode', () => {
         readFileSync(workerReadyMarkerPath(crewHome, 'worker-run'), 'utf-8'),
       ) as { registered_tools: string[] };
       expect(marker.registered_tools).toEqual(['send_message']);
+      expect(await getStaleRunSweep()).toBeNull();
+      expect(await getRunGc()).toBeNull();
+      expect(staleRunSweeper).not.toHaveBeenCalled();
+      expect(runGc).not.toHaveBeenCalled();
     } finally {
       await client?.close();
       await builtServer?.close();

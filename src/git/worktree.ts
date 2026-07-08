@@ -1473,6 +1473,62 @@ export class WorktreeManager {
     return result;
   }
 
+  /**
+   * Remove only the run-owned checkout directory and metadata record for an
+   * orphaned cross-repo run whose host repo no longer exists. This deliberately
+   * avoids git operations: there is no owning repo left to remove a worktree
+   * registration or branch from, and invoking git through this manager would
+   * target the current server's repo instead.
+   */
+  async cleanupOrphanedRunWorktree(
+    runId: string,
+    options: { onLockAcquired?: () => void | Promise<void> } = {},
+  ): Promise<WorktreeCleanupResult> {
+    let result: WorktreeCleanupResult = {
+      success: true,
+      errors: [],
+      hadRecord: false,
+      worktreeRemoved: false,
+      branchDeleted: false,
+      recordDeleted: false,
+    };
+    await this.withRunLock(runId, async () => {
+      await options.onLockAcquired?.();
+      const metadataPath = this.runMetadataFilePath(runId);
+      const runDir = join(this.runBasePath, this.toRunToken(runId));
+      const worktreePath = join(runDir, 'worktree');
+      const hadRecord = existsSync(metadataPath);
+      const hadWorktree = existsSync(worktreePath);
+      const errors: string[] = [];
+
+      try {
+        rmSync(worktreePath, { recursive: true, force: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`remove worktree: ${message}`);
+        logger.warn(`Failed to remove orphaned run worktree ${worktreePath}: ${message}`);
+      }
+
+      try {
+        rmSync(metadataPath, { force: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`delete record: ${message}`);
+        logger.warn(`Failed to delete orphaned run metadata ${metadataPath}: ${message}`);
+      }
+
+      result = {
+        success: errors.length === 0,
+        errors,
+        hadRecord,
+        worktreeRemoved: hadWorktree && !existsSync(worktreePath),
+        branchDeleted: false,
+        recordDeleted: hadRecord && !existsSync(metadataPath),
+      };
+    });
+    return result;
+  }
+
   private pruneRunWorktreesOnce(projectRoot: string): void {
     const pruneKey = this.resolveProjectRootPruneKey(projectRoot);
     if (WorktreeManager.prunedProjectRootRealpaths.has(pruneKey)) return;

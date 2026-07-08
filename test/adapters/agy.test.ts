@@ -233,6 +233,7 @@ describe('AgyAdapter', () => {
       expect(result.sessionId).toBe('conv-xyz');
       expect(result.metadata.numTurns).toBe(2);
       expect(result.metadata.durationMs).toBe(3000);
+      expect(result.metadata.rawEvents).toBeUndefined();
     });
 
     it('delivers a leading-dash prompt via stdin so it is never parsed as a flag', async () => {

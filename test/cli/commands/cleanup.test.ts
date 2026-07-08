@@ -6,12 +6,14 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { cleanupCommand } from '../../../src/cli/commands/cleanup.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
+import { PANEL_SCHEMA_VERSION } from '../../../src/orchestrator/panels/schema.js';
+import { panelDir, writePanelStateAtomic } from '../../../src/orchestrator/panels/store.js';
 import { writeConfigFile, DEFAULT_CONFIG } from '../../../src/utils/config-store.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -151,5 +153,43 @@ describe('cleanupCommand', () => {
     });
 
     expect(existsSync(wt)).toBe(false);
+  });
+
+  it('runs panel GC and reports deleted panel states', async () => {
+    const dir = panelDir(crewHome, 'panel-old');
+    mkdirSync(dir, { recursive: true });
+    writePanelStateAtomic(dir, {
+      schemaVersion: PANEL_SCHEMA_VERSION,
+      panelId: 'panel-old',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      panelRepoRoot: repoRoot,
+      reviewers: [
+        {
+          runId: 'review-run',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-01-01T00:00:00.000Z',
+          dispatchWarnings: [],
+          terminalSnapshot: {
+            status: 'success',
+            summary: 'done',
+            filesChanged: [],
+            completedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      ],
+    });
+    const stdout = captureStdout();
+
+    await cleanupCommand({
+      cwd: repoRoot,
+      crewHome,
+      criteriaSetTtlDays: 7,
+      now: T0 + 8 * DAY_MS,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(stdout.text).toContain('1 panel state(s) deleted');
   });
 });

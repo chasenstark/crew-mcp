@@ -1,7 +1,8 @@
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { atomicWrite } from '../../utils/atomic-write.js';
+import { logger } from '../../utils/logger.js';
 import {
   PANEL_SCHEMA_VERSION,
   panelStateSchemaV1,
@@ -119,6 +120,69 @@ export function snapshotPanelReviewerTerminal(
   }
   writePanelStateAtomic(targetPanelDir, next);
   return next;
+}
+
+export function gcPanelStates(
+  crewHome: string,
+  ttlMs: number,
+  now = Date.now(),
+): number {
+  if (ttlMs === Number.POSITIVE_INFINITY) return 0;
+  const root = join(crewHome, 'panels');
+  if (!existsSync(root)) return 0;
+
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch (err) {
+    logger.warn(
+      `panel GC: failed to read ${root}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 0;
+  }
+
+  let deleted = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(root, entry.name);
+    let state: PanelStateV1 | undefined;
+    try {
+      state = readPanelState(dir);
+    } catch (err) {
+      logger.warn(
+        `panel GC: failed to read ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+    if (!state) continue;
+    const completedAtMs = newestReviewerTerminalCompletedAtMs(state);
+    if (completedAtMs === undefined) continue;
+    const ageMs = now - completedAtMs;
+    if (!Number.isFinite(ageMs) || ageMs < ttlMs) continue;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      parsedPanelStateCache.delete(join(dir, 'panel.json'));
+      deleted += 1;
+    } catch (err) {
+      logger.warn(
+        `panel GC: failed to delete ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return deleted;
+}
+
+function newestReviewerTerminalCompletedAtMs(state: PanelStateV1): number | undefined {
+  let newest: number | undefined;
+  for (const reviewer of state.reviewers) {
+    if (!reviewer.dispatched) return undefined;
+    const completedAt = reviewer.terminalSnapshot?.completedAt;
+    if (completedAt === undefined) return undefined;
+    const ms = Date.parse(completedAt);
+    if (!Number.isFinite(ms)) return undefined;
+    newest = newest === undefined ? ms : Math.max(newest, ms);
+  }
+  return newest;
 }
 
 function isEnoent(err: unknown): boolean {
