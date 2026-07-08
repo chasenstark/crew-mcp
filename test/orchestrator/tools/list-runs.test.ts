@@ -6,6 +6,7 @@ import { join } from 'path';
 
 import {
   clearListRunsCachesForTest,
+  LIST_RUNS_SUMMARY_MAX_CHARS,
   listRuns,
   setListRunsFsForTest,
 } from '../../../src/orchestrator/tools/list-runs.js';
@@ -147,6 +148,39 @@ describe('listRuns', () => {
       { run_id: 'sweeper-marked-error', summary: 'abandoned (server restart)' },
       { run_id: 'adapter-error', summary: 'adapter summary wins' },
     ]);
+  });
+
+  it('truncates long summaries and marks the entry as truncated', () => {
+    const longSummary = `${'a'.repeat(LIST_RUNS_SUMMARY_MAX_CHARS)} tail that should only be in get_run_status`;
+    writeState({
+      runId: 'run-long-summary',
+      status: 'success',
+      repoRoot,
+      completedAt: iso(2),
+      promptSummary: longSummary,
+    });
+    writeState({
+      runId: 'run-short-summary',
+      status: 'success',
+      repoRoot,
+      completedAt: iso(1),
+      promptSummary: 'short summary',
+    });
+
+    const out = listRuns({}, { crewHome, repoRoot });
+
+    expect(out.runs[0]).toMatchObject({
+      run_id: 'run-long-summary',
+      summary_truncated: true,
+    });
+    expect(out.runs[0].summary).toHaveLength(LIST_RUNS_SUMMARY_MAX_CHARS);
+    expect(out.runs[0].summary).toMatch(/\.\.\.$/);
+    expect(out.runs[0].summary).not.toContain('tail that should only be in get_run_status');
+    expect(out.runs[1]).toMatchObject({
+      run_id: 'run-short-summary',
+      summary: 'short summary',
+      summary_truncated: false,
+    });
   });
 
   it('projects typed failure when present', () => {

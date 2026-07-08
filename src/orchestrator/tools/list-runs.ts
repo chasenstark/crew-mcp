@@ -22,7 +22,7 @@ import {
   type RunStatus,
 } from '../run-state.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { jsonContent } from './shared.js';
+import { markdownContent } from './shared.js';
 
 const RUN_STATUS_VALUES = [
   'running',
@@ -35,8 +35,9 @@ const RUN_STATUS_VALUES = [
   'discarded',
 ] as const satisfies readonly RunStatus[];
 
-export const DEFAULT_LIST_RUNS_LIMIT = 50;
+export const DEFAULT_LIST_RUNS_LIMIT = 20;
 export const MAX_LIST_RUNS_LIMIT = 500;
+export const LIST_RUNS_SUMMARY_MAX_CHARS = 400;
 
 export const runStatusSchema = z.enum(RUN_STATUS_VALUES);
 
@@ -55,7 +56,7 @@ export const listRunsInputSchema = z.object({
 export type ListRunsInput = z.infer<typeof listRunsInputSchema>;
 
 export const LIST_RUNS_DESCRIPTION =
-  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, status, startedAt, completedAt, worktreePath, latest summary/error, and typed failure when present.';
+  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, status, startedAt, completedAt, worktreePath, latest truncated summary/error plus summary_truncated marker, and typed failure when present. Use get_run_status for the rich per-run payload.';
 
 export interface ListRunsEntry {
   readonly run_id: string;
@@ -67,6 +68,7 @@ export interface ListRunsEntry {
   /** Present only for non-default lifecycles (read_only / ephemeral_review). */
   readonly run_mode?: string;
   readonly summary?: string;
+  readonly summary_truncated: boolean;
   readonly failure?: RunStateV1['failure'];
 }
 
@@ -85,7 +87,7 @@ export function listRunsToolHandler(
   deps: Pick<ToolHandlerDeps, 'crewHome' | 'projectRoot'>,
 ): ToolCallReturn {
   const out = listRuns(args, { crewHome: deps.crewHome, repoRoot: deps.projectRoot });
-  return jsonContent(out);
+  return markdownContent(renderListRunsMarkdown(out), out);
 }
 
 interface ParsedRunStateCacheEntry {
@@ -197,9 +199,51 @@ function compareRunStateNewestFirst(a: RunStateV1, b: RunStateV1): number {
   return b.runId.localeCompare(a.runId);
 }
 
-function summaryField(state: RunStateV1): { summary?: string } {
+function summaryField(state: RunStateV1): { summary?: string; summary_truncated: boolean } {
   const summary = state.prompts.at(-1)?.summary ?? state.lastError;
-  return summary !== undefined ? { summary } : {};
+  if (summary === undefined) return { summary_truncated: false };
+  const truncated = truncateSummary(summary);
+  return {
+    summary: truncated.text,
+    summary_truncated: truncated.truncated,
+  };
+}
+
+function truncateSummary(summary: string): { text: string; truncated: boolean } {
+  if (summary.length <= LIST_RUNS_SUMMARY_MAX_CHARS) {
+    return { text: summary, truncated: false };
+  }
+  const suffix = '...';
+  const maxBodyChars = LIST_RUNS_SUMMARY_MAX_CHARS - suffix.length;
+  return {
+    text: `${Array.from(summary).slice(0, maxBodyChars).join('').trimEnd()}${suffix}`,
+    truncated: true,
+  };
+}
+
+function renderListRunsMarkdown(out: ListRunsOutput): string {
+  const inbox = out.captain_inbox_summary;
+  const lines = [
+    `Runs: ${out.runs.length}. Inbox: ${inbox.total_unread} unread / ${inbox.total_in_inbox} total.`,
+  ];
+  if (out.runs.length === 0) {
+    lines.push('No runs found for this repo.');
+    return lines.join('\n');
+  }
+  for (const run of out.runs) {
+    const completed = run.completedAt ? ` completed=${run.completedAt}` : '';
+    const mode = run.run_mode ? ` mode=${run.run_mode}` : '';
+    const summary = run.summary ? ` - ${compactLine(run.summary)}` : '';
+    const truncation = run.summary_truncated ? ' (summary truncated; use get_run_status)' : '';
+    lines.push(
+      `- ${run.run_id} [${run.status}] agent=${run.agent_id}${mode} started=${run.startedAt}${completed}${truncation}${summary}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function compactLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function readRunState(

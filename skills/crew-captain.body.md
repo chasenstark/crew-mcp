@@ -294,7 +294,10 @@ unrecognized run.
 
 With more than one pending run, use one repo-scoped `list_runs` call
 instead of N `get_run_status` calls. Reserve `get_run_status` for the
-rich payload of the run you are surfacing now.
+rich payload of the run you are surfacing now. Treat `list_runs` as an
+index: its `summary` is intentionally truncated and carries
+`summary_truncated`; when that marker is true, call `get_run_status`
+for the full per-run summary before synthesizing details.
 
 Use `list_runs` after `/clear`, compaction, context loss, or unknown-run
 references. Prefer omitting `completedAfter` and deduping by `run_id`;

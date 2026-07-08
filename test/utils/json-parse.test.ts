@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { performance } from 'node:perf_hooks';
 import { extractJson } from '../../src/utils/json-parse.js';
 
 describe('extractJson', () => {
@@ -26,5 +27,14 @@ describe('extractJson', () => {
 
   it('throws when no JSON can be extracted', () => {
     expect(() => extractJson('not json at all')).toThrow(/Could not extract JSON/);
+  });
+
+  it('rejects large truncated brace-heavy output without quadratic delimiter parsing', () => {
+    const input = `prefix\n${'{'.repeat(1024 * 1024)}\ntruncated`;
+    const startedAt = performance.now();
+
+    expect(() => extractJson(input)).toThrow(/Could not extract JSON/);
+
+    expect(performance.now() - startedAt).toBeLessThan(1000);
   });
 });

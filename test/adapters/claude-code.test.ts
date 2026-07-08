@@ -1,6 +1,7 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync } from 'fs';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
+import { tmpdir } from 'os';
 import { PassThrough, Readable, Writable } from 'stream';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
@@ -98,14 +99,28 @@ function createStreamingClaudeProcess({
 
 describe('ClaudeCodeAdapter', () => {
   let adapter: InstanceType<typeof ClaudeCodeAdapter>;
+  let healthCacheDir: string;
+  let originalHealthCachePath: string | undefined;
   const dispatchMcpEnv = {
     CREW_RUN_ID: 'claude-run-123',
     CREW_RUN_TOKEN: 'b'.repeat(64),
   };
 
   beforeEach(() => {
+    healthCacheDir = mkdtempSync(join(tmpdir(), 'crew-claude-health-cache-'));
+    originalHealthCachePath = process.env.CREW_HEALTHCHECK_CACHE_PATH;
+    process.env.CREW_HEALTHCHECK_CACHE_PATH = join(healthCacheDir, 'healthcheck-cache.json');
     adapter = new ClaudeCodeAdapter();
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalHealthCachePath === undefined) {
+      delete process.env.CREW_HEALTHCHECK_CACHE_PATH;
+    } else {
+      process.env.CREW_HEALTHCHECK_CACHE_PATH = originalHealthCachePath;
+    }
+    rmSync(healthCacheDir, { recursive: true, force: true });
   });
 
   describe('properties', () => {
@@ -876,17 +891,9 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   describe('healthCheck', () => {
-    it('returns available when version and auth succeed', async () => {
-      // First call: --version
+    it('returns available from the default non-LLM version probe', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: 'claude 1.0.12',
-        stderr: '',
-        exitCode: 0,
-      } as any);
-
-      // Second call: auth check
-      mockExeca.mockResolvedValueOnce({
-        stdout: '{"type":"result","subtype":"success","result":"OK","is_error":false}',
         stderr: '',
         exitCode: 0,
       } as any);
@@ -896,6 +903,8 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.available).toBe(true);
       expect(result.authenticated).toBe(true);
       expect(result.version).toBe('claude 1.0.12');
+      expect(mockExeca).toHaveBeenCalledOnce();
+      expect(mockExeca.mock.calls[0][1]).toEqual(['--version']);
     });
 
     it('returns unavailable when CLI not found', async () => {
@@ -908,7 +917,7 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.error).toBe('Claude CLI not found');
     });
 
-    it('returns not authenticated when auth check fails and prefers stdout error payload', async () => {
+    it('runs the prompt auth probe on refresh and prefers stdout error payload', async () => {
       // First call: --version succeeds
       mockExeca.mockResolvedValueOnce({
         stdout: 'claude 1.0.12',
@@ -923,7 +932,7 @@ describe('ClaudeCodeAdapter', () => {
         exitCode: 1,
       } as any);
 
-      const result = await adapter.healthCheck();
+      const result = await adapter.healthCheck({ refresh: true });
 
       expect(result.available).toBe(true);
       expect(result.version).toBe('claude 1.0.12');

@@ -40,7 +40,6 @@ import {
 import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import {
   buildAdapterDispatchTask,
-  captureRunBranchPointSnapshot,
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
   applyModelPreflight,
@@ -232,10 +231,6 @@ export async function continueRunToolHandler(
     ...appendResult.warnings,
     ...criteriaWarnings,
   ];
-  const branchPointBefore =
-    ownsWorktree(runMode)
-      ? await captureRunBranchPointSnapshot(deps.worktreeManager, args.run_id, state.worktreePath)
-      : undefined;
   let dispatchMcpEnv: DispatchMcpEnv;
   try {
     const issued = issueRunAuthSidecar({
@@ -263,7 +258,6 @@ export async function continueRunToolHandler(
     worktreePath: state.worktreePath,
     runMode,
     dispatchWarnings,
-    branchPointBefore,
     effectiveModel,
     effectiveEffort,
     // Resume the prior turn's provider conversation so a stateful adapter (agy)

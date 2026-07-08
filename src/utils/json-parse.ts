@@ -22,17 +22,48 @@ export function extractJson(text: string): unknown {
     }
   }
 
-  const parseFromDelimiters = (
-    startChar: '{' | '[',
-    endChar: '}' | ']',
-  ): unknown | undefined => {
+  const parseBalancedFromDelimiter = (startChar: '{' | '['): unknown | undefined => {
     const first = trimmed.indexOf(startChar);
     if (first === -1) return undefined;
-    for (let end = trimmed.lastIndexOf(endChar); end >= first; end = trimmed.lastIndexOf(endChar, end - 1)) {
-      try {
-        return JSON.parse(trimmed.slice(first, end + 1));
-      } catch {
-        // continue
+
+    const stack: Array<'{' | '['> = [];
+    let inString = false;
+    let escaped = false;
+
+    for (let i = first; i < trimmed.length; i += 1) {
+      const char = trimmed[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{' || char === '[') {
+        stack.push(char);
+        continue;
+      }
+      if (char !== '}' && char !== ']') continue;
+
+      const open = stack.at(-1);
+      if ((char === '}' && open !== '{') || (char === ']' && open !== '[')) {
+        return undefined;
+      }
+      stack.pop();
+      if (stack.length === 0) {
+        try {
+          return JSON.parse(trimmed.slice(first, i + 1));
+        } catch {
+          return undefined;
+        }
       }
     }
     return undefined;
@@ -45,15 +76,15 @@ export function extractJson(text: string): unknown {
   const tryArrayFirst = firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace);
 
   const primary = tryArrayFirst
-    ? parseFromDelimiters('[', ']')
-    : parseFromDelimiters('{', '}');
+    ? parseBalancedFromDelimiter('[')
+    : parseBalancedFromDelimiter('{');
   if (primary !== undefined) {
     return primary;
   }
 
   const secondary = tryArrayFirst
-    ? parseFromDelimiters('{', '}')
-    : parseFromDelimiters('[', ']');
+    ? parseBalancedFromDelimiter('{')
+    : parseBalancedFromDelimiter('[');
   if (secondary !== undefined) {
     return secondary;
   }

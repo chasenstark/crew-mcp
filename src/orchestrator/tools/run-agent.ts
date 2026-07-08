@@ -247,7 +247,6 @@ export interface RunAgentDispatchPlan {
    */
   readonly readOnly: boolean;
   readonly dispatchWarnings: readonly string[];
-  readonly branchPointBefore?: ReadonlyMap<string, string>;
   readonly adapter: AgentAdapter;
   readonly toolCallId: string;
   readonly buildTask: (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv) => DispatchTask;
@@ -387,11 +386,6 @@ export async function planRunAgent(
   }
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
-  const branchPointBefore =
-    ownsWorktree(runMode)
-    && effectiveWorkingDirectory === worktreePath
-      ? await captureRunBranchPointSnapshot(ctx.worktreeManager, runId, worktreePath)
-      : undefined;
 
   const modelPreflight = applyModelPreflight(
     adapter,
@@ -416,7 +410,6 @@ export async function planRunAgent(
       worktreePath,
       runMode,
       dispatchWarnings,
-      branchPointBefore,
       effectiveModel,
       effectiveEffort,
       worktreeManager: ctx.worktreeManager,
@@ -430,7 +423,6 @@ export async function planRunAgent(
     runMode,
     readOnly,
     dispatchWarnings,
-    branchPointBefore,
     adapter,
     toolCallId,
     buildTask,
@@ -572,7 +564,6 @@ export function buildAdapterDispatchTask(args: {
    */
   readonly runMode: RunMode;
   readonly dispatchWarnings?: readonly string[];
-  readonly branchPointBefore?: ReadonlyMap<string, string>;
   readonly effectiveModel: string | undefined;
   /**
    * Effort already resolved upstream via `resolveEffectiveEffort`.
@@ -600,9 +591,14 @@ export function buildAdapterDispatchTask(args: {
     run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
       const readOnly = args.runMode === 'read_only';
       let writablePaths: readonly string[] | undefined;
+      let branchPointBefore: ReadonlyMap<string, string> | undefined;
       if (ownsWorktree(args.runMode)) {
         try {
           writablePaths = args.worktreeManager.getRunGitCommitWritablePaths(args.runId).paths;
+          branchPointBefore =
+            args.effectiveWorkingDirectory === args.worktreePath
+              ? await captureRunBranchPointSnapshot(args.worktreeManager, args.runId, args.worktreePath)
+              : undefined;
         } catch (err) {
           return {
             output: '',
@@ -629,6 +625,9 @@ export function buildAdapterDispatchTask(args: {
             await detectDirtyTree(args.effectiveWorkingDirectory).catch(() => []),
           )
         : undefined;
+      if (taskCtx.signal.aborted) {
+        throw taskCtx.signal.reason ?? new Error('cancelled');
+      }
       const result = await args.adapter.execute({
         prompt: args.prompt,
         dispatchMcpEnv: args.dispatchMcpEnv,
@@ -674,7 +673,7 @@ export function buildAdapterDispatchTask(args: {
         dispatchWarnings: args.dispatchWarnings,
         effectiveWorkingDirectory: args.effectiveWorkingDirectory,
         worktreePath: args.worktreePath,
-        branchPointBefore: args.branchPointBefore,
+        branchPointBefore,
         worktreeManager: args.worktreeManager,
         runId: args.runId,
         adapterName: args.adapter.name,

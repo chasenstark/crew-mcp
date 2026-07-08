@@ -998,26 +998,45 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
-    return this.healthCheckCache.get(options, () => this.probeHealth());
+    const versionProbe = await this.probeVersion();
+    if (!versionProbe.available || versionProbe.version === undefined) {
+      return versionProbe;
+    }
+    const version = versionProbe.version;
+    return this.healthCheckCache.get(
+      options,
+      () => options?.refresh === true
+        ? this.probePromptAuth(version)
+        : Promise.resolve({
+            available: true,
+            version,
+            authenticated: true,
+          }),
+      {
+        cacheKey: `claude-code:${version}`,
+        cliVersion: version,
+      },
+    );
   }
 
-  private async probeHealth(): Promise<HealthCheckResult> {
-    // Check version
-    let version: string | undefined;
+  private async probeVersion(): Promise<HealthCheckResult> {
     try {
       const versionResult = await execa('claude', ['--version'], {
         timeout: 10_000,
         reject: false,
       });
       if (versionResult.exitCode === 0 && versionResult.stdout) {
-        version = versionResult.stdout.trim();
-      } else {
         return {
-          available: false,
-          authenticated: false,
-          error: versionResult.stderr || 'claude --version failed',
+          available: true,
+          version: versionResult.stdout.trim(),
+          authenticated: true,
         };
       }
+      return {
+        available: false,
+        authenticated: false,
+        error: versionResult.stderr || 'claude --version failed',
+      };
     } catch {
       return {
         available: false,
@@ -1025,7 +1044,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         error: 'Claude CLI not found',
       };
     }
+  }
 
+  private async probePromptAuth(version: string): Promise<HealthCheckResult> {
     // Auth check with a minimal prompt
     try {
       const authResult = await execa(

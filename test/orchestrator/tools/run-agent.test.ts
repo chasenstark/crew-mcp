@@ -118,6 +118,41 @@ describe('planRunAgent', () => {
     }
   });
 
+  it('captures branch-point snapshots inside DispatchTask.run, before adapter execution', async () => {
+    const getModifiedFilesByRun = vi.spyOn(worktreeManager, 'getModifiedFilesByRun');
+    const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
+      expect(getModifiedFilesByRun).toHaveBeenCalledTimes(1);
+      const typedTask = task as { context: { workingDirectory: string } };
+      writeFileSync(join(typedTask.context.workingDirectory, 'agent.txt'), 'agent edit\n', 'utf-8');
+      return {
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+      };
+    });
+    const adapter = makeMockAdapter({ name: 'codex', execute: executeMock });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'create a file' },
+      ctx,
+    );
+
+    expect(plan.kind).toBe('dispatched');
+    expect(getModifiedFilesByRun).not.toHaveBeenCalled();
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+
+    const result = await plan.buildTask('create a file').run({ signal: makeAbortSignal() });
+
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(result.filesModified).toEqual(['agent.txt']);
+    expect(getModifiedFilesByRun).toHaveBeenCalledTimes(2);
+  });
+
   it('invokes the adapter.execute with the composed prompt + working directory', async () => {
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async () => ({
       output: 'done',
