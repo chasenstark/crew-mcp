@@ -228,6 +228,69 @@ describe('codex rollout quota', () => {
       expect(cache.get('codex', { now: NOW })).toEqual(limited);
     });
 
+    it('never downgrades a reactive limited snapshot with a near_limit rollout read', async () => {
+      // A token_count at 90-99% can predate the quota stop that
+      // classified the run limited; the hard failure stays authoritative.
+      writeRollout([tokenCountLine({ primaryPercent: 95 })]);
+      const cache = new QuotaCache();
+      const limited: QuotaSnapshot = {
+        state: 'limited',
+        confidence: 'high',
+        source: 'local-ledger',
+        checkedAt: NOW,
+      };
+      cache.record('codex', limited);
+      await seedCodexRolloutQuota(cache, {
+        agentId: 'codex',
+        threadId: THREAD_ID,
+        codexHome,
+        now: NOW,
+      });
+      expect(cache.get('codex', { now: NOW })).toEqual(limited);
+    });
+
+    it('never downgrades a reactive near_limit snapshot with an ok rollout read', async () => {
+      // A 429 rate stop records near_limit reactively even at low
+      // used_percent (burst throttling, not window budget); the rollout
+      // must not clear that warning right after the stop.
+      writeRollout([tokenCountLine({ primaryPercent: 20 })]);
+      const cache = new QuotaCache();
+      const nearLimit: QuotaSnapshot = {
+        state: 'near_limit',
+        confidence: 'high',
+        source: 'local-ledger',
+        checkedAt: NOW,
+      };
+      cache.record('codex', nearLimit);
+      await seedCodexRolloutQuota(cache, {
+        agentId: 'codex',
+        threadId: THREAD_ID,
+        codexHome,
+        now: NOW,
+      });
+      expect(cache.get('codex', { now: NOW })).toEqual(nearLimit);
+    });
+
+    it('upgrades a reactive near_limit snapshot when the rollout says limited', async () => {
+      writeRollout([tokenCountLine({ primaryPercent: 100 })]);
+      const cache = new QuotaCache();
+      cache.record('codex', {
+        state: 'near_limit',
+        confidence: 'high',
+        source: 'local-ledger',
+        checkedAt: NOW,
+      });
+      await seedCodexRolloutQuota(cache, {
+        agentId: 'codex',
+        threadId: THREAD_ID,
+        codexHome,
+        now: NOW,
+      });
+      const snapshot = cache.get('codex', { now: NOW });
+      expect(snapshot?.state).toBe('limited');
+      expect(snapshot?.usedPercent).toBe(100);
+    });
+
     it('overwrites a limited snapshot when the rollout ALSO says limited (fresher numbers)', async () => {
       writeRollout([tokenCountLine({ primaryPercent: 100 })]);
       const cache = new QuotaCache();

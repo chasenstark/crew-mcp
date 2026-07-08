@@ -247,6 +247,17 @@ function normalizeTargets(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Partial<Record<HostId, InstalledTarget>> = {};
   for (const [host, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (isRetiredHostId(host)) {
+      // A retired host's record must not make the whole manifest
+      // unreadable — install/verify/uninstall for the LIVE hosts all
+      // read through here. Drop the entry: its host CLI is dead, its
+      // on-disk leftovers are inert, and the next manifest write
+      // persists the pruned view. (Its sharedSkills never listed files
+      // another host owns — shared copies are recorded under the
+      // OWNING host's writtenPaths — so dropping the record orphans
+      // nothing live.)
+      continue;
+    }
     if (!isKnownHostId(host)) {
       // Plan §"v1→v2 migration cases": unknown host → reject. Throw with
       // a clear message rather than silently dropping the entry —
@@ -263,6 +274,17 @@ function normalizeTargets(
     }
   }
   return out;
+}
+
+/**
+ * Hosts crew once installed into but no longer supports. Their manifest
+ * records are dropped on read instead of rejected as unknown, so
+ * pre-retirement manifests stay readable.
+ */
+const RETIRED_HOST_IDS: readonly string[] = ['gemini'];
+
+function isRetiredHostId(host: string): boolean {
+  return RETIRED_HOST_IDS.includes(host);
 }
 
 function isKnownHostId(host: string): host is HostId {
@@ -333,6 +355,7 @@ function migrateV1Targets(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
   const out: Partial<Record<HostId, InstalledTarget>> = {};
   for (const [host, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (isRetiredHostId(host)) continue;
     if (!isKnownHostId(host)) {
       throw new Error(
         `install.json (v1) references unknown host "${host}"; known hosts: ${ALL_HOST_IDS.join(', ')}. `

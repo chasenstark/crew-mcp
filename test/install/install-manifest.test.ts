@@ -252,6 +252,85 @@ describe('install-manifest unknown-host rejection (plan §migration-cases)', () 
   });
 });
 
+describe('install-manifest retired-host tolerance (gemini retirement)', () => {
+  it('drops a retired gemini v2 target (with sharedSkills) instead of rejecting the manifest', async () => {
+    await withTmpHome(async (home) => {
+      const dir = join(home, '.crew');
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, 'install.json'),
+        JSON.stringify({
+          schemaVersion: 2,
+          targets: {
+            'claude-code': {
+              configPath: '/home/me/.claude.json',
+              skillPath: '/home/me/.claude/skills/crew/SKILL.md',
+              skills: { crew: '/home/me/.claude/skills/crew/SKILL.md' },
+              writtenPaths: ['/home/me/.claude/skills/crew/SKILL.md'],
+              version: '0.3.0',
+              installedAt: 'now',
+              serverCommand: 'node',
+              serverArgs: [],
+            },
+            gemini: {
+              configPath: '/home/me/.gemini/settings.json',
+              skillPath: '/home/me/.gemini/skills/crew/SKILL.md',
+              skills: {},
+              writtenPaths: [],
+              sharedSkills: {
+                crew: '/home/me/.agents/skills/crew/SKILL.md',
+                'crew:iterate': '/home/me/.agents/skills/crew-iterate/SKILL.md',
+              },
+              version: '0.3.0',
+              installedAt: 'now',
+              serverCommand: 'node',
+              serverArgs: [],
+            },
+          },
+        }),
+        'utf-8',
+      );
+      const manifest = await readInstallManifest(home);
+      expect(Object.keys(manifest.targets)).toEqual(['claude-code']);
+      expect(manifest.targets['claude-code']?.configPath).toBe('/home/me/.claude.json');
+    });
+  });
+
+  it('drops a retired gemini v1 target instead of rejecting the manifest', async () => {
+    await withTmpHome(async (home) => {
+      const dir = join(home, '.crew');
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, 'install.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          targets: {
+            codex: {
+              configPath: '/home/me/.codex/config.toml',
+              skillPath: '/home/me/.codex/skills/crew/SKILL.md',
+              version: '0.1.0',
+              installedAt: 'now',
+              serverCommand: 'node',
+              serverArgs: [],
+            },
+            gemini: {
+              configPath: '/home/me/.gemini/settings.json',
+              skillPath: '/home/me/.gemini/extensions/crew/SKILL.md',
+              version: '0.1.0',
+              installedAt: 'now',
+              serverCommand: 'node',
+              serverArgs: [],
+            },
+          },
+        }),
+        'utf-8',
+      );
+      const manifest = await readInstallManifest(home);
+      expect(Object.keys(manifest.targets)).toEqual(['codex']);
+    });
+  });
+});
+
 describe('install-manifest top-level extras preservation (plan §migration-cases)', () => {
   it('preserves hand-edited top-level keys through read+write', async () => {
     await withTmpHome(async (home) => {

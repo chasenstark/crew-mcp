@@ -742,6 +742,119 @@ describe('crew serve — cross-host schema compatibility', () => {
   });
 });
 
+describe('crew serve — codex rollout quota seeding (post-terminal wiring)', () => {
+  const THREAD_ID = '0198aaaa-bbbb-cccc-dddd-eeee00001111';
+  let codexHome: string;
+  let previousCodexHome: string | undefined;
+
+  beforeEach(() => {
+    codexHome = mkdtempSync(join(tmpdir(), 'crew-serve-codex-home-'));
+    const day = join(codexHome, 'sessions', '2026', '07', '07');
+    mkdirSync(day, { recursive: true });
+    writeFileSync(
+      join(day, `rollout-2026-07-07T10-00-00-${THREAD_ID}.jsonl`),
+      `${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {},
+          rate_limits: {
+            plan_type: 'prolite',
+            primary: { used_percent: 42, window_minutes: 300, resets_at: 4102444800 },
+            secondary: { used_percent: 7, window_minutes: 10080, resets_at: 4102444800 },
+          },
+        },
+      })}\n`,
+      'utf-8',
+    );
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+  });
+
+  afterEach(() => {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
+    }
+    rmSync(codexHome, { recursive: true, force: true });
+  });
+
+  it('a terminal codex run with a sessionId seeds list_agents quota from the rollout file', async () => {
+    // Adapter must be NAMED codex (the seed gates on the canonical id)
+    // and return the thread id as sessionId — the deterministic
+    // run→rollout mapping the wiring relies on.
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      execute: async () => ({
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+        sessionId: THREAD_ID,
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'codex', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      // markTerminal persists state.json BEFORE the (awaited) rollout
+      // seed completes, so the poller can observe terminal a beat ahead
+      // of the cache write — poll list_agents until the seed lands.
+      const readCodexQuota = async () => {
+        const res = await h.client.callTool({ name: 'list_agents', arguments: {} });
+        const structured = res.structuredContent as {
+          agents: Array<{ name: string; quota?: { state: string; source: string; usedPercent?: number } }>;
+        };
+        return structured.agents.find((a) => a.name === 'codex')?.quota;
+      };
+      await expect.poll(async () => (await readCodexQuota())?.source, { timeout: 5_000 })
+        .toBe('session-file');
+      const quota = await readCodexQuota();
+      expect(quota?.state).toBe('ok');
+      expect(quota?.usedPercent).toBe(42);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a non-codex agent with a sessionId does not seed from the rollout', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => ({
+        output: 'done',
+        filesModified: [],
+        status: 'success',
+        metadata: {},
+        sessionId: THREAD_ID,
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, env.run_id);
+
+      const res = await h.client.callTool({ name: 'list_agents', arguments: {} });
+      const structured = res.structuredContent as {
+        agents: Array<{ name: string; quota?: { source: string } }>;
+      };
+      const agent = structured.agents.find((a) => a.name === 'mock-coder');
+      expect(agent?.quota?.source).not.toBe('session-file');
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe('crew serve — list_agents tool', () => {
   let h: Harness;
   beforeEach(async () => {

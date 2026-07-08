@@ -35,6 +35,7 @@ describe('recognizesModel proxy/instance parity', () => {
     ['claude-code', 'haiku', true],
     ['claude-code', 'gpt-5.5', false],
     ['codex', 'gpt-5.3-codex', true],
+    ['codex', 'openrouter/deepseek-r1', true],
     ['codex', 'sonnet', false],
   ] as const)('%s proxy and instance agree on %s', async (name, model, expected) => {
     const registry = createBuiltinRegistry();

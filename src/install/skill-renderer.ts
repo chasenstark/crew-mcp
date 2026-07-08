@@ -126,8 +126,8 @@ export interface SkillInstallSpec {
    * already discovers the skill from a shared location on its search
    * path (`~/.agents/skills/`), so a per-host copy would be a duplicate
    * the host warns about. No current host adapter produces this (the
-   * retired gemini host did); kept because old install manifests still
-   * carry the sharedSkills entries it recorded. The skipped skill is
+   * retired gemini host did); kept as a generic capability for the next
+   * host whose CLI scans a shared skills dir. The skipped skill is
    * excluded from the install manifest's written-paths and skills map.
    */
   readonly skip?: boolean;

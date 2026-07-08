@@ -94,7 +94,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     streamsIncrementally: true,
     supportsResume: true,
     recognizesModel: (modelId) =>
-      typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId),
+      typeof modelId === 'string'
+      && (/^(gpt-|o\d)/.test(modelId) || modelId.includes('/')),
     hasExecuteWithSchema: true,
     hasGetCliVersionTag: true,
   },

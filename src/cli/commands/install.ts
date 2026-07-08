@@ -684,10 +684,10 @@ async function renderAndWriteSkills(args: {
       // Skipped skills render nothing — the host already discovers
       // them from a shared search-path location (~/.agents/skills/).
       // No current host adapter produces skip:true (the retired gemini
-      // host did); the machinery stays because install manifests on
-      // disk may still carry sharedSkills entries that verify/uninstall
-      // read. Their legacyPathsToRemove still runs below, and the
-      // shared path they load from is recorded as a sharedSkill.
+      // host did); the machinery stays as a generic capability for the
+      // next host whose CLI scans a shared skills dir. Their
+      // legacyPathsToRemove still runs below, and the shared path they
+      // load from is recorded as a sharedSkill.
       if (spec.skip) {
         logger.info(
           `crew install: ${adapter.displayName} — '${skill.id}' already on the host's shared skill `

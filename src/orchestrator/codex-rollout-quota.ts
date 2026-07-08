@@ -282,11 +282,30 @@ export interface SeedCodexRolloutQuotaArgs extends CodexRolloutQuotaArgs {
 }
 
 /**
+ * Severity rank for the downgrade guard below. Only states the reactive
+ * path can record for codex appear; anything unlisted ranks lowest.
+ */
+function quotaSeverityRank(state: QuotaSnapshot['state']): number {
+  switch (state) {
+    case 'limited':
+      return 2;
+    case 'near_limit':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
  * Best-effort: parse the rollout for a just-terminated codex run and
  * seed the preemptive quota cache with the numeric headroom. Never
- * throws. A reactive `limited` observation is never downgraded by an
- * `ok` rollout read (the hard failure is fresher evidence than a
- * token_count event that may predate the stop).
+ * throws. The rollout read may never IMPROVE a reactive observation —
+ * a quota/rate stop is fresher evidence than a token_count event that
+ * may predate it (and a 429 can throttle at low used_percent), so a
+ * `limited` or `near_limit` state stands until it expires or a
+ * same-or-worse rollout replaces it with fresher numbers. Recovery
+ * still happens via snapshot expiry (staleAfter) and reactive success
+ * observations — just not via this seed.
  */
 export async function seedCodexRolloutQuota(
   cache: Pick<QuotaCache, 'get' | 'record'>,
@@ -297,7 +316,12 @@ export async function seedCodexRolloutQuota(
     const snapshot = await codexRolloutQuotaSnapshot(args);
     if (snapshot === undefined) return;
     const existing = cache.get(args.agentId, args.now !== undefined ? { now: args.now } : {});
-    if (existing?.state === 'limited' && snapshot.state === 'ok') return;
+    if (
+      existing !== undefined
+      && quotaSeverityRank(snapshot.state) < quotaSeverityRank(existing.state)
+    ) {
+      return;
+    }
     cache.record(args.agentId, snapshot);
   } catch (err) {
     logBestEffortFailure('codex-rollout-quota.seed', err);

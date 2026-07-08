@@ -153,9 +153,11 @@ export interface AgentAdapter {
   getCliVersionTag?(): Promise<string | undefined>;
   /**
    * Returns true when the given model id is known to work with this adapter.
-   * Consumed by preflight to warn + fall back when captain.model is set to a
-   * model the captain CLI can't actually drive. Adapters that can drive any
-   * model they're handed (e.g., generic command adapters) return true.
+   * Consumed by the dispatch-time model preflight (`applyModelPreflight`):
+   * an unrecognized per-call pin or agents.json default is dropped with a
+   * warning so the CLI's own default model runs instead of the spawn
+   * failing. Omit entirely for adapters that can drive any model they're
+   * handed (generic, openai-compatible) — absent matcher means no check.
    */
   recognizesModel?(modelId: string): boolean;
   healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult>;

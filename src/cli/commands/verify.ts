@@ -144,10 +144,10 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
     // catalog — a tool present in only one skill is fine; the failure
     // mode is a live tool absent from every skill we installed.
     // Skills crew wrote for this host, PLUS skills it loads from a
-    // shared search-path location (sharedSkills entries recorded by
-    // older installs — no current host produces them). Both must exist
-    // and parse for the host to function. Fall back to the back-compat
-    // single skillPath only when neither map carries anything.
+    // shared search-path location (sharedSkills — no current host
+    // produces them; retained capability). Both must exist and parse
+    // for the host to function. Fall back to the back-compat single
+    // skillPath only when neither map carries anything.
     const recordedSkillPaths = [
       ...Object.values(entry.skills ?? {}),
       ...Object.values(entry.sharedSkills ?? {}),

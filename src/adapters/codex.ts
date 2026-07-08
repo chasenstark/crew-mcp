@@ -446,7 +446,12 @@ export class CodexAdapter implements AgentAdapter {
   private readonly healthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
-    return typeof modelId === 'string' && /^(gpt-|o\d)/.test(modelId);
+    // OpenAI-family ids, plus any provider-qualified slug ("openrouter/…")
+    // — codex config.toml model_providers can route arbitrary models we
+    // can't enumerate here, and the '/' marks that intent. Keep in
+    // lockstep with the registry proxy metadata (proxy/instance parity).
+    return typeof modelId === 'string'
+      && (/^(gpt-|o\d)/.test(modelId) || modelId.includes('/'));
   }
 
   async getCliVersionTag(): Promise<string | undefined> {
