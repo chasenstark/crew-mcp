@@ -575,6 +575,14 @@ last resort and must be labeled as inline fallback, not a fresh vote.
 The captain's own diff read is still mandatory for consolidation, but it
 is not a second same-model vote.
 
+A backgrounded host reviewer is host-harness-tracked, so the harness
+emits its own `Agent "<label>" finished` completion banner when the
+subagent terminates — a separate channel from the panel watcher. If you
+already consolidated that round with its verdict folded into the
+aggregation, the banner is an expected, redundant wake: silently end the
+turn, no explanation line. Only act if the late output's verdict differs
+from what you folded in, and then re-open that round's consolidation.
+
 ### `run_panel` shape
 
 Bound to an implementer:

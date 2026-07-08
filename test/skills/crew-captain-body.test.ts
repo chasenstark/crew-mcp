@@ -210,6 +210,18 @@ describe('crew-captain body — review panels', () => {
     expectContainsCI(flat, 'inline fallback');
   });
 
+  it('tells the captain to silently no-op a host reviewer completion for an already-consolidated round', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Host reviewer', '### `run_panel` shape');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'completion banner');
+    expectContainsCI(flat, 'separate channel from the panel watcher');
+    expectContainsCI(flat, 'expected, redundant wake');
+    expectContainsCI(flat, 'silently end the turn');
+    expectContainsCI(flat, "verdict differs");
+  });
+
   it('uses one panel watcher and get_panel_status fallback instead of aggregate_not_ready discovery', async () => {
     const body = await loadBody();
     const section = sliceBetween(body, '### Panel lifecycle', '### Aggregation and consolidation');
