@@ -1,16 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  closeSync,
-  fsyncSync,
-  writeSync,
-} from 'node:fs';
+import * as fs from 'node:fs';
 import { join } from 'node:path';
 
 import { withFileLock } from '../../utils/file-lock.js';
@@ -19,6 +8,7 @@ import { warnOnce } from '../../utils/warn-once.js';
 import { repoHash } from '../auth/token.js';
 import {
   CAPTAIN_INBOX_SCHEMA_VERSION,
+  CAPTAIN_INBOX_MSG_ID_REGEX,
   captainInboxMessageSchema,
   type CaptainInboxMessage,
 } from './schema.js';
@@ -76,6 +66,46 @@ export interface SweepExpiredMessagesArgs {
 
 let lastSweepAtMsByRepo = new Map<string, number>();
 
+interface ParsedMessageCacheEntry {
+  readonly path: string;
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly message?: CaptainInboxMessage;
+}
+
+interface CaptainInboxFs {
+  existsSync(path: string): boolean;
+  mkdirSync(path: string, options: { readonly recursive: true }): void;
+  readdirSync(path: string, options: { readonly withFileTypes: true }): fs.Dirent[];
+  statSync(path: string): fs.Stats;
+  readFileSync(path: string, encoding: 'utf-8'): string;
+  openSync(path: string, flags: string, mode: number): number;
+  writeSync(fd: number, string: string, position?: number | null, encoding?: BufferEncoding): number;
+  fsyncSync(fd: number): void;
+  closeSync(fd: number): void;
+  renameSync(oldPath: string, newPath: string): void;
+  unlinkSync(path: string): void;
+}
+
+const defaultCaptainInboxFs: CaptainInboxFs = {
+  existsSync: fs.existsSync,
+  mkdirSync: fs.mkdirSync,
+  readdirSync: fs.readdirSync,
+  statSync: fs.statSync,
+  readFileSync: fs.readFileSync,
+  openSync: fs.openSync,
+  writeSync: fs.writeSync,
+  fsyncSync: fs.fsyncSync,
+  closeSync: fs.closeSync,
+  renameSync: fs.renameSync,
+  unlinkSync: fs.unlinkSync,
+};
+
+let captainInboxFs = defaultCaptainInboxFs;
+const parsedMessageCache = new Map<string, ParsedMessageCacheEntry>();
+const MSG_ID_PATTERN = CAPTAIN_INBOX_MSG_ID_REGEX.source.replace(/^\^/, '').replace(/\$$/, '');
+const MESSAGE_FILE_RE = new RegExp(`^(${MSG_ID_PATTERN})\\.json$`);
+
 export function inboxRepoDir(crewHome: string, repoRoot: string): string {
   return join(crewHome, 'captain-inbox', repoHash(repoRoot));
 }
@@ -83,7 +113,7 @@ export function inboxRepoDir(crewHome: string, repoRoot: string): string {
 export async function appendMessage(args: AppendMessageArgs): Promise<CaptainInboxMessage> {
   const repoRoot = args.message.repo_root_at_send;
   const dir = inboxRepoDir(args.crewHome, repoRoot);
-  mkdirSync(dir, { recursive: true });
+  captainInboxFs.mkdirSync(dir, { recursive: true });
   const env = args.env ?? process.env;
   const caps = {
     maxUnread: getPositiveIntegerEnv('CREW_CAPTAIN_INBOX_MAX_UNREAD', 200, env),
@@ -127,12 +157,18 @@ function collectMessages(args: {
   readonly repoRoot: string;
 }): CaptainInboxMessage[] {
   const dir = inboxRepoDir(args.crewHome, args.repoRoot);
-  if (!existsSync(dir)) return [];
+  if (!captainInboxFs.existsSync(dir)) return [];
   const messages: CaptainInboxMessage[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  const seenPaths = new Set<string>();
+  for (const entry of captainInboxFs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = messagePathForEntry(dir, entry);
+    if (entryPath !== undefined) seenPaths.add(entryPath);
     const parsed = readMessageFile(dir, entry);
-    if (parsed !== undefined) messages.push(parsed.message);
+    if (parsed !== undefined) {
+      messages.push(parsed.message);
+    }
   }
+  pruneMissingMessageCacheEntries(dir, seenPaths);
   return messages;
 }
 
@@ -159,7 +195,7 @@ export function summarizeInbox(args: {
 
 export async function transitionMessages(args: TransitionMessagesArgs): Promise<TransitionMessagesResult> {
   const dir = inboxRepoDir(args.crewHome, args.repoRoot);
-  mkdirSync(dir, { recursive: true });
+  captainInboxFs.mkdirSync(dir, { recursive: true });
   const targetIds = new Set(args.msgIds);
   if (targetIds.size === 0) {
     return { acknowledged: [], not_found: [], already_in_target_state: [] };
@@ -168,13 +204,20 @@ export async function transitionMessages(args: TransitionMessagesArgs): Promise<
   const targetStatus = args.action === 'read' ? 'read' : 'dismissed';
 
   return withInboxLock(dir, async () => {
-    const seen = new Set<string>();
     const acknowledged: string[] = [];
     const alreadyInTargetState: string[] = [];
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const parsed = readMessageFile(dir, entry);
-      if (parsed === undefined || !targetIds.has(parsed.message.msg_id)) continue;
-      seen.add(parsed.message.msg_id);
+    const notFound: string[] = [];
+    const writes: AtomicMessageWrite[] = [];
+    for (const targetId of targetIds) {
+      if (!isValidMsgId(targetId)) {
+        notFound.push(targetId);
+        continue;
+      }
+      const parsed = readMessageById(dir, targetId);
+      if (parsed === undefined) {
+        notFound.push(targetId);
+        continue;
+      }
       if (parsed.message.status === targetStatus) {
         alreadyInTargetState.push(parsed.message.msg_id);
         continue;
@@ -185,10 +228,10 @@ export async function transitionMessages(args: TransitionMessagesArgs): Promise<
         status: targetStatus,
         ...(args.action === 'read' ? { read_at: timestamp } : { dismissed_at: timestamp }),
       };
-      writeMessageAtomicAtPath(parsed.path, next);
+      writes.push({ path: parsed.path, message: next });
       acknowledged.push(next.msg_id);
     }
-    const notFound = Array.from(targetIds).filter((id) => !seen.has(id));
+    writeMessagesAtomicBatch(writes);
     return {
       acknowledged: acknowledged.sort(),
       not_found: notFound.sort(),
@@ -202,7 +245,7 @@ export async function sweepExpiredMessages(args: SweepExpiredMessagesArgs): Prom
   readonly skipped: boolean;
 }> {
   const dir = inboxRepoDir(args.crewHome, args.repoRoot);
-  if (!existsSync(dir)) return { swept: 0, skipped: false };
+  if (!captainInboxFs.existsSync(dir)) return { swept: 0, skipped: false };
   const now = args.now ?? new Date();
   const nowMs = now.getTime();
   const key = dir;
@@ -217,12 +260,13 @@ export async function sweepExpiredMessages(args: SweepExpiredMessagesArgs): Prom
 
   return withInboxLock(dir, async () => {
     let swept = 0;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of captainInboxFs.readdirSync(dir, { withFileTypes: true })) {
       const parsed = readMessageFile(dir, entry);
       if (parsed === undefined) continue;
       const timestamp = sweepTimestamp(parsed.message);
       if (timestamp === undefined || Date.parse(timestamp) >= cutoffMs) continue;
-      unlinkSync(parsed.path);
+      captainInboxFs.unlinkSync(parsed.path);
+      parsedMessageCache.delete(parsed.path);
       swept += 1;
     }
     return { swept, skipped: false };
@@ -236,12 +280,16 @@ export function makeInboxMessageId(now = new Date()): string {
 function countMessages(dir: string): { readonly total: number; readonly unread: number } {
   let total = 0;
   let unread = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  const seenPaths = new Set<string>();
+  for (const entry of captainInboxFs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = messagePathForEntry(dir, entry);
+    if (entryPath !== undefined) seenPaths.add(entryPath);
     const parsed = readMessageFile(dir, entry);
     if (parsed === undefined) continue;
     total += 1;
     if (parsed.message.status === 'unread') unread += 1;
   }
+  pruneMissingMessageCacheEntries(dir, seenPaths);
   return { total, unread };
 }
 
@@ -255,28 +303,90 @@ function writeMessageAtomic(dir: string, message: CaptainInboxMessage): void {
   writeMessageAtomicAtPath(join(dir, `${message.msg_id}.json`), message);
 }
 
-function writeMessageAtomicAtPath(path: string, message: CaptainInboxMessage): void {
+function writeMessageAtomicAtPath(
+  path: string,
+  message: CaptainInboxMessage,
+): void {
   const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   let fd: number | undefined;
   try {
-    fd = openSync(tmp, 'wx', 0o600);
-    writeSync(fd, JSON.stringify(message, null, 2) + '\n', undefined, 'utf-8');
-    fsyncSync(fd);
-    closeSync(fd);
+    fd = captainInboxFs.openSync(tmp, 'wx', 0o600);
+    captainInboxFs.writeSync(fd, JSON.stringify(message, null, 2) + '\n', undefined, 'utf-8');
+    captainInboxFs.fsyncSync(fd);
+    captainInboxFs.closeSync(fd);
     fd = undefined;
-    renameSync(tmp, path);
+    captainInboxFs.renameSync(tmp, path);
+    cacheWrittenMessage(path, message);
   } catch (err) {
     if (fd !== undefined) {
       try {
-        closeSync(fd);
+        captainInboxFs.closeSync(fd);
       } catch {
         // Surface the original write/rename error.
       }
     }
     try {
-      unlinkSync(tmp);
+      captainInboxFs.unlinkSync(tmp);
     } catch {
       // Surface the original write/rename error.
+    }
+    throw err;
+  }
+}
+
+interface AtomicMessageWrite {
+  readonly path: string;
+  readonly message: CaptainInboxMessage;
+}
+
+interface PendingAtomicMessageWrite extends AtomicMessageWrite {
+  readonly tmp: string;
+  fd?: number;
+  renamed: boolean;
+}
+
+function writeMessagesAtomicBatch(writes: readonly AtomicMessageWrite[]): void {
+  if (writes.length === 0) return;
+  const pending: PendingAtomicMessageWrite[] = [];
+  try {
+    for (const write of writes) {
+      const tmp = `${write.path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+      const fd = captainInboxFs.openSync(tmp, 'wx', 0o600);
+      captainInboxFs.writeSync(fd, JSON.stringify(write.message, null, 2) + '\n', undefined, 'utf-8');
+      pending.push({ ...write, tmp, fd, renamed: false });
+    }
+
+    for (const write of pending) {
+      if (write.fd !== undefined) captainInboxFs.fsyncSync(write.fd);
+    }
+    for (const write of pending) {
+      if (write.fd !== undefined) {
+        captainInboxFs.closeSync(write.fd);
+        write.fd = undefined;
+      }
+    }
+    for (const write of pending) {
+      captainInboxFs.renameSync(write.tmp, write.path);
+      write.renamed = true;
+      cacheWrittenMessage(write.path, write.message);
+    }
+  } catch (err) {
+    for (const write of pending) {
+      if (write.fd !== undefined) {
+        try {
+          captainInboxFs.closeSync(write.fd);
+          write.fd = undefined;
+        } catch {
+          // Surface the original write/fsync/rename error.
+        }
+      }
+      if (!write.renamed) {
+        try {
+          captainInboxFs.unlinkSync(write.tmp);
+        } catch {
+          // Surface the original write/fsync/rename error.
+        }
+      }
     }
     throw err;
   }
@@ -286,18 +396,89 @@ function readMessageFile(
   dir: string,
   entry: { readonly isFile: () => boolean; readonly name: string },
 ): { readonly path: string; readonly message: CaptainInboxMessage } | undefined {
-  if (!entry.isFile() || !entry.name.endsWith('.json')) return undefined;
-  const stem = entry.name.slice(0, -'.json'.length);
-  const path = join(dir, entry.name);
+  const path = messagePathForEntry(dir, entry);
+  if (path === undefined) return undefined;
+  return readMessagePath(path, entry.name.slice(0, -'.json'.length));
+}
+
+function readMessageById(
+  dir: string,
+  msgId: string,
+): { readonly path: string; readonly message: CaptainInboxMessage } | undefined {
+  if (!isValidMsgId(msgId)) return undefined;
+  return readMessagePath(join(dir, `${msgId}.json`), msgId);
+}
+
+function readMessagePath(
+  path: string,
+  expectedMsgId: string,
+): { readonly path: string; readonly message: CaptainInboxMessage } | undefined {
+  let stat: { readonly mtimeMs: number; readonly size: number };
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+    stat = messageStat(path);
+  } catch {
+    parsedMessageCache.delete(path);
+    return undefined;
+  }
+
+  const cached = parsedMessageCache.get(path);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.message !== undefined ? { path, message: cached.message } : undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(captainInboxFs.readFileSync(path, 'utf-8')) as unknown;
     const result = captainInboxMessageSchema.safeParse(parsed);
-    if (!result.success || result.data.msg_id !== stem) return undefined;
+    if (!result.success || result.data.msg_id !== expectedMsgId) {
+      parsedMessageCache.set(path, { path, ...stat });
+      return undefined;
+    }
+    parsedMessageCache.set(path, { path, ...stat, message: result.data });
     return { path, message: result.data };
   } catch {
     // Readers tolerate in-flight temp files, corrupt files, and old shapes.
+    parsedMessageCache.set(path, { path, ...stat });
     return undefined;
   }
+}
+
+function messagePathForEntry(
+  dir: string,
+  entry: { readonly isFile: () => boolean; readonly name: string },
+): string | undefined {
+  if (!entry.isFile()) return undefined;
+  if (MESSAGE_FILE_RE.exec(entry.name) === null) return undefined;
+  return join(dir, entry.name);
+}
+
+function cacheWrittenMessage(path: string, message: CaptainInboxMessage): void {
+  try {
+    parsedMessageCache.set(path, {
+      path,
+      ...messageStat(path),
+      message,
+    });
+  } catch {
+    parsedMessageCache.delete(path);
+  }
+}
+
+function messageStat(path: string): { readonly mtimeMs: number; readonly size: number } {
+  const stat = captainInboxFs.statSync(path);
+  return { mtimeMs: stat.mtimeMs, size: stat.size };
+}
+
+function pruneMissingMessageCacheEntries(dir: string, seenPaths: Set<string>): void {
+  const expectedPathPrefix = `${dir}/`;
+  for (const [path] of parsedMessageCache) {
+    if (path.startsWith(expectedPathPrefix) && !seenPaths.has(path)) {
+      parsedMessageCache.delete(path);
+    }
+  }
+}
+
+function isValidMsgId(value: string): boolean {
+  return CAPTAIN_INBOX_MSG_ID_REGEX.test(value);
 }
 
 function withInboxLock<T>(repoDir: string, operation: () => Promise<T>): Promise<T> {
@@ -340,6 +521,20 @@ function getRetentionDays(env: NodeJS.ProcessEnv): number {
 
 export function clearCaptainInboxSweepStateForTest(): void {
   lastSweepAtMsByRepo = new Map<string, number>();
+}
+
+export function clearCaptainInboxCachesForTest(): void {
+  parsedMessageCache.clear();
+  lastSweepAtMsByRepo = new Map<string, number>();
+}
+
+export function setCaptainInboxFsForTest(overrides: Partial<CaptainInboxFs>): () => void {
+  captainInboxFs = { ...defaultCaptainInboxFs, ...overrides };
+  parsedMessageCache.clear();
+  return () => {
+    captainInboxFs = defaultCaptainInboxFs;
+    parsedMessageCache.clear();
+  };
 }
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';

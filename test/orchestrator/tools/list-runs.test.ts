@@ -11,13 +11,19 @@ import {
   setListRunsFsForTest,
 } from '../../../src/orchestrator/tools/list-runs.js';
 import type { RunStateV1, RunStatus } from '../../../src/orchestrator/run-state.js';
-import { appendMessage, transitionMessages } from '../../../src/orchestrator/captain-inbox/store.js';
+import {
+  appendMessage,
+  clearCaptainInboxCachesForTest,
+  setCaptainInboxFsForTest,
+  transitionMessages,
+} from '../../../src/orchestrator/captain-inbox/store.js';
 
 describe('listRuns', () => {
   let crewHome: string;
   let repoRoot: string;
   let otherRepoRoot: string;
   let resetListRunsFs: (() => void) | undefined;
+  let resetCaptainInboxFs: (() => void) | undefined;
 
   beforeEach(() => {
     clearListRunsCachesForTest();
@@ -29,7 +35,10 @@ describe('listRuns', () => {
   afterEach(() => {
     resetListRunsFs?.();
     resetListRunsFs = undefined;
+    resetCaptainInboxFs?.();
+    resetCaptainInboxFs = undefined;
     clearListRunsCachesForTest();
+    clearCaptainInboxCachesForTest();
     rmSync(crewHome, { recursive: true, force: true });
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(otherRepoRoot, { recursive: true, force: true });
@@ -344,6 +353,41 @@ describe('listRuns', () => {
       total_in_inbox: 2,
       oldest_unread_at: unread.created_at,
     });
+  });
+
+  it('reuses cached inbox parses for repeated captain inbox summaries', async () => {
+    writeState({ runId: 'run-1', status: 'running', repoRoot });
+    await appendMessage({
+      crewHome,
+      message: inboxMessage(repoRoot, 1),
+      now: new Date('2026-07-06T00:00:01.000Z'),
+    });
+    await appendMessage({
+      crewHome,
+      message: inboxMessage(repoRoot, 2),
+      now: new Date('2026-07-06T00:00:02.000Z'),
+    });
+    clearCaptainInboxCachesForTest();
+    const inboxReadFileCalls: string[] = [];
+    resetCaptainInboxFs = setCaptainInboxFsForTest({
+      readFileSync(path, encoding) {
+        inboxReadFileCalls.push(path);
+        return fs.readFileSync(path, encoding);
+      },
+    });
+
+    expect(listRuns({}, { crewHome, repoRoot }).captain_inbox_summary).toMatchObject({
+      total_unread: 2,
+      total_in_inbox: 2,
+    });
+    expect(inboxReadFileCalls).toHaveLength(2);
+
+    inboxReadFileCalls.length = 0;
+    expect(listRuns({}, { crewHome, repoRoot }).captain_inbox_summary).toMatchObject({
+      total_unread: 2,
+      total_in_inbox: 2,
+    });
+    expect(inboxReadFileCalls).toEqual([]);
   });
 
   function writeState(args: {

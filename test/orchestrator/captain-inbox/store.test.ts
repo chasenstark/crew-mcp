@@ -1,14 +1,18 @@
+import * as fs from 'node:fs';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   appendMessage,
   CaptainInboxError,
+  clearCaptainInboxCachesForTest,
   clearCaptainInboxSweepStateForTest,
   inboxRepoDir,
   listMessages,
+  setCaptainInboxFsForTest,
+  summarizeInbox,
   sweepExpiredMessages,
   transitionMessages,
 } from '../../../src/orchestrator/captain-inbox/store.js';
@@ -39,6 +43,10 @@ function message(repoRoot: string, index = 0) {
 }
 
 describe('captain inbox store', () => {
+  afterEach(() => {
+    clearCaptainInboxCachesForTest();
+  });
+
   it('serializes concurrent appends under caps without corrupt files', async () => {
     const h = tempRoot();
     try {
@@ -125,6 +133,116 @@ describe('captain inbox store', () => {
     }
   });
 
+  it('uses the mtime cache for count, summary, and list reads when files are unchanged', async () => {
+    const h = tempRoot();
+    let resetFs: (() => void) | undefined;
+    const readFilePaths: string[] = [];
+    try {
+      resetFs = setCaptainInboxFsForTest({
+        readFileSync(path, encoding) {
+          readFilePaths.push(path);
+          return fs.readFileSync(path, encoding);
+        },
+      });
+      await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 1) });
+      await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 2) });
+      await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 3) });
+
+      clearCaptainInboxCachesForTest();
+      readFilePaths.length = 0;
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot })).toHaveLength(3);
+      expect(readFilePaths).toHaveLength(3);
+
+      readFilePaths.length = 0;
+      expect(summarizeInbox({ crewHome: h.crewHome, repoRoot: h.repoRoot })).toMatchObject({
+        total_unread: 3,
+        total_in_inbox: 3,
+      });
+      expect(readFilePaths).toEqual([]);
+
+      await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 4) });
+      expect(readFilePaths).toEqual([]);
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot })).toHaveLength(4);
+      expect(readFilePaths).toEqual([]);
+    } finally {
+      resetFs?.();
+      h.cleanup();
+    }
+  });
+
+  it('does not re-parse unchanged malformed message bodies', async () => {
+    const h = tempRoot();
+    let resetFs: (() => void) | undefined;
+    const readFilePaths: string[] = [];
+    try {
+      const valid = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 1) });
+      const malformed = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 2) });
+      const malformedPath = join(inboxRepoDir(h.crewHome, h.repoRoot), `${malformed.msg_id}.json`);
+      writeFileSync(malformedPath, '{ bad', 'utf-8');
+      resetFs = setCaptainInboxFsForTest({
+        readFileSync(path, encoding) {
+          readFilePaths.push(path);
+          return fs.readFileSync(path, encoding);
+        },
+      });
+
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot }).map((m) => m.msg_id))
+        .toEqual([valid.msg_id]);
+      expect(readFilePaths).toHaveLength(2);
+
+      readFilePaths.length = 0;
+      expect(summarizeInbox({ crewHome: h.crewHome, repoRoot: h.repoRoot })).toMatchObject({
+        total_unread: 1,
+        total_in_inbox: 1,
+      });
+      expect(readFilePaths).toEqual([]);
+    } finally {
+      resetFs?.();
+      h.cleanup();
+    }
+  });
+
+  it('re-parses cached messages when size changes even if mtime is unchanged', async () => {
+    const h = tempRoot();
+    let resetFs: (() => void) | undefined;
+    const readFilePaths: string[] = [];
+    try {
+      const original = await appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, 1) });
+      const messagePath = join(inboxRepoDir(h.crewHome, h.repoRoot), `${original.msg_id}.json`);
+      resetFs = setCaptainInboxFsForTest({
+        statSync(path) {
+          const stat = fs.statSync(path);
+          return { ...stat, mtimeMs: 12345 } as fs.Stats;
+        },
+        readFileSync(path, encoding) {
+          readFilePaths.push(path);
+          return fs.readFileSync(path, encoding);
+        },
+      });
+      clearCaptainInboxCachesForTest();
+
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot })).toMatchObject([
+        { msg_id: original.msg_id, body: 'body 1' },
+      ]);
+      expect(readFilePaths).toHaveLength(1);
+
+      writeFileSync(
+        messagePath,
+        JSON.stringify({ ...original, body: 'body 1 with a different size' }, null, 2) + '\n',
+        'utf-8',
+      );
+      readFilePaths.length = 0;
+
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot })).toMatchObject([
+        { msg_id: original.msg_id, body: 'body 1 with a different size' },
+      ]);
+      expect(readFilePaths).toHaveLength(1);
+    } finally {
+      resetFs?.();
+      h.cleanup();
+    }
+  });
+
   it('skips filename/id mismatches and cannot transition-write outside the inbox dir', async () => {
     const h = tempRoot();
     try {
@@ -151,6 +269,11 @@ describe('captain inbox store', () => {
         JSON.stringify({ ...good, msg_id: traversalName }, null, 2) + '\n',
         'utf-8',
       );
+      writeFileSync(
+        join(dir, `${good.msg_id}.read.json`),
+        JSON.stringify({ ...good, body: 'status-suffixed filename must be ignored' }, null, 2) + '\n',
+        'utf-8',
+      );
 
       expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot }).map((m) => m.msg_id))
         .toEqual([good.msg_id]);
@@ -175,6 +298,85 @@ describe('captain inbox store', () => {
         status: 'unread',
       });
     } finally {
+      h.cleanup();
+    }
+  });
+
+  it('resolves transition ids directly and batches fsync before status renames', async () => {
+    const h = tempRoot();
+    let resetFs: (() => void) | undefined;
+    const readFilePaths: string[] = [];
+    const operationOrder: string[] = [];
+    const fdPaths = new Map<number, string>();
+    let readdirCalls = 0;
+    let fsyncCalls = 0;
+    try {
+      const messages = await Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, index) })),
+      );
+      const targetIds = messages.slice(1, 4).map((m) => m.msg_id);
+      clearCaptainInboxCachesForTest();
+      resetFs = setCaptainInboxFsForTest({
+        readdirSync(path, options) {
+          readdirCalls += 1;
+          return fs.readdirSync(path, options);
+        },
+        readFileSync(path, encoding) {
+          readFilePaths.push(path);
+          return fs.readFileSync(path, encoding);
+        },
+        openSync(path, flags, mode) {
+          const fd = fs.openSync(path, flags, mode);
+          fdPaths.set(fd, path);
+          operationOrder.push(`open:${path}`);
+          return fd;
+        },
+        fsyncSync(fd) {
+          fsyncCalls += 1;
+          operationOrder.push(`fsync:${fdPaths.get(fd) ?? fd}`);
+          fs.fsyncSync(fd);
+        },
+        closeSync(fd) {
+          operationOrder.push(`close:${fdPaths.get(fd) ?? fd}`);
+          fdPaths.delete(fd);
+          fs.closeSync(fd);
+        },
+        renameSync(oldPath, newPath) {
+          operationOrder.push(`rename:${oldPath}->${newPath}`);
+          fs.renameSync(oldPath, newPath);
+        },
+      });
+
+      expect(await transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: targetIds,
+        action: 'read',
+        now: new Date('2026-07-06T00:00:03.000Z'),
+      })).toEqual({
+        acknowledged: [...targetIds].sort(),
+        not_found: [],
+        already_in_target_state: [],
+      });
+
+      expect(readdirCalls).toBe(0);
+      expect(readFilePaths.sort()).toEqual(
+        targetIds.map((id) => join(inboxRepoDir(h.crewHome, h.repoRoot), `${id}.json`)).sort(),
+      );
+      expect(fsyncCalls).toBe(targetIds.length);
+      const firstRenameIndex = operationOrder.findIndex((entry) => entry.startsWith('rename:'));
+      const lastFsyncIndex = operationOrder.reduce(
+        (last, entry, index) => entry.startsWith('fsync:') ? index : last,
+        -1,
+      );
+      expect(firstRenameIndex).toBeGreaterThan(lastFsyncIndex);
+      expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot }))
+        .toEqual(expect.arrayContaining(
+          targetIds.map((id) => expect.objectContaining({ msg_id: id, status: 'read' })),
+        ));
+    } finally {
+      resetFs?.();
       h.cleanup();
     }
   });

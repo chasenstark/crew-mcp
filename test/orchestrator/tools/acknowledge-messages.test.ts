@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { issueRunAuthSidecar } from '../../../src/orchestrator/auth/index.js';
 import {
   appendMessage,
   listMessages,
@@ -12,6 +13,7 @@ import {
   acknowledgeMessagesInputSchema,
   acknowledgeMessagesToolHandler,
 } from '../../../src/orchestrator/tools/acknowledge-messages.js';
+import { sendMessageToolHandler } from '../../../src/orchestrator/tools/send-message.js';
 
 function tempRoot(): { readonly crewHome: string; readonly repoRoot: string; readonly cleanup: () => void } {
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-ack-inbox-home-'));
@@ -131,6 +133,57 @@ describe('acknowledge_messages', () => {
         .toHaveLength(6);
       expect(listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot }).every((m) => m.status === 'read'))
         .toBe(true);
+    } finally {
+      h.cleanup();
+    }
+  });
+
+  it('keeps concurrent send_message and acknowledge_messages race-safe', async () => {
+    const h = tempRoot();
+    try {
+      const existing = await appendMessage({
+        crewHome: h.crewHome,
+        message: message(h.repoRoot, 1),
+      });
+      const issued = await issueRunAuthSidecar({
+        crewHome: h.crewHome,
+        runId: 'worker-run',
+        agentId: 'codex',
+        repoRoot: h.repoRoot,
+        captainServeInstance: 'captain-test',
+        writeMode: 'must-not-exist',
+      });
+
+      const [sendResult, acknowledgeResult] = await Promise.all([
+        sendMessageToolHandler(
+          { body: 'new worker note', kind: 'note', to: { kind: 'captain' } },
+          {
+            crewHome: h.crewHome,
+            workerAuth: issued.sidecar,
+            env: { CREW_RUN_TOKEN: issued.sidecar.token } as NodeJS.ProcessEnv,
+          },
+        ),
+        acknowledgeMessagesToolHandler(
+          acknowledgeMessagesInputSchema.parse({ msg_ids: [existing.msg_id], action: 'read' }),
+          { crewHome: h.crewHome, projectRoot: h.repoRoot },
+        ),
+      ]);
+
+      expect(sendResult.isError).not.toBe(true);
+      expect(acknowledgeResult.structuredContent).toMatchObject({
+        acknowledged: [existing.msg_id],
+      });
+      const messages = listMessages({ crewHome: h.crewHome, repoRoot: h.repoRoot });
+      expect(messages).toHaveLength(2);
+      expect(new Set(messages.map((m) => m.msg_id)).size).toBe(2);
+      expect(messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ msg_id: existing.msg_id, status: 'read' }),
+        expect.objectContaining({
+          msg_id: (sendResult.structuredContent as { msg_id: string }).msg_id,
+          status: 'unread',
+          body: 'new worker note',
+        }),
+      ]));
     } finally {
       h.cleanup();
     }
