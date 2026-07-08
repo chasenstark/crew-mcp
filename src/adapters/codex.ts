@@ -8,6 +8,7 @@ import {
   existsSync,
   rmSync,
 } from 'fs';
+import { mkdtemp, readFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
@@ -91,6 +92,10 @@ function parseJsonlEvent(line: string): CodexEvent | undefined {
     return undefined;
   }
   return parsed as CodexEvent;
+}
+
+function isEnoent(value: unknown): boolean {
+  return value instanceof Error && 'code' in value && (value as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
 function preview(text: string | undefined, max = 600): string {
@@ -468,7 +473,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'codex-'));
+    const tmpDir = await mkdtemp(join(tmpdir(), 'codex-'));
     registerTempDirForCleanup(tmpDir);
     try {
       const outputFile = join(tmpDir, 'output.json');
@@ -818,11 +823,10 @@ export class CodexAdapter implements AgentAdapter {
 
       // Get output: prefer output file, fall back to last agent message
       let output = '';
-      if (existsSync(outputFile)) {
-        try {
-          output = readFileSync(outputFile, 'utf-8');
-        } catch {
-          // Fall through to agent message
+      try {
+        output = await readFile(outputFile, 'utf-8');
+      } catch (err) {
+        if (!isEnoent(err)) {
           logger.warn('[adapter:codex] could not read output file, falling back to event message', {
             outputFile,
           });
@@ -870,7 +874,7 @@ export class CodexAdapter implements AgentAdapter {
       };
     } finally {
       try {
-        rmSync(tmpDir, { recursive: true, force: true });
+        await rm(tmpDir, { recursive: true, force: true });
         unregisterTempDirForCleanup(tmpDir);
       } catch (err) {
         logBestEffortFailure('codex.tmp-cleanup', err);

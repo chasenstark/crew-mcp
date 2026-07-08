@@ -194,6 +194,7 @@ function createBoundedStderrCapture(): {
 
 function createClaudeStreamCapture(): {
   readonly feedLine: (line: string) => void;
+  readonly feedParsedLine: (line: string, event: Record<string, unknown> | undefined) => void;
   readonly feedText: (text: string) => void;
   readonly envelope: () => ClaudeResponse | undefined;
   readonly capturedText: () => string;
@@ -203,27 +204,28 @@ function createClaudeStreamCapture(): {
   let captured = '';
   let sessionId: string | undefined;
 
-  const feedLine = (line: string): void => {
+  const feedParsedLine = (line: string, event: Record<string, unknown> | undefined): void => {
     const trimmed = line.trim();
     if (!trimmed) return;
     captured = appendBounded(captured, `${trimmed}\n`);
-    try {
-      const obj = JSON.parse(trimmed) as { type?: string; session_id?: string };
-      if (typeof obj.session_id === 'string' && !sessionId) {
-        sessionId = obj.session_id;
-      }
-      if (obj.type === 'result') {
-        lastResultLine = trimmed;
-      }
-    } catch {
-      return;
+    if (event === undefined) return;
+    if (typeof event.session_id === 'string' && !sessionId) {
+      sessionId = event.session_id;
     }
-    const chunk = extractAssistantTextFromStreamLine(trimmed);
+    if (event.type === 'result') {
+      lastResultLine = trimmed;
+    }
+    const chunk = extractAssistantTextFromStreamLine(event);
     if (chunk) assistantText = appendBounded('', chunk);
+  };
+
+  const feedLine = (line: string): void => {
+    feedParsedLine(line, parseClaudeStreamLine(line));
   };
 
   return {
     feedLine,
+    feedParsedLine,
     feedText: (text: string) => {
       for (const line of text.split('\n')) feedLine(line);
     },
@@ -353,20 +355,26 @@ function compactJson(value: unknown): string {
  * Pulls user-visible assistant text from a single stream-json line.
  * Returns '' for non-assistant events (tool_use, system, result).
  */
-function extractAssistantTextFromStreamLine(line: string): string {
+function parseClaudeStreamLine(line: string): Record<string, unknown> | undefined {
   try {
-    const obj = JSON.parse(line) as {
-      type?: string;
-      message?: { content?: Array<{ type?: string; text?: string }> };
-    };
-    if (obj.type !== 'assistant' || !obj.message?.content) return '';
-    return obj.message.content
-      .filter((block) => block.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text)
-      .join('');
+    const event = JSON.parse(line) as unknown;
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return undefined;
+    return event as Record<string, unknown>;
   } catch {
-    return '';
+    return undefined;
   }
+}
+
+function extractAssistantTextFromStreamLine(lineOrEvent: string | Record<string, unknown>): string {
+  const obj = typeof lineOrEvent === 'string'
+    ? parseClaudeStreamLine(lineOrEvent)
+    : lineOrEvent;
+  const content = (obj?.message as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
+  if (obj?.type !== 'assistant' || !content) return '';
+  return content
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('');
 }
 
 /**
@@ -375,37 +383,34 @@ function extractAssistantTextFromStreamLine(line: string): string {
  * content blocks, so this walks `message.content[]` instead of relying on the
  * top-level event type alone.
  */
-export function formatClaudeStreamLineForStream(line: string): string[] {
-  try {
-    const event = JSON.parse(line) as Record<string, unknown>;
-    if (!event || typeof event !== 'object' || Array.isArray(event)) {
-      return [claudeEventFallback(undefined)];
-    }
-
-    const type = event.type;
-    if (typeof type !== 'string' || !type) {
-      return [claudeEventFallback(type)];
-    }
-
-    switch (type) {
-      case 'system':
-        return [formatClaudeSystemEvent(event)];
-      case 'rate_limit_event':
-        return [formatClaudeRateLimitEvent(event)];
-      case 'assistant':
-        return formatClaudeAssistantEvent(event);
-      case 'user':
-        return formatClaudeUserEvent(event);
-      case 'result':
-        return [formatClaudeResultEvent(event)];
-      default:
-        return [claudeEventFallback(type)];
-    }
-  } catch {
+export function formatClaudeStreamLineForStream(lineOrEvent: string | Record<string, unknown> | undefined): string[] {
+  const event = typeof lineOrEvent === 'string'
+    ? parseClaudeStreamLine(lineOrEvent)
+    : lineOrEvent;
+  if (!event) {
     return [claudeEventFallback(undefined)];
   }
-}
 
+  const type = event.type;
+  if (typeof type !== 'string' || !type) {
+    return [claudeEventFallback(type)];
+  }
+
+  switch (type) {
+    case 'system':
+      return [formatClaudeSystemEvent(event)];
+    case 'rate_limit_event':
+      return [formatClaudeRateLimitEvent(event)];
+    case 'assistant':
+      return formatClaudeAssistantEvent(event);
+    case 'user':
+      return formatClaudeUserEvent(event);
+    case 'result':
+      return [formatClaudeResultEvent(event)];
+    default:
+      return [claudeEventFallback(type)];
+  }
+}
 function formatClaudeSystemEvent(event: Record<string, unknown>): string {
   const subtype = typeof event.subtype === 'string' ? event.subtype : 'event';
   if (subtype !== 'init') {
@@ -665,10 +670,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         const emitLine = (line: string): void => {
           const trimmed = line.trim();
           if (!trimmed) return;
-          if (streaming) streamCapture.feedLine(trimmed);
+          const parsed = streaming ? parseClaudeStreamLine(trimmed) : undefined;
+          if (streaming) streamCapture.feedParsedLine(trimmed, parsed);
           else rawStdoutCapture = appendBounded(rawStdoutCapture, `${trimmed}\n`);
           if (!streaming) return;
-          for (const chunk of formatClaudeStreamLineForStream(trimmed)) {
+          for (const chunk of formatClaudeStreamLineForStream(parsed)) {
             try {
               task.onOutput!(chunk);
             } catch (err) {

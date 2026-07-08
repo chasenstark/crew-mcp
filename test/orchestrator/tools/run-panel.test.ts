@@ -927,6 +927,7 @@ describe('runPanelHandler', () => {
     const state = h.runStateStore.read(out.reviewers[0].run_id);
     expect(state?.prompts.at(-1)?.summary).toBe('terminal review');
     expect(state?.filesChanged).toEqual(['review.md']);
+    await drainPendingTerminalPersists();
     const panelState = readPanelState(panelDir(h.crewHome, out.panel_id));
     expect(panelState?.reviewers[0]).toMatchObject({
       dispatched: true,

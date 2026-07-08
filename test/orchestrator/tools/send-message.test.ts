@@ -55,7 +55,7 @@ describe('send_message worker tool', () => {
   it('stamps identity from the sidecar and ignores spoofed input', async () => {
     const h = tempRoot();
     try {
-      const issued = issueRunAuthSidecar({
+      const issued = await issueRunAuthSidecar({
         crewHome: h.crewHome,
         runId: 'worker-run',
         agentId: 'codex',
@@ -93,7 +93,7 @@ describe('send_message worker tool', () => {
   it('revalidates revoked, deleted, and changed-token sidecars per call', async () => {
     const h = tempRoot();
     try {
-      const issued = issueRunAuthSidecar({
+      const issued = await issueRunAuthSidecar({
         crewHome: h.crewHome,
         runId: 'worker-run',
         agentId: 'codex',
@@ -113,7 +113,7 @@ describe('send_message worker tool', () => {
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toEqual({ error: 'token_invalid' });
 
-      revokeRunAuthSidecar(h.crewHome, 'worker-run');
+      await revokeRunAuthSidecar(h.crewHome, 'worker-run');
       result = await sendMessageToolHandler(
         { body: 'revoked', kind: 'note', to: { kind: 'captain' } },
         {
@@ -152,7 +152,7 @@ describe('send_message worker tool', () => {
   it('reports repo_root_mismatch when the sidecar repo is gone', async () => {
     const h = tempRoot();
     try {
-      const issued = issueRunAuthSidecar({
+      const issued = await issueRunAuthSidecar({
         crewHome: h.crewHome,
         runId: 'worker-run',
         agentId: 'codex',
@@ -180,7 +180,7 @@ describe('send_message worker tool', () => {
   it('truncates over-cap bodies with metadata and a warning', async () => {
     const h = tempRoot();
     try {
-      const issued = issueRunAuthSidecar({
+      const issued = await issueRunAuthSidecar({
         crewHome: h.crewHome,
         runId: 'worker-run',
         agentId: 'codex',

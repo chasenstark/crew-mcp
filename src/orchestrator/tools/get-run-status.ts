@@ -30,6 +30,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
 import { z } from 'zod';
 
@@ -199,6 +200,14 @@ interface CommitSummary {
   readonly subject: string;
 }
 
+interface CommitSummaryCacheEntry {
+  readonly completedAt: string | undefined;
+  readonly hostHead: string;
+  readonly summary: { readonly commits: readonly CommitSummary[]; readonly commit_count: number };
+}
+
+const terminalCommitSummaryCache = new Map<string, CommitSummaryCacheEntry>();
+
 type TerminalPromptRecord = {
   readonly turn: number;
   readonly startedAt: string;
@@ -294,13 +303,35 @@ function collectRunCommits(
   state: RunStateV1,
   fallbackRepoRoot: string,
 ): { readonly commits: readonly CommitSummary[]; readonly commit_count: number } {
+  if (
+    state.status === 'discarded'
+    || state.status === 'merged'
+    || !existsSync(state.worktreePath)
+  ) {
+    return { commits: [], commit_count: 0 };
+  }
+
   try {
     const targetRoot = state.repoRoot ?? fallbackRepoRoot;
     const targetHead = gitOutput(targetRoot, ['rev-parse', 'HEAD']);
+    const cached = terminalCommitSummaryCache.get(state.runId);
+    if (
+      cached !== undefined
+      && cached.completedAt === state.completedAt
+      && cached.hostHead === targetHead
+    ) {
+      return cached.summary;
+    }
     const range = `${targetHead}..HEAD`;
     const count = Number.parseInt(gitOutput(state.worktreePath, ['rev-list', '--count', range]), 10);
     if (!Number.isFinite(count) || count <= 0) {
-      return { commits: [], commit_count: 0 };
+      const summary = { commits: [], commit_count: 0 };
+      terminalCommitSummaryCache.set(state.runId, {
+        completedAt: state.completedAt,
+        hostHead: targetHead,
+        summary,
+      });
+      return summary;
     }
     const raw = gitOutput(state.worktreePath, [
       'log',
@@ -319,7 +350,13 @@ function collectRunCommits(
         };
       })
       .filter((commit): commit is CommitSummary => commit !== undefined);
-    return { commits, commit_count: count };
+    const summary = { commits, commit_count: count };
+    terminalCommitSummaryCache.set(state.runId, {
+      completedAt: state.completedAt,
+      hostHead: targetHead,
+      summary,
+    });
+    return summary;
   } catch {
     return { commits: [], commit_count: 0 };
   }
@@ -357,8 +394,9 @@ async function waitForRunChange(args: {
     if (!args.terminalOnly) {
       subs.push(args.dispatcher.onEvent('run:stream', (info) => {
         if (!matches(info)) return;
-        const lines = formatProgressLines(args.agentName, info.chunk);
-        if (filterEventsTailNoise(lines).length === 0) return;
+        const signalLines = info.formattedSignalLines
+          ?? filterEventsTailNoise(formatProgressLines(args.agentName, info.chunk));
+        if (signalLines.length === 0) return;
         finish(false);
       }));
     }

@@ -393,6 +393,32 @@ describe('RunStateStore', () => {
     expect(receipt.failure).toBeNull();
   });
 
+  it('create() can persist initial pending worker readiness in the first state write', async () => {
+    const result = await store.create({
+      runId: 'r-worker-pending',
+      agentId: 'a',
+      worktreePath: '/x',
+      initialPrompt: 'p',
+      workerReady: { status: 'pending' },
+    });
+
+    expect(result.state.workerReady).toEqual({ status: 'pending' });
+    expect(store.read('r-worker-pending')?.workerReady).toEqual({ status: 'pending' });
+  });
+
+  it('appendPrompt() can persist pending worker readiness with the continuation write', async () => {
+    await createRun({ runId: 'r-append-ready', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+    await store.markTerminal('r-append-ready', { status: 'success', summary: 'done', filesChanged: [] });
+
+    const result = await store.appendPrompt('r-append-ready', {
+      userPrompt: 'next',
+      workerReady: { status: 'pending' },
+    });
+
+    expect(result.state.status).toBe('running');
+    expect(result.state.workerReady).toEqual({ status: 'pending' });
+  });
+
   it('create() omits peer_messages_input when no initial peer messages are provided', async () => {
     const result = await store.create({
       runId: 'r-no-peer',
@@ -1171,6 +1197,21 @@ describe('RunStateStore', () => {
       // coherent.
       expect(result.lines).toEqual([]);
       expect(result.nextLine).toBe(2);
+    });
+
+    it('serves cursor-miss signal reads from the cached byte offset', async () => {
+      await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
+      store.appendEvent('r-1', '[codex] message: old synthesis');
+      const seeded = store.getEventLineCount('r-1');
+      expect(seeded).toBe(1);
+      const before = store.eventReadDiagnosticsForTest().fullEventLogReads;
+
+      store.appendEvent('r-1', '[codex] message: new synthesis');
+      const result = store.readSignalEventsSince('r-1', 0);
+
+      expect(result.lines).toEqual(['[codex] message: new synthesis']);
+      expect(result.nextLine).toBe(2);
+      expect(store.eventReadDiagnosticsForTest().fullEventLogReads).toBe(before);
     });
 
     it('honors sinceLine cursor on the raw file offset', async () => {

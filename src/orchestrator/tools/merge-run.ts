@@ -217,7 +217,7 @@ export async function mergeRunToolHandler(
         });
       }
       try {
-        revokeRunAuthSidecar(deps.crewHome, args.run_id);
+        await revokeRunAuthSidecar(deps.crewHome, args.run_id);
       } catch (err) {
         logger.warn(
           `merge_run ${args.run_id}: failed to revoke run auth sidecar: ${

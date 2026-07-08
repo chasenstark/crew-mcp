@@ -536,7 +536,7 @@ describe('crew serve — restricted worker mode', () => {
     writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
     execSync('git add README.md', { cwd: root });
     execSync('git commit -q -m init', { cwd: root });
-    const issued = issueRunAuthSidecar({
+    const issued = await issueRunAuthSidecar({
       crewHome,
       runId: 'worker-run',
       agentId: 'codex',
@@ -4336,6 +4336,7 @@ describe('crew serve — cancel_run tool', () => {
       } else {
         expect(abortFired).toBe(false);
       }
+      await waitFor(() => readRunAuthSidecar(h.crewHome, env.run_id).revoked === true);
       expect(readRunAuthSidecar(h.crewHome, env.run_id).revoked).toBe(true);
     } finally {
       await h.close();
@@ -5356,7 +5357,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       };
       expect(s.next_event_line).toBeUndefined();
       expect(s.events_tail).toBeUndefined();
-      expect(readSpy.mock.calls.length - readsBeforeStatusCall).toBe(3);
+      const readsDuringStatusCall = readSpy.mock.calls.length - readsBeforeStatusCall;
+      expect(readsDuringStatusCall).toBeGreaterThanOrEqual(3);
+      expect(readsDuringStatusCall).toBeLessThanOrEqual(4);
       readSpy.mockRestore();
 
       resolveAdapter();

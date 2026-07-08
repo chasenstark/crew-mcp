@@ -32,11 +32,11 @@ describe('run auth sidecars', () => {
     };
   }
 
-  it('issues and verifies a token round trip with a 0600 sidecar', () => {
+  it('issues and verifies a token round trip with a 0600 sidecar', async () => {
     const h = makeDirs();
     cleanups.push(h.cleanup);
 
-    const issued = issueRunAuthSidecar({
+    const issued = await issueRunAuthSidecar({
       crewHome: h.crewHome,
       runId: 'run-1',
       agentId: 'codex',
@@ -60,7 +60,7 @@ describe('run auth sidecars', () => {
     expect(readRunAuthSidecar(h.crewHome, 'run-1').token).toBe(issued.sidecar.token);
   });
 
-  it('rejects absent, tampered, expired, and revoked tokens', () => {
+  it('rejects absent, tampered, expired, and revoked tokens', async () => {
     const h = makeDirs();
     cleanups.push(h.cleanup);
 
@@ -70,7 +70,7 @@ describe('run auth sidecars', () => {
       token: '0'.repeat(64),
     })).toThrow(/sidecar_missing/);
 
-    const issued = issueRunAuthSidecar({
+    const issued = await issueRunAuthSidecar({
       crewHome: h.crewHome,
       runId: 'run-2',
       agentId: 'codex',
@@ -93,7 +93,7 @@ describe('run auth sidecars', () => {
       tokenTtlMs: 1,
     })).toThrow(/token_expired/);
 
-    revokeRunAuthSidecar(h.crewHome, 'run-2', new Date('2026-01-01T00:00:03.000Z'));
+    await revokeRunAuthSidecar(h.crewHome, 'run-2', new Date('2026-01-01T00:00:03.000Z'));
     expect(() => validateRunAuthSidecar({
       crewHome: h.crewHome,
       runId: 'run-2',
@@ -102,10 +102,10 @@ describe('run auth sidecars', () => {
     })).toThrow(/token_revoked/);
   });
 
-  it('rejects sidecars with unsafe permissions', () => {
+  it('rejects sidecars with unsafe permissions', async () => {
     const h = makeDirs();
     cleanups.push(h.cleanup);
-    const issued = issueRunAuthSidecar({
+    const issued = await issueRunAuthSidecar({
       crewHome: h.crewHome,
       runId: 'run-3',
       agentId: 'codex',

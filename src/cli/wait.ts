@@ -166,6 +166,8 @@ export async function waitForRunsTerminal(
   const pending = new Set(options.runIds);
   const stateAppeared = new Set<string>();
   const linesByRunId = new Map<string, string>();
+  const snapshotsByRunId = new Map<string, StateSnapshot>();
+  let currentPollIntervalMs = pollIntervalMs;
   const statePathByRunId = new Map(
     options.runIds.map((runId) => [runId, join(crewHome, 'runs', runId, 'state.json')]),
   );
@@ -175,8 +177,9 @@ export async function waitForRunsTerminal(
       if (!pending.has(runId)) continue;
 
       const statePath = statePathByRunId.get(runId)!;
-      const snapshot = await readStateSnapshotIfPresent(statePath);
+      const snapshot = await readStateSnapshotIfPresent(statePath, snapshotsByRunId.get(runId));
       if (snapshot) {
+        snapshotsByRunId.set(runId, snapshot);
         stateAppeared.add(runId);
         const line = terminalLine(snapshot.state, runId);
         if (line) {
@@ -196,7 +199,8 @@ export async function waitForRunsTerminal(
     }
 
     if (pending.size > 0) {
-      await sleep(pollIntervalMs);
+      await sleep(currentPollIntervalMs);
+      currentPollIntervalMs = nextCrewWaitPollIntervalMs(currentPollIntervalMs, pollIntervalMs);
     }
   }
 

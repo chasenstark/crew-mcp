@@ -349,6 +349,7 @@ export interface CreateRunStateInit {
    * `runMode: 'read_only'` when `runMode` is absent. Prefer `runMode`.
    */
   readonly readOnly?: boolean;
+  readonly workerReady?: WorkerReadyStatus;
 }
 
 export interface RunStateStoreOptions {
@@ -379,6 +380,7 @@ export interface AppendPromptOptions {
   readonly contractPrefix?: string;
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
+  readonly workerReady?: WorkerReadyStatus;
 }
 
 export interface AppendPromptResult {
@@ -503,6 +505,7 @@ export class RunStateStore {
         ...(init.criteriaSetId !== undefined
           ? { criteriaSetId: init.criteriaSetId, criteriaEpoch: init.criteriaEpoch }
           : {}),
+        ...(init.workerReady !== undefined ? { workerReady: init.workerReady } : {}),
         prompts: [
           {
             turn: 1,
@@ -708,6 +711,7 @@ export class RunStateStore {
         lastError: undefined,
         failure: undefined,
         serverPid: process.pid,
+        ...(options.workerReady !== undefined ? { workerReady: options.workerReady } : {}),
         ...(options.criteriaSetId !== undefined
           ? { criteriaSetId: options.criteriaSetId, criteriaEpoch: options.criteriaEpoch }
           : {}),
@@ -1170,8 +1174,13 @@ export class RunStateStore {
     readonly lines: string[];
     readonly nextLine: number;
   } {
-    const { lines, nextLine } = this.readEventsSince(runId, sinceLine);
-    return { lines: filterEventsTailNoise(lines), nextLine };
+    const start = Math.max(0, sinceLine);
+    const cursor = this.eventReadCursors.get(runId);
+    const raw = cursor && start < cursor.lineCount
+      ? this.readEventsFromCursor(runId, this.eventsLogPath(runId), cursor)
+        ?? this.readEventsSince(runId, cursor.lineCount)
+      : this.readEventsSince(runId, start);
+    return { lines: filterEventsTailNoise(raw.lines), nextLine: raw.nextLine };
   }
 
   /**

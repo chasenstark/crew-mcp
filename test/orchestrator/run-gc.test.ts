@@ -210,7 +210,7 @@ describe('gcTerminalRuns', () => {
   it('deletes the whole run-dir past the run-dir TTL', async () => {
     const runId = 'aaaaaaaa-0000-0000-0000-000000000002';
     await seedRun(runId, { status: 'success', repoRoot, completedAt: '2026-01-01T00:00:00.000Z' });
-    issueRunAuthSidecar({
+    await issueRunAuthSidecar({
       crewHome,
       runId,
       agentId: 'mock',

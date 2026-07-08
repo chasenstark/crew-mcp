@@ -1,6 +1,7 @@
 import type { TaskResult } from '../adapters/types.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
+import { filterEventsTailNoise } from './events-filter.js';
 import { formatProgressLines, type ProgressNotifier } from './progress.js';
 import type { RunStateStore } from './run-state.js';
 import type { ToolDispatcher } from './tool-dispatcher.js';
@@ -97,6 +98,7 @@ export function installRunLifecycleListeners(args: {
       args.dispatcher.onEvent('run:stream', (info) => {
         if (settled || info.toolCallId !== args.toolCallId) return;
         const progressLines = formatProgressLines(args.agentName, info.chunk);
+        info.formattedSignalLines = filterEventsTailNoise(progressLines);
         try {
           args.runStateStore.appendEvents(args.runId, progressLines);
         } catch (err) {

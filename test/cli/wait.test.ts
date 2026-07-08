@@ -300,6 +300,62 @@ describe('crew-wait', () => {
     ]);
   });
 
+  it('backs off multi-id polling while preserving output order', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-multi-backoff-'));
+    cleanup.push(crewHome);
+    const firstRunDir = join(crewHome, 'runs', 'run-first');
+    const runDir = join(crewHome, 'runs', 'run-second');
+    mkdirSync(firstRunDir, { recursive: true });
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(firstRunDir, {
+      schemaVersion: 1,
+      runId: 'run-first',
+      agentId: 'codex',
+      status: 'success',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      worktreePath: '/tmp/first',
+      prompts: [],
+      filesChanged: [],
+    });
+    writeStateAtomic(runDir, {
+      schemaVersion: 1,
+      runId: 'run-second',
+      agentId: 'codex',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      worktreePath: '/tmp/second',
+      prompts: [],
+      filesChanged: [],
+    });
+
+    const sleeps: number[] = [];
+    await waitForRunsTerminal({
+      runIds: ['run-first', 'run-second'],
+      crewHome,
+      pollIntervalMs: 5,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        if (sleeps.length === 2) {
+          writeStateAtomic(runDir, {
+            schemaVersion: 1,
+            runId: 'run-second',
+            agentId: 'codex',
+            status: 'success',
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            worktreePath: '/tmp/second',
+            prompts: [],
+            filesChanged: [],
+          });
+        }
+      },
+      writeStdout: () => {},
+    });
+
+    expect(sleeps).toEqual([5, 10]);
+  });
+
   it('multi-id unknown run exits through the exit-3 diagnostic path after printing terminal peers', async () => {
     const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-multi-unknown-'));
     cleanup.push(crewHome);

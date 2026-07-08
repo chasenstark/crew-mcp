@@ -114,6 +114,98 @@ describe('getRunStatusToolHandler', () => {
     expect(commits[0].sha).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('reuses terminal commit cache until host HEAD changes', async () => {
+    execSync('git init -q', { cwd: repoRoot });
+    execSync('git config user.email test@crew.local', { cwd: repoRoot });
+    execSync('git config user.name test', { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: repoRoot });
+    execSync('git commit -q -m init', { cwd: repoRoot });
+
+    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
+    const worktreePath = await manager.createRunWorktree('r-cache');
+    await store.create({
+      runId: 'r-cache',
+      agentId: 'codex',
+      worktreePath,
+      initialPrompt: 'go',
+    });
+    writeFileSync(join(worktreePath, 'run-1.txt'), 'run 1\n', 'utf-8');
+    execSync('git add run-1.txt', { cwd: worktreePath });
+    execSync('git commit -q -m "run: change 1"', { cwd: worktreePath });
+    await store.markTerminal('r-cache', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: ['run-1.txt'],
+    });
+
+    const first = await getRunStatusToolHandler(
+      { run_id: 'r-cache' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(first.structuredContent).toMatchObject({ commit_count: 1 });
+
+    writeFileSync(join(worktreePath, 'run-2.txt'), 'run 2\n', 'utf-8');
+    execSync('git add run-2.txt', { cwd: worktreePath });
+    execSync('git commit -q -m "run: change 2"', { cwd: worktreePath });
+
+    const unchangedHost = await getRunStatusToolHandler(
+      { run_id: 'r-cache' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(unchangedHost.structuredContent).toMatchObject({ commit_count: 1 });
+
+    writeFileSync(join(repoRoot, 'host.txt'), 'host moved\n', 'utf-8');
+    execSync('git add host.txt', { cwd: repoRoot });
+    execSync('git commit -q -m "host: moved"', { cwd: repoRoot });
+
+    const advancedHost = await getRunStatusToolHandler(
+      { run_id: 'r-cache' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(advancedHost.structuredContent).toMatchObject({ commit_count: 2 });
+  });
+
+  it('surfaces commits for merge_conflict runs while the worktree remains present', async () => {
+    execSync('git init -q', { cwd: repoRoot });
+    execSync('git config user.email test@crew.local', { cwd: repoRoot });
+    execSync('git config user.name test', { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: repoRoot });
+    execSync('git commit -q -m init', { cwd: repoRoot });
+
+    const manager = new WorktreeManager({ projectRoot: repoRoot, crewHome });
+    const worktreePath = await manager.createRunWorktree('r-conflict-commits');
+    await store.create({
+      runId: 'r-conflict-commits',
+      agentId: 'codex',
+      worktreePath,
+      initialPrompt: 'go',
+    });
+    writeFileSync(join(worktreePath, 'conflict.txt'), 'run edit\n', 'utf-8');
+    execSync('git add conflict.txt', { cwd: worktreePath });
+    execSync('git commit -q -m "run: conflict edit"', { cwd: worktreePath });
+    await store.markTerminal('r-conflict-commits', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: ['conflict.txt'],
+    });
+    await store.markMergeConflict('r-conflict-commits', {
+      target: 'main',
+      conflicts: ['conflict.txt'],
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-conflict-commits' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+
+    expect(response.structuredContent).toMatchObject({
+      status: 'merge_conflict',
+      commit_count: 1,
+    });
+  });
+
   it('terminal-only long-poll returns immediately during the terminal persist gap', async () => {
     await store.create({
       runId: 'r-gap',

@@ -121,7 +121,7 @@ describe('planRunAgent', () => {
   it('captures branch-point snapshots inside DispatchTask.run, before adapter execution', async () => {
     const getModifiedFilesByRun = vi.spyOn(worktreeManager, 'getModifiedFilesByRun');
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {
-      expect(getModifiedFilesByRun).toHaveBeenCalledTimes(1);
+      expect(getModifiedFilesByRun).not.toHaveBeenCalled();
       const typedTask = task as { context: { workingDirectory: string } };
       writeFileSync(join(typedTask.context.workingDirectory, 'agent.txt'), 'agent edit\n', 'utf-8');
       return {
@@ -150,7 +150,7 @@ describe('planRunAgent', () => {
 
     expect(executeMock).toHaveBeenCalledOnce();
     expect(result.filesModified).toEqual(['agent.txt']);
-    expect(getModifiedFilesByRun).toHaveBeenCalledTimes(2);
+    expect(getModifiedFilesByRun).toHaveBeenCalledTimes(1);
   });
 
   it('invokes the adapter.execute with the composed prompt + working directory', async () => {

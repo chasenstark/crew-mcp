@@ -1,18 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
-  chmodSync,
   existsSync,
-  mkdirSync,
-  openSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   unlinkSync,
-  writeSync,
-  closeSync,
-  fsyncSync,
 } from 'node:fs';
+import { chmod, mkdir, open, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -70,7 +64,7 @@ export function generateRunToken(): string {
   return randomBytes(32).toString('hex');
 }
 
-export function issueRunAuthSidecar(args: IssueRunAuthSidecarArgs): IssuedRunAuth {
+export async function issueRunAuthSidecar(args: IssueRunAuthSidecarArgs): Promise<IssuedRunAuth> {
   const issuedAt = (args.now ?? new Date()).toISOString();
   const sidecar: RunAuthSidecar = {
     schema_version: 1,
@@ -84,7 +78,7 @@ export function issueRunAuthSidecar(args: IssueRunAuthSidecarArgs): IssuedRunAut
     issued_at: issuedAt,
     revoked: false,
   };
-  writeSidecar(runAuthSidecarPath(args.crewHome, args.runId), sidecar, args.writeMode);
+  await writeSidecar(runAuthSidecarPath(args.crewHome, args.runId), sidecar, args.writeMode);
   return {
     sidecar,
     dispatchMcpEnv: {
@@ -150,11 +144,11 @@ export function validateRunAuthSidecar(args: {
   return sidecar;
 }
 
-export function revokeRunAuthSidecar(
+export async function revokeRunAuthSidecar(
   crewHome: string,
   runId: string,
   now = new Date(),
-): RunAuthSidecar | undefined {
+): Promise<RunAuthSidecar | undefined> {
   let sidecar: RunAuthSidecar;
   try {
     sidecar = readRunAuthSidecar(crewHome, runId);
@@ -168,7 +162,7 @@ export function revokeRunAuthSidecar(
     revoked: true,
     revoked_at: now.toISOString(),
   };
-  writeSidecar(runAuthSidecarPath(crewHome, runId), next, 'replace-existing');
+  await writeSidecar(runAuthSidecarPath(crewHome, runId), next, 'replace-existing');
   return next;
 }
 
@@ -197,29 +191,29 @@ function constantTimeTokenEqual(expected: string, actual: string): boolean {
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
-function writeSidecar(path: string, sidecar: RunAuthSidecar, mode: SidecarWriteMode): void {
-  mkdirSync(join(path, '..'), { recursive: true });
+async function writeSidecar(path: string, sidecar: RunAuthSidecar, mode: SidecarWriteMode): Promise<void> {
+  await mkdir(join(path, '..'), { recursive: true });
   if (mode === 'must-not-exist' && existsSync(path)) {
     throw new RunAuthError('unexpected_sidecar_collision', `unexpected_sidecar_collision: ${path}`);
   }
   const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-  let fd: number | undefined;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    fd = openSync(tmp, 'wx', 0o600);
-    writeSync(fd, JSON.stringify(sidecar, null, 2) + '\n', undefined, 'utf-8');
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    renameSync(tmp, path);
-    chmodSync(path, 0o600);
+    handle = await open(tmp, 'wx', 0o600);
+    await handle.writeFile(JSON.stringify(sidecar, null, 2) + '\n', 'utf-8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(tmp, path);
+    await chmod(path, 0o600);
     const stat = statSync(path);
     if ((stat.mode & 0o777) !== 0o600) {
       throw new RunAuthError('sidecar_permission_unfixable', `sidecar_permission_unfixable: ${path}`);
     }
   } catch (err) {
-    if (fd !== undefined) {
+    if (handle !== undefined) {
       try {
-        closeSync(fd);
+        await handle.close();
       } catch {
         // Surface the original error.
       }

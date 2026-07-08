@@ -232,6 +232,14 @@ export interface RunAgentDispatchPlan {
    */
   readonly worktreePath: string;
   /**
+   * Dirty paths copied while allocating a fresh host-snapshot worktree.
+   * Fresh dispatches can seed their branch-point signature from this list
+   * instead of re-deriving the same host dirty set from git. Undefined for
+   * read-only, ephemeral source snapshots, pre-existing worktrees, and
+   * continue_run tasks, which must keep deriving from the live worktree.
+   */
+  readonly branchPointSeedPaths?: readonly string[];
+  /**
    * Resolved lifecycle mode for this dispatch (see run-mode.ts). The
    * dispatch layer persists it into RunStateV1 so continue_run stays
    * sticky, and branches cleanup/merge behavior through the
@@ -350,6 +358,7 @@ export async function planRunAgent(
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   let worktreePath: string;
+  let branchPointSeedPaths: readonly string[] | undefined;
   if (!ownsWorktree(runMode)) {
     // No FS isolation: working_directory is either what the caller
     // specified (e.g., another run's worktree for the reviewer
@@ -376,7 +385,14 @@ export async function planRunAgent(
       worktreePath =
         runMode === 'ephemeral_review' && ctx.ephemeralReviewSnapshot !== undefined
           ? await ctx.worktreeManager.createRunWorktreeFromSource(runId, ctx.ephemeralReviewSnapshot)
-          : await ctx.worktreeManager.createRunWorktree(runId);
+          : '';
+      if (!worktreePath) {
+        const created = await ctx.worktreeManager.createRunWorktree(runId, {
+          includeCopiedDirtyPaths: true,
+        });
+        worktreePath = created.worktreePath;
+        branchPointSeedPaths = created.copiedDirtyPaths;
+      }
     } catch (err: unknown) {
       return {
         kind: 'error',
@@ -413,6 +429,7 @@ export async function planRunAgent(
       effectiveModel,
       effectiveEffort,
       worktreeManager: ctx.worktreeManager,
+      branchPointSeedPaths,
       input: { ...input },
     });
 
@@ -420,6 +437,7 @@ export async function planRunAgent(
     kind: 'dispatched',
     runId,
     worktreePath,
+    ...(branchPointSeedPaths !== undefined ? { branchPointSeedPaths } : {}),
     runMode,
     readOnly,
     dispatchWarnings,
@@ -580,6 +598,7 @@ export function buildAdapterDispatchTask(args: {
    */
   readonly resumeSessionId?: string;
   readonly worktreeManager: WorktreeManager;
+  readonly branchPointSeedPaths?: readonly string[];
   readonly input: Record<string, unknown>;
 }): DispatchTask {
   return {
@@ -597,7 +616,12 @@ export function buildAdapterDispatchTask(args: {
           writablePaths = args.worktreeManager.getRunGitCommitWritablePaths(args.runId).paths;
           branchPointBefore =
             args.effectiveWorkingDirectory === args.worktreePath
-              ? await captureRunBranchPointSnapshot(args.worktreeManager, args.runId, args.worktreePath)
+              ? await captureRunBranchPointSnapshot(
+                  args.worktreeManager,
+                  args.runId,
+                  args.worktreePath,
+                  args.branchPointSeedPaths,
+                )
               : undefined;
         } catch (err) {
           return {
@@ -959,10 +983,11 @@ export async function captureRunBranchPointSnapshot(
   worktreeManager: WorktreeManager,
   runId: string,
   worktreePath: string,
+  seedPaths?: readonly string[],
 ): Promise<ReadonlyMap<string, string>> {
   return capturePathSignatureSnapshot(
     worktreePath,
-    await worktreeManager.getModifiedFilesByRun(runId).catch(() => []),
+    seedPaths ?? await worktreeManager.getModifiedFilesByRun(runId).catch(() => []),
   );
 }
 

@@ -143,6 +143,7 @@ export async function dispatchRunAgentInternal(
           }
         : {}),
       runMode: plan.runMode,
+      workerReady: { status: 'pending' },
     });
     if (criteriaContract !== undefined && args.linkCriteriaImplementerRun !== false) {
       await linkCriteriaSetImplementerRun({
@@ -162,7 +163,7 @@ export async function dispatchRunAgentInternal(
   }
 
   try {
-    const issued = issueRunAuthSidecar({
+    const issued = await issueRunAuthSidecar({
       crewHome: ctx.crewHome,
       runId: plan.runId,
       agentId: input.agent_id,
@@ -171,7 +172,6 @@ export async function dispatchRunAgentInternal(
       writeMode: 'must-not-exist',
     });
     dispatchMcpEnv = issued.dispatchMcpEnv;
-    await ctx.runStateStore.setWorkerReady(plan.runId, { status: 'pending' });
   } catch (err) {
     const message = errorMessage(err);
     try {
@@ -228,7 +228,7 @@ export async function dispatchRunAgentInternal(
         `run_agent terminal rollback failed for ${plan.runId}: ${errorMessage(markErr)}`,
       );
     }
-    revokeSidecarBestEffort(ctx.crewHome, plan.runId, 'run_agent start failure');
+    await revokeSidecarBestEffort(ctx.crewHome, plan.runId, 'run_agent start failure');
     deleteWorkerReadyMarker(ctx.crewHome, plan.runId);
     await cleanupAllocatedWorktree(ctx, plan, 'start failure');
     throw new DispatchError(message, { warnings });
@@ -250,8 +250,8 @@ export async function dispatchRunAgentInternal(
 
 export function revokeSidecarOnTerminal(
   crewHome: string,
-): (state: RunStateV1) => void {
-  return (state) => {
+): (state: RunStateV1) => Promise<void> {
+  return async (state) => {
     deleteWorkerReadyMarker(crewHome, state.runId);
     if (
       state.status === 'success'
@@ -259,14 +259,18 @@ export function revokeSidecarOnTerminal(
       || state.status === 'error'
       || state.status === 'cancelled'
     ) {
-      revokeSidecarBestEffort(crewHome, state.runId, `terminal ${state.status}`);
+      await revokeSidecarBestEffort(crewHome, state.runId, `terminal ${state.status}`);
     }
   };
 }
 
-export function revokeSidecarBestEffort(crewHome: string, runId: string, reason: string): void {
+export async function revokeSidecarBestEffort(
+  crewHome: string,
+  runId: string,
+  reason: string,
+): Promise<void> {
   try {
-    revokeRunAuthSidecar(crewHome, runId);
+    await revokeRunAuthSidecar(crewHome, runId);
   } catch (err) {
     logger.warn(
       `failed to revoke run auth sidecar for ${runId} after ${reason}: ${errorMessage(err)}`,

@@ -20,6 +20,16 @@ const mockWriteFileSync = vi.fn();
 const mockExistsSync = vi.fn(() => false);
 const mockAdapterReadFileSync = vi.fn();
 
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    mkdtemp: async (...args: any[]) => mockMkdtempSync(...args),
+    readFile: async (...args: any[]) => mockAdapterReadFileSync(...args),
+    rm: async () => undefined,
+  };
+});
+
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {

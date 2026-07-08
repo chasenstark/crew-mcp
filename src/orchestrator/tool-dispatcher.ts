@@ -34,7 +34,12 @@ export interface DispatchTask {
 
 export interface DispatcherEvents {
   'run:start': (info: { toolCallId: string; toolName: string; runId?: string }) => void;
-  'run:stream': (info: { toolCallId: string; chunk: string; runId?: string }) => void;
+  'run:stream': (info: {
+    toolCallId: string;
+    chunk: string;
+    runId?: string;
+    formattedSignalLines?: readonly string[];
+  }) => void;
   'run:complete': (info: { toolCallId: string; toolName: string; result: unknown; runId?: string }) => void;
   'run:failed': (info: {
     toolCallId: string;

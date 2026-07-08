@@ -180,6 +180,7 @@ export async function continueRunToolHandler(
           criteriaEpoch: criteriaContract.criteriaEpoch,
         }
       : {}),
+    workerReady: { status: 'pending' },
   });
   const dispatchWarnings: string[] = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
@@ -196,13 +197,13 @@ export async function continueRunToolHandler(
   const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
     const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;
     await markContinueDispatchFailed(deps, args.run_id, message);
-    revokeSidecarBestEffort(deps.crewHome, args.run_id, 'continue_run rollback');
+    await revokeSidecarBestEffort(deps.crewHome, args.run_id, 'continue_run rollback');
     deleteWorkerReadyMarker(deps.crewHome, args.run_id);
     return new DispatchError(message, { warnings: [...dispatchWarnings, ...criteriaWarnings] });
   };
 
   let appendResult: Awaited<ReturnType<typeof deps.runStateStore.appendPrompt>>;
-  revokeSidecarBestEffort(deps.crewHome, args.run_id, 'new continue_run dispatch');
+  await revokeSidecarBestEffort(deps.crewHome, args.run_id, 'new continue_run dispatch');
   deleteWorkerReadyMarker(deps.crewHome, args.run_id);
   // Source re-sync runs ONLY for write continues: an ephemeral_review
   // continue keeps a FROZEN snapshot, so the follow-up reasons about exactly
@@ -233,7 +234,7 @@ export async function continueRunToolHandler(
   ];
   let dispatchMcpEnv: DispatchMcpEnv;
   try {
-    const issued = issueRunAuthSidecar({
+    const issued = await issueRunAuthSidecar({
       crewHome: deps.crewHome,
       runId: args.run_id,
       agentId: state.agentId,
@@ -242,7 +243,6 @@ export async function continueRunToolHandler(
       writeMode: 'replace-existing',
     });
     dispatchMcpEnv = issued.dispatchMcpEnv;
-    await deps.runStateStore.setWorkerReady(args.run_id, { status: 'pending' });
   } catch (err) {
     const dispatchErr = await rollbackContinuation(err);
     return errorContent(dispatchErr.message);
@@ -280,7 +280,7 @@ export async function continueRunToolHandler(
       warnings: [...dispatchWarnings, ...warnings],
       progress: progressNotifierFrom(continueExtra, state.agentId, deps.progressTokenSeen),
       onTerminalPersisted: async (terminalState) => {
-        revokeSidecarOnTerminal(deps.crewHome)(terminalState);
+        await revokeSidecarOnTerminal(deps.crewHome)(terminalState);
         await deps.onTerminalPersisted?.(terminalState);
       },
       onDispatchStarted: () => startWorkerReadyHandshake({

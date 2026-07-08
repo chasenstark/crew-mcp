@@ -63,6 +63,11 @@ export interface WorktreeCleanupResult {
   readonly recordDeleted: boolean;
 }
 
+export interface CreateRunWorktreeResult {
+  readonly worktreePath: string;
+  readonly copiedDirtyPaths?: readonly string[];
+}
+
 export type MergeRunResult =
   | ({ status: 'merged'; commitSha: string } & MergeRunCheckoutInfo)
   | ({ status: 'conflict'; conflicts: string[] } & MergeRunCheckoutInfo)
@@ -218,16 +223,27 @@ export class WorktreeManager {
   // independent worktrees.
   // -------------------------------------------------------------------------
 
-  async createRunWorktree(runId: string): Promise<string> {
+  async createRunWorktree(runId: string): Promise<string>;
+  async createRunWorktree(
+    runId: string,
+    options: { readonly includeCopiedDirtyPaths: true },
+  ): Promise<CreateRunWorktreeResult>;
+  async createRunWorktree(
+    runId: string,
+    options?: { readonly includeCopiedDirtyPaths?: boolean },
+  ): Promise<string | CreateRunWorktreeResult> {
     return this.withRepoLock(async () => this.withRunLock(runId, async () => {
       await this.assertHostRepoReadyForSnapshot(runId, 'dispatch');
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
-        return existing.worktreePath;
+        return options?.includeCopiedDirtyPaths === true
+          ? { worktreePath: existing.worktreePath }
+          : existing.worktreePath;
       }
 
       for (let attempt = 0; attempt < WorktreeManager.CREATE_RETRY_ATTEMPTS; attempt++) {
         const record = this.buildRunWorktreeRecord(runId);
+        let copiedDirtyPaths: readonly string[] | undefined;
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
           await this.git.raw(['worktree', 'add', '-b', record.branchName, record.worktreePath]);
@@ -237,7 +253,8 @@ export class WorktreeManager {
           // failure is logged but doesn't fail the dispatch — the agent
           // will just operate on committed state in that case.
           try {
-            await this.syncUncommittedToWorktree(record.worktreePath);
+            const sync = await this.syncUncommittedToWorktree(record.worktreePath);
+            copiedDirtyPaths = sync.dirtyPaths;
           } catch (syncErr) {
             logger.warn(
               `Run ${runId}: failed to sync uncommitted state into worktree: ${syncErr instanceof Error ? syncErr.message : String(syncErr)}`,
@@ -255,7 +272,9 @@ export class WorktreeManager {
             }
             throw err;
           }
-          return record.worktreePath;
+          return options?.includeCopiedDirtyPaths === true
+            ? { worktreePath: record.worktreePath, copiedDirtyPaths }
+            : record.worktreePath;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (!this.isRecoverableCreateCollision(message)) {
@@ -420,6 +439,7 @@ export class WorktreeManager {
   async syncUncommittedToRunWorktree(runId: string): Promise<{
     readonly copied: number;
     readonly removed: number;
+    readonly dirtyPaths: readonly string[];
   }> {
     return this.withRepoLock(async () => this.withRunLock(runId, async () => {
       await this.assertHostRepoReadyForSnapshot(runId, 'continue_run');
@@ -460,6 +480,7 @@ export class WorktreeManager {
   ): Promise<{
     readonly copied: number;
     readonly removed: number;
+    readonly dirtyPaths: readonly string[];
   }> {
     return this.syncUncommittedFromTo(sourcePath, simpleGit(sourcePath), targetWorktreePath);
   }
@@ -472,6 +493,7 @@ export class WorktreeManager {
   private async syncUncommittedToWorktree(worktreePath: string): Promise<{
     readonly copied: number;
     readonly removed: number;
+    readonly dirtyPaths: readonly string[];
   }> {
     return this.syncUncommittedFromTo(this.projectRoot, this.git, worktreePath);
   }
@@ -499,10 +521,12 @@ export class WorktreeManager {
   ): Promise<{
     readonly copied: number;
     readonly removed: number;
+    readonly dirtyPaths: readonly string[];
   }> {
     const strict = options.strict === true;
     const failures: string[] = [];
     const status = await sourceGit.status();
+    const dirtyPaths = collectStatusCandidatePaths(status);
     let copied = 0;
     let removed = 0;
     // For every path git reports as differing from HEAD, mirror the SOURCE
@@ -513,7 +537,7 @@ export class WorktreeManager {
     // NONE of them), which previously left the target holding the stale
     // HEAD version of a file the source deleted.
     const syncResults = await mapWithConcurrency(
-      collectStatusCandidatePaths(status),
+      dirtyPaths,
       8,
       async (relPath): Promise<{ copied: number; removed: number }> => {
         const src = join(sourceRoot, relPath);
@@ -576,7 +600,10 @@ export class WorktreeManager {
         + `${sourceRoot}: ${failures.join('; ')}`,
       );
     }
-    return { copied, removed };
+    return Object.defineProperty({ copied, removed }, 'dirtyPaths', {
+      value: dirtyPaths,
+      enumerable: false,
+    }) as { copied: number; removed: number; dirtyPaths: readonly string[] };
   }
 
   /**
@@ -620,8 +647,10 @@ export class WorktreeManager {
     const path = this.getRunWorktreePath(runId);
     const wGit = simpleGit(path);
     const base = await this.resolveRunBranchPoint(wGit);
-    const diffOutput = await wGit.raw(['diff', '--name-only', base, '--']);
-    const status = await wGit.status();
+    const [diffOutput, status] = await Promise.all([
+      wGit.raw(['diff', '--name-only', base, '--']),
+      wGit.status(),
+    ]);
     return Array.from(new Set([
       ...diffOutput.split('\n').map((line) => line.trim()).filter(Boolean),
       ...status.not_added,
@@ -629,17 +658,12 @@ export class WorktreeManager {
   }
 
   private async resolveRunBranchPoint(wGit: SimpleGit): Promise<string> {
-    const [runHeadRaw, hostHeadRaw] = await Promise.all([
-      wGit.revparse(['HEAD']),
-      this.git.revparse(['HEAD']),
-    ]);
-    const runHead = runHeadRaw.trim();
-    const hostHead = hostHeadRaw.trim();
+    const hostHead = (await this.git.revparse(['HEAD'])).trim();
     try {
-      const base = (await wGit.raw(['merge-base', runHead, hostHead])).trim();
-      return base || runHead;
+      const base = (await wGit.raw(['merge-base', 'HEAD', hostHead])).trim();
+      return base || 'HEAD';
     } catch {
-      return runHead;
+      return 'HEAD';
     }
   }
 
