@@ -2116,6 +2116,45 @@ describe('crew serve — continue_run tool', () => {
     }
   });
 
+  it('continue_run preflights a pinned model and surfaces the warning', async () => {
+    let observedModel: string | undefined | null = null;
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      recognizesModel: (m) => m === 'Known Label',
+      execute: async (task) => {
+        const t = task as { constraints?: { model?: string } };
+        observedModel = t.constraints?.model;
+        return {
+          output: 'ok',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        } satisfies TaskResult;
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'turn-one' },
+      });
+      const firstEnv = first.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, firstEnv.run_id);
+      const second = await h.client.callTool({
+        name: 'continue_run',
+        arguments: { run_id: firstEnv.run_id, prompt: 'turn-two', model: 'Bad Label' },
+      });
+      const secondEnv = second.structuredContent as FullRunEnvelope;
+      expect(secondEnv.warnings).toEqual([
+        expect.stringContaining('model preflight: agent "mock-coder" does not recognize model "Bad Label"'),
+      ]);
+      await pollUntilTerminal(h.client, firstEnv.run_id);
+      expect(observedModel).toBeUndefined();
+    } finally {
+      await h.close();
+    }
+  });
+
   it('refuses to continue a run that does not exist', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
     try {

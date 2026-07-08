@@ -11,6 +11,7 @@ import {
   crewWorktreeRejectMessage,
   resolveEffectiveEffort,
   resolveEffectiveModel,
+  applyModelPreflight,
   type RunAgentHandlerContext,
 } from '../../../src/orchestrator/tools/run-agent.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
@@ -1099,5 +1100,141 @@ describe('resolveEffectiveModel', () => {
   it('returns undefined when nothing is configured (CLI default wins)', () => {
     expect(resolveEffectiveModel(adapter, undefined, {})).toBeUndefined();
     expect(resolveEffectiveModel(adapter, undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('applyModelPreflight', () => {
+  it('passes recognized models through untouched', () => {
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      recognizesModel: (m) => m.startsWith('gpt-'),
+    });
+    expect(applyModelPreflight(adapter, 'gpt-5.3-codex')).toEqual({ model: 'gpt-5.3-codex' });
+  });
+
+  it('drops unrecognized models and warns', () => {
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      recognizesModel: (m) => m.startsWith('gpt-'),
+    });
+    const result = applyModelPreflight(adapter, 'sonnnet');
+    expect(result.model).toBeUndefined();
+    expect(result.warning).toContain('model preflight');
+    expect(result.warning).toContain('agent "codex"');
+    expect(result.warning).toContain('"sonnnet"');
+    expect(result.warning).toContain("CLI's default model");
+  });
+
+  it('adds the exact-label hint for agy', () => {
+    const adapter = makeMockAdapter({
+      name: 'agy',
+      recognizesModel: () => false,
+    });
+    const result = applyModelPreflight(adapter, 'Gemini 3.1 Pro');
+    expect(result.model).toBeUndefined();
+    expect(result.warning).toContain('exact labels');
+  });
+
+  it('skips the check when the adapter has no matcher or no model resolved', () => {
+    const noMatcher = makeMockAdapter({ name: 'generic-x' });
+    expect(applyModelPreflight(noMatcher, 'anything-goes')).toEqual({ model: 'anything-goes' });
+
+    const withMatcher = makeMockAdapter({ name: 'codex', recognizesModel: () => false });
+    expect(applyModelPreflight(withMatcher, undefined)).toEqual({ model: undefined });
+  });
+});
+
+describe('planRunAgent — model preflight', () => {
+  let worktreeManager: WorktreeManager;
+  let tmpRepo: string;
+  let crewHome: string;
+
+  beforeEach(() => {
+    tmpRepo = mkdtempSync(join(tmpdir(), 'crew-preflight-'));
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-preflight-home-'));
+    execSync('git init -q', { cwd: tmpRepo });
+    execSync('git config user.email test@crew.local', { cwd: tmpRepo });
+    execSync('git config user.name test', { cwd: tmpRepo });
+    writeFileSync(join(tmpRepo, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: tmpRepo });
+    execSync('git commit -q -m init', { cwd: tmpRepo });
+    worktreeManager = new WorktreeManager({ projectRoot: tmpRepo, crewHome });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRepo, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
+  });
+
+  it('unrecognized pinned model → dispatch proceeds modelless with the preflight warning', async () => {
+    let observedConstraints: Record<string, unknown> | undefined;
+    const adapter = makeMockAdapter({
+      name: 'strict-labels',
+      recognizesModel: (m) => m === 'Known Label',
+      execute: async (task) => {
+        observedConstraints = task.constraints as Record<string, unknown>;
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'strict-labels', prompt: 'go', model: 'Unknown Label' },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.dispatchWarnings).toEqual([
+      expect.stringContaining('model preflight: agent "strict-labels" does not recognize model "Unknown Label"'),
+    ]);
+
+    await plan.buildTask('go').run({ signal: makeAbortSignal(), onStream: () => undefined });
+    expect(observedConstraints?.model).toBeUndefined();
+  });
+
+  it('recognized pinned model reaches the adapter with no warning', async () => {
+    let observedConstraints: Record<string, unknown> | undefined;
+    const adapter = makeMockAdapter({
+      name: 'strict-labels',
+      recognizesModel: (m) => m === 'Known Label',
+      execute: async (task) => {
+        observedConstraints = task.constraints as Record<string, unknown>;
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'strict-labels', prompt: 'go', model: 'Known Label' },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.dispatchWarnings).toEqual([]);
+
+    await plan.buildTask('go').run({ signal: makeAbortSignal(), onStream: () => undefined });
+    expect(observedConstraints?.model).toBe('Known Label');
+  });
+
+  it('preflights the agents.json model too, not just per-call pins', async () => {
+    const adapter = makeMockAdapter({
+      name: 'strict-labels',
+      recognizesModel: (m) => m === 'Known Label',
+    });
+    const ctx: RunAgentHandlerContext = {
+      registry: makeRegistry([adapter]),
+      worktreeManager,
+      agentPrefs: { 'strict-labels': { model: 'Stale Label' } },
+    };
+    const plan = await planRunAgent(
+      { agent_id: 'strict-labels', prompt: 'go' },
+      ctx,
+    );
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.dispatchWarnings).toEqual([
+      expect.stringContaining('"Stale Label"'),
+    ]);
   });
 });

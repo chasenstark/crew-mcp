@@ -361,7 +361,11 @@ the user to run `crew-mcp verify`; do not shell out yourself.
   user the healthcheck error instead of dispatching into a known failure.
 - Use `useWhen`, `strengths`, default `model`, and default `effort` from
   `list_agents` as routing guidance. Do not invent model names; ask if
-  the user's requested model is fuzzy.
+  the user's requested model is fuzzy. A pinned `model` the agent does
+  not recognize is dropped at dispatch (the CLI's default model runs
+  instead) with a `model preflight` warning in the envelope — relay it
+  and re-dispatch with a correct model if the pin mattered. agy accepts
+  only exact labels from its pinned model list.
 - Uncommitted host state is mirrored into write run worktrees. Do not
   manually copy files. `continue_run` re-syncs user edits between turns.
 - Prefer inline reasoning for work you can answer yourself.

@@ -120,6 +120,7 @@ describe('ClaudeCodeAdapter', () => {
     it('recognizes Claude CLI model aliases and full model IDs', () => {
       expect(adapter.recognizesModel(ModelId.CLAUDE_SONNET)).toBe(true);
       expect(adapter.recognizesModel(ModelId.CLAUDE_OPUS)).toBe(true);
+      expect(adapter.recognizesModel('haiku')).toBe(true);
       expect(adapter.recognizesModel('claude-sonnet-4-7')).toBe(true);
       expect(adapter.recognizesModel(ModelId.GPT)).toBe(false);
     });

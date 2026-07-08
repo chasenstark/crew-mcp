@@ -43,6 +43,7 @@ import {
   captureRunBranchPointSnapshot,
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
+  applyModelPreflight,
   resolveEffectiveEffort,
   resolveEffectiveModel,
 } from './run-agent.js';
@@ -165,11 +166,11 @@ export async function continueRunToolHandler(
     args.effort,
     continueAgentPrefs,
   );
-  const effectiveModel = resolveEffectiveModel(
+  const modelPreflight = applyModelPreflight(
     adapter,
-    args.model,
-    continueAgentPrefs,
+    resolveEffectiveModel(adapter, args.model, continueAgentPrefs),
   );
+  const effectiveModel = modelPreflight.model;
   const appendPrompt = () => deps.runStateStore.appendPrompt(args.run_id, {
     userPrompt,
     peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
@@ -181,9 +182,12 @@ export async function continueRunToolHandler(
         }
       : {}),
   });
-  const dispatchWarnings = runMode === 'read_only' && adapter.enforcesReadOnly !== true
+  const dispatchWarnings: string[] = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
+  if (modelPreflight.warning !== undefined) {
+    dispatchWarnings.push(modelPreflight.warning);
+  }
   const criteriaWarnings = criteriaPeerMessageBypassWarnings(
     args.criteria_set_id,
     validatedInput,

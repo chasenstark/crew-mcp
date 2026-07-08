@@ -77,7 +77,8 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsResume: true,
     recognizesModel: (modelId) =>
       typeof modelId === 'string'
-      && (/^claude-/.test(modelId) || modelId === 'sonnet' || modelId === 'opus'),
+      && (/^claude-/.test(modelId)
+        || modelId === 'sonnet' || modelId === 'opus' || modelId === 'haiku'),
     hasExecuteWithSchema: true,
     hasGetCliVersionTag: true,
   },

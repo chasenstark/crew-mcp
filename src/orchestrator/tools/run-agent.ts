@@ -347,7 +347,7 @@ export async function planRunAgent(
     return { kind: 'error', message: crewWorktreeRejectMessage(adapter.name, input.working_directory) };
   }
 
-  const dispatchWarnings = readOnly && adapter.enforcesReadOnly !== true
+  const dispatchWarnings: string[] = readOnly && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   let worktreePath: string;
@@ -393,7 +393,14 @@ export async function planRunAgent(
       ? await captureRunBranchPointSnapshot(ctx.worktreeManager, runId, worktreePath)
       : undefined;
 
-  const effectiveModel = resolveEffectiveModel(adapter, input.model, ctx.agentPrefs);
+  const modelPreflight = applyModelPreflight(
+    adapter,
+    resolveEffectiveModel(adapter, input.model, ctx.agentPrefs),
+  );
+  if (modelPreflight.warning !== undefined) {
+    dispatchWarnings.push(modelPreflight.warning);
+  }
+  const effectiveModel = modelPreflight.model;
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   const toolCallId = randomUUID();
   await ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
@@ -503,6 +510,36 @@ export function resolveEffectiveModel(
 ): string | undefined {
   if (perCall) return perCall;
   return prefs?.[adapter.name]?.model;
+}
+
+export interface ModelPreflightResult {
+  readonly model: string | undefined;
+  readonly warning?: string;
+}
+
+/**
+ * Dispatch-time model preflight. When the adapter declares
+ * `recognizesModel` and the resolved model fails it, drop the override
+ * (the CLI's own default model wins) and surface a warning instead of
+ * letting the spawn fail with the CLI's raw error. agy is the
+ * motivating case — it accepts only EXACT labels from its pinned model
+ * list and hard-errors on anything else. Adapters without a matcher
+ * (generic, openai-compatible) pass any model through untouched.
+ */
+export function applyModelPreflight(
+  adapter: AgentAdapter,
+  model: string | undefined,
+): ModelPreflightResult {
+  if (model === undefined || adapter.recognizesModel === undefined) return { model };
+  if (adapter.recognizesModel(model)) return { model };
+  const hint = adapter.name === AgentId.AGY
+    ? ' agy accepts only the exact labels from its pinned model list (e.g. "Gemini 3.1 Pro (High)").'
+    : '';
+  return {
+    model: undefined,
+    warning: `model preflight: agent "${adapter.name}" does not recognize model "${model}"; `
+      + `the model override was dropped and the CLI's default model will be used.${hint}`,
+  };
 }
 
 /**

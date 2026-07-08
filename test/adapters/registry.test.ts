@@ -30,6 +30,20 @@ describe('createBuiltinRegistry', () => {
   });
 });
 
+describe('recognizesModel proxy/instance parity', () => {
+  it.each([
+    ['claude-code', 'haiku', true],
+    ['claude-code', 'gpt-5.5', false],
+    ['codex', 'gpt-5.3-codex', true],
+    ['codex', 'sonnet', false],
+  ] as const)('%s proxy and instance agree on %s', async (name, model, expected) => {
+    const registry = createBuiltinRegistry();
+    expect(registry.get(name)?.recognizesModel?.(model)).toBe(expected);
+    const loaded = await registry.load(name);
+    expect(loaded?.recognizesModel?.(model)).toBe(expected);
+  });
+});
+
 describe('mergeCustomAgents', () => {
   it('registers an openai-compatible custom agent on top of built-ins', () => {
     const registry = createBuiltinRegistry();
