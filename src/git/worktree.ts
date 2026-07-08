@@ -5,6 +5,7 @@ import {
   createReadStream,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmdirSync,
@@ -24,7 +25,13 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { promisify } from 'util';
 import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
-import { FileLockTimeoutError, withFileLock } from '../utils/file-lock.js';
+import {
+  FileLockTimeoutError,
+  readFileLockRecord,
+  withFileLock,
+  writeFileLockRecord,
+  type FileLockRecord,
+} from '../utils/file-lock.js';
 import { logger } from '../utils/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -45,6 +52,12 @@ interface RunWorktreeRecord {
 export interface EphemeralSnapshotSource {
   /** Absolute path of the worktree to snapshot (e.g. an implementer run's worktree). */
   readonly sourcePath: string;
+  /**
+   * Run id that owns `sourcePath`, when known. Ephemeral panel snapshots pass
+   * this so the source's run lock can exclude continue_run / merge_run while
+   * the source HEAD + dirty state are being signed and copied.
+   */
+  readonly sourceRunId?: string;
   /**
    * Invoked after the snapshot copy completes, before the source is
    * re-signed and the worktree is handed out. Throw to fail the snapshot —
@@ -232,7 +245,7 @@ export class WorktreeManager {
     runId: string,
     options?: { readonly includeCopiedDirtyPaths?: boolean },
   ): Promise<string | CreateRunWorktreeResult> {
-    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+    return this.withHostSnapshotReadLock(async () => this.withRunLock(runId, async () => {
       await this.assertHostRepoReadyForSnapshot(runId, 'dispatch');
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
@@ -246,7 +259,7 @@ export class WorktreeManager {
         let copiedDirtyPaths: readonly string[] | undefined;
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
-          await this.git.raw(['worktree', 'add', '-b', record.branchName, record.worktreePath]);
+          await this.addRunWorktree(record);
           // Mirror the host repo's uncommitted state into the fresh worktree
           // so the dispatched agent sees the same in-progress files the
           // user does (see syncUncommittedToWorktree). Best-effort: a sync
@@ -323,7 +336,7 @@ export class WorktreeManager {
     runId: string,
     source: EphemeralSnapshotSource,
   ): Promise<string> {
-    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+    return this.withSnapshotRunLocks(runId, source.sourceRunId, async () => {
       const existing = await this.resolveExistingRunWorktree(runId);
       if (existing) {
         return existing.worktreePath;
@@ -336,9 +349,7 @@ export class WorktreeManager {
         const record = this.buildRunWorktreeRecord(runId);
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
-          await this.git.raw([
-            'worktree', 'add', '-b', record.branchName, record.worktreePath, before.headSha,
-          ]);
+          await this.addRunWorktree(record, before.headSha);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (!this.isRecoverableCreateCollision(message)) {
@@ -383,7 +394,7 @@ export class WorktreeManager {
       }
 
       throw new Error(`Failed to create a unique run worktree for ${runId} after multiple attempts.`);
-    }));
+    });
   }
 
   /**
@@ -415,7 +426,7 @@ export class WorktreeManager {
   }
 
   async assertHostRepoReadyForDispatch(runId: string): Promise<void> {
-    await this.withRepoLock(async () => {
+    await this.withHostSnapshotReadLock(async () => {
       await this.assertHostRepoReadyForSnapshot(runId, 'dispatch');
     });
   }
@@ -441,7 +452,7 @@ export class WorktreeManager {
     readonly removed: number;
     readonly dirtyPaths: readonly string[];
   }> {
-    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+    return this.withHostSnapshotReadLock(async () => this.withRunLock(runId, async () => {
       await this.assertHostRepoReadyForSnapshot(runId, 'continue_run');
       const record = this.requireRunWorktreeRecord(runId);
       return this.syncUncommittedToWorktree(record.worktreePath);
@@ -452,7 +463,7 @@ export class WorktreeManager {
     runId: string,
     append: () => Promise<T>,
   ): Promise<T> {
-    return this.withRepoLock(async () => this.withRunLock(runId, async () => {
+    return this.withHostSnapshotReadLock(async () => this.withRunLock(runId, async () => {
       await this.assertHostRepoReadyForSnapshot(runId, 'continue_run');
       const result = await append();
       const record = this.requireRunWorktreeRecord(runId);
@@ -692,7 +703,7 @@ export class WorktreeManager {
       updateStatusInsideLock?: MergeRunStatusUpdater;
     } = {},
   ): Promise<MergeRunResult> {
-    return this.withRepoLock(async () => (
+    return this.withHostMutationLock(async () => (
       this.withRunLock(runId, async () => {
         const result = await this.mergeRunWorktreeLocked(runId, options);
         await options.updateStatusInsideLock?.(result);
@@ -1699,6 +1710,16 @@ export class WorktreeManager {
     };
   }
 
+  private async addRunWorktree(record: RunWorktreeRecord, startPoint?: string): Promise<void> {
+    const args = ['worktree', 'add', '-b', record.branchName, record.worktreePath];
+    if (startPoint !== undefined) {
+      args.push(startPoint);
+    }
+    await this.withRepoLock(async () => {
+      await this.git.raw(args);
+    });
+  }
+
   private runMetadataFilePath(runId: string): string {
     return join(this.runMetadataPath, `${encodeURIComponent(runId)}.json`);
   }
@@ -1744,20 +1765,192 @@ export class WorktreeManager {
     return normalized || 'run';
   }
 
+  private async withSnapshotRunLocks<T>(
+    targetRunId: string,
+    sourceRunId: string | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (sourceRunId === undefined || sourceRunId === targetRunId) {
+      return this.withRunLock(targetRunId, operation);
+    }
+
+    const [first, second] = [targetRunId, sourceRunId].sort();
+    return this.withRunLock(first, async () => (
+      this.withRunLock(second, operation)
+    ));
+  }
+
   private async withRunLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
     const lockDir = join(this.runLockPath, encodeURIComponent(runId));
     return this.withLock(lockDir, `Timed out waiting for run worktree lock on ${runId}.`, operation);
+  }
+
+  private async withHostSnapshotReadLock<T>(operation: () => Promise<T>): Promise<T> {
+    const paths = await this.resolveHostSnapshotLockPaths();
+    mkdirSync(paths.readersDir, { recursive: true });
+    const timeoutAt = Date.now() + WorktreeManager.LOCK_TIMEOUT_MS;
+    let readerDir: string | undefined;
+
+    while (true) {
+      if (this.isActiveAdvisoryLock(paths.writerDir)) {
+        await this.waitForHostSnapshotLockTurn(timeoutAt, paths.writerDir);
+        continue;
+      }
+
+      const ownerId = this.hostSnapshotOwnerId();
+      const candidate = join(paths.readersDir, ownerId);
+      try {
+        mkdirSync(candidate);
+        try {
+          writeFileLockRecord(candidate, this.hostSnapshotLockRecord(ownerId));
+        } catch (err) {
+          rmSync(candidate, { recursive: true, force: true });
+          throw err;
+        }
+        readerDir = candidate;
+      } catch (err) {
+        if (isEexist(err)) {
+          await this.waitForHostSnapshotLockTurn(timeoutAt, candidate);
+          continue;
+        }
+        throw err;
+      }
+
+      if (!this.isActiveAdvisoryLock(paths.writerDir)) {
+        break;
+      }
+
+      this.releaseHostSnapshotReader(readerDir);
+      readerDir = undefined;
+      await this.waitForHostSnapshotLockTurn(timeoutAt, paths.writerDir);
+    }
+
+    try {
+      return await operation();
+    } finally {
+      if (readerDir !== undefined) {
+        this.releaseHostSnapshotReader(readerDir);
+      }
+    }
+  }
+
+  private async withHostMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const paths = await this.resolveHostSnapshotLockPaths();
+    mkdirSync(paths.readersDir, { recursive: true });
+    try {
+      return await this.withLock(
+        paths.writerDir,
+        `Timed out waiting for host snapshot mutation lock on ${paths.rootDir}.`,
+        async () => {
+          const timeoutAt = Date.now() + WorktreeManager.LOCK_TIMEOUT_MS;
+          await this.waitForHostSnapshotReaders(paths.readersDir, timeoutAt);
+          return operation();
+        },
+      );
+    } catch (err) {
+      if (err instanceof FileLockTimeoutError) {
+        throw new Error(`host_snapshot_lock_timeout: ${err.message}`);
+      }
+      throw err;
+    }
+  }
+
+  private async resolveHostSnapshotLockPaths(): Promise<{
+    readonly rootDir: string;
+    readonly readersDir: string;
+    readonly writerDir: string;
+  }> {
+    const commonDirRealpath = await this.resolveRepoCommonDirRealpath();
+    const rootDir = join(commonDirRealpath, 'crew-host-snapshot-lock', repoLockName(commonDirRealpath));
+    return {
+      rootDir,
+      readersDir: join(rootDir, 'readers'),
+      writerDir: join(rootDir, 'writer'),
+    };
+  }
+
+  private async waitForHostSnapshotReaders(readersDir: string, timeoutAt: number): Promise<void> {
+    while (true) {
+      const activeReaders = this.activeHostSnapshotReaders(readersDir);
+      if (activeReaders.length === 0) {
+        return;
+      }
+      if (Date.now() >= timeoutAt) {
+        throw new Error(
+          `host_snapshot_lock_timeout: timed out waiting for ${activeReaders.length} host snapshot reader(s).`,
+        );
+      }
+      await delay(50);
+    }
+  }
+
+  private activeHostSnapshotReaders(readersDir: string): string[] {
+    if (!existsSync(readersDir)) return [];
+    const activeReaders: string[] = [];
+    for (const entry of readdirSync(readersDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const readerDir = join(readersDir, entry.name);
+      if (this.isActiveAdvisoryLock(readerDir)) {
+        activeReaders.push(entry.name);
+      }
+    }
+    return activeReaders;
+  }
+
+  private async waitForHostSnapshotLockTurn(timeoutAt: number, lockDir: string): Promise<void> {
+    if (Date.now() >= timeoutAt) {
+      const holder = readFileLockRecord(lockDir);
+      throw new Error(
+        holder
+          ? `host_snapshot_lock_timeout: timed out waiting for host snapshot lock held by pid=${holder.pid}, owner=${holder.ownerId}, acquiredAt=${holder.acquiredAt}.`
+          : 'host_snapshot_lock_timeout: timed out waiting for host snapshot lock.',
+      );
+    }
+    await delay(50);
+  }
+
+  private isActiveAdvisoryLock(lockDir: string): boolean {
+    if (!existsSync(lockDir)) return false;
+    const record = readFileLockRecord(lockDir);
+    if (record?.pid && getProcessStatus(record.pid) !== 'dead') {
+      return true;
+    }
+    if (this.isStaleAdvisoryLock(lockDir)) {
+      rmSync(lockDir, { recursive: true, force: true });
+      return false;
+    }
+    return true;
+  }
+
+  private isStaleAdvisoryLock(lockDir: string): boolean {
+    try {
+      return (Date.now() - statSync(lockDir).mtimeMs) >= WorktreeManager.LOCK_STALE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  private releaseHostSnapshotReader(readerDir: string): void {
+    rmSync(readerDir, { recursive: true, force: true });
+  }
+
+  private hostSnapshotOwnerId(): string {
+    return globalThis.crypto?.randomUUID?.() ?? randomUUID();
+  }
+
+  private hostSnapshotLockRecord(ownerId: string): FileLockRecord {
+    return {
+      ownerId,
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+    };
   }
 
   private async withRepoLock<T>(operation: () => Promise<T>): Promise<T> {
     const commonDirRealpath = await this.resolveRepoCommonDirRealpath();
     const lockRoot = join(commonDirRealpath, 'crew-merge-lock');
     mkdirSync(lockRoot, { recursive: true });
-    const lockName = createHash('sha256')
-      .update(commonDirRealpath)
-      .digest('hex')
-      .slice(0, 32);
-    const lockDir = join(lockRoot, lockName);
+    const lockDir = join(lockRoot, repoLockName(commonDirRealpath));
     try {
       return await this.withLock(
         lockDir,
@@ -1797,6 +1990,7 @@ export class WorktreeManager {
         lockDir,
         timeoutMs: WorktreeManager.LOCK_TIMEOUT_MS,
         staleMs: WorktreeManager.LOCK_STALE_MS,
+        // T5-5 FIFO fairness stays deferred; T5 narrows hold times instead.
         waitMs: 50,
         timeoutMessage,
         reclaimOwnerless: true,
@@ -1858,6 +2052,13 @@ function conflictsFromMergeTreeOutput(outputOrError: unknown): string[] {
 function isPathInside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function repoLockName(commonDirRealpath: string): string {
+  return createHash('sha256')
+    .update(commonDirRealpath)
+    .digest('hex')
+    .slice(0, 32);
 }
 
 /**
@@ -1943,4 +2144,32 @@ async function mapWithConcurrency<T, R>(
 
 function isEnoent(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
+}
+
+function isEexist(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'EEXIST';
+}
+
+function getProcessStatus(pid: number): 'alive' | 'dead' | 'unknown' {
+  try {
+    process.kill(pid, 0);
+    return 'alive';
+  } catch (err) {
+    if (
+      typeof err === 'object'
+      && err !== null
+      && 'code' in err
+    ) {
+      const code = (err as { code?: string }).code;
+      if (code === 'EPERM') return 'alive';
+      if (code === 'ESRCH') return 'dead';
+    }
+    return 'unknown';
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
 }

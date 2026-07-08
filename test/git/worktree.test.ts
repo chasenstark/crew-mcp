@@ -381,6 +381,156 @@ describe('WorktreeManager', () => {
       expect(b).toBe(join(crewHome, 'runs', 'run-2', 'worktree'));
     });
 
+    it('K-way concurrent createRunWorktree fan-out does not hold the repo lock while dirty sync waits', async () => {
+      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { crewHome, manager, rootGit } = createManager();
+      const releaseDirtySync = deferred<void>();
+      let dirtySyncStatusCalls = 0;
+      rootGit.status.mockImplementation(async () => {
+        dirtySyncStatusCalls += 1;
+        await releaseDirtySync.promise;
+        return {
+          modified: [],
+          created: [],
+          not_added: [],
+          deleted: [],
+          renamed: [],
+        };
+      });
+
+      const runIds = Array.from({ length: 5 }, (_, index) => `fanout-${index + 1}`);
+      const creates = runIds.map((runId) => manager.createRunWorktree(runId));
+
+      await vi.waitFor(() => {
+        expect(rootGit.raw.mock.calls.filter(
+          ([args]) => args[0] === 'worktree' && args[1] === 'add',
+        )).toHaveLength(5);
+      });
+      expect(dirtySyncStatusCalls).toBe(5);
+
+      releaseDirtySync.resolve();
+      const paths = await Promise.all(creates);
+      expect(paths).toEqual(runIds.map((runId) => join(
+        crewHome,
+        'runs',
+        runId,
+        'worktree',
+      )));
+    });
+
+    it('mergeRunWorktree waits for an in-progress fresh dispatch host snapshot copy', async () => {
+      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { crewHome, manager, rootGit } = createManager();
+      const mergePath = await manager.createRunWorktree('merge-run');
+      const mergeGit = getGitClient(mergePath);
+      installHostCheckoutState(rootGit);
+      mergeGit.revparse.mockImplementation(async (args: string[]) => (
+        args[0] === 'HEAD' ? 'work-head' : 'crew-run/merge-run-aaaaaaaa'
+      ));
+      rootGit.raw.mockClear();
+      rootGit.status.mockClear();
+      mergeGit.status.mockClear();
+
+      const releaseDispatchSync = deferred<void>();
+      rootGit.status.mockImplementation(async () => {
+        await releaseDispatchSync.promise;
+        return {
+          modified: [],
+          created: [],
+          not_added: [],
+          deleted: [],
+          renamed: [],
+        };
+      });
+
+      const dispatch = manager.createRunWorktree('dispatch-run');
+      await vi.waitFor(() => {
+        expect(rootGit.status).toHaveBeenCalledTimes(1);
+      });
+
+      const merge = manager.mergeRunWorktree('merge-run', { targetBranch: 'main' });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(mergeGit.status).not.toHaveBeenCalled();
+
+      releaseDispatchSync.resolve();
+      const [dispatchPath, mergeResult] = await Promise.all([dispatch, merge]);
+      expect(dispatchPath).toBe(join(crewHome, 'runs', 'dispatch-run', 'worktree'));
+      expect(mergeResult).toMatchObject({ status: 'merged' });
+      expect(mergeGit.status).toHaveBeenCalled();
+    });
+
+    it('fresh dispatch waits while mergeRunWorktree is between ref advance and host reset', async () => {
+      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { crewHome, manager, rootGit } = createManager();
+      const mergePath = await manager.createRunWorktree('merge-run');
+      const mergeGit = getGitClient(mergePath);
+      installHostCheckoutState(rootGit, { branch: 'main', head: 'target-head', targetHead: 'target-head' });
+      mergeGit.revparse.mockImplementation(async (args: string[]) => (
+        args[0] === 'HEAD' ? 'work-head' : 'crew-run/merge-run-aaaaaaaa'
+      ));
+      const releaseReset = deferred<void>();
+      rootGit.reset.mockImplementation(async () => {
+        await releaseReset.promise;
+      });
+
+      const merge = manager.mergeRunWorktree('merge-run', { targetBranch: 'main' });
+      await vi.waitFor(() => {
+        expect(rootGit.reset).toHaveBeenCalledTimes(1);
+      });
+      const addCallsBeforeDispatch = rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'add',
+      ).length;
+
+      const dispatch = manager.createRunWorktree('dispatch-during-merge');
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(rootGit.raw.mock.calls.filter(
+        ([args]) => args[0] === 'worktree' && args[1] === 'add',
+      )).toHaveLength(addCallsBeforeDispatch);
+
+      releaseReset.resolve();
+      const [mergeResult, dispatchPath] = await Promise.all([merge, dispatch]);
+      expect(mergeResult).toMatchObject({ status: 'merged' });
+      expect(dispatchPath).toBe(join(crewHome, 'runs', 'dispatch-during-merge', 'worktree'));
+    });
+
+    it('source snapshots hold the source run lock while signing and copying', async () => {
+      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { crewHome, manager, rootGit } = createManager();
+      const sourcePath = await manager.createRunWorktree('source-run');
+      const sourceGit = getGitClient(sourcePath);
+      installHostCheckoutState(rootGit);
+      sourceGit.revparse.mockImplementation(async (args: string[]) => (
+        args[0] === 'HEAD' ? 'source-head' : 'crew-run/source-run-aaaaaaaa'
+      ));
+      rootGit.raw.mockClear();
+      const firstSnapshotAssertEntered = deferred<void>();
+      const releaseSnapshotAssert = deferred<void>();
+      let assertCalls = 0;
+
+      const snapshot = manager.createRunWorktreeFromSource('review-run', {
+        sourcePath,
+        sourceRunId: 'source-run',
+        assertSourceStableAfterSync: async () => {
+          assertCalls += 1;
+          if (assertCalls === 1) {
+            firstSnapshotAssertEntered.resolve();
+          }
+          await releaseSnapshotAssert.promise;
+        },
+      });
+      await firstSnapshotAssertEntered.promise;
+
+      const merge = manager.mergeRunWorktree('source-run', { targetBranch: 'main' });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(rootGit.raw.mock.calls.some(([args]) => args[0] === 'commit-tree')).toBe(false);
+
+      releaseSnapshotAssert.resolve();
+      const [snapshotPath, mergeResult] = await Promise.all([snapshot, merge]);
+      expect(snapshotPath).toBe(join(crewHome, 'runs', 'review-run', 'worktree'));
+      expect(mergeResult).toMatchObject({ status: 'merged' });
+      expect(rootGit.raw.mock.calls.some(([args]) => args[0] === 'commit-tree')).toBe(true);
+    });
+
     it('retries git lock contention while allocating a run worktree', async () => {
       mockRandomUUID
         .mockReturnValueOnce('owner-run-1')
@@ -431,15 +581,10 @@ describe('WorktreeManager', () => {
       expect(existsSync(lockDir)).toBe(false);
     });
 
-    it('reclaims a stale repository merge lock whose owner process is gone', async () => {
-      mockRandomUUID
-        .mockReturnValueOnce('owner-1')
-        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
-        .mockReturnValueOnce('repo-owner')
-        .mockReturnValueOnce('run-owner');
+    it('reclaims a stale repository worktree-add lock whose owner process is gone', async () => {
+      mockRandomUUID.mockReturnValue('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
 
-      const { manager, root, rootGit } = createManager();
-      const wPath = await manager.createRunWorktree('run-1');
+      const { crewHome, manager, root } = createManager();
       const commonDirRealpath = realpathSync(join(root, '.git'));
       const lockName = createHash('sha256')
         .update(commonDirRealpath)
@@ -459,19 +604,9 @@ describe('WorktreeManager', () => {
       const stale = new Date(Date.now() - 60_000);
       utimesSync(lockDir, stale, stale);
 
-      const wGit = getGitClient(wPath);
-      wGit.revparse.mockResolvedValueOnce('worktree-sha');
-      rootGit.revparse
-        .mockResolvedValueOnce('main')
-        .mockResolvedValueOnce('target-sha')
-        .mockResolvedValueOnce('main')
-        .mockResolvedValueOnce('pre-merge-sha')
-        .mockResolvedValueOnce('merged-sha');
-
-      await expect(manager.mergeRunWorktree('run-1')).resolves.toMatchObject({
-        status: 'merged',
-        commitSha: 'merged-sha',
-      });
+      await expect(manager.createRunWorktree('run-1')).resolves.toBe(
+        join(crewHome, 'runs', 'run-1', 'worktree'),
+      );
       expect(existsSync(lockDir)).toBe(false);
     });
 

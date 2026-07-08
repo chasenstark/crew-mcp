@@ -137,6 +137,9 @@ export async function runPanelToolHandler(
 const PANEL_IMPLEMENTER_TERMINAL = new Set(['success', 'partial', 'error', 'cancelled']);
 const DEFAULT_PANEL_REVIEW_PROMPT =
   'Review the target changes for correctness, regressions, and missing tests. Return concrete findings with file/line references when possible.';
+// Parallelizes reviewer validation/dispatch setup. Ephemeral reviewers bound
+// to the same implementer still serialize their snapshot copy on the source
+// run lock so they cannot review a torn source worktree.
 const PANEL_REVIEWER_SETUP_CONCURRENCY = 2;
 
 export async function runPanelHandler(
@@ -512,6 +515,7 @@ function implementerSnapshotSource(
   };
   return {
     sourcePath: implementerState.worktreePath,
+    sourceRunId: implementerState.runId,
     assertSourceStableAfterSync: () => {
       const latest = ctx.runStateStore.read(implementerState.runId);
       if (
