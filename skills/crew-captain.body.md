@@ -418,6 +418,9 @@ state it briefly in the prompt.
 Read `quota` from `list_agents` when present. Exclude `limited` agents
 unless forced by the user, down-rank `near_limit`, allow but penalize
 `unknown`, and prefer `local_unmetered` for cheap read-only triage.
+After any codex run, its snapshot may carry real numeric headroom
+(`usedPercent` + `resetAt`, `source: "session-file"`) — trust the
+number over the coarse state when weighing borderline routing.
 If the user resolves an upstream limit, call `list_agents({ refresh:
 true })` to clear cached quota and re-probe so the agent can un-stick.
 

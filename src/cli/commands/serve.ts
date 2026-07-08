@@ -54,6 +54,7 @@ import {
   probeQuota,
   recordQuotaObservation,
 } from '../../orchestrator/quota-cache.js';
+import { seedCodexRolloutQuota } from '../../orchestrator/codex-rollout-quota.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
 import { gcTerminalRunsAndCriteriaSets, type RunGcArgs } from '../../orchestrator/run-gc.js';
 import { sweepExpiredMessages } from '../../orchestrator/captain-inbox/store.js';
@@ -609,9 +610,19 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     quotaProbe: async (agentName) =>
       probeQuota(quotaCache, agentName, { unmetered: registry.get(agentName)?.unmetered === true }),
     clearQuotaCache: () => quotaCache.clear(),
-    onTerminalPersisted: (state) => recordQuotaObservation(quotaCache, state, {
-      resolveCanonicalAgentId: (agentId) => registry.get(agentId)?.name ?? agentId,
-    }),
+    onTerminalPersisted: async (state) => {
+      const resolveCanonicalAgentId = (agentId: string): string =>
+        registry.get(agentId)?.name ?? agentId;
+      recordQuotaObservation(quotaCache, state, { resolveCanonicalAgentId });
+      // Preemptive numeric headroom: codex persists real used_percent to
+      // its session rollout file; seed the cache from it post-terminal.
+      if (state.sessionId !== undefined) {
+        await seedCodexRolloutQuota(quotaCache, {
+          agentId: resolveCanonicalAgentId(state.agentId),
+          threadId: state.sessionId,
+        });
+      }
+    },
   };
 
   if (workerAuth !== undefined) {

@@ -59,6 +59,7 @@ export interface QuotaSnapshot {
     | 'stream-cache'
     | 'statusline-cache'
     | 'local-ledger'
+    | 'session-file'
     | 'health-only';
   readonly checkedAt: string; // ISO timestamp
   readonly staleAfter?: string;
