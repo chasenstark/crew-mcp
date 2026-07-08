@@ -46,11 +46,10 @@ export interface GenericAdapterOptions {
 
 /**
  * GenericAdapter wraps an arbitrary CLI tool as an agent. It intentionally
- * does NOT implement executeWithSchema: generic CLI tools have no universal
+ * does not advertise JSON-schema support: generic CLI tools have no universal
  * mechanism for structured output enforcement because each tool's flags and
  * output guarantees differ. Callers should treat generic agents as
- * unstructured workers and avoid assigning them captain/tool-loop roles that
- * require schema-constrained decisions.
+ * unstructured workers.
  *
  * Reliability limitations:
  *   - Depends on the underlying tool being able to produce well-formed JSON

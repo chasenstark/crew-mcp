@@ -13,11 +13,9 @@ vi.mock('execa', () => ({
 }));
 
 // Mock fs functions used by the adapter
-// We need to keep the real readFileSync for loading fixtures, but mock everything
-// the adapter uses.
+// The adapter writes its result to a temp file, then reads that file via
+// fs/promises.readFile. Keep fixture loading on real fs.
 const mockMkdtempSync = vi.fn(() => '/tmp/codex-mock');
-const mockWriteFileSync = vi.fn();
-const mockExistsSync = vi.fn(() => false);
 const mockAdapterReadFileSync = vi.fn();
 
 vi.mock('fs/promises', async (importOriginal) => {
@@ -27,25 +25,6 @@ vi.mock('fs/promises', async (importOriginal) => {
     mkdtemp: async (...args: any[]) => mockMkdtempSync(...args),
     readFile: async (...args: any[]) => mockAdapterReadFileSync(...args),
     rm: async () => undefined,
-  };
-});
-
-vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs')>();
-  return {
-    ...actual,
-    mkdtempSync: (...args: any[]) => mockMkdtempSync(...args),
-    writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
-    existsSync: (...args: any[]) => mockExistsSync(...args),
-    readFileSync: (...args: any[]) => {
-      // If called with a path under fixtures, use real fs
-      const path = args[0] as string;
-      if (typeof path === 'string' && path.includes('fixtures')) {
-        return actual.readFileSync(...(args as Parameters<typeof actual.readFileSync>));
-      }
-      // Otherwise, delegate to mock (adapter reading output files)
-      return mockAdapterReadFileSync(...args);
-    },
   };
 });
 
@@ -123,8 +102,6 @@ describe('CodexAdapter', () => {
     adapter = new CodexAdapter();
     vi.clearAllMocks();
     delete process.env.CREW_HEALTHCHECK_TTL_MS;
-    // Reset default for existsSync
-    mockExistsSync.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -656,7 +633,6 @@ describe('CodexAdapter', () => {
         exitCode: 0,
       } as any);
 
-      mockExistsSync.mockReturnValue(true);
       mockAdapterReadFileSync.mockReturnValueOnce('Output from file');
 
       const result = await adapter.execute({

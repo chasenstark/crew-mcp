@@ -43,7 +43,6 @@ interface LazyAdapterMetadata {
   readonly streamsIncrementally?: boolean;
   readonly supportsResume?: boolean;
   readonly recognizesModel?: (modelId: string) => boolean;
-  readonly hasExecuteWithSchema?: boolean;
   readonly hasGetCliVersionTag?: boolean;
 }
 
@@ -79,7 +78,6 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
       typeof modelId === 'string'
       && (/^claude-/.test(modelId)
         || modelId === 'sonnet' || modelId === 'opus' || modelId === 'haiku'),
-    hasExecuteWithSchema: true,
     hasGetCliVersionTag: true,
   },
   [AdapterId.CODEX]: {
@@ -96,14 +94,12 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     recognizesModel: (modelId) =>
       typeof modelId === 'string'
       && (/^(gpt-|o\d)/.test(modelId) || modelId.includes('/')),
-    hasExecuteWithSchema: true,
     hasGetCliVersionTag: true,
   },
   [AdapterId.AGY]: {
     name: AdapterId.AGY,
     strengths: BUILTIN_AGENT_ROUTING[AdapterId.AGY].strengths,
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.AGY].useWhen,
-    // No native JSON-schema flag (post-validate via executeWithSchema/Zod).
     supportsJsonSchema: false,
     // agy has no enforceable read-only sandbox; an in-place read_only dispatch
     // is REFUSED rather than weakly enforced. enforcesReadOnly stays false;
@@ -125,7 +121,6 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     // agy labels contain "Claude…"/"GPT-OSS…" which a loose test would claim.
     recognizesModel: (modelId) =>
       typeof modelId === 'string' && AGY_MODEL_LABEL_SET.has(modelId),
-    hasExecuteWithSchema: true,
     hasGetCliVersionTag: true,
   },
 };
@@ -310,15 +305,6 @@ function createLazyAdapterProxy(
   if (metadata.recognizesModel) {
     proxy.recognizesModel = metadata.recognizesModel;
   }
-  if (metadata.hasExecuteWithSchema) {
-    proxy.executeWithSchema = (async (prompt, schema, options) => {
-      const adapter = await load();
-      if (!adapter.executeWithSchema) {
-        throw new Error(`Adapter "${metadata.name}" does not support schema execution.`);
-      }
-      return adapter.executeWithSchema(prompt, schema, options);
-    }) as NonNullable<AgentAdapter['executeWithSchema']>;
-  }
   if (metadata.hasGetCliVersionTag) {
     proxy.getCliVersionTag = async () => {
       const adapter = await load();
@@ -405,7 +391,6 @@ function registerOpenAiCompatibleAdapter(
       enforcesReadOnly: false,
       unmetered,
       captainCapabilities: GENERIC_CAPABILITIES,
-      hasExecuteWithSchema: true,
     },
     async () => {
       const { OpenAiCompatibleAdapter } = await import('./openai-compatible.js');

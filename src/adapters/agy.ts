@@ -17,7 +17,6 @@ import { AGY_MODEL_LABELS, AGY_MODEL_LABEL_SET } from './agy-models.js';
 import type {
   AgentAdapter,
   AgentStrength,
-  ExecuteOptions,
   HealthCheckOptions,
   HealthCheckResult,
   Task,
@@ -170,9 +169,8 @@ function isMaxBufferError(error: unknown): boolean {
  * prompt-level mitigation, not a sandbox (a model can still name an absolute
  * path elsewhere — accepted by the write-mode-only design); the run-agent
  * post-run "write-like success with an empty worktree" warning backstops a
- * slip. Injected in execute() so it applies to fresh dispatch, --conversation
- * resume, and executeWithSchema (which layers its JSON-schema instruction after
- * the user prompt — the contract stays first as operational policy).
+ * slip. Injected in execute() so it applies to fresh dispatch and
+ * --conversation resume.
  */
 export function withAgyWorkspacePreamble(prompt: string, worktreeRoot: string): string {
   return [
@@ -308,7 +306,7 @@ export class AgyAdapter implements AgentAdapter {
   // NOT advertise agy as read-only — it cannot honestly enforce read-only.
   readonly strengths: AgentStrength[] = [...BUILTIN_AGENT_ROUTING[AgentId.AGY].strengths];
   readonly useWhen = BUILTIN_AGENT_ROUTING[AgentId.AGY].useWhen;
-  // No native JSON-schema flag; executeWithSchema post-validates with Zod.
+  // No native JSON-schema support.
   readonly supportsJsonSchema = false;
   // agy CANNOT enforce a read-only filesystem sandbox: absolute paths in a
   // prompt escape any --add-dir/--sandbox, and there is no --policy/tool-deny
@@ -586,26 +584,6 @@ export class AgyAdapter implements AgentAdapter {
         numTurns: typeof envelope.num_turns === 'number' ? envelope.num_turns : undefined,
       },
     };
-  }
-
-  async executeWithSchema<T extends z.ZodType>(
-    prompt: string,
-    schema: T,
-    options?: ExecuteOptions,
-  ): Promise<z.infer<T>> {
-    const result = await this.execute({
-      prompt: `${prompt}\n\nReturn only JSON matching this schema:\n${JSON.stringify(z.toJSONSchema(schema), null, 2)}`,
-      context: { workingDirectory: options?.workingDirectory ?? process.cwd() },
-      constraints: {
-        timeout: options?.timeout,
-        model: options?.model,
-        signal: options?.signal,
-      },
-    });
-    if (result.status === 'error') {
-      throw new Error(result.output || 'agy execution failed.');
-    }
-    return schema.parse(extractJson(result.output)) as z.infer<T>;
   }
 
   async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {

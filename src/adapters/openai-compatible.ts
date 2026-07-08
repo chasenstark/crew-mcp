@@ -1,12 +1,9 @@
-import { z } from 'zod';
-import { extractJson } from '../utils/json-parse.js';
 import { ModelId } from '../workflow/models.js';
 import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
 import { classifyHttpFailure, classifyTextFailure } from './failure-classifier.js';
 import type {
   AgentAdapter,
   AgentStrength,
-  ExecuteOptions,
   HealthCheckResult,
   Task,
   TaskResult,
@@ -119,35 +116,6 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
         rawEvents: [response],
       },
     };
-  }
-
-  async executeWithSchema<T extends z.ZodType>(
-    prompt: string,
-    schema: T,
-    options?: ExecuteOptions,
-  ): Promise<z.infer<T>> {
-    const response = await this.chatCompletion({
-      model: options?.model ?? this.defaultModel,
-      messages: [
-        {
-          role: 'system',
-          content: 'Return only valid JSON for the user request.',
-        },
-        {
-          role: 'user',
-          content: `${prompt}\n\nJSON schema:\n${JSON.stringify(z.toJSONSchema(schema), null, 2)}`,
-        },
-      ],
-      timeoutMs: options?.timeout,
-      signal: options?.signal,
-    });
-
-    const text = response?.choices?.[0]?.message?.content;
-    if (typeof text !== 'string' || !text.trim()) {
-      throw new Error('OpenAI-compatible adapter returned no content for schema execution.');
-    }
-
-    return schema.parse(extractJson(text)) as z.infer<T>;
   }
 
   async healthCheck(): Promise<HealthCheckResult> {

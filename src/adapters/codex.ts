@@ -1,13 +1,6 @@
 import { execa } from 'execa';
 import { z } from 'zod';
 
-import {
-  writeFileSync,
-  readFileSync,
-  mkdtempSync,
-  existsSync,
-  rmSync,
-} from 'fs';
 import { mkdtemp, readFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -22,7 +15,6 @@ import type {
   AgentAdapter,
   AgentStrength,
   EffortLevel,
-  ExecuteOptions,
   HealthCheckOptions,
   HealthCheckResult,
   Task,
@@ -878,125 +870,6 @@ export class CodexAdapter implements AgentAdapter {
         unregisterTempDirForCleanup(tmpDir);
       } catch (err) {
         logBestEffortFailure('codex.tmp-cleanup', err);
-      }
-    }
-  }
-
-  async executeWithSchema<T extends z.ZodType>(
-    prompt: string,
-    schema: T,
-    options?: ExecuteOptions,
-  ): Promise<z.infer<T>> {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'codex-schema-'));
-    registerTempDirForCleanup(tmpDir);
-    try {
-      const schemaFile = join(tmpDir, 'schema.json');
-      const outputFile = join(tmpDir, 'output.json');
-
-      const jsonSchema = z.toJSONSchema(schema);
-      writeFileSync(schemaFile, JSON.stringify(jsonSchema, null, 2), 'utf-8');
-
-      const args = [
-        'exec',
-        '--json',
-        '--skip-git-repo-check',
-        '--output-schema',
-        schemaFile,
-        '-o',
-        outputFile,
-        ...(options?.model ? ['--model', options.model] : []),
-      ];
-
-      // No wall-clock timeout — see the matching comment on the
-      // primary execute() path. The schema-mode call is bounded by
-      // the captain-driven cancel signal; the agent's turn budget is
-      // its own backstop.
-      const timeout = options?.timeout;
-      logger.debug('[adapter:codex] starting executeWithSchema', {
-        cwd: options?.workingDirectory,
-        timeoutMs: timeout,
-        schemaFile,
-        outputFile,
-        model: options?.model,
-        promptChars: prompt.length,
-      });
-
-      let result;
-      try {
-        result = await execa(AgentId.CODEX, args, {
-          cwd: options?.workingDirectory,
-          ...(timeout ? { timeout } : {}),
-          cancelSignal: options?.signal,
-          reject: false,
-          input: prompt,
-        });
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : 'Unknown execution error';
-        logger.error('[adapter:codex] executeWithSchema process threw', {
-          cwd: options?.workingDirectory,
-          timeoutMs: timeout,
-          error: message,
-        });
-        throw new Error(`Codex execution failed before producing JSON output: ${message}`);
-      }
-
-      logger.debug('[adapter:codex] executeWithSchema finished', {
-        exitCode: result.exitCode,
-        stdoutChars: result.stdout?.length ?? 0,
-        stderrChars: result.stderr?.length ?? 0,
-      });
-
-      if (result.exitCode !== 0 && !result.stdout) {
-        logger.error('[adapter:codex] executeWithSchema failed with no stdout', {
-          exitCode: result.exitCode,
-          stderrPreview: preview(result.stderr),
-        });
-        throw new Error(
-          `Codex schema execution failed with exit code ${result.exitCode}: ${result.stderr}`,
-        );
-      }
-
-      // Check for errors in JSONL output
-      if (result.stdout) {
-        const { events } = parseJsonl(result.stdout);
-        const errorMessage = findError(events);
-        if (errorMessage) {
-          logger.error('[adapter:codex] executeWithSchema returned error event', {
-            errorMessage,
-          });
-          throw new Error(`Codex returned an error: ${errorMessage}`);
-        }
-      }
-
-      // Read structured output from the output file
-      if (!existsSync(outputFile)) {
-        logger.error('[adapter:codex] executeWithSchema missing output file', {
-          outputFile,
-          exitCode: result.exitCode,
-          stderrPreview: preview(result.stderr),
-        });
-        throw new Error(
-          `Codex did not produce output file (exit code ${result.exitCode}): ${result.stderr}`,
-        );
-      }
-
-      let raw: unknown;
-      try {
-        raw = JSON.parse(readFileSync(outputFile, 'utf-8'));
-      } catch {
-        logger.error('[adapter:codex] executeWithSchema output file was invalid JSON', {
-          outputFile,
-        });
-        throw new Error(`Failed to parse Codex output file: ${outputFile}`);
-      }
-
-      return schema.parse(raw) as z.infer<T>;
-    } finally {
-      try {
-        rmSync(tmpDir, { recursive: true, force: true });
-        unregisterTempDirForCleanup(tmpDir);
-      } catch (err) {
-        logBestEffortFailure('codex.schema-tmp-cleanup', err);
       }
     }
   }

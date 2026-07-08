@@ -145,11 +145,6 @@ export interface AgentAdapter {
   readonly supportsResume?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
-  executeWithSchema?<T extends z.ZodType>(
-    prompt: string,
-    schema: T,
-    options?: ExecuteOptions,
-  ): Promise<z.infer<T>>;
   getCliVersionTag?(): Promise<string | undefined>;
   /**
    * Returns true when the given model id is known to work with this adapter.

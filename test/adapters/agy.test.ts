@@ -2,7 +2,6 @@ import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
 
 vi.mock('execa', () => ({
   execa: vi.fn(),
@@ -217,9 +216,8 @@ describe('AgyAdapter', () => {
       expect(input).toContain('/crew/wt-abc');
       expect(input).toMatch(/ABSOLUTE paths/);
       expect(input).toMatch(/relative paths/i);
-      // Contract comes first; the user prompt follows it (operational policy
-      // before the task) so executeWithSchema can still append its JSON
-      // instruction after the user prompt.
+      // Contract comes first; the user prompt follows it as operational policy
+      // before the task.
       expect(input.indexOf('Crew workspace contract')).toBeLessThan(input.indexOf('do the work'));
     });
 
@@ -485,25 +483,6 @@ describe('AgyAdapter', () => {
       expect(result.status).toBe('error');
       expect(result.output).toContain('spawn agy ENOENT');
       expect(result.failure).toBeDefined();
-    });
-  });
-
-  describe('executeWithSchema', () => {
-    it('parses JSON from the response against the schema', async () => {
-      mockOnce(successEnvelope({ response: '{"ok":true}' }));
-      const result = await adapter.executeWithSchema(
-        'return json',
-        z.object({ ok: z.boolean() }),
-        { workingDirectory: '/crew/wt' },
-      );
-      expect(result).toEqual({ ok: true });
-    });
-
-    it('throws when the underlying dispatch errors', async () => {
-      mockOnce(`${JSON.stringify({ status: 'ERROR', response: '', error: 'boom' })}\n`, 1);
-      await expect(
-        adapter.executeWithSchema('x', z.object({ ok: z.boolean() }), { workingDirectory: '/crew/wt' }),
-      ).rejects.toThrow(/boom/);
     });
   });
 

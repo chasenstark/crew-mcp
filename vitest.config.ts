@@ -1,17 +1,23 @@
 import { defineConfig } from 'vitest/config';
 
-const realGitIntegrationTests = [
-  'test/git/**/*.test.{ts,tsx}',
+const serveRealGitIntegrationTests = [
   'test/cli/commands/serve.test.ts',
   'test/cli/commands/serve.subprocess.test.ts',
+];
+
+const parallelRealGitIntegrationTests = [
+  'test/git/worktree-host-repo-clean.test.ts',
   'test/orchestrator/run-gc.test.ts',
   'test/orchestrator/dispatch-run-agent-internal.test.ts',
   'test/orchestrator/run-lifecycle-listeners.test.ts',
   'test/orchestrator/tools/run-agent.test.ts',
-  'test/orchestrator/tools/*merge*.test.ts',
-  'test/orchestrator/tools/*discard*.test.ts',
   'test/orchestrator/tools/ephemeral-review*.test.ts',
   'test/orchestrator/tools/run-panel.test.ts',
+];
+
+const realGitIntegrationTests = [
+  ...serveRealGitIntegrationTests,
+  ...parallelRealGitIntegrationTests,
 ];
 
 export default defineConfig({
@@ -39,10 +45,19 @@ export default defineConfig({
       {
         extends: true,
         test: {
-          name: 'real-git',
-          include: realGitIntegrationTests,
-          maxWorkers: 1,
+          name: 'real-git-parallel',
+          include: parallelRealGitIntegrationTests,
+          maxWorkers: 3,
           sequence: { groupOrder: 1 },
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'real-git-serve',
+          include: serveRealGitIntegrationTests,
+          maxWorkers: 1,
+          sequence: { groupOrder: 2 },
         },
       },
     ],

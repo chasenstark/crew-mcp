@@ -1,13 +1,11 @@
 import { execa } from 'execa';
 import { z } from 'zod';
-import { extractJson } from '../utils/json-parse.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 
 import type {
   AgentAdapter,
   AgentStrength,
-  ExecuteOptions,
   HealthCheckOptions,
   HealthCheckResult,
   Task,
@@ -873,134 +871,6 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         numTurns: parsed.num_turns,
       },
     };
-  }
-
-  async executeWithSchema<T extends z.ZodType>(
-    prompt: string,
-    schema: T,
-    options?: ExecuteOptions,
-  ): Promise<z.infer<T>> {
-    const rawJsonSchema = z.toJSONSchema(schema);
-    // Strip $schema meta-field — some CLI versions don't accept it
-    const { $schema: _, ...cleanSchema } = rawJsonSchema as Record<string, unknown>;
-    const jsonSchema = JSON.stringify(cleanSchema);
-
-    // Embed the schema in the prompt so the model knows the expected shape
-    // even if --json-schema enforcement doesn't populate structured_output.
-    const fullPrompt = prompt +
-      '\n\nYou MUST respond with valid JSON matching this exact schema:\n' +
-      JSON.stringify(cleanSchema, null, 2);
-
-    const args = [
-      '-p',
-      '-',
-      '--output-format',
-      'json',
-      '--dangerously-skip-permissions',
-      ...(options?.model ? ['--model', options.model] : []),
-      '--json-schema',
-      jsonSchema,
-      // Override the system prompt to prevent CLAUDE.md, hooks, and output
-      // styles from interfering with structured JSON output. This keeps
-      // OAuth/keychain auth working (unlike --bare which disables them).
-      '--system-prompt',
-      'You are a structured data extraction engine. Return ONLY valid JSON matching the provided schema. No prose, no markdown, no explanations.',
-      // Disable all tools — captain steps only need to analyze the prompt
-      // and return JSON, never browse files or run commands.
-      '--tools',
-      '',
-    ];
-
-    if (options?.maxTurns) {
-      args.push('--max-turns', String(options.maxTurns));
-    }
-
-    // No wall-clock timeout — see execute() for the rationale.
-    const timeout = options?.timeout;
-    logger.debug('[adapter:claude-code] starting executeWithSchema', {
-      cwd: options?.workingDirectory,
-      timeoutMs: timeout,
-      maxTurns: options?.maxTurns,
-      model: options?.model,
-      promptChars: prompt.length,
-    });
-
-    let result;
-    try {
-      result = await execa('claude', args, {
-        cwd: options?.workingDirectory,
-        ...(timeout ? { timeout } : {}),
-        cancelSignal: options?.signal,
-        reject: false,
-        input: fullPrompt,
-      });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown execution error';
-      logger.error('[adapter:claude-code] executeWithSchema process threw', {
-        cwd: options?.workingDirectory,
-        timeoutMs: timeout,
-        error: message,
-      });
-      throw new Error(`Claude execution failed before producing output: ${message}`);
-    }
-
-    const schemaStdout = result.stdout ?? '';
-    const schemaStderr = result.stderr ?? '';
-    logger.debug('[adapter:claude-code] executeWithSchema finished', {
-      exitCode: result.exitCode,
-      stdoutChars: schemaStdout.length,
-      stderrChars: schemaStderr.length,
-    });
-
-    if (!schemaStdout) {
-      logger.error('[adapter:claude-code] executeWithSchema returned no stdout', {
-        exitCode: result.exitCode,
-        stderrPreview: preview(schemaStderr),
-      });
-      throw new Error(
-        `Claude CLI returned no output (exit code ${result.exitCode}): ${schemaStderr}`,
-      );
-    }
-
-    let parsed: ClaudeResponse;
-    try {
-      parsed = ClaudeResponseSchema.parse(JSON.parse(schemaStdout));
-    } catch {
-      logger.error('[adapter:claude-code] executeWithSchema failed to parse JSON envelope', {
-        stdoutPreview: preview(schemaStdout),
-        stderrPreview: preview(schemaStderr),
-      });
-      throw new Error(`Failed to parse Claude response: ${schemaStdout}`);
-    }
-
-    if (parsed.is_error) {
-      logger.error('[adapter:claude-code] executeWithSchema returned error response', {
-        resultPreview: preview(parsed.result),
-      });
-      throw new Error(`Claude returned an error: ${parsed.result}`);
-    }
-
-    // Prefer structured_output (populated when --json-schema is supported).
-    // Fall back to extracting JSON from the result string — the model may
-    // wrap it in markdown fences or include extra text.
-    let output: unknown = parsed.structured_output;
-    if (output === undefined || output === null) {
-      if (!parsed.result) {
-        throw new Error('Claude returned neither structured_output nor a result string');
-      }
-      try {
-        output = extractJson(parsed.result);
-      } catch {
-        logger.error('[adapter:claude-code] executeWithSchema could not extract JSON payload', {
-          resultPreview: preview(parsed.result),
-        });
-        throw new Error(
-          `Claude returned no structured_output and could not extract JSON from result: ${parsed.result.slice(0, 200)}`,
-        );
-      }
-    }
-
-    return schema.parse(output) as z.infer<T>;
   }
 
   async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
