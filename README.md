@@ -67,6 +67,9 @@ isolated worktree and reports back.
   **🔁 The crew-iterate skill** below.
 - **Use local models** — add Ollama, LM Studio, or any
   OpenAI-compatible endpoint as a crew agent alongside the cloud CLIs.
+- **Get structured results back** — Claude Code and Codex workers
+  deliver finalized findings through a worker-only `send_message` tool
+  into a durable captain inbox, alongside the run's terminal summary.
 - **Merge when ready** — review the diff, then `merge_run` applies it
   to your branch. Or `discard_run` to throw it away. Nothing touches
   your working tree until you decide.
@@ -249,12 +252,14 @@ crew-mcp uninstall --target all
 | `get_panel_status` | Check panel progress |
 | `get_run_status` | Check a single run's status |
 | `list_runs` | List all runs, optionally filtered by status |
-| `list_agents` | List available agents with `useWhen`, strengths, defaults, health, and quota — the captain routes away from rate-limited agents |
+| `list_agents` | List available agents with `useWhen`, strengths, defaults, health, and quota — the captain routes away from rate-limited agents (after a Codex run, real `used_percent` headroom is read from its session rollout file) |
 | `merge_run` | Apply a completed run's changes to your branch |
 | `continue_run` | Send follow-up instructions to a running agent |
 | `discard_run` | Discard a run's worktree and changes |
 | `cancel_run` | Cancel a running agent |
 | `get_crew_preferences` | Read crew configuration |
+| `check_captain_inbox` | Read structured results workers delivered via `send_message` |
+| `acknowledge_messages` | Mark inbox messages read/dismissed |
 | `create_criteria` | Draft an acceptance-criteria set for a piece of work |
 | `confirm_criteria` | Lock a criteria set after you approve it |
 | `get_criteria` | Read a criteria set (drives reviewer scoring) |
@@ -263,6 +268,11 @@ crew-mcp uninstall --target all
 The criteria tools back the `crew-iterate` loop: criteria are stored
 server-side, embedded into implementer prompts, and scored PASS/FAIL by
 every reviewer.
+
+Workers get one tool of their own: dispatched Claude Code / Codex runs
+see a worker-only `send_message` (and none of the captain tools), which
+delivers their finalized findings into the captain inbox with
+server-stamped sender identity.
 
 ## ⚙️ Configure
 
@@ -317,6 +327,7 @@ setups. Milliseconds unless noted.
 | `CREW_HEALTHCHECK_TTL_MS` | 5m | `list_agents` health-probe success cache TTL |
 | `CREW_CRITERIA_LOCK_TIMEOUT_MS` / `CREW_CRITERIA_LOCK_STALE_MS` | 30s / 60s | Criteria-store lock acquisition / stale-reclaim windows |
 | `CREW_OPENAI_BASE_URL` | unset | Default API base for openai-compatible agents without an explicit `apiBase` |
+| `CODEX_HOME` | `~/.codex` | Where Codex quota headroom is read from post-run (Codex's own variable, honored by crew) |
 | `CREW_TAIL_INSTALL_DIR` | `~/Applications` | Handler-app location for direct `scripts/tail-handler/install.sh` runs (`crew-mcp install-tail-handler` always uses `~/Applications`) |
 
 ## 👥 Managing agents
@@ -324,7 +335,9 @@ setups. Milliseconds unless noted.
 Agents live in `~/.crew/agents.json`. Each entry can carry `useWhen`
 primary routing prose, `strengths` secondary tags, a default `effort`,
 and a `model` — the captain reads these to route work when you don't
-name an agent explicitly.
+name an agent explicitly. Model pins are preflighted at dispatch: a
+model the agent doesn't recognize is dropped with a warning and the
+CLI's own default runs instead of the spawn failing.
 
 ```sh
 crew-mcp agents add      # register a model (interactive wizard, --use-when supported)
