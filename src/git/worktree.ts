@@ -327,6 +327,9 @@ export class WorktreeManager {
    * the bracketing signatures. Do not lean on this as a hostile-race
    * defense.
    *
+   * T7-5 deferred: panel double-hashing would add bounded confidence but is
+   * off the critical path; the existing source signature remains unchanged.
+   *
    * Unlike `createRunWorktree`, a failed uncommitted-state sync here is
    * FATAL, not best-effort: a reviewer must see exactly what an in-place
    * reviewer would, so a partial snapshot (failed copies/removals, skipped
@@ -1639,7 +1642,7 @@ export class WorktreeManager {
     if (!record) return undefined;
     try {
       const wGit = simpleGit(record.worktreePath);
-      await wGit.status();
+      await wGit.raw(['rev-parse', '--is-inside-work-tree']);
       return record;
     } catch {
       const cleanup = await this.cleanupRunRecordedWorktree(record);
@@ -1657,6 +1660,8 @@ export class WorktreeManager {
     record: RunWorktreeRecord,
     options: { keepBranch?: boolean } = {},
   ): Promise<WorktreeCleanupResult> {
+    // T7-4 deferred: returning before worktree removal would change
+    // merge/discard timing; current cleanup stays synchronous and GC-backed.
     const errors: string[] = [];
     let worktreeRemoved = false;
     let branchDeleted = false;
@@ -1715,6 +1720,9 @@ export class WorktreeManager {
     if (startPoint !== undefined) {
       args.push(startPoint);
     }
+    // This repo lock serializes only concurrent `git worktree add` calls.
+    // remove/prune run outside it because they mutate disjoint
+    // `.git/worktrees/<id>` entries and branch refs for the recorded run.
     await this.withRepoLock(async () => {
       await this.git.raw(args);
     });

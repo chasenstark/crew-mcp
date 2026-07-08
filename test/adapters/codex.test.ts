@@ -15,15 +15,15 @@ vi.mock('execa', () => ({
 // Mock fs functions used by the adapter
 // The adapter writes its result to a temp file, then reads that file via
 // fs/promises.readFile. Keep fixture loading on real fs.
-const mockMkdtempSync = vi.fn(() => '/tmp/codex-mock');
-const mockAdapterReadFileSync = vi.fn();
+const mockMkdtemp = vi.fn(() => '/tmp/codex-mock');
+const mockAdapterReadFile = vi.fn();
 
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
   return {
     ...actual,
-    mkdtemp: async (...args: any[]) => mockMkdtempSync(...args),
-    readFile: async (...args: any[]) => mockAdapterReadFileSync(...args),
+    mkdtemp: async (...args: any[]) => mockMkdtemp(...args),
+    readFile: async (...args: any[]) => mockAdapterReadFile(...args),
     rm: async () => undefined,
   };
 });
@@ -633,7 +633,7 @@ describe('CodexAdapter', () => {
         exitCode: 0,
       } as any);
 
-      mockAdapterReadFileSync.mockReturnValueOnce('Output from file');
+      mockAdapterReadFile.mockReturnValueOnce('Output from file');
 
       const result = await adapter.execute({
         prompt: 'Do something',

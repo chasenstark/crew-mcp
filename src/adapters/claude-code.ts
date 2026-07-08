@@ -50,6 +50,8 @@ const ClaudeResponseSchema = z.object({
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
 
 const PROGRESS_LINE_MAX_LEN = 240;
+// Non-streaming captures stay bounded for CLI health/manual callers. Production
+// dispatch supplies onOutput, so stream-json parsing is not subject to this cap.
 const CAPTURED_STDOUT_MAX_CHARS = 64 * 1024;
 const CAPTURED_STDERR_MAX_CHARS = 16 * 1024;
 const syntheticClaudeResponses = new WeakSet<ClaudeResponse>();

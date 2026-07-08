@@ -396,11 +396,3 @@ export interface HealthCheckOptions {
    */
   refresh?: boolean;
 }
-
-export interface ExecuteOptions {
-  workingDirectory?: string;
-  timeout?: number;
-  maxTurns?: number;
-  model?: string;
-  signal?: AbortSignal;
-}

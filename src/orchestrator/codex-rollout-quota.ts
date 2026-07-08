@@ -18,7 +18,7 @@
  * events recur so the last one is always near the end.
  */
 
-import { open, readdir, stat } from 'node:fs/promises';
+import { open, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logBestEffortFailure } from '../utils/best-effort.js';
@@ -33,12 +33,6 @@ export const CODEX_NEAR_LIMIT_PERCENT = 90;
 
 /** used_percent at or above this (either window) reports `limited`. */
 export const CODEX_LIMITED_PERCENT = 100;
-
-/**
- * Bounded walk depth under `sessions/`: year/month/day/rollout-*.jsonl
- * is depth 4; one extra level of slack in case codex nests differently.
- */
-const MAX_WALK_DEPTH = 5;
 
 interface RolloutWindow {
   readonly usedPercent: number;
@@ -71,47 +65,72 @@ async function findRolloutFile(
   threadId: string,
 ): Promise<string | undefined> {
   const suffix = `-${threadId}.jsonl`;
-  const matches: string[] = [];
+  const sessionsDir = join(codexHome, 'sessions');
 
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > MAX_WALK_DEPTH) return;
-    let entries;
+  let years;
+  try {
+    years = await readdir(sessionsDir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+
+  const sortedYears = years
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+
+  for (const year of sortedYears) {
+    let months;
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      months = await readdir(join(sessionsDir, year), { withFileTypes: true });
     } catch {
-      return;
+      continue;
     }
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full, depth + 1);
-      } else if (
-        entry.isFile()
-        && entry.name.startsWith('rollout-')
-        && entry.name.endsWith(suffix)
-      ) {
-        matches.push(full);
+    const sortedMonths = months
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .reverse();
+    for (const month of sortedMonths) {
+      let days;
+      try {
+        days = await readdir(join(sessionsDir, year, month), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      const sortedDays = days
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .reverse();
+      for (const day of sortedDays) {
+        const match = await findRolloutInDayDir(join(sessionsDir, year, month, day), suffix);
+        if (match !== undefined) return match;
       }
     }
   }
 
-  await walk(join(codexHome, 'sessions'), 1);
-  if (matches.length === 0) return undefined;
-  if (matches.length === 1) return matches[0];
+  return undefined;
+}
 
-  // Shouldn't happen (thread ids are unique), but prefer the newest.
-  let best: { path: string; mtimeMs: number } | undefined;
-  for (const path of matches) {
-    try {
-      const info = await stat(path);
-      if (best === undefined || info.mtimeMs > best.mtimeMs) {
-        best = { path, mtimeMs: info.mtimeMs };
-      }
-    } catch {
-      // Race with deletion — skip.
-    }
+async function findRolloutInDayDir(dayDir: string, suffix: string): Promise<string | undefined> {
+  let entries;
+  try {
+    entries = await readdir(dayDir, { withFileTypes: true });
+  } catch {
+    return undefined;
   }
-  return best?.path;
+  const match = entries
+    .filter((entry) => (
+      entry.isFile()
+      && entry.name.startsWith('rollout-')
+      && entry.name.endsWith(suffix)
+    ))
+    .map((entry) => entry.name)
+    .sort((a, b) => b.localeCompare(a))[0];
+
+  return match !== undefined ? join(dayDir, match) : undefined;
 }
 
 async function readTail(path: string, tailBytes: number): Promise<string | undefined> {

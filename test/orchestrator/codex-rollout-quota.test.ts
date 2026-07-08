@@ -68,8 +68,14 @@ describe('codex rollout quota', () => {
     rmSync(codexHome, { recursive: true, force: true });
   });
 
-  function writeRollout(lines: string[], threadId = THREAD_ID): string {
-    const path = join(sessionDay, `rollout-2026-07-07T10-00-00-${threadId}.jsonl`);
+  function writeRollout(
+    lines: string[],
+    threadId = THREAD_ID,
+    dayDir = sessionDay,
+    timestamp = '2026-07-07T10-00-00',
+  ): string {
+    mkdirSync(dayDir, { recursive: true });
+    const path = join(dayDir, `rollout-${timestamp}-${threadId}.jsonl`);
     writeFileSync(path, `${lines.join('\n')}\n`, 'utf-8');
     return path;
   }
@@ -139,6 +145,54 @@ describe('codex rollout quota', () => {
       codexHome: join(codexHome, 'does-not-exist'),
       now: NOW,
     })).toBeUndefined();
+  });
+
+  it('walks rollout day directories newest-first and falls through to the first matching day', async () => {
+    const olderDay = join(codexHome, 'sessions', '2026', '07', '06');
+    const newerDay = join(codexHome, 'sessions', '2026', '07', '08');
+    writeRollout(
+      [tokenCountLine({ primaryPercent: 91 })],
+      'ffffffff-aaaa-bbbb-cccc-000000000000',
+      newerDay,
+      '2026-07-08T10-00-00',
+    );
+    writeRollout(
+      [tokenCountLine({ primaryPercent: 44 })],
+      THREAD_ID,
+      olderDay,
+      '2026-07-06T10-00-00',
+    );
+
+    const snapshot = await codexRolloutQuotaSnapshot({
+      threadId: THREAD_ID,
+      codexHome,
+      now: NOW,
+    });
+    expect(snapshot?.usedPercent).toBe(44);
+  });
+
+  it('prefers a matching rollout in a newer day directory', async () => {
+    const olderDay = join(codexHome, 'sessions', '2026', '07', '06');
+    const newerDay = join(codexHome, 'sessions', '2026', '07', '08');
+    writeRollout(
+      [tokenCountLine({ primaryPercent: 22 })],
+      THREAD_ID,
+      olderDay,
+      '2026-07-06T10-00-00',
+    );
+    writeRollout(
+      [tokenCountLine({ primaryPercent: 77 })],
+      THREAD_ID,
+      newerDay,
+      '2026-07-08T10-00-00',
+    );
+
+    const snapshot = await codexRolloutQuotaSnapshot({
+      threadId: THREAD_ID,
+      codexHome,
+      now: NOW,
+    });
+    expect(snapshot?.usedPercent).toBe(77);
   });
 
   it('schema drift fails soft: token_count without parseable windows yields undefined', async () => {

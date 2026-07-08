@@ -114,7 +114,7 @@ describe('install / verify / uninstall — happy path', () => {
     expect(manifest.targets.codex.skills.crew).toBe(adapter.skillPath(home));
     expect(manifest.targets.codex.skills['crew:iterate']).toMatch(/crew-iterate\/SKILL\.md$/);
     expect(manifest.targets.codex.writtenPaths).toContain(adapter.skillPath(home));
-    expect(manifest.targets.codex.version).toMatch(/0\.2\.0/);
+    expect(manifest.targets.codex.version).toBe('0.5.0');
     expect(manifest.targets.codex.crewWaitCommand).toBe('crew-wait');
   });
 
