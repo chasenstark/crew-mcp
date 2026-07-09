@@ -352,8 +352,10 @@ function writeMessagesAtomicBatch(writes: readonly AtomicMessageWrite[]): void {
     for (const write of writes) {
       const tmp = `${write.path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
       const fd = captainInboxFs.openSync(tmp, 'wx', 0o600);
-      captainInboxFs.writeSync(fd, JSON.stringify(write.message, null, 2) + '\n', undefined, 'utf-8');
+      // Track the fd + tmp before writeSync so a mid-write failure (e.g. ENOSPC)
+      // still routes through the catch block's fd-close + tmp-unlink cleanup.
       pending.push({ ...write, tmp, fd, renamed: false });
+      captainInboxFs.writeSync(fd, JSON.stringify(write.message, null, 2) + '\n', undefined, 'utf-8');
     }
 
     for (const write of pending) {

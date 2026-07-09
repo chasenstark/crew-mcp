@@ -381,6 +381,57 @@ describe('captain inbox store', () => {
     }
   });
 
+  it('closes fds and removes tmp files when a batched write fails mid-loop', async () => {
+    const h = tempRoot();
+    let resetFs: (() => void) | undefined;
+    const openFds = new Set<number>();
+    const closedFds = new Set<number>();
+    let writeCalls = 0;
+    try {
+      const messages = await Promise.all(
+        Array.from({ length: 3 }, (_, index) =>
+          appendMessage({ crewHome: h.crewHome, message: message(h.repoRoot, index) })),
+      );
+      const targetIds = messages.map((m) => m.msg_id);
+      clearCaptainInboxCachesForTest();
+      resetFs = setCaptainInboxFsForTest({
+        openSync(path, flags, mode) {
+          const fd = fs.openSync(path, flags, mode);
+          openFds.add(fd);
+          return fd;
+        },
+        writeSync(fd, string, position, encoding) {
+          writeCalls += 1;
+          // Fail the second batched write to simulate an ENOSPC mid-loop, after
+          // the first fd is already open — exercises the cleanup path.
+          if (writeCalls === 2) throw new Error('ENOSPC: no space left on device');
+          return fs.writeSync(fd, string, position ?? null, encoding);
+        },
+        closeSync(fd) {
+          closedFds.add(fd);
+          fs.closeSync(fd);
+        },
+      });
+
+      await expect(transitionMessages({
+        crewHome: h.crewHome,
+        repoRoot: h.repoRoot,
+        msgIds: targetIds,
+        action: 'read',
+        now: new Date('2026-07-06T00:00:03.000Z'),
+      })).rejects.toThrow(/ENOSPC/);
+
+      // Every fd the failing batch opened was closed — no fd leak on the error path.
+      expect([...openFds].sort()).toEqual([...closedFds].sort());
+      // No orphan .tmp files remain, including the one whose write threw.
+      const dir = inboxRepoDir(h.crewHome, h.repoRoot);
+      expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      resetFs?.();
+      h.cleanup();
+    }
+  });
+
   it('sweeps only expired read and dismissed messages', async () => {
     clearCaptainInboxSweepStateForTest();
     const h = tempRoot();
