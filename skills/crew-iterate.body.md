@@ -110,15 +110,16 @@ confirm the chosen agent is `available: true`. Unavailable agents
 alternative rather than retrying silently. Never invent an `agent_id`
 absent from `list_agents`.
 
-**5. Do NOT Crew-dispatch your own host product.** If you are running
-on Claude Code, do not `run_agent` / `run_panel` `claude-code` as
-implementer or reviewer. Same rule for Codex → Codex, Gemini →
-Gemini. Crew is for cross-product delegation; same-host crew
-dispatches lose the heterogeneity that makes review valuable and can
-cause nested-session resource conflicts. This bans **Crew dispatch**,
-not native subagents: the host model still reviews, via a native
-subagent (Step 2), and that native review is not a crew run — it won't
-appear in `list_runs` or `aggregate_panel`.
+**5. Route your own host product through a native subagent, not a
+Crew dispatch.** If you are running on Claude Code, don't `run_agent` /
+`run_panel` `claude-code` as implementer or reviewer — send that work
+to a native `Agent` / `Task` subagent instead. Same routing for
+Codex → Codex, Gemini → Gemini. This is not a ban on same-host work:
+the host model still implements and reviews, it just runs as a native
+subagent rather than a Crew run, because same-host Crew dispatches lose
+the heterogeneity that makes review valuable and can cause
+nested-session resource conflicts. A native subagent is not a crew run —
+it won't appear in `list_runs` or `aggregate_panel`.
 
 **6. Never shell out to `crew-mcp`.** Use the MCP tool surface
 (`mcp__crew__*`). The MCP server is the authoritative interface;

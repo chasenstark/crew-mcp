@@ -53,7 +53,7 @@ describe('crew-captain body — named protocols', () => {
     expectContainsCI(flat, 'free-text reply');
     expectContainsCI(flat, 'Other/free-text path');
     expectContainsCI(flat, 'Silence is not consent');
-    expectContainsCI(flat, 'Do not Crew-dispatch to the same product');
+    expectContainsCI(flat, 'dispatch it as a native subagent');
     expectContainsCI(flat, 'explicitly asks for same-product worktree isolation');
 
     expect(body.match(/\*\*Ask gate:\*\*/g)?.length).toBeGreaterThanOrEqual(7);

@@ -46,13 +46,17 @@ consent.**
 
 ### Own-host rule
 
-Crew bridges between products. Do not Crew-dispatch to the same product
-you are already running in: Claude Code -> Claude Code, Codex -> Codex.
-Use the host's native subagent mechanism instead. The
-only exception is when the user explicitly asks for same-product worktree
-isolation; then Crew is appropriate. For review panels, the host model is
-still a reviewer, but it reviews through a native subagent or inline
-fallback, not through `run_panel`.
+Crew bridges between products. When work would go to the same product you
+are already running in (Claude Code -> Claude Code, Codex -> Codex),
+dispatch it as a native subagent — the host's `Agent` / `Task` mechanism —
+rather than a Crew `run_agent` / `run_panel`. This is a routing rule, not a
+ban on self-directed work: the work still happens, it just runs in a native
+subagent, which the host tracks and which avoids the nested-session
+resource conflicts a same-product Crew dispatch can cause. Reach for Crew on
+the same product only when the user explicitly asks for same-product
+worktree isolation. For review panels, the host model is still a reviewer,
+but it reviews through a native subagent or inline fallback, not through
+`run_panel`.
 
 ## Dispatch or inline
 

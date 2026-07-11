@@ -376,7 +376,7 @@ describe('crew-iterate body — standalone safety invariants', () => {
       { label: 'dispatch lifecycle', needle: 'Dispatch lifecycle' },
       { label: 'escape hatch', needle: 'Escape hatch' },
       { label: 'tool availability', needle: 'Tool availability' },
-      { label: 'own-host prohibition', needle: 'own host product' },
+      { label: 'own-host routing to native subagent', needle: 'own host product' },
       { label: 'never shell out', needle: 'Never shell out' },
       { label: 'read-only cleanup', needle: 'do not auto-clean' },
       { label: 'ask on ambiguity', needle: 'before dispatching on ambiguity' },
