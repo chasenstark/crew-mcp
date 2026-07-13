@@ -472,6 +472,7 @@ async function verifyCanonicalSkillContent(args: {
     }
     const expected = await renderSkill({
       templatePath: templatePathForHost(args.packageRoot, args.targetId),
+      hostId: args.targetId,
       skill,
       spec,
       tools: CAPTAIN_CATALOG_TOOLS,

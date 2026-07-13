@@ -702,6 +702,7 @@ async function renderAndWriteSkills(args: {
       }
       const skillContent = await renderSkill({
         templatePath,
+        hostId: adapter.id,
         skill,
         spec,
         tools: CAPTAIN_CATALOG_TOOLS,

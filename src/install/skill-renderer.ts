@@ -136,6 +136,11 @@ export interface SkillInstallSpec {
 export interface RenderSkillArgs {
   readonly templatePath: string;
   /**
+   * Host adapter ID used to retain only matching host-conditional body
+   * blocks. Omit to retain every block for backwards-compatible callers.
+   */
+  readonly hostId?: string;
+  /**
    * Manifest entry being rendered. Determines which `bodyFile` to load
    * and which `description` to substitute. Optional for back-compat:
    * if omitted, defaults to the umbrella `crew` entry (SKILL_MANIFEST[0]).
@@ -203,10 +208,62 @@ export function resolvePackageRoot(override?: string): string {
 export async function loadSkillBody(
   packageRoot: string,
   bodyFile: string,
+  hostId?: string,
 ): Promise<string> {
   const path = join(packageRoot, 'skills', bodyFile);
   const raw = await readFile(path, 'utf-8');
-  return stripHtmlComments(raw).trimEnd();
+  return stripHtmlComments(sliceHostBlocks(raw, hostId)).trimEnd();
+}
+
+/**
+ * Slice block-level host conditionals from a canonical skill body.
+ *
+ * Markers must occupy their own lines:
+ *
+ *   <!-- host:codex, claude-code -->
+ *   Host-specific content.
+ *   <!-- /host -->
+ *
+ * A matching host retains the inner content, while another host drops the
+ * whole block. Omitting `hostId` retains all inner content so callers that do
+ * not yet render for a specific host preserve the historical body. Marker
+ * lines never survive. Other HTML comments are left for `stripHtmlComments`.
+ */
+export function sliceHostBlocks(text: string, hostId?: string): string {
+  const openMarker = /^[\t ]*<!--[\t ]*host:[\t ]*([^<>]*?)[\t ]*-->[\t ]*(?:\r?\n)?$/;
+  const closeMarker = /^[\t ]*<!--[\t ]*\/host[\t ]*-->[\t ]*(?:\r?\n)?$/;
+  const output: string[] = [];
+  let activeHosts: readonly string[] | undefined;
+
+  for (const line of text.split(/(?<=\n)/)) {
+    const open = line.match(openMarker);
+    if (open) {
+      if (activeHosts !== undefined) {
+        throw new Error('Invalid host block markers: nested host blocks are not allowed');
+      }
+      activeHosts = open[1].split(',').map((token) => token.trim());
+      continue;
+    }
+
+    if (closeMarker.test(line)) {
+      if (activeHosts === undefined) {
+        throw new Error('Invalid host block markers: closing marker has no matching opening marker');
+      }
+      activeHosts = undefined;
+      continue;
+    }
+
+    if (activeHosts === undefined || hostId === undefined || activeHosts.includes(hostId)) {
+      output.push(line);
+    }
+  }
+
+  if (activeHosts !== undefined) {
+    throw new Error('Invalid host block markers: opening marker has no matching closing marker');
+  }
+
+  return output.join('').replace(/(?:\r?\n){3,}/g, (newlines) =>
+    newlines.includes('\r\n') ? '\r\n\r\n' : '\n\n');
 }
 
 /**
@@ -245,7 +302,7 @@ export function stripHtmlComments(input: string): string {
 export async function renderSkill(args: RenderSkillArgs): Promise<string> {
   const packageRoot = resolvePackageRoot(args.packageRoot);
   const skill = args.skill ?? SKILL_MANIFEST[0];
-  const body = await loadSkillBody(packageRoot, skill.bodyFile);
+  const body = await loadSkillBody(packageRoot, skill.bodyFile, args.hostId);
   const templateRaw = await readFile(args.templatePath, 'utf-8');
 
   const toolList = renderToolList(captainSkillTools(args.tools));

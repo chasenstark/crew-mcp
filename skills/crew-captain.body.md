@@ -83,24 +83,15 @@ worse than a short clarifying question.
 2. **Yield while running.** `run_agent` / `continue_run` return
    immediately with `run_id`, `status: "running"`, and `tail_url`.
    Confirm in one visible line that names the `run_id` and status, include
-   the tail link, then end the turn. First start the host watcher. On
-   Claude Code:
-   `Bash(<required_next_action.command>, run_in_background: true)`.
-   For independent non-panel Crew runs, spawn N watchers for N run ids.
-   On Codex, use the deferred `functions.exec` recipe in Step 2; it must
-   call `yield_control()` before waiting so chat remains available.
-3. **Read terminal state later.** Claude Code gets a watcher-triggered
-   synthetic turn; Codex gets a deferred `crew_wait_terminal` completion
-   event. If either watcher is unavailable or lost, recover by snapshot
-   on the next user turn.
+   the tail link, apply the current host's terminal-notification path, then
+   end the turn. A host without a watcher ends immediately.
+3. **Read terminal state later.** Use the host's terminal notification when
+   available; otherwise recover by snapshot on the next user turn.
    Use `get_run_status` for the rich terminal payload. For Tier-2
    workers (`codex`, `claude-code`), also `check_captain_inbox` on the
    terminal turn (see "Worker messages").
 4. **Iterate or review.** Use `continue_run` for fixups. For a second
-   opinion, dispatch a reviewer with `read_only: true` and
-   `working_directory: <implementer worktree>`. For agy reviews, use
-   `run_mode: "ephemeral_review"` or a bound `run_panel`; do not pass
-   `read_only` or `working_directory`.
+   opinion, follow the selected reviewer's placement contract.
 5. **Ask what to do next.** For implementer runs, ask merge / iterate /
    discard. For read-only or ephemeral reviews, ask cleanup / keep.
    **Ask gate:** confirm via the Ask protocol. **Silence is not consent.**
@@ -193,9 +184,12 @@ progress.
 
 **Don't block the turn with `get_run_status`.** Do not call `get_run_status` with
 `wait_for_terminal_only: true` or a long `wait_for_change_ms` to keep the
-turn open. The only legitimate in-turn waits are the explicit foreground
-`{{CREW_WAIT_COMMAND}}` opt-in below and bounded native subagent work that
-is not a Crew MCP long-poll.
+turn open. Bounded native subagent work is legitimate because it is not a
+Crew MCP long-poll.
+<!-- host:claude-code -->
+Claude Code's explicit foreground `{{CREW_WAIT_COMMAND}}` opt-in is the one
+Crew watcher exception.
+<!-- /host -->
 
 ### Dispatch order - crew first
 
@@ -231,8 +225,11 @@ If the user says the tail link does nothing, suggest
 `crew-mcp install-tail-handler` or give `tail -F <events_log_path>` from
 the dispatch envelope.
 
+<!-- host:claude-code,codex -->
 ### Step 2 - background watcher overlay (Claude Code and Codex, mandatory)
+<!-- /host -->
 
+<!-- host:claude-code -->
 On Claude Code, immediately after `run_agent` / `continue_run` returns:
 
 Complete this checklist before ending the turn:
@@ -247,7 +244,9 @@ Complete this checklist before ending the turn:
 The returned command includes the exact allowed executable, the server's
 pinned Crew home, and the run id. Do not rebuild it from the rendered
 `{{CREW_WAIT_COMMAND}}` template or remove any arguments.
+<!-- /host -->
 
+<!-- host:codex -->
 On Codex, immediately after `run_agent` / `continue_run` returns, call
 `functions.exec` once per independent run with this recipe. Paste
 `required_next_action.command_json` and
@@ -342,7 +341,9 @@ Treat `crew_wait_failed` as explicit watcher degradation: report it,
 snapshot the listed runs, and keep next-user-turn recovery active until
 every listed run is terminal. The command carries the server's Crew home
 through an internal argument, so do not remove or rewrite any arguments.
+<!-- /host -->
 
+<!-- host:claude-code,codex -->
 A native `Agent` / `Task` subagent completion is host harness-tracked, not
 Crew-tracked, and tells you nothing about Crew runs.
 
@@ -365,13 +366,17 @@ If the watcher exits with diagnostic code 3, the run id is unknown or
 `$CREW_HOME` is wrong/stale. Do not respawn in a loop. Use `list_runs`
 for the current repo, identify the run by visible conversation context,
 and continue from the recovered `run_id`.
+<!-- /host -->
 
+<!-- host:codex -->
 On Codex, read these lines from the `crew_wait_terminal.output` field. If a
 watcher completion arrives without `CREW_WAIT_TERMINAL`, use
 `list_runs` without `completedAfter`, filter to terminal statuses, and
 dedupe by `run_id` against runs already surfaced. Only use
 `completedAfter` when the timestamp is confidently visible in the chat.
+<!-- /host -->
 
+<!-- host:claude-code -->
 ### Foreground watcher opt-in
 
 Foreground `crew-wait` is an explicit blocking opt-in. Use it only when the
@@ -382,11 +387,15 @@ user explicitly says "wait for this" or equivalent:
 ```
 
 This blocks chat but uses one inference instead of an MCP long-poll loop.
+<!-- /host -->
+<!-- host:codex -->
 Do not use a foreground watcher on Codex. The supported Codex
 path is the deferred Step 2 recipe; it yields before waiting. If deferred
 code mode is unavailable, end the turn and recover by snapshot at the next
 user turn.
+<!-- /host -->
 
+<!-- host:claude-code,codex -->
 ### Checking pending runs at turn start
 
 Claude Code and Codex: while this conversation has known in-flight runs,
@@ -420,6 +429,7 @@ Do not coalesce independent completions across watcher turns.
 Panels are different: use the panel-level wait described in Review
 panels, because consolidation cannot start until all reviewer runs are
 terminal.
+<!-- /host -->
 
 ### Progress
 
@@ -431,14 +441,11 @@ progress channel. Do not duplicate progress into chat unless the user asks.
 ```
 run_agent(...) -> { run_id: R, status: "running", tail_url: "crew-tail://..." }
 "Dispatched as `R` (status: running) - [tail in side terminal](crew-tail://...). Ended turn; chat freely."
-Claude Code:
-  Bash(<required_next_action.command>, run_in_background: true)
-Codex:
-  functions.exec(<deferred Step 2 recipe with returned command + workdir>)
+<apply the current host's terminal-notification path>
 end turn
 
 later watcher/user turn:
-  CREW_WAIT_TERMINAL run_id=R agent=... status=success worktree=...
+  <host terminal notification or next-turn recovery>
   get_run_status({ run_id: R })
     -> status: "success", summary: "...", filesChanged: [...],
        commits: [{sha, subject}], commit_count: N, events_tail: [...]
@@ -526,9 +533,11 @@ state it briefly in the prompt.
 Read `quota` from `list_agents` when present. Exclude `limited` agents
 unless forced by the user, down-rank `near_limit`, allow but penalize
 `unknown`, and prefer `local_unmetered` for cheap read-only triage.
+<!-- host:codex -->
 After any codex run, its snapshot may carry real numeric headroom
 (`usedPercent` + `resetAt`, `source: "session-file"`) — trust the
 number over the coarse state when weighing borderline routing.
+<!-- /host -->
 If the user resolves an upstream limit, call `list_agents({ refresh:
 true })` to clear cached quota and re-probe so the agent can un-stick.
 
@@ -680,6 +689,7 @@ last resort and must be labeled as inline fallback, not a fresh vote.
 The captain's own diff read is still mandatory for consolidation, but it
 is not a second same-model vote.
 
+<!-- host:claude-code -->
 A backgrounded host reviewer is host-harness-tracked, so the harness
 emits its own `Agent "<label>" finished` completion banner when the
 subagent terminates — a separate channel from the panel watcher. If you
@@ -687,6 +697,7 @@ already consolidated that round with its verdict folded into the
 aggregation, the banner is an expected, redundant wake: silently end the
 turn, no explanation line. Only act if the late output's verdict differs
 from what you folded in, and then re-open that round's consolidation.
+<!-- /host -->
 
 ### `run_panel` shape
 
@@ -703,7 +714,8 @@ run_panel({
 ```
 
 Bound reviewers get `read_only: true`, `working_directory: <A.worktree>`,
-and a peer message with A's summary/files. agy reviewers are auto-routed
+and a peer message with A's summary/files.
+agy reviewers are auto-routed
 to `run_mode: "ephemeral_review"` and snapshot A's worktree.
 
 Standalone panels run like plain `run_agent` calls. `read_only: true`
@@ -712,21 +724,36 @@ override `working_directory`.
 
 ### Panel lifecycle
 
-`run_panel` returns `panel_id`, reviewer `run_id`s, and a panel-level
-`required_next_action` for Claude Code and Codex:
+`run_panel` returns `panel_id` and reviewer `run_id`s.
 
+<!-- host:claude-code,codex -->
+For Claude Code and Codex it also returns a panel-level
+`required_next_action`:
+<!-- /host -->
+
+<!-- host:claude-code -->
 ```
 Bash(<panel required_next_action.command>, run_in_background: true)
 ```
 
 Spawn one watcher for the panel, not one per reviewer, because
-consolidation waits for all reviewers. On Claude Code use the background
-`Bash` form above; on Codex pass the same command to the deferred Step 2
-recipe. The reviewer envelopes still carry per-run commands for
-selective/degraded waits.
+consolidation waits for all reviewers. Use the background `Bash` form above.
+<!-- /host -->
+<!-- host:codex -->
+Start one deferred watcher with the panel command, not one per reviewer,
+because consolidation waits for all reviewers.
+<!-- /host -->
+<!-- host:claude-code,codex -->
+The reviewer envelopes still carry per-run commands for selective/degraded
+waits.
+<!-- /host -->
 
-On hosts without the watcher capability, use next-turn snapshots. For
-selective/degraded watcher turns, call `get_panel_status({ panel_id })`. If
+<!-- host:agy -->
+On hosts without the watcher capability, use next-turn snapshots.
+<!-- /host -->
+
+On any panel notification or recovery turn, call
+`get_panel_status({ panel_id })`. If
 `running_count > 0`, end
 with at most one short status line and no reviewer findings dump. When
 `running_count` is 0, call `aggregate_panel` and consolidate. Never

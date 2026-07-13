@@ -37,6 +37,7 @@ as part of the iterate cycle (see invariant #7).
 `continue_run` / `run_panel`, do NOT long-poll `get_run_status`
 in-turn. Confirm dispatch with the inline `tail_url` markdown, end
 the turn, and:
+<!-- host:claude-code -->
 - Claude Code, independent runs (`run_agent` / `continue_run`): before
   ending the turn, complete this checklist for every crew run returned
   by the dispatch:
@@ -53,6 +54,8 @@ the turn, and:
   on such watcher turns call `get_panel_status({panel_id})` — if
   `running_count > 0`, end the turn with at most one short status
   line; at 0, proceed to `aggregate_panel` + consolidation.
+<!-- /host -->
+<!-- host:codex -->
 - Codex, independent runs: call `functions.exec` once per run using the
   JSON-safe `required_next_action.command_json` and
   `required_next_action.run_ids_json`, with
@@ -139,6 +142,8 @@ the turn, and:
   Treat `crew_wait_failed` as degradation, snapshot its `run_ids`, and
   keep turn-start recovery active until all are terminal. Never remove the
   server-supplied Crew-home argument from the command.
+<!-- /host -->
+<!-- host:claude-code,codex -->
 - On any watcher shape, a harness-tracked native `Agent` / `Task` subagent
   completing tells you nothing about crew runs, which are not
   harness-tracked. The watcher will fire a completion event containing
@@ -148,15 +153,20 @@ the turn, and:
   `get_run_status({run_id})` for the full envelope. Without the
   completion-event handling, the loop deadlocks: dispatched and ended
   the turn but never recognizes the resume.
+<!-- /host -->
+<!-- host:codex -->
   On Codex the lines are in the `crew_wait_terminal.output` field. If the
   completion arrives without that terminal line, or if a run
   has been in-flight suspiciously long, fall back to:
   `list_runs({status: ["success","partial","error","cancelled"],
   completedAfter: <last surfaced ISO timestamp>})`. Dedupe run IDs you
   already surfaced and process the remainder as normal terminal runs.
+<!-- /host -->
+<!-- host:agy -->
 - Hosts without either watcher mechanism: discover terminal runs on the
   next user turn via
   `list_runs({status: ["success","partial","error","cancelled"]})`.
+<!-- /host -->
 On any user turn while this loop has in-flight crew runs,
 opportunistically call `list_runs` so a lost watcher cannot stall the
 loop silently.
@@ -175,8 +185,11 @@ not a violation of this invariant.
 **Crew before captain-side work (when independent).** When a round
 both dispatches crew and does captain-side work — a native subagent,
 or your own inline review — issue the crew dispatch(es) FIRST so the
-workers run concurrently; prefer `run_in_background: true` for native
-subagents. **Exception:** if the captain-side work produces the crew
+workers run concurrently.
+<!-- host:claude-code -->
+Prefer `run_in_background: true` for native subagents.
+<!-- /host -->
+**Exception:** if the captain-side work produces the crew
 dispatch's input (e.g. a reviewer's `peer_messages` built from the
 implementer's `summary` / `files_changed`, per Step 2), it's a
 prerequisite, not a peer — do it first. Otherwise crew-second
@@ -552,9 +565,8 @@ run_agent({
   dispatch-time `criteria.*` codes (Step 0). `criteria.invalid` belongs
   to `create_criteria` / `confirm_criteria` / `revise_criteria`
   validation, not dispatch.
-- Confirm dispatch with `[tail in side terminal](<tail_url>)`, start the
-  host watcher for each returned crew run ID, and end the turn (per
-  invariant #2). Codex must yield inside `functions.exec` before waiting.
+- Confirm dispatch with `[tail in side terminal](<tail_url>)`, apply the
+  current host's lifecycle from invariant #2, and end the turn.
 
 ### Step 2 — Review (crew + host native subagent, parallel)
 
@@ -604,8 +616,10 @@ summary, and worktree path. This is the one residual captain-inserted
 criteria block, and it must come from `get_criteria` rather than memory
 or hand reformatting.
 
+<!-- host:claude-code -->
 - **Background it if your host supports it** (e.g. Claude Code's
   `run_in_background: true`) so chat stays available while it reviews.
+<!-- /host -->
 - **If the native subagent is synchronous,** run it in the
   **foreground**. The crew panel is already async, so this blocks only
   the current turn, not the panel — keep it bounded. On a very large
@@ -623,12 +637,14 @@ The captain ALSO reads the diff to consolidate (Step 3) — that read is
 mandatory orchestration QA, not an extra same-model vote. Don't
 double-count the captain's read and the host subagent's review.
 
+<!-- host:claude-code -->
 After dispatching crew reviewers, start every `[M]` criterion command as
 background Bash in `A.worktree_path` when the command does not mutate
 tracked files (tests/lint/build normally qualify; skip or defer mutating
 commands). This overlaps the captain's mechanical pass with review.
 Reconcile the results in Step 3; captain `[M]` scores still override
 reviewer `[M]` scores.
+<!-- /host -->
 
 Single-reviewer dispatch:
 
@@ -983,7 +999,7 @@ in alongside the crew reviewers (`aggregate_panel` won't return it):
    before consolidating.
 
 After the consolidated report consumes the reviewer outputs, discard the
-read-only reviewer runs immediately (and ephemeral snapshots too). This
+reviewer runs immediately. This
 is cleanup only; keep the implementer run. The consolidated report feeds
 into the iterate path below.
 

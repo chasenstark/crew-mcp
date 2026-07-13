@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
@@ -14,16 +15,20 @@ import { parse as parseYaml } from 'yaml';
 import {
   captainSkillTools,
   ITERATE_SKILL_DESCRIPTION,
+  loadSkillBody,
   renderSkill,
   renderToolList,
   resolvePackageRoot,
   SKILL_MANIFEST,
+  sliceHostBlocks,
   stripHtmlComments,
   templatePathForHost,
   SKILL_DESCRIPTION,
   type SkillManifestEntry,
   type SkillTool,
 } from '../../src/install/skill-renderer.js';
+import { HOST_ADAPTERS, type HostId } from '../../src/install/hosts/index.js';
+import { CATALOG_TOOLS } from '../../src/install/tool-catalog.js';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(here, '..', '..');
@@ -99,6 +104,225 @@ describe('stripHtmlComments', () => {
 
   it('leaves text without comments unchanged', () => {
     expect(stripHtmlComments('# Hello\nworld\n')).toBe('# Hello\nworld\n');
+  });
+});
+
+describe('sliceHostBlocks', () => {
+  const body = [
+    'shared before',
+    '<!-- host: codex, agy -->',
+    'selected content',
+    '<!-- /host -->',
+    'shared after',
+  ].join('\n');
+
+  it('keeps matching block content and strips marker comments', () => {
+    expect(sliceHostBlocks(body, 'codex')).toBe(
+      'shared before\nselected content\nshared after',
+    );
+  });
+
+  it('accepts comma-separated host lists with surrounding spaces', () => {
+    expect(sliceHostBlocks(body, 'agy')).toContain('selected content');
+  });
+
+  it('drops non-matching block content and both markers', () => {
+    const out = sliceHostBlocks(body, 'claude-code');
+    expect(out).toBe('shared before\nshared after');
+    expect(out).not.toContain('host:');
+    expect(out).not.toContain('/host');
+  });
+
+  it('keeps all block content when hostId is omitted', () => {
+    expect(sliceHostBlocks(body)).toBe(
+      'shared before\nselected content\nshared after',
+    );
+  });
+
+  it('collapses runs of three or more newlines after slicing', () => {
+    const input = 'before\n\n<!-- host:codex -->\nremoved\n<!-- /host -->\n\n\nafter';
+    expect(sliceHostBlocks(input, 'agy')).toBe('before\n\nafter');
+  });
+
+  it('collapses CRLF newline runs while preserving CRLF style', () => {
+    const input = 'before\r\n\r\n<!-- host:codex -->\r\nremoved\r\n<!-- /host -->\r\n\r\n\r\nafter';
+    expect(sliceHostBlocks(input, 'agy')).toBe('before\r\n\r\nafter');
+  });
+
+  it('leaves unrelated HTML comments untouched', () => {
+    expect(sliceHostBlocks('before\n<!-- note -->\nafter', 'codex')).toBe(
+      'before\n<!-- note -->\nafter',
+    );
+  });
+
+  it('throws on an opening marker without a close', () => {
+    expect(() => sliceHostBlocks('<!-- host:codex -->\ncontent', 'codex'))
+      .toThrow(/opening marker has no matching closing marker/);
+  });
+
+  it('throws on a closing marker without an open', () => {
+    expect(() => sliceHostBlocks('content\n<!-- /host -->', 'codex'))
+      .toThrow(/closing marker has no matching opening marker/);
+  });
+
+  it('throws on nested host blocks', () => {
+    const nested = [
+      '<!-- host:codex -->',
+      '<!-- host:agy -->',
+      '<!-- /host -->',
+      '<!-- /host -->',
+    ].join('\n');
+    expect(() => sliceHostBlocks(nested, 'codex')).toThrow(/nested host blocks/);
+  });
+});
+
+describe('host-conditional real skill bodies', () => {
+  const HOST_IDS = Object.keys(HOST_ADAPTERS) as HostId[];
+  const SENTINELS: Record<string, Record<HostId, string>> = {
+    crew: {
+      'claude-code': 'Complete this checklist before ending the turn:',
+      codex: '`yield_control()` is the non-blocking boundary',
+      agy: 'On hosts without the watcher capability, use next-turn snapshots.',
+    },
+    'crew:iterate': {
+      'claude-code': 'Claude Code, panels (`run_panel`): spawn ONE watcher',
+      codex: '`yield_control()` releases the model turn before the wait continues',
+      agy: 'Hosts without either watcher mechanism: discover terminal runs',
+    },
+  };
+  const FOREIGN_MECHANICS: Record<HostId, readonly string[]> = {
+    'claude-code': [
+      'functions.exec',
+      'crew_wait_terminal',
+      'yield_control',
+      'On hosts without the watcher capability, use next-turn snapshots.',
+      'Hosts without either watcher mechanism: discover terminal runs',
+    ],
+    codex: [
+      'run_in_background',
+      'Bash(<required_next_action',
+      'Bash(<panel required_next_action',
+      'Foreground `crew-wait`',
+      'On hosts without the watcher capability, use next-turn snapshots.',
+      'Hosts without either watcher mechanism: discover terminal runs',
+    ],
+    agy: [
+      'functions.exec',
+      'crew_wait_terminal',
+      'yield_control',
+      'run_in_background',
+      'Bash(<required_next_action',
+      'Bash(<panel required_next_action',
+      'CREW_WAIT_TERMINAL',
+    ],
+  };
+  const SHARED_SENTINELS: Record<string, readonly string[]> = {
+    crew: [
+      '## Criteria display',
+      '## Merge boundary',
+      '### Pick the merge strategy',
+      '## Review panels',
+      'agy cannot honestly enforce read-only',
+      'agy reviewers are auto-routed',
+      'discover panel completeness',
+      '**Silence is not consent.**',
+    ],
+    'crew:iterate': [
+      '### Step 0 — Derive and confirm acceptance criteria',
+      '### Step 3 — Iterate or converge',
+      '### Step 4 — Merge',
+      '## Tools',
+      'reviews the wrong diff',
+      '**Ephemeral reviewers.**',
+      '**Silence is not consent.**',
+    ],
+  };
+
+  async function renderForHost(skill: SkillManifestEntry, hostId: HostId): Promise<string> {
+    return renderSkill({
+      templatePath: templatePathForHost(REPO_ROOT, hostId),
+      hostId,
+      skill,
+      tools: CATALOG_TOOLS,
+      packageRoot: REPO_ROOT,
+    });
+  }
+
+  for (const skill of SKILL_MANIFEST) {
+    it.each(HOST_IDS)(
+      `${skill.id} rendered for %s includes only that host's lifecycle sentinel`,
+      async (hostId) => {
+        const out = await renderForHost(skill, hostId);
+        expect(out).toContain(SENTINELS[skill.id][hostId]);
+        for (const foreignHost of HOST_IDS.filter((candidate) => candidate !== hostId)) {
+          expect(out).not.toContain(SENTINELS[skill.id][foreignHost]);
+        }
+      },
+    );
+
+    it.each(HOST_IDS)(
+      `${skill.id} rendered for %s retains the complete captain tool catalog`,
+      async (hostId) => {
+        const out = await renderForHost(skill, hostId);
+        for (const tool of captainSkillTools(CATALOG_TOOLS)) {
+          expect(out).toContain(`mcp__crew__${tool.name}`);
+        }
+      },
+    );
+
+    it.each(HOST_IDS)(
+      `${skill.id} rendered for %s excludes foreign mechanics and retains shared guards`,
+      async (hostId) => {
+        const out = await renderForHost(skill, hostId);
+        for (const phrase of FOREIGN_MECHANICS[hostId]) {
+          expect(out, `${skill.id}/${hostId} leaked '${phrase}'`).not.toContain(phrase);
+        }
+        for (const phrase of SHARED_SENTINELS[skill.id]) {
+          expect(out, `${skill.id}/${hostId} lost shared '${phrase}'`).toContain(phrase);
+        }
+        expect(out).not.toContain('recipe in Step 2');
+        expect(out).not.toContain('opt-in below');
+      },
+    );
+
+    it(`${skill.id} hostId-omitted loading removes only marker lines`, async () => {
+      const raw = await readFile(join(REPO_ROOT, 'skills', skill.bodyFile), 'utf-8');
+      const markersRemoved = raw.replace(
+        /^[\t ]*<!--(?:[\t ]*host:[^>]*|[\t ]*\/host[\t ]*)-->[\t ]*\r?\n?/gm,
+        '',
+      );
+      await expect(loadSkillBody(REPO_ROOT, skill.bodyFile)).resolves.toBe(
+        stripHtmlComments(markersRemoved).trimEnd(),
+      );
+    });
+  }
+
+  it('uses only registered HOST_ADAPTERS keys in real body markers', async () => {
+    const registeredHosts = new Set(Object.keys(HOST_ADAPTERS));
+    for (const skill of SKILL_MANIFEST) {
+      const raw = await readFile(join(REPO_ROOT, 'skills', skill.bodyFile), 'utf-8');
+      for (const marker of raw.matchAll(/<!--\s*host:\s*([^>]+?)\s*-->/g)) {
+        for (const token of marker[1].split(',').map((value) => value.trim())) {
+          expect(registeredHosts.has(token), `unknown host token '${token}' in ${skill.bodyFile}`)
+            .toBe(true);
+        }
+      }
+    }
+  });
+
+  it('keeps the complete panel-readiness and agy-reviewer placement contract shared', async () => {
+    const captain = await renderForHost(SKILL_MANIFEST[0], 'agy');
+    expect(captain).toContain('`run_panel` returns `panel_id` and reviewer `run_id`s.');
+    expect(captain).toContain('`get_panel_status({ panel_id })`');
+    expect(captain).toContain('`running_count > 0`');
+    expect(captain).toContain('`running_count` is 0, call `aggregate_panel`');
+    expect(captain).toContain('handling `run_panel.aggregate_not_ready`');
+
+    for (const hostId of HOST_IDS) {
+      const iterate = await renderForHost(SKILL_MANIFEST[1], hostId);
+      expect(iterate).toContain('so it reviews the wrong diff');
+      expect(iterate).toContain('ephemeral-worktree adapters are routed to their');
+    }
   });
 });
 
