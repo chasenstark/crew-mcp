@@ -124,7 +124,7 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('## Dispatch or inline');
     expect(out).toContain('## Merge boundary');
     expect(out).toContain('## Dispatch lifecycle');
-    expect(out).toContain('Step 2 - background watcher overlay (Claude Code, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
     expect(out).toContain('Checking pending runs at turn start');
     expect(out).not.toContain('## Polling lifecycle — every dispatch');
     expect(out).not.toContain('Hard rule: stay in the same turn');
@@ -164,9 +164,11 @@ describe('renderSkill (claude-code template)', () => {
       packageRoot: REPO_ROOT,
     });
 
-    // Default substitution: bare command (skill body uses the
-    // placeholder, never the literal `crew-wait` name).
-    expect(out).toContain('crew-wait <run_id>');
+    // The install command remains documented as a template value, while
+    // dispatch-time watcher launches use the server-returned command so its
+    // Crew-home pin and run ids cannot drift.
+    expect(out.replace(/\s+/g, ' ')).toContain('rendered `crew-wait` template');
+    expect(out).toContain('Bash(<required_next_action.command>, run_in_background: true)');
     expect(out).not.toMatch(/\{\{CREW_WAIT_COMMAND\}\}/);
   });
 
@@ -184,12 +186,11 @@ describe('renderSkill (claude-code template)', () => {
       packageRoot: REPO_ROOT,
     });
 
-    expect(out).toContain(`${ABSOLUTE_PATH} <run_id>`);
+    expect(out.replace(/\s+/g, ' ')).toContain(`rendered \`${ABSOLUTE_PATH}\` template`);
     expect(out).not.toMatch(/\{\{CREW_WAIT_COMMAND\}\}/);
     // Bare "crew-wait" can still appear in prose, but the actual
     // command-shape examples must use the absolute path.
-    const watcherInvocation = out.match(/Bash\(["']?[^)]*crew-wait[^)]*["']?\s*,?\s*run_in_background/);
-    expect(watcherInvocation?.[0]).toContain(ABSOLUTE_PATH);
+    expect(out).toContain('Bash(<required_next_action.command>, run_in_background: true)');
   });
 
   it('renders the Phase 2 dispatch-and-yield body (Remove / Replace / Add bullets)', async () => {
@@ -212,13 +213,27 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).not.toMatch(/Always pass\s+`wait_for_change_ms:\s*30000`/);
 
     // ADDED — Phase 2 + post-review revisions:
-    expect(out).toContain('Step 2 - background watcher overlay (Claude Code, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
-    expect(out).toContain('Synthetic-turn handling');
+    expect(out).toContain('Completion-event handling');
+    expect(out).toContain('await yield_control()');
+    expect(out).toContain('notify(JSON.stringify({');
+    expect(out).toContain('tools.write_stdin({');
+    expect(out).toContain('required_next_action.command_json');
+    expect(out).toContain('required_next_action.run_ids_json');
+    expect(out).toContain('required_next_action.working_directory_json');
+    expect(out).toContain('workdir,');
+    expect(out).toContain('output.slice(-overlap)');
+    expect(out).toContain('chunk.slice(0, overlap)');
+    expect(out).toContain("type: 'crew_wait_failed'");
+    expect(out).toContain("result.session_id !== undefined && result.exit_code === undefined");
+    expect(out).toContain("output.includes('CREW_WAIT_TERMINAL ')");
+    expect(out).toContain('do **not** call `wait`');
     expect(out).toContain('list_runs');
-    // Foreground crew-wait hard gate: the Codex host stays blocked until
-    // empirical evidence lands. (Phase 2 review's major finding.)
-    expect(out).toMatch(/Codex(?:\s+host)?[\s\S]{0,40}blocked/);
+    // Foreground waiting remains forbidden on Codex; only the deferred
+    // yield-before-wait recipe is allowed.
+    expect(out).toContain('Do not use a foreground watcher on Codex');
+    expect(out).toContain('deferred Step 2 recipe');
     expect(out).not.toContain('docs/status/captain-flow-review-2026-04-29.md');
     expect(out).toContain('panel-level');
     expect(out).toContain('commits');

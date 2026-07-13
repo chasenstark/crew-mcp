@@ -25,10 +25,12 @@ export const MAX_LONG_POLL_MS = 60_000;
  * Classification of the MCP host CLI that initialized this server, derived
  * from the `clientInfo.name` carried in the MCP `initialize` request. Used
  * to tailor the dispatch envelope's "next step" copy: Claude Code captains
- * need to spawn a watcher overlay before ending the turn, while Codex
- * captains just end the turn after the dispatch tool returns.
+ * spawn a background-shell watcher, while Codex captains start a deferred
+ * code-mode watcher that yields control before waiting.
  */
-export type ClientKind = 'claude-code' | 'codex' | 'unknown';
+export type ClientKind = 'claude-code' | 'codex' | 'codex-legacy' | 'unknown';
+
+export const MIN_CODEX_DEFERRED_WATCHER_VERSION = '0.144.1';
 
 /**
  * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
@@ -38,24 +40,53 @@ export type ClientKind = 'claude-code' | 'codex' | 'unknown';
  * `"Claude Code"`, `"claude_code"`, and `"claude-code-cli"` all fold
  * to the same kind.
  */
-export function classifyClient(name: string | undefined): ClientKind {
+export function classifyClient(
+  name: string | undefined,
+  version?: string,
+): ClientKind {
   if (!name) return 'unknown';
   const n = name.toLowerCase().replace(/[\s_]+/g, '-');
   if (n.includes('claude-code') || n === 'claude') return 'claude-code';
-  if (n.includes('codex')) return 'codex';
+  if (n.includes('codex')) {
+    return supportsCodexDeferredWatcher(version) ? 'codex' : 'codex-legacy';
+  }
   return 'unknown';
+}
+
+export function supportsCodexDeferredWatcher(version: string | undefined): boolean {
+  const actual = parseNumericVersion(version);
+  const minimum = parseNumericVersion(MIN_CODEX_DEFERRED_WATCHER_VERSION)!;
+  if (actual === undefined) return false;
+  for (let index = 0; index < minimum.length; index += 1) {
+    const delta = (actual[index] ?? 0) - minimum[index];
+    if (delta !== 0) return delta > 0;
+  }
+  return true;
+}
+
+function parseNumericVersion(version: string | undefined): number[] | undefined {
+  if (!version) return undefined;
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return undefined;
+  return match.slice(1).map((part) => Number.parseInt(part, 10));
 }
 
 /**
  * Host-specific "next step" sentence appended to the dispatch envelope
  * summary and the markdown `- Next:` bullet.
  */
-export function nextStepSentence(kind: ClientKind): string {
+export function nextStepSentence(kind: ClientKind, watcherAvailable = true): string {
   switch (kind) {
     case 'claude-code':
-      return 'One required action: spawn the crew-wait watcher before ending your turn; user is free to chat.';
+      return watcherAvailable
+        ? 'One required action: spawn the crew-wait watcher before ending your turn; user is free to chat.'
+        : 'The crew-wait watcher is unavailable; end your turn and recover terminal state on the next user turn.';
     case 'codex':
-      return 'End your turn after this dispatch returns; user is free to chat.';
+      return watcherAvailable
+        ? 'One required action: start the deferred crew-wait watcher and yield control before ending your turn; user is free to chat.'
+        : 'The installed Codex watcher command is unavailable or untrusted; end your turn and recover terminal state on the next user turn.';
+    case 'codex-legacy':
+      return `This Codex version lacks the deferred watcher (requires ${MIN_CODEX_DEFERRED_WATCHER_VERSION}+); end your turn and recover terminal state on the next user turn.`;
     case 'unknown':
       return 'End your turn after dispatch; user is free to chat.';
   }
@@ -66,6 +97,7 @@ export function agentIdForClientKind(kind: ClientKind): string | undefined {
     case 'claude-code':
       return 'claude-code';
     case 'codex':
+    case 'codex-legacy':
       return 'codex';
     case 'unknown':
       return undefined;
@@ -100,8 +132,16 @@ export interface FullRunEnvelope extends RunEnvelope {
 
 export interface RequiredNextAction {
   readonly type: 'spawn_watcher';
-  readonly mechanism: 'background_shell';
+  readonly mechanism: 'background_shell' | 'deferred_code';
   readonly command: string;
+  /** JSON string literal safe to paste directly into deferred JavaScript. */
+  readonly command_json: string;
+  /** JSON array literal safe to paste directly into deferred JavaScript. */
+  readonly run_ids_json: string;
+  /** Working directory used by the watcher command. */
+  readonly working_directory: string;
+  /** JSON string literal safe to paste directly into deferred JavaScript. */
+  readonly working_directory_json: string;
   readonly run_id?: string;
   readonly run_ids?: readonly string[];
   readonly run_in_background: true;
@@ -157,7 +197,7 @@ export interface ToolHandlerDeps {
   readonly crewHome: string;
   readonly projectRoot: string;
   readonly getClientKind: () => ClientKind;
-  readonly getCrewWaitCommand: () => string;
+  readonly getCrewWaitCommand: () => string | undefined;
   readonly progressTokenSeen: ProgressTokenSeen;
   readonly captainServeInstance?: string;
   readonly readAgentPrefs: () => AgentPrefsMap;
@@ -180,7 +220,9 @@ interface DispatchAndRespondArgs {
   onDispatchStarted?: () => void;
   onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
   clientKind: ClientKind;
-  crewWaitCommand: string;
+  crewWaitCommand?: string;
+  crewHome: string;
+  projectRoot: string;
 }
 
 export async function runDispatchAndRespond(
@@ -205,13 +247,18 @@ export async function runDispatchAndRespond(
     throw err;
   }
 
-  const summary = `Dispatched as "${args.runId}". ${nextStepSentence(args.clientKind)}`;
+  const summary = `Dispatched as "${args.runId}". ${nextStepSentence(
+    args.clientKind,
+    args.crewWaitCommand !== undefined,
+  )}`;
   const eventsLogPath = args.runStateStore.eventsLogPath(args.runId);
   const tailCommandPath = args.runStateStore.tailCommandPath(args.runId);
   const requiredNextAction = requiredNextActionForRun(
     args.clientKind,
     args.crewWaitCommand,
     args.runId,
+    args.crewHome,
+    args.projectRoot,
   );
   const env: FullRunEnvelope = {
     run_id: args.runId,
@@ -265,12 +312,18 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
     );
   }
   lines.push(`- Tail manually: \`tail -F ${env.events_log_path}\``);
-  if (clientKind === 'claude-code' && env.required_next_action !== undefined) {
-    lines.push(
-      `**REQUIRED before you end this turn:** spawn the watcher -> \`Bash(${env.required_next_action.command}, run_in_background: true)\`. Skip it and the run is orphaned.`,
-    );
+  if (env.required_next_action !== undefined) {
+    if (clientKind === 'claude-code') {
+      lines.push(
+        `**REQUIRED before you end this turn:** spawn the watcher -> \`Bash(${env.required_next_action.command}, run_in_background: true)\`. Skip it and the run is orphaned.`,
+      );
+    } else if (clientKind === 'codex') {
+      lines.push(
+        `**REQUIRED before you end this turn:** start the Crew skill's deferred \`functions.exec\` watcher using \`required_next_action.command_json\` and yield control immediately. Command: ${mdInlineCode(env.required_next_action.command)}. Skip it and the run is orphaned.`,
+      );
+    }
   } else {
-    lines.push(`- Next: ${nextStepSentence(clientKind)}`);
+    lines.push(`- Next: ${nextStepSentence(clientKind, false)}`);
   }
   lines.push(`- Later status read: \`get_run_status({ run_id: "${env.run_id}" })\``);
   if (env.warnings && env.warnings.length > 0) {
@@ -286,41 +339,80 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
 
 export function requiredNextActionForRun(
   clientKind: ClientKind,
-  crewWaitCommand: string,
+  crewWaitCommand: string | undefined,
   runId: string,
+  crewHome: string,
+  projectRoot: string,
 ): RequiredNextAction | undefined {
-  if (clientKind !== 'claude-code') return undefined;
+  if (
+    (clientKind !== 'claude-code' && clientKind !== 'codex')
+    || crewWaitCommand === undefined
+  ) return undefined;
+  const command = watcherCommand(clientKind, crewWaitCommand, [runId], crewHome);
   return {
     type: 'spawn_watcher',
-    mechanism: 'background_shell',
-    command: `${crewWaitCommand} ${runId}`,
+    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'deferred_code',
+    command,
+    command_json: JSON.stringify(command),
+    run_ids_json: JSON.stringify([runId]),
+    working_directory: projectRoot,
+    working_directory_json: JSON.stringify(projectRoot),
     run_id: runId,
     run_in_background: true,
     per_run: true,
-    consequence_if_skipped:
-      'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
+    consequence_if_skipped: clientKind === 'claude-code'
+      ? 'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.'
+      : 'Skip it and the run is orphaned; no deferred completion event will surface the terminal state.',
   };
 }
 
 export function requiredNextActionForRuns(
   clientKind: ClientKind,
-  crewWaitCommand: string,
+  crewWaitCommand: string | undefined,
   runIds: readonly string[],
+  crewHome: string,
+  projectRoot: string,
 ): RequiredNextAction | undefined {
-  if (clientKind !== 'claude-code' || runIds.length === 0) return undefined;
+  if (
+    (clientKind !== 'claude-code' && clientKind !== 'codex')
+    || crewWaitCommand === undefined
+    || runIds.length === 0
+  ) return undefined;
   if (runIds.length === 1) {
-    return requiredNextActionForRun(clientKind, crewWaitCommand, runIds[0]);
+    return requiredNextActionForRun(
+      clientKind,
+      crewWaitCommand,
+      runIds[0],
+      crewHome,
+      projectRoot,
+    );
   }
+  const command = watcherCommand(clientKind, crewWaitCommand, runIds, crewHome);
   return {
     type: 'spawn_watcher',
-    mechanism: 'background_shell',
-    command: `${crewWaitCommand} ${runIds.join(' ')}`,
+    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'deferred_code',
+    command,
+    command_json: JSON.stringify(command),
+    run_ids_json: JSON.stringify(runIds),
+    working_directory: projectRoot,
+    working_directory_json: JSON.stringify(projectRoot),
     run_ids: [...runIds],
     run_in_background: true,
     per_run: false,
-    consequence_if_skipped:
-      'Skip it and the panel is orphaned; no watcher-triggered terminal turn will surface panel completion.',
+    consequence_if_skipped: clientKind === 'claude-code'
+      ? 'Skip it and the panel is orphaned; no watcher-triggered terminal turn will surface panel completion.'
+      : 'Skip it and the panel is orphaned; no deferred completion event will surface panel completion.',
   };
+}
+
+function watcherCommand(
+  clientKind: Extract<ClientKind, 'claude-code' | 'codex'>,
+  crewWaitCommand: string,
+  runIds: readonly string[],
+  crewHome: string,
+): string {
+  const crewHomeArg = ` --crew-home-base64 ${Buffer.from(crewHome, 'utf-8').toString('base64url')}`;
+  return `${crewWaitCommand}${crewHomeArg} ${runIds.join(' ')}`;
 }
 
 export function mergeEnvelopeWarnings(

@@ -1,11 +1,16 @@
-import { constants } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { constants, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import {
   isCrewWaitOnPath,
+  isTrustedProjectCrewWaitCommand,
   projectCrewBinaryResolver,
   projectCrewWaitCommand,
+  quoteExecutablePath,
   resolveCrewWaitBinary,
 } from '../../src/install/crew-binary.js';
 
@@ -60,6 +65,50 @@ describe('projectCrewWaitCommand', () => {
       'npx --no-install crew-wait',
     );
   });
+
+  it('trusts only exact project-installer command forms', () => {
+    expect(isTrustedProjectCrewWaitCommand('./node_modules/.bin/crew-wait')).toBe(true);
+    expect(isTrustedProjectCrewWaitCommand('.\\node_modules\\.bin\\crew-wait.cmd')).toBe(true);
+    expect(isTrustedProjectCrewWaitCommand('npx --no-install crew-wait')).toBe(true);
+    expect(isTrustedProjectCrewWaitCommand('crew-wait')).toBe(false);
+    expect(isTrustedProjectCrewWaitCommand('npx --no-install crew-wait; echo owned')).toBe(false);
+  });
+});
+
+describe('quoteExecutablePath', () => {
+  it('quotes POSIX spaces and apostrophes', () => {
+    expect(quoteExecutablePath("/Applications/Crew's Tools/crew-wait", 'darwin')).toBe(
+      "'/Applications/Crew'\"'\"'s Tools/crew-wait'",
+    );
+  });
+
+  it('quotes Windows paths without changing backslashes', () => {
+    expect(quoteExecutablePath('C:\\Program Files\\Crew\\crew-wait.cmd', 'win32')).toBe(
+      '& "C:\\Program Files\\Crew\\crew-wait.cmd"',
+    );
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'invokes a quoted .cmd path with spaces through PowerShell',
+    () => {
+      const root = mkdtempSync(join(tmpdir(), 'crew wait '));
+      try {
+        const commandPath = join(root, 'crew-wait.cmd');
+        writeFileSync(
+          commandPath,
+          '@echo off\r\nif "%~1"=="probe" exit /b 0\r\nexit /b 9\r\n',
+          'utf-8',
+        );
+        execFileSync('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `${quoteExecutablePath(commandPath, 'win32')} probe`,
+        ]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('resolveCrewWaitBinary', () => {

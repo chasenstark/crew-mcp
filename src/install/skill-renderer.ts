@@ -154,9 +154,9 @@ export interface RenderSkillArgs {
    * the body. Must match the host's allowlist entry exactly — bare
    * `crew-wait` when the install detected it on PATH, or an absolute
    * path like `/usr/local/bin/crew-wait` when install used the
-   * absolute-path fallback. Hosts that don't run the watcher (Codex,
-   * agy) still receive the literal so the prose reads sensibly,
-   * but they default to the portable baseline anyway.
+   * absolute-path fallback. Codex uses the same command in its deferred
+   * code-mode watcher; hosts without watchers still receive the literal so
+   * the prose reads sensibly.
    */
   readonly crewWaitCommand?: string;
   /**

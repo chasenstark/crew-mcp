@@ -46,6 +46,8 @@ import {
   agentIdForClientKind,
   errorContent,
   markdownContent,
+  mdInlineCode,
+  nextStepSentence,
   progressNotifierFrom,
   requiredNextActionForRun,
   requiredNextActionForRuns,
@@ -103,7 +105,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel review agents as one panel. Optionally bind to a terminal implementer run to prepend summary/files as peer_messages; omitted/empty reviewers use workflow.agentDefaults.panel, explicit reviewers win. Ephemeral-worktree reviewers (agy) auto-route to run_mode:"ephemeral_review" on a disposable snapshot; omit read_only/working_directory. Returns panel_id, reviewer run_ids, failed_reviewers, and for Claude Code a panel-level crew-wait watcher command covering all reviewer runs; per-reviewer wait commands remain available for selective recovery. Do not block the turn long-polling get_run_status.';
+  'Dispatch parallel reviewers as one panel. Optionally bind a terminal implementer to prepend summary/files; omitted reviewers use workflow.agentDefaults.panel. agy auto-routes to ephemeral_review. Returns panel_id, reviewer run_ids, failures, and on Claude Code/Codex a panel-level crew-wait watcher command in required_next_action; per-reviewer wait commands remain available for selective recovery. Do not block the turn long-polling get_run_status.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -163,7 +165,7 @@ export async function runPanelHandler(
     ? buildImplementerPeerMessage(implementerState)
     : undefined;
   const clientKind = ctx.clientKind ?? 'unknown';
-  const crewWaitCommand = ctx.crewWaitCommand ?? 'crew-wait';
+  const crewWaitCommand = ctx.crewWaitCommand;
 
   let panelState = buildStubPanelState(panelId, ctx.runStateStore.repoRoot, implementerState);
   await writeAndNotify(targetPanelDir, panelState, ctx);
@@ -318,6 +320,8 @@ export async function runPanelHandler(
         clientKind,
         crewWaitCommand,
         result.runId,
+        ctx.crewHome,
+        ctx.projectRoot,
       );
       envelope = {
         run_id: result.runId,
@@ -348,6 +352,8 @@ export async function runPanelHandler(
     clientKind,
     crewWaitCommand,
     successfulReviewers.map((envelope) => envelope.run_id),
+    ctx.crewHome,
+    ctx.projectRoot,
   );
 
   return {
@@ -381,22 +387,29 @@ function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): st
         `  - ${reviewer.agent_id}: ${reviewer.error}`),
     );
   }
-  if (clientKind === 'claude-code' && out.required_next_action !== undefined) {
-    lines.push(
-      '',
-      '**REQUIRED before you end this turn:** spawn one panel watcher.',
-      `- \`Bash(${out.required_next_action.command}, run_in_background: true)\``,
-      'Skip it and the panel is orphaned.',
-    );
+  if (out.required_next_action !== undefined) {
+    lines.push('', '**REQUIRED before you end this turn:** spawn one panel watcher.');
+    if (clientKind === 'claude-code') {
+      lines.push(`- \`Bash(${out.required_next_action.command}, run_in_background: true)\``);
+    } else if (clientKind === 'codex') {
+      lines.push(
+        `- Start the Crew skill's deferred \`functions.exec\` watcher using \`required_next_action.command_json\` and yield control immediately. Command: ${mdInlineCode(out.required_next_action.command)}.`,
+      );
+    }
+    lines.push('Skip it and the panel is orphaned.');
     const selectiveActions = out.reviewers
       .map((reviewer) => reviewer.required_next_action)
-      .filter((action): action is RequiredNextAction => action !== undefined);
+      .filter((action): action is RequiredNextAction =>
+        action !== undefined
+        && action.command !== out.required_next_action?.command);
     if (selectiveActions.length > 0) {
       lines.push(
         '- Selective waits if the panel watcher degrades: '
-        + selectiveActions.map((action) => `\`${action.command}\``).join(', '),
+        + selectiveActions.map((action) => mdInlineCode(action.command)).join(', '),
       );
     }
+  } else {
+    lines.push(`- Next: ${nextStepSentence(clientKind, false)}`);
   }
   return lines.join('\n');
 }

@@ -81,8 +81,14 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
       'native subagent',
       'do not auto-merge',
       'Silence is not consent',
-      'synthetic-turn',
+      'completion-event',
       'CREW_WAIT_TERMINAL',
+      'yield_control',
+      'notify(',
+      'required_next_action.command_json',
+      'required_next_action.working_directory_json',
+      'crew_wait_failed',
+      'result.exit_code === undefined',
       'Captain mechanical pass',
       'score-vs-finding',
       'foreground-wait',
@@ -90,6 +96,7 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
       '[M]',
       '[B]',
       '[N]',
+      'output.slice(-overlap)',
     ];
     for (const phrase of phrases) {
       expectContainsCI(body, phrase);
@@ -424,10 +431,10 @@ describe('crew-iterate body — standalone safety invariants', () => {
     const inv2 = flattenWhitespace(body.slice(start, end));
 
     expectContainsCI(inv2, 'complete this checklist');
-    expectContainsCI(inv2, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
+    expectContainsCI(inv2, 'Bash(<required_next_action.command>, run_in_background: true)');
     expectContainsCI(inv2, 'Repeat once per independent run');
     expectContainsCI(inv2, 'ONE watcher for the whole panel');
-    expectContainsCI(inv2, 'Bash({{CREW_WAIT_COMMAND}} <id1> <id2> ..., run_in_background: true)');
+    expectContainsCI(inv2, 'Bash(<panel required_next_action.command>, run_in_background: true)');
     expectContainsCI(inv2, 'required_next_action');
     expectContainsCI(inv2, 'get_panel_status');
     expectContainsCI(inv2, 'running_count');

@@ -21,7 +21,10 @@ import { homedir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 
 import { HOST_ADAPTERS, isGlobalHostId, type HostId } from '../../install/hosts/index.js';
-import { readInstallManifest } from '../../install/install-manifest.js';
+import {
+  readInstallManifest,
+  type InstalledTarget,
+} from '../../install/install-manifest.js';
 import {
   absolutizeProjectTarget,
   readProjectInstallManifest,
@@ -32,7 +35,13 @@ import {
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
-import { captainSkillTools } from '../../install/skill-renderer.js';
+import {
+  captainSkillTools,
+  renderSkill,
+  resolvePackageRoot,
+  SKILL_MANIFEST,
+  templatePathForHost,
+} from '../../install/skill-renderer.js';
 import { resolvePeerMessageCaps } from '../../orchestrator/peer-messages/caps.js';
 import { runPeerMessagesPipeline } from '../../orchestrator/peer-messages/pipeline.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
@@ -40,6 +49,7 @@ import type { PeerMessageInput } from '../../orchestrator/peer-messages/schema.j
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 import { resolveTargets } from './install.js';
+import { CREW_MCP_VERSION } from '../version.js';
 
 const CAPTAIN_CATALOG_TOOLS = captainSkillTools(CATALOG_TOOLS);
 
@@ -56,6 +66,8 @@ export interface VerifyOptions {
   crewHome?: string;
   /** Override env for runtime cap verification (tests). Defaults to process.env. */
   env?: NodeJS.ProcessEnv;
+  /** Override package root containing canonical skill bodies (tests). */
+  packageRoot?: string;
 }
 
 export interface VerifyTargetReport {
@@ -138,6 +150,11 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
       logger.warn(`  - ${report.issues[0]}`);
       continue;
     }
+    if (entry.version !== CREW_MCP_VERSION) {
+      issues.push(
+        `installed version ${entry.version || '(missing)'} does not match crew-mcp ${CREW_MCP_VERSION}`,
+      );
+    }
 
     // 1. Skill file(s) present + tool-reference parity. Union references
     // across ALL recorded skill files before comparing to the live
@@ -178,6 +195,13 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
         issues.push(`skill references unknown tools: ${extras.join(', ')}`);
       }
     }
+    issues.push(...await verifyCanonicalSkillContent({
+      targetId,
+      entry,
+      installRoot: home,
+      packageRoot: resolvePackageRoot(opts.packageRoot),
+      scope: 'global',
+    }));
 
     // 2. Host config still has crew MCP block.
     let config = '';
@@ -270,6 +294,11 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     }
 
     const entry = absolutizeProjectTarget(repoRoot, manifestEntry);
+    if (entry.version !== CREW_MCP_VERSION) {
+      issues.push(
+        `installed version ${entry.version || '(missing)'} does not match crew-mcp ${CREW_MCP_VERSION}`,
+      );
+    }
     const recordedPaths = new Set(entry.writtenPaths);
     for (const path of recordedPaths) {
       if (!existsSync(path)) {
@@ -308,6 +337,13 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
         issues.push(`skill references unknown tools: ${extras.join(', ')}`);
       }
     }
+    issues.push(...await verifyCanonicalSkillContent({
+      targetId,
+      entry,
+      installRoot: repoRoot,
+      packageRoot: resolvePackageRoot(opts.packageRoot),
+      scope: 'project',
+    }));
 
     let config = '';
     if (!existsSync(entry.configPath)) {
@@ -399,6 +435,55 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     logger.warn('crew verify: project drift detected. Run `crew-mcp install --scope project --target <host>` to re-sync.');
   }
   return { ok, probes, targets: reports };
+}
+
+async function verifyCanonicalSkillContent(args: {
+  readonly targetId: HostId;
+  readonly entry: InstalledTarget;
+  readonly installRoot: string;
+  readonly packageRoot: string;
+  readonly scope: InstallScope;
+}): Promise<string[]> {
+  const adapter = HOST_ADAPTERS[args.targetId];
+  const issues: string[] = [];
+  for (const skill of SKILL_MANIFEST) {
+    const spec = args.scope === 'project'
+      ? adapter.projectSkillInstallSpecFor?.(args.installRoot, skill)
+      : adapter.skillInstallSpecFor(args.installRoot, skill);
+    if (!spec || spec.skip) continue;
+    const installedPath = args.entry.skills?.[skill.id];
+    if (!installedPath) {
+      issues.push(
+        `install manifest missing expected skill ${skill.id}: ${spec.skillPath}`,
+      );
+      continue;
+    }
+    if (installedPath !== spec.skillPath) {
+      issues.push(
+        `install manifest skill path mismatch for ${skill.id}: expected ${spec.skillPath}, got ${installedPath}`,
+      );
+      continue;
+    }
+    if (!existsSync(installedPath)) {
+      // The general recorded-file pass reports the same missing path with
+      // host-neutral wording. Keep canonical verification focused on the
+      // manifest contract and avoid duplicating that issue.
+      continue;
+    }
+    const expected = await renderSkill({
+      templatePath: templatePathForHost(args.packageRoot, args.targetId),
+      skill,
+      spec,
+      tools: CAPTAIN_CATALOG_TOOLS,
+      crewWaitCommand: args.entry.crewWaitCommand,
+      packageRoot: args.packageRoot,
+    });
+    const actual = await readFile(installedPath, 'utf-8');
+    if (actual !== expected) {
+      issues.push(`skill content stale: ${installedPath}`);
+    }
+  }
+  return issues;
 }
 
 /**

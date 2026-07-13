@@ -88,6 +88,21 @@ export function projectCrewWaitCommand(options: {
     : './node_modules/.bin/crew-wait';
 }
 
+const TRUSTED_PROJECT_CREW_WAIT_COMMANDS = new Set([
+  projectCrewWaitCommand({ platform: 'darwin' }),
+  projectCrewWaitCommand({ platform: 'win32' }),
+  projectCrewWaitCommand({ strategy: 'npx' }),
+]);
+
+/**
+ * Project install manifests live in the repository and may therefore be
+ * supplied by an untrusted checkout. Only commands emitted by Crew's own
+ * project installer are safe to place in an auto-executed watcher envelope.
+ */
+export function isTrustedProjectCrewWaitCommand(command: string): boolean {
+  return TRUSTED_PROJECT_CREW_WAIT_COMMANDS.has(command);
+}
+
 export function parseProjectCrewBinaryStrategy(raw: unknown): ProjectCrewBinaryStrategy {
   if (raw === undefined || raw === null || raw === '') return 'node-modules-bin';
   if (raw === 'node-modules-bin' || raw === 'npx') return raw;
@@ -145,6 +160,23 @@ export function isCrewWaitOnPath(options: ResolveCrewWaitBinaryOptions = {}): bo
   return Boolean(
     firstExecutable(pathCandidates('crew-wait', { platform, pathEnv }), { platform, access }),
   );
+}
+
+/** Quote a resolved executable path for the host's default command shell. */
+export function quoteExecutablePath(
+  executablePath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === 'win32') {
+    // Codex uses PowerShell on Windows. A quoted path alone is a string
+    // expression there; `&` invokes it. Escape PowerShell interpolation
+    // characters that are legal in Windows paths.
+    const escaped = executablePath
+      .replace(/`/g, '``')
+      .replace(/\$/g, '`$');
+    return `& "${escaped}"`;
+  }
+  return `'${executablePath.replace(/'/g, `'"'"'`)}'`;
 }
 
 function firstExecutable(

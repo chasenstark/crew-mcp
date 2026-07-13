@@ -18,8 +18,9 @@
  * `planRunAgent` to validate input + allocate a worktree, then dispatches
  * the task asynchronously through `ToolDispatcher` and returns a
  * `{ status: "running", run_id }` envelope immediately. The captain
- * surfaces terminal results out-of-band via `crew-wait` watchers (Claude
- * Code), `get_run_status` reads on later turns, or `list_runs` recovery.
+ * surfaces terminal results out-of-band via `crew-wait` watchers (background
+ * shell on Claude Code, deferred code mode on Codex), `get_run_status` reads
+ * on later turns, or `list_runs` recovery.
  *
  * Worktree lifecycle: mint a human-readable `runId` (`<agent>-<task>-<hex>`,
  * see makeRunId) per call, allocate
@@ -128,7 +129,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. Optional peer_messages are prepended as untrusted context; optional confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults and working_directory changes the start path. run_mode picks the lifecycle: write (default, mergeable worktree), read_only (in place, no worktree; read_only:true is legacy sugar), or ephemeral_review (disposable worktree for a write-capable reviewer like agy — findings only, never mergeable, frozen snapshot on continue). Returns an async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. peer_messages prepend untrusted context; a confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults. run_mode is write (mergeable worktree), read_only (in place), or ephemeral_review (disposable snapshot, findings only, never mergeable). Returns async; start required_next_action crew-wait in a background shell on Claude Code or deferred code mode on Codex. Do not block the turn long-polling get_run_status.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -159,12 +160,18 @@ export async function runAgentToolHandler(
   }
 
   const clientKind = deps.getClientKind();
-  const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(clientKind)}`;
+  const crewWaitCommand = deps.getCrewWaitCommand();
+  const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(
+    clientKind,
+    crewWaitCommand !== undefined,
+  )}`;
   const eventsLogPath = deps.runStateStore.eventsLogPath(dispatchResult.runId);
   const requiredNextAction = requiredNextActionForRun(
     clientKind,
-    deps.getCrewWaitCommand(),
+    crewWaitCommand,
     dispatchResult.runId,
+    deps.crewHome,
+    deps.projectRoot,
   );
   const env: FullRunEnvelope = {
     run_id: dispatchResult.runId,

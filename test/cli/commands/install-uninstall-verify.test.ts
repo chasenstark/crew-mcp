@@ -27,6 +27,7 @@ import { dirname, join } from 'path';
 import { installCommand } from '../../../src/cli/commands/install.js';
 import { uninstallCommand } from '../../../src/cli/commands/uninstall.js';
 import { verifyCommand } from '../../../src/cli/commands/verify.js';
+import { CREW_MCP_VERSION } from '../../../src/cli/version.js';
 import { HOST_ADAPTERS } from '../../../src/install/hosts/index.js';
 import { manifestPath } from '../../../src/install/install-manifest.js';
 import { projectManifestPath } from '../../../src/install/project-install-manifest.js';
@@ -114,7 +115,7 @@ describe('install / verify / uninstall — happy path', () => {
     expect(manifest.targets.codex.skills.crew).toBe(adapter.skillPath(home));
     expect(manifest.targets.codex.skills['crew:iterate']).toMatch(/crew-iterate\/SKILL\.md$/);
     expect(manifest.targets.codex.writtenPaths).toContain(adapter.skillPath(home));
-    expect(manifest.targets.codex.version).toBe('0.5.0');
+    expect(manifest.targets.codex.version).toBe(CREW_MCP_VERSION);
     expect(manifest.targets.codex.crewWaitCommand).toBe('crew-wait');
   });
 
@@ -278,6 +279,56 @@ describe('install / verify / uninstall — happy path', () => {
     expect(report.ok).toBe(false);
     expect(report.targets[0].issues).toContain(
       'Codex config missing approval_mode = "approve" for send_message',
+    );
+  });
+
+  it('verify rejects stale install versions and stale canonical skill content', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
+    });
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { version: string }>;
+    };
+    manifest.targets.codex.version = '0.5.1';
+    writeFileSync(manifestPath(home), `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+    const skillPath = HOST_ADAPTERS.codex.skillPath(home);
+    writeFileSync(skillPath, `${readFileSync(skillPath, 'utf-8')}\n<!-- stale -->\n`, 'utf-8');
+
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(false);
+    expect(report.targets[0].issues).toContain(
+      `installed version 0.5.1 does not match crew-mcp ${CREW_MCP_VERSION}`,
+    );
+    expect(report.targets[0].issues).toContain(`skill content stale: ${skillPath}`);
+  });
+
+  it('verify rejects an install manifest that omits a canonical skill', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
+    });
+    const path = manifestPath(home);
+    const manifest = JSON.parse(readFileSync(path, 'utf-8')) as {
+      targets: Record<string, { skills: Record<string, string> }>;
+    };
+    const omittedPath = manifest.targets.codex.skills['crew:iterate'];
+    delete manifest.targets.codex.skills['crew:iterate'];
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`, 'utf-8');
+
+    const report = await verifyCommand({ home });
+
+    expect(report.ok).toBe(false);
+    expect(report.targets[0].issues).toContain(
+      `install manifest missing expected skill crew:iterate: ${omittedPath}`,
     );
   });
 
@@ -687,6 +738,43 @@ describe('install / verify / uninstall — happy path', () => {
       targets: Record<string, { crewWaitCommand: string }>;
     };
     expect(manifest.targets['claude-code'].crewWaitCommand).toBe(STUB_CREW_WAIT);
+  });
+
+  it('install gives Codex a quoted absolute crew-wait fallback', async () => {
+    const fallback = '/Applications/Crew Tools/bin/crew-wait';
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => false,
+      resolveCrewWaitBinary: () => fallback,
+    });
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { crewWaitCommand: string }>;
+    };
+    expect(manifest.targets.codex.crewWaitCommand).toBe(`'${fallback}'`);
+    const report = await verifyCommand({ home });
+    expect(report.ok).toBe(true);
+  });
+
+  it('install gives Windows Codex a PowerShell-invocable absolute fallback', async () => {
+    const fallback = 'C:\\Program Files\\Crew\\crew-wait.cmd';
+    await installCommand({
+      target: 'codex',
+      home,
+      platform: 'win32',
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => false,
+      resolveCrewWaitBinary: () => fallback,
+    });
+    const manifest = JSON.parse(readFileSync(manifestPath(home), 'utf-8')) as {
+      targets: Record<string, { crewWaitCommand: string }>;
+    };
+    expect(manifest.targets.codex.crewWaitCommand).toBe(`& "${fallback}"`);
   });
 
   it('install is idempotent for the Claude Code crew-wait Bash allowlist', async () => {

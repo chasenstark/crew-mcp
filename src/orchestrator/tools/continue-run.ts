@@ -9,7 +9,7 @@
  *
  * Returns the same async-first envelope shape as run_agent
  * (run_id, worktree_path, status: "running"). Terminal results are
- * surfaced out-of-band via crew-wait watchers (Claude Code), or
+ * surfaced out-of-band via crew-wait watchers (Claude Code/Codex), or
  * later get_run_status / list_runs reads.
  */
 
@@ -73,7 +73,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the run-linked criteria contract; passing a different id is rejected. model/effort may override defaults and run_mode stays sticky (write re-syncs host changes in; ephemeral_review continues against its FROZEN review snapshot and stays non-mergeable). Returns the async dispatch envelope; spawn crew-wait on Claude Code. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the linked contract; a different id is rejected. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async; start required_next_action crew-wait in a background shell on Claude Code or deferred code mode on Codex. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -290,6 +290,8 @@ export async function continueRunToolHandler(
       }),
       clientKind: deps.getClientKind(),
       crewWaitCommand: deps.getCrewWaitCommand(),
+      crewHome: deps.crewHome,
+      projectRoot: deps.projectRoot,
       onStartFailure: rollbackContinuation,
     });
   } catch (err) {

@@ -104,7 +104,8 @@ describe('crew-captain body — dispatch lifecycle', () => {
     expectContainsCI(flat, 'crew-mcp install-tail-handler');
     expectContainsCI(flat, 'live runs:');
     expectContainsCI(flat, 'Complete this checklist before ending the turn');
-    expectContainsCI(flat, 'Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)');
+    expectContainsCI(flat, 'Bash(<required_next_action.command>, run_in_background: true)');
+    expectContainsCI(flat, 'required_next_action.working_directory_json');
     expectContainsCI(flat, 'N crew runs means N watchers');
     expectContainsCI(flat, 'Agent');
     expectContainsCI(flat, 'Task');
@@ -229,7 +230,7 @@ describe('crew-captain body — review panels', () => {
 
     expectContainsCI(flat, 'panel-level');
     expectContainsCI(flat, 'required_next_action');
-    expectContainsCI(flat, '{{CREW_WAIT_COMMAND}} <id1> <id2> ...');
+    expectContainsCI(flat, 'Bash(<panel required_next_action.command>, run_in_background: true)');
     expectContainsCI(flat, 'Spawn one watcher for the panel');
     expectContainsCI(flat, 'per-run commands for selective/degraded waits');
     expectContainsCI(flat, 'get_panel_status({ panel_id })');

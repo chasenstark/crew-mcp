@@ -166,11 +166,16 @@ describe('runPanelHandler', () => {
       },
     });
 
+    const commandPrefix = `/usr/local/bin/crew-wait --crew-home-base64 ${Buffer.from(h.ctx.crewHome).toString('base64url')}`;
     expect(out.reviewers).toHaveLength(2);
     expect(out.required_next_action).toEqual({
       type: 'spawn_watcher',
       mechanism: 'background_shell',
-      command: '/usr/local/bin/crew-wait codex-run-1 gemini-cli-run-2',
+      command: `${commandPrefix} codex-run-1 gemini-cli-run-2`,
+      command_json: JSON.stringify(`${commandPrefix} codex-run-1 gemini-cli-run-2`),
+      run_ids_json: JSON.stringify(['codex-run-1', 'gemini-cli-run-2']),
+      working_directory: h.ctx.projectRoot,
+      working_directory_json: JSON.stringify(h.ctx.projectRoot),
       run_ids: ['codex-run-1', 'gemini-cli-run-2'],
       run_in_background: true,
       per_run: false,
@@ -181,7 +186,11 @@ describe('runPanelHandler', () => {
       {
         type: 'spawn_watcher',
         mechanism: 'background_shell',
-        command: '/usr/local/bin/crew-wait codex-run-1',
+        command: `${commandPrefix} codex-run-1`,
+        command_json: JSON.stringify(`${commandPrefix} codex-run-1`),
+        run_ids_json: JSON.stringify(['codex-run-1']),
+        working_directory: h.ctx.projectRoot,
+        working_directory_json: JSON.stringify(h.ctx.projectRoot),
         run_id: 'codex-run-1',
         run_in_background: true,
         per_run: true,
@@ -191,7 +200,11 @@ describe('runPanelHandler', () => {
       {
         type: 'spawn_watcher',
         mechanism: 'background_shell',
-        command: '/usr/local/bin/crew-wait gemini-cli-run-2',
+        command: `${commandPrefix} gemini-cli-run-2`,
+        command_json: JSON.stringify(`${commandPrefix} gemini-cli-run-2`),
+        run_ids_json: JSON.stringify(['gemini-cli-run-2']),
+        working_directory: h.ctx.projectRoot,
+        working_directory_json: JSON.stringify(h.ctx.projectRoot),
         run_id: 'gemini-cli-run-2',
         run_in_background: true,
         per_run: true,
@@ -199,6 +212,49 @@ describe('runPanelHandler', () => {
           'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
       },
     ]);
+  });
+
+  it('adds deferred panel and selective watcher actions for Codex panels', async () => {
+    const h = makeHarness([
+      makeMockAdapter({ name: 'codex-reviewer' }),
+      makeMockAdapter({ name: 'agy-reviewer' }),
+    ]);
+    cleanupHarness(h);
+    let dispatched = 0;
+
+    const out = await runPanelHandler({
+      reviewers: [
+        { agent_id: 'codex-reviewer', prompt: 'review a' },
+        { agent_id: 'agy-reviewer', prompt: 'review b' },
+      ],
+    }, {
+      ...h.ctx,
+      clientKind: 'codex',
+      crewWaitCommand: '.\\node_modules\\.bin\\crew-wait.cmd',
+      dispatchRunAgentInternalImpl: async (args) => {
+        dispatched += 1;
+        return fakeDispatchResult(args.input.agent_id, dispatched);
+      },
+    });
+
+    const runIds = out.reviewers.map((reviewer) => reviewer.run_id);
+    const commandPrefix = `.\\node_modules\\.bin\\crew-wait.cmd --crew-home-base64 ${Buffer.from(h.ctx.crewHome).toString('base64url')}`;
+    expect(out.required_next_action).toEqual({
+      type: 'spawn_watcher',
+      mechanism: 'deferred_code',
+      command: `${commandPrefix} ${runIds.join(' ')}`,
+      command_json: JSON.stringify(`${commandPrefix} ${runIds.join(' ')}`),
+      run_ids_json: JSON.stringify(runIds),
+      working_directory: h.ctx.projectRoot,
+      working_directory_json: JSON.stringify(h.ctx.projectRoot),
+      run_ids: runIds,
+      run_in_background: true,
+      per_run: false,
+      consequence_if_skipped:
+        'Skip it and the panel is orphaned; no deferred completion event will surface panel completion.',
+    });
+    expect(out.reviewers.map((reviewer) => reviewer.required_next_action?.mechanism))
+      .toEqual(['deferred_code', 'deferred_code']);
   });
 
   it('injects a passed criteria contract into reviewer runs without relinking implementerRunId', async () => {

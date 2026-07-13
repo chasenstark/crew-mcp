@@ -18,7 +18,7 @@
  *      one of: (a) a stream/terminal event fires for this run, (b)
  *      `wait_for_change_ms` elapses. Captains should not use this to
  *      surface a terminal result inside the dispatch turn — the
- *      crew-wait watcher (Claude Code) or a next-turn snapshot is the
+ *      crew-wait watcher (Claude Code/Codex) or a next-turn snapshot is the
  *      non-blocking path.
  *   3. Terminal-only long-poll (`wait_for_terminal_only: true`): with
  *      `wait_for_change_ms`, ignores stream chunks and waits only for a
@@ -92,7 +92,7 @@ export const getRunStatusInputSchema = z.object({
    * run events (`run:complete`, `run:failed`, `run:cancelled`) and
    * ignore stream chunks. Same opt-in-only caveat as
    * `wait_for_change_ms`: the chat-available default is the crew-wait
-   * watcher (Claude Code) or a next-turn snapshot, not a blocking
+   * watcher (Claude Code/Codex) or a next-turn snapshot, not a blocking
    * long-poll inside the dispatch turn.
    */
   wait_for_terminal_only: z.boolean().optional(),
@@ -117,7 +117,7 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read a run's current status by run_id. Default: omit wait params for an immediate snapshot (turn-start, post-watcher, status question). wait_for_change_ms / wait_for_terminal_only block until events arrive or terminal; opt-in only when the user explicitly asks to wait. Captain default is the crew-wait watcher (Claude Code) or next-turn snapshot, not a long-poll. Pass since_event_line to page events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal returns status, cursor, paths, summary/filesChanged/prompts/warnings, commits/commit_count, events_tail; timeouts return { status: "running", timed_out: true }.`;
+  `Read a run's current status by run_id. Default: omit wait params for an immediate snapshot (turn-start, post-watcher, status question). wait_for_change_ms / wait_for_terminal_only block until events arrive or terminal; opt-in only when the user explicitly asks to wait. Captain default is the crew-wait watcher (Claude Code/Codex) or next-turn snapshot, not a long-poll. Pass since_event_line to page events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal returns status, cursor, paths, summary/filesChanged/prompts/warnings, commits/commit_count, events_tail; timeouts return { status: "running", timed_out: true }.`;
 
 export async function getRunStatusToolHandler(
   args: GetRunStatusInput,

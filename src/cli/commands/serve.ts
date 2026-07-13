@@ -31,7 +31,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, type Dirent } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
@@ -163,6 +163,7 @@ import {
 } from '../../orchestrator/tools/send-message.js';
 import {
   classifyClient,
+  MIN_CODEX_DEFERRED_WATCHER_VERSION,
   type ClientKind,
   type ProgressTokenSeen,
   type ToolHandlerDeps,
@@ -170,6 +171,7 @@ import {
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { manifestPath } from '../../install/install-manifest.js';
 import { projectManifestPath } from '../../install/project-install-manifest.js';
+import { isTrustedProjectCrewWaitCommand } from '../../install/crew-binary.js';
 import type { HostId } from '../../install/hosts/index.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger, setLogFilePath } from '../../utils/logger.js';
@@ -233,6 +235,13 @@ export interface ServeOptions {
    * still resolve their adjacent manifest.
    */
   home?: string;
+
+  /**
+   * Test seam for establishing whether this server was launched from the
+   * repository's own node_modules/crew-mcp package. Production uses
+   * process.argv[1].
+   */
+  serverScriptPath?: string;
 
   /**
    * Test seam: override the stale-run sweeper while preserving the same
@@ -394,49 +403,105 @@ function joinInFlightPromises(promises: Map<string, Promise<void>>): Promise<voi
 }
 
 interface CrewWaitCommandResolution {
-  readonly command: string;
-  readonly source: 'project-manifest' | 'global-manifest' | 'legacy-fallback';
+  readonly command?: string;
+  readonly source:
+    | 'project-manifest'
+    | 'global-manifest'
+    | 'legacy-fallback'
+    | 'invalid-project-manifest';
+  readonly reason?: string;
 }
 
 const LEGACY_CREW_WAIT_COMMAND = 'crew-wait';
 
 /**
- * Resolve the watcher command that dispatch envelopes tell Claude Code
- * to spawn. Selection is deliberately host-scoped and deterministic:
- * client kind -> HostId, then project install manifest first, then the
- * user-scope manifest. That means a committed project install wins
- * over an older global install for the same host. If the selected
- * manifest predates `crewWaitCommand`, serve falls back to the legacy
- * bare command and logs a warning instead of silently inferring from
- * serverCommand.
+ * Resolve the watcher command that dispatch envelopes tell Claude Code or
+ * Codex to spawn. Selection is deliberately host-scoped and deterministic:
+ * client kind -> HostId, then the project install manifest when this server
+ * is itself project-local, then the user-scope manifest. A project command is
+ * accepted only when it exactly matches one of the fixed forms emitted by
+ * Crew's project installer: the project manifest belongs to the checkout and
+ * is not a trusted source of arbitrary shell. Legacy Claude installs retain
+ * the old PATH fallback; Codex degrades to next-turn recovery instead of
+ * auto-executing a command Crew cannot establish as installed.
  */
 export function resolveCrewWaitCommandForClientKind(args: {
   readonly clientKind: ClientKind;
   readonly projectRoot: string;
   readonly home: string;
+  readonly projectInstallActive: boolean;
 }): CrewWaitCommandResolution {
   const hostId = hostIdForClientKind(args.clientKind);
   if (hostId === undefined) {
-    return { command: LEGACY_CREW_WAIT_COMMAND, source: 'legacy-fallback' };
+    return { source: 'legacy-fallback' };
   }
 
-  const project = readStoredCrewWaitCommand(projectManifestPath(args.projectRoot), hostId);
-  if (project.targetPresent) {
-    return {
-      command: project.command ?? LEGACY_CREW_WAIT_COMMAND,
-      source: project.command ? 'project-manifest' : 'legacy-fallback',
-    };
+  if (args.projectInstallActive) {
+    const project = readStoredCrewWaitCommand(projectManifestPath(args.projectRoot), hostId);
+    if (project.targetPresent) {
+      if (project.command && !isTrustedProjectCrewWaitCommand(project.command)) {
+        return {
+          source: 'invalid-project-manifest',
+          reason: `untrusted project crewWaitCommand ${JSON.stringify(project.command)}`,
+        };
+      }
+      return {
+        command: project.command ?? legacyCrewWaitCommand(args.clientKind),
+        source: project.command ? 'project-manifest' : 'legacy-fallback',
+      };
+    }
   }
 
   const global = readStoredCrewWaitCommand(manifestPath(args.home), hostId);
   if (global.targetPresent) {
     return {
-      command: global.command ?? LEGACY_CREW_WAIT_COMMAND,
+      command: global.command ?? legacyCrewWaitCommand(args.clientKind),
       source: global.command ? 'global-manifest' : 'legacy-fallback',
     };
   }
 
-  return { command: LEGACY_CREW_WAIT_COMMAND, source: 'legacy-fallback' };
+  return {
+    command: legacyCrewWaitCommand(args.clientKind),
+    source: 'legacy-fallback',
+  };
+}
+
+function legacyCrewWaitCommand(kind: ClientKind): string | undefined {
+  return kind === 'claude-code' ? LEGACY_CREW_WAIT_COMMAND : undefined;
+}
+
+/**
+ * Project manifests are repository-controlled, so their executable choice is
+ * trusted only when the MCP server itself is running from that repository's
+ * physical node_modules/crew-mcp package. The server entrypoint may be the
+ * normal node_modules/.bin/crew-mcp symlink, so trust is based on real paths:
+ * both the package and the running script must resolve inside the project.
+ * A project-local shim or package symlink targeting a global install fails
+ * that physical containment check.
+ */
+export function isActiveProjectCrewInstall(
+  projectRoot: string,
+  serverScriptPath: string | undefined = process.argv[1],
+): boolean {
+  if (!serverScriptPath) return false;
+  const lexicalProjectRoot = resolve(projectRoot);
+  const lexicalPackageRoot = join(lexicalProjectRoot, 'node_modules', 'crew-mcp');
+  const lexicalScriptPath = resolve(serverScriptPath);
+  try {
+    const physicalProjectRoot = realpathSync(lexicalProjectRoot);
+    const physicalPackageRoot = realpathSync(lexicalPackageRoot);
+    const physicalScriptPath = realpathSync(lexicalScriptPath);
+    return pathIsWithin(physicalProjectRoot, physicalPackageRoot)
+      && pathIsWithin(physicalPackageRoot, physicalScriptPath);
+  } catch {
+    return false;
+  }
+}
+
+function pathIsWithin(parent: string, candidate: string): boolean {
+  const rel = relative(parent, candidate);
+  return rel.length === 0
+    || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function hostIdForClientKind(kind: ClientKind): HostId | undefined {
@@ -444,6 +509,7 @@ function hostIdForClientKind(kind: ClientKind): HostId | undefined {
     case 'claude-code':
       return 'claude-code';
     case 'codex':
+    case 'codex-legacy':
       return 'codex';
     case 'unknown':
       return undefined;
@@ -501,6 +567,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const captainServeInstance = randomUUID();
   const workerAuth = resolveWorkerServeAuth(crewHome);
   const installManifestHome = options.home ?? inferInstallManifestHome(crewHome);
+  const projectInstallActive = isActiveProjectCrewInstall(
+    projectRoot,
+    options.serverScriptPath,
+  );
 
   const server = new McpServer({
     name: 'crew',
@@ -594,32 +664,54 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   // see a defined value. Cache so we don't re-classify on every
   // dispatch — the answer can't change within a single server lifetime.
   let cachedClientKind: ClientKind | undefined;
+  let loggedLegacyCodexClient = false;
   const getClientKind = (): ClientKind => {
     if (cachedClientKind !== undefined) return cachedClientKind;
     const info = server.server.getClientVersion();
-    cachedClientKind = classifyClient(info?.name);
+    cachedClientKind = classifyClient(info?.name, info?.version);
+    if (cachedClientKind === 'codex-legacy' && !loggedLegacyCodexClient) {
+      loggedLegacyCodexClient = true;
+      logger.warn(
+        `crew-mcp serve: Codex client version ${JSON.stringify(info?.version ?? '(missing)')} `
+        + `does not support deferred watchers (requires ${MIN_CODEX_DEFERRED_WATCHER_VERSION}+); `
+        + 'dispatch remains available with next-turn status recovery.',
+      );
+    }
     return cachedClientKind;
   };
   let cachedCrewWaitCommand: string | undefined;
-  let loggedLegacyCrewWaitFallback = false;
-  const getCrewWaitCommand = (): string => {
-    if (cachedCrewWaitCommand !== undefined) return cachedCrewWaitCommand;
+  let crewWaitCommandResolved = false;
+  let loggedCrewWaitResolution = false;
+  const getCrewWaitCommand = (): string | undefined => {
+    if (crewWaitCommandResolved) return cachedCrewWaitCommand;
+    crewWaitCommandResolved = true;
+    const clientKind = getClientKind();
     const resolution = resolveCrewWaitCommandForClientKind({
-      clientKind: getClientKind(),
+      clientKind,
       projectRoot,
       home: installManifestHome,
+      projectInstallActive,
     });
-    if (
-      resolution.source === 'legacy-fallback'
-      && getClientKind() === 'claude-code'
-      && !loggedLegacyCrewWaitFallback
-    ) {
-      loggedLegacyCrewWaitFallback = true;
-      logger.warn(
-        'crew-mcp serve: no stored crewWaitCommand found for Claude Code; '
-        + 'falling back to legacy `crew-wait`. Re-run `crew-mcp install -t claude-code` '
-        + 'to persist the exact allowlisted watcher command.',
-      );
+    if (!loggedCrewWaitResolution) {
+      loggedCrewWaitResolution = true;
+      if (resolution.source === 'invalid-project-manifest') {
+        logger.warn(
+          `crew-mcp serve: ${resolution.reason}; watcher auto-execution is disabled. `
+          + `Re-run \`crew-mcp install --scope project -t ${hostIdForClientKind(clientKind) ?? 'codex'}\` `
+          + 'to replace the project install manifest.',
+        );
+      } else if (resolution.source === 'legacy-fallback' && clientKind === 'claude-code') {
+        logger.warn(
+          'crew-mcp serve: no stored crewWaitCommand found for Claude Code; '
+          + 'falling back to legacy `crew-wait`. Re-run `crew-mcp install -t claude-code` '
+          + 'to persist the exact allowlisted watcher command.',
+        );
+      } else if (resolution.source === 'legacy-fallback' && clientKind === 'codex') {
+        logger.warn(
+          'crew-mcp serve: no stored crewWaitCommand found for Codex; deferred watcher '
+          + 'auto-execution is disabled. Re-run `crew-mcp install -t codex` and restart Codex.',
+        );
+      }
     }
     cachedCrewWaitCommand = resolution.command;
     return cachedCrewWaitCommand;

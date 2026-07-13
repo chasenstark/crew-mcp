@@ -55,6 +55,7 @@ import {
   parseProjectCrewBinaryStrategy,
   projectCrewBinaryResolver,
   projectCrewWaitCommand,
+  quoteExecutablePath,
   resolveCrewWaitBinary,
   type CrewBinaryResolver,
   type ProjectCrewBinaryStrategy,
@@ -132,9 +133,9 @@ export interface InstallOptions {
   platform?: NodeJS.Platform;
   /** Override crew binary resolution (tests). */
   resolveCrewBinary?: CrewBinaryResolver;
-  /** Test seam for Claude Code `crew-wait` PATH discoverability. */
+  /** Test seam for watcher `crew-wait` PATH discoverability. */
   isCrewWaitOnPath?: () => boolean;
-  /** Test seam for Claude Code absolute `crew-wait` fallback resolution. */
+  /** Test seam for absolute `crew-wait` fallback resolution. */
   resolveCrewWaitBinary?: () => string;
   /**
    * Test seam: override the interactive target selector. Defaults to
@@ -244,6 +245,7 @@ async function installGlobalCommand(opts: InstallOptions): Promise<InstallResult
           autoApprove: opts.autoApprove ?? true,
           isCrewWaitOnPath: opts.isCrewWaitOnPath ?? isCrewWaitOnPath,
           resolveCrewWaitBinary: opts.resolveCrewWaitBinary ?? resolveCrewWaitBinary,
+          platform: opts.platform,
         });
 
         if (!opts.skipRunningCheck) {
@@ -404,24 +406,27 @@ export async function installSingleTarget(args: {
   autoApprove: boolean;
   isCrewWaitOnPath?: () => boolean;
   resolveCrewWaitBinary?: () => string;
+  platform?: NodeJS.Platform;
 }): Promise<InstalledTarget> {
   const { adapter, home, packageRoot, crewBin, crewArgs, autoApprove } = args;
 
-  // Resolve the crew-wait command up front so the skill body and the
-  // Claude allowlist entry stay in lockstep. The skill embeds this
-  // literal as `{{CREW_WAIT_COMMAND}} <run_id>`, and the allowlist is
-  // `Bash(<this>:*)` — the two MUST match exactly or the captain's
-  // Bash invocation won't pass the matcher.
+  // Resolve the crew-wait command up front so the skill body, install
+  // manifest, dispatch envelope, and Claude allowlist stay in lockstep.
+  // The runtime adds the pinned Crew home and run ids; the executable
+  // prefix must still match the allowlist exactly.
   //
-  // Only Claude Code actually uses the watcher; for the other hosts we
-  // pass the bare name so the rendered prose still reads correctly,
-  // but those captains default to the portable baseline anyway.
+  // Both watcher-capable hosts need a PATH-visible or absolute command.
+  // Claude's permission matcher must agree with the rendered command; Codex
+  // also needs the binary to resolve inside its nested code-mode shell.
   let crewWaitCommand = 'crew-wait';
-  if (adapter.id === 'claude-code') {
+  if (adapter.id === 'claude-code' || adapter.id === 'codex') {
     const pathVisible = (args.isCrewWaitOnPath ?? isCrewWaitOnPath)();
-    crewWaitCommand = pathVisible
-      ? 'crew-wait'
-      : (args.resolveCrewWaitBinary ?? resolveCrewWaitBinary)();
+    if (!pathVisible) {
+      const absolute = (args.resolveCrewWaitBinary ?? resolveCrewWaitBinary)();
+      crewWaitCommand = adapter.id === 'codex'
+        ? quoteExecutablePath(absolute, args.platform)
+        : absolute;
+    }
   }
 
   // 1+2. Render + write each skill in the manifest via the helper
@@ -465,8 +470,8 @@ export async function installSingleTarget(args: {
     const approvalExisting = existsSync(approvalFile)
       ? await readFile(approvalFile, 'utf-8')
       : '';
-    // crewWaitCommand was resolved above the skill render so the
-    // allowlist entry matches the skill body exactly.
+    // crewWaitCommand was resolved above skill rendering so the
+    // allowlist matches the executable prefix returned at dispatch.
     const approvalUpdated = addClaudePermission(
       approvalExisting,
       `Bash(${crewWaitCommand}:*)`,
@@ -476,7 +481,7 @@ export async function installSingleTarget(args: {
     }
     logger.info(
       `crew install: Claude Code crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
-      + 'Skill body uses the same command.',
+      + 'Dispatch envelopes use the same executable prefix.',
     );
   }
 
@@ -580,7 +585,7 @@ export async function installSingleProjectTarget(args: {
     }
     logger.info(
       `crew install: Claude Code project crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
-      + 'Skill body uses the same command.',
+      + 'Dispatch envelopes use the same executable prefix.',
     );
   }
 

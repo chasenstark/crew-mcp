@@ -237,7 +237,40 @@ describe('crew-wait', () => {
     } finally {
       process.stderr.write = originalWrite;
     }
-    expect(writes.join('')).toContain('Usage: crew-wait <run_id...>');
+    expect(writes.join('')).toContain('Usage: crew-wait [--crew-home-base64 <base64url>] <run_id...>');
+  });
+
+  it('uses the explicit base64url Crew home instead of process env', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-explicit-home-'));
+    cleanup.push(crewHome);
+    const runDir = join(crewHome, 'runs', 'run-explicit-home');
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId: 'run-explicit-home',
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/worktree',
+    });
+    const priorCrewHome = process.env.CREW_HOME;
+    process.env.CREW_HOME = join(crewHome, 'wrong-home');
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64',
+        Buffer.from(crewHome).toString('base64url'),
+        'run-explicit-home',
+      ])).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+      if (priorCrewHome === undefined) delete process.env.CREW_HOME;
+      else process.env.CREW_HOME = priorCrewHome;
+    }
+    expect(writes.join('')).toContain('CREW_WAIT_TERMINAL run_id=run-explicit-home');
   });
 
   it('waits for multiple run ids before printing terminal lines in argument order', async () => {
@@ -540,7 +573,7 @@ describe('crew-wait', () => {
     } finally {
       process.stdout.write = originalWrite;
     }
-    expect(writes.join('')).toMatch(/Usage: crew-wait <run_id\.\.\.>/);
+    expect(writes.join('')).toMatch(/Usage: crew-wait \[--crew-home-base64 <base64url>\] <run_id\.\.\.>/);
   });
 });
 

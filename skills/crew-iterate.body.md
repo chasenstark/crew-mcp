@@ -41,33 +41,122 @@ the turn, and:
   ending the turn, complete this checklist for every crew run returned
   by the dispatch:
   1. Read the crew `run_id`.
-  2. Spawn `Bash({{CREW_WAIT_COMMAND}} <run_id>, run_in_background: true)`.
+  2. Spawn `Bash(<required_next_action.command>, run_in_background: true)`
+     using the returned command exactly; it pins the server's Crew home.
   3. Repeat once per independent run — each surfaces individually as
      it lands.
 - Claude Code, panels (`run_panel`): spawn ONE watcher for the whole
   panel, not one per reviewer — consolidation waits for all reviewers.
   Use the panel envelope's panel-level `required_next_action` command:
-  `Bash({{CREW_WAIT_COMMAND}} <id1> <id2> ..., run_in_background: true)`.
+  `Bash(<panel required_next_action.command>, run_in_background: true)`.
   Per-reviewer commands remain available for selective/degraded waits;
   on such watcher turns call `get_panel_status({panel_id})` — if
   `running_count > 0`, end the turn with at most one short status
   line; at 0, proceed to `aggregate_panel` + consolidation.
-- On either shape, a harness-tracked native `Agent` / `Task` subagent
+- Codex, independent runs: call `functions.exec` once per run using the
+  JSON-safe `required_next_action.command_json` and
+  `required_next_action.run_ids_json`, with
+  `required_next_action.working_directory_json` as the nested command's
+  `workdir`. Codex panels use ONE deferred
+  watcher with the panel-level multi-id command. Use this recipe:
+
+  ```js
+  const command = <required_next_action.command_json>;
+  const runIds = <required_next_action.run_ids_json>;
+  const workdir = <required_next_action.working_directory_json>;
+  let output = '';
+  const appendOutput = (chunk) => {
+    if (!chunk) return;
+    if (!output) {
+      output = chunk;
+      return;
+    }
+    if (chunk.startsWith(output)) {
+      output = chunk;
+      return;
+    }
+    if (output.endsWith(chunk)) return;
+    let overlap = Math.min(output.length, chunk.length);
+    while (overlap > 0 && output.slice(-overlap) !== chunk.slice(0, overlap)) {
+      overlap -= 1;
+    }
+    output += chunk.slice(overlap);
+  };
+  const fail = (error, exitCode) => notify(JSON.stringify({
+    type: 'crew_wait_failed',
+    command,
+    run_ids: runIds,
+    exit_code: exitCode,
+    output: output.trim(),
+    error: String(error).slice(0, 2000),
+  }));
+  try {
+    const pending = tools.exec_command({
+      cmd: command,
+      workdir,
+      yield_time_ms: 1000,
+      max_output_tokens: 4000,
+    }).then(
+      (result) => ({ result }),
+      (error) => ({ error }),
+    );
+    await yield_control();
+    const started = await pending;
+    if ('error' in started) throw started.error;
+    let result = started.result;
+    appendOutput(result.output);
+    while (result.session_id !== undefined && result.exit_code === undefined) {
+      result = await tools.write_stdin({
+        session_id: result.session_id,
+        chars: '',
+        yield_time_ms: 30000,
+        max_output_tokens: 4000,
+      });
+      appendOutput(result.output);
+    }
+    if (result.exit_code !== 0 || !output.includes('CREW_WAIT_TERMINAL ')) {
+      fail('crew-wait exited without a terminal marker', result.exit_code);
+    } else {
+      notify(JSON.stringify({
+        type: 'crew_wait_terminal',
+        command,
+        run_ids: runIds,
+        exit_code: result.exit_code,
+        output: output.trim(),
+      }));
+    }
+  } catch (error) {
+    fail(error);
+  }
+  ```
+
+  `yield_control()` releases the model turn before the wait continues, so
+  the user remains free to chat. When `functions.exec` returns `Script
+  running with cell ID ...`, do not call `wait`; end the turn. If deferred
+  code mode is unavailable, report degradation and use next-user-turn
+  snapshot recovery. Never substitute a blocking `Stop` hook, foreground
+  shell, goal, or polling loop.
+  Treat `crew_wait_failed` as degradation, snapshot its `run_ids`, and
+  keep turn-start recovery active until all are terminal. Never remove the
+  server-supplied Crew-home argument from the command.
+- On any watcher shape, a harness-tracked native `Agent` / `Task` subagent
   completing tells you nothing about crew runs, which are not
-  harness-tracked. The host will fire a synthetic next-turn prefixed
-  with `CREW_WAIT_TERMINAL run_id=... agent=... status=... worktree=...`
+  harness-tracked. The watcher will fire a completion event containing
+  `CREW_WAIT_TERMINAL run_id=... agent=... status=... worktree=...`
   when a run reaches terminal — one line per run from a multi-id panel
   watcher. Parse those lines on receipt, then call
   `get_run_status({run_id})` for the full envelope. Without the
-  synthetic-turn handling, the loop deadlocks: dispatched and ended
+  completion-event handling, the loop deadlocks: dispatched and ended
   the turn but never recognizes the resume.
-  If the synthetic turn arrives without that terminal line, or if a run
+  On Codex the lines are in the `crew_wait_terminal.output` field. If the
+  completion arrives without that terminal line, or if a run
   has been in-flight suspiciously long, fall back to:
   `list_runs({status: ["success","partial","error","cancelled"],
   completedAfter: <last surfaced ISO timestamp>})`. Dedupe run IDs you
   already surfaced and process the remainder as normal terminal runs.
-- Codex / Gemini: no watcher. Discover terminal runs on the next user
-  turn via `list_runs({status: ["success","partial","error"]})`.
+- Hosts without either watcher mechanism: discover terminal runs on the
+  next user turn via
+  `list_runs({status: ["success","partial","error","cancelled"]})`.
 On any user turn while this loop has in-flight crew runs,
 opportunistically call `list_runs` so a lost watcher cannot stall the
 loop silently.
@@ -168,8 +257,9 @@ When in doubt: ask. "Do you want me to iterate this until review
 passes, or just dispatch once?"
 
 **Cross-host trigger.** All hosts use `name: crew-iterate`; only the
-slash prefix differs. On Codex/Gemini, terminal status surfaces on the
-next user turn (no watcher overlay) — tell the user upfront.
+slash prefix differs. Claude Code and Codex surface terminal status through
+their watcher overlays. Other hosts use next-user-turn recovery — tell the
+user upfront.
 
 ## The 5-step loop
 
@@ -462,9 +552,9 @@ run_agent({
   dispatch-time `criteria.*` codes (Step 0). `criteria.invalid` belongs
   to `create_criteria` / `confirm_criteria` / `revise_criteria`
   validation, not dispatch.
-- Confirm dispatch with `[tail in side terminal](<tail_url>)`, end
-  the turn, and on Claude Code spawn the watcher for each returned
-  crew run ID before ending the turn (per invariant #2).
+- Confirm dispatch with `[tail in side terminal](<tail_url>)`, start the
+  host watcher for each returned crew run ID, and end the turn (per
+  invariant #2). Codex must yield inside `functions.exec` before waiting.
 
 ### Step 2 — Review (crew + host native subagent, parallel)
 

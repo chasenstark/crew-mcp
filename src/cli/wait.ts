@@ -537,7 +537,7 @@ async function readStateSnapshotIfPresent(
 
 export function usage(): string {
   return [
-    'Usage: crew-wait <run_id...>',
+    'Usage: crew-wait [--crew-home-base64 <base64url>] <run_id...>',
     '',
     'Wait for one or more crew runs to reach terminal state and print one terminal metadata line per run.',
   ].join('\n');
@@ -549,13 +549,43 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
 
-  if (argv.length < 1 || argv.some((arg) => arg.startsWith('-'))) {
+  const parsed = parseCliArgs(argv);
+  if (!parsed) {
     process.stderr.write(`${usage()}\n`);
     return 2;
   }
 
-  await waitForRunsTerminal({ runIds: argv });
+  await waitForRunsTerminal({
+    runIds: parsed.runIds,
+    ...(parsed.crewHome ? { crewHome: parsed.crewHome } : {}),
+  });
   return 0;
+}
+
+function parseCliArgs(argv: readonly string[]): {
+  readonly runIds: readonly string[];
+  readonly crewHome?: string;
+} | undefined {
+  const remaining = [...argv];
+  let crewHome: string | undefined;
+  const flagIndex = remaining.indexOf('--crew-home-base64');
+  if (flagIndex >= 0) {
+    const encoded = remaining[flagIndex + 1];
+    if (!encoded || !/^[A-Za-z0-9_-]+$/.test(encoded)) return undefined;
+    try {
+      crewHome = Buffer.from(encoded, 'base64url').toString('utf-8');
+    } catch {
+      return undefined;
+    }
+    if (!crewHome || Buffer.from(crewHome, 'utf-8').toString('base64url') !== encoded) {
+      return undefined;
+    }
+    remaining.splice(flagIndex, 2);
+  }
+  if (remaining.length < 1 || remaining.some((arg) => arg.startsWith('-'))) {
+    return undefined;
+  }
+  return { runIds: remaining, ...(crewHome ? { crewHome } : {}) };
 }
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {

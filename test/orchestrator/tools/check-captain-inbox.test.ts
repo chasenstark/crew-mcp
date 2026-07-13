@@ -44,6 +44,7 @@ function message(repoRoot: string, index: number, runId = `run-${index}`) {
 describe('check_captain_inbox', () => {
   it('filters by status, limit, since, and from_run_id while totals ignore filters', async () => {
     clearCaptainInboxSweepStateForTest();
+    vi.useFakeTimers({ now: new Date('2026-07-06T01:00:00.000Z') });
     const h = tempRoot();
     try {
       const unreadOld = await appendMessage({
@@ -128,6 +129,7 @@ describe('check_captain_inbox', () => {
         .toEqual([unreadNew.msg_id]);
       expect(sinceAndRun.structuredContent).toMatchObject({ total_unread: 2, total_in_inbox: 4 });
     } finally {
+      vi.useRealTimers();
       h.cleanup();
       clearCaptainInboxSweepStateForTest();
     }
