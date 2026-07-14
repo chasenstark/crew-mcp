@@ -30,6 +30,7 @@ import {
 import { classifyTextFailure } from './failure-classifier.js';
 import type { TaskFailure } from './types.js';
 import { redactRunToken } from '../utils/redaction.js';
+import { codexSafeSpawnEnvironment } from '../codex/environment.js';
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -453,6 +454,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async getCliVersionTag(): Promise<string | undefined> {
     const versionResult = await execa(AgentId.CODEX, ['--version'], {
+      ...codexSafeSpawnEnvironment(),
       timeout: 10_000,
       reject: false,
       stdin: 'ignore',
@@ -579,6 +581,7 @@ export class CodexAdapter implements AgentAdapter {
       const stderrCapture = createBoundedStderrCapture();
       try {
         const subprocess = execa(AgentId.CODEX, args, {
+          ...codexSafeSpawnEnvironment(),
           cwd: task.context.workingDirectory,
           ...(timeout ? { timeout } : {}),
           ...processGroupSpawnOptions(),
@@ -881,6 +884,7 @@ export class CodexAdapter implements AgentAdapter {
   private async probeHealth(): Promise<HealthCheckResult> {
     try {
       const result = await execa(AgentId.CODEX, ['--version'], {
+        ...codexSafeSpawnEnvironment(),
         timeout: 10_000,
         reject: false,
         stdin: 'ignore',

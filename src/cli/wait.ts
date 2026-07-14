@@ -4,6 +4,19 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  CODEX_THREAD_ID_ENV,
+  decodeCodexBridgeFile,
+  wakeCodexThread,
+  type WakeCodexThreadOptions,
+  type WakeCodexThreadResult,
+} from '../codex/app-server-bridge.js';
+import {
+  decodeRunGenerations,
+  runClaimedCodexWake,
+  type ClaimedCodexWakeOptions,
+  type ClaimedCodexWakeResult,
+} from '../codex/wake-delivery.js';
 import { resolveCrewHome } from '../utils/crew-home.js';
 
 const CREW_WAIT_POLL_INTERVAL_ENV = 'CREW_WAIT_POLL_INTERVAL_MS';
@@ -537,13 +550,27 @@ async function readStateSnapshotIfPresent(
 
 export function usage(): string {
   return [
-    'Usage: crew-wait [--crew-home-base64 <base64url>] <run_id...>',
+    'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>] <run_id...>',
     '',
     'Wait for one or more crew runs to reach terminal state and print one terminal metadata line per run.',
+    'When --codex-bridge-base64 is present, start a completion turn on the hosted Codex thread.',
   ].join('\n');
 }
 
-export async function main(argv = process.argv.slice(2)): Promise<number> {
+export interface CrewWaitMainDependencies {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly wakeCodexThread?: (
+    options: WakeCodexThreadOptions,
+  ) => Promise<WakeCodexThreadResult>;
+  readonly runClaimedCodexWake?: (
+    options: ClaimedCodexWakeOptions<unknown>,
+  ) => Promise<ClaimedCodexWakeResult<unknown>>;
+}
+
+export async function main(
+  argv = process.argv.slice(2),
+  dependencies: CrewWaitMainDependencies = {},
+): Promise<number> {
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(`${usage()}\n`);
     return 0;
@@ -555,16 +582,54 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 2;
   }
 
+  const crewHome = parsed.crewHome ?? resolveCrewHome();
   await waitForRunsTerminal({
     runIds: parsed.runIds,
-    ...(parsed.crewHome ? { crewHome: parsed.crewHome } : {}),
+    crewHome,
   });
+  if (parsed.codexBridgeFile) {
+    const threadId = (dependencies.env ?? process.env)[CODEX_THREAD_ID_ENV];
+    if (!parsed.runGenerations || parsed.runGenerations.length !== parsed.runIds.length) {
+      throw new Error('Codex bridge wake requires one run generation per run id');
+    }
+    let claimResult: ClaimedCodexWakeResult<unknown> | undefined;
+    const wake = await (dependencies.wakeCodexThread ?? wakeCodexThread)({
+      bridgeFile: parsed.codexBridgeFile,
+      threadId: threadId ?? '',
+      runIds: parsed.runIds,
+      guardTurnStart: async (startTurn) => {
+        claimResult = await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
+          crewHome,
+          threadId: threadId ?? '',
+          runIds: parsed.runIds,
+          runGenerations: parsed.runGenerations!,
+          startTurn,
+        });
+        return claimResult.started
+          ? { action: 'start', result: claimResult.result }
+          : { action: 'skip' };
+      },
+    });
+    if (wake.skipped) {
+      process.stdout.write(
+        `CREW_WAIT_CODEX_WAKE_SKIPPED thread_id=${threadId} reason=${
+          claimResult && !claimResult.started ? claimResult.reason : 'unknown'
+        }\n`,
+      );
+    } else {
+      process.stdout.write(
+        `CREW_WAIT_CODEX_WAKE_SENT thread_id=${threadId} turn_id=${wake.turnId}\n`,
+      );
+    }
+  }
   return 0;
 }
 
 function parseCliArgs(argv: readonly string[]): {
   readonly runIds: readonly string[];
   readonly crewHome?: string;
+  readonly codexBridgeFile?: string;
+  readonly runGenerations?: readonly number[];
 } | undefined {
   const remaining = [...argv];
   let crewHome: string | undefined;
@@ -582,10 +647,45 @@ function parseCliArgs(argv: readonly string[]): {
     }
     remaining.splice(flagIndex, 2);
   }
+  let codexBridgeFile: string | undefined;
+  const bridgeFlagIndex = remaining.indexOf('--codex-bridge-base64');
+  if (bridgeFlagIndex >= 0) {
+    const encoded = remaining[bridgeFlagIndex + 1];
+    if (!encoded) return undefined;
+    try {
+      codexBridgeFile = decodeCodexBridgeFile(encoded);
+    } catch {
+      return undefined;
+    }
+    remaining.splice(bridgeFlagIndex, 2);
+  }
+  let runGenerations: readonly number[] | undefined;
+  const generationsFlagIndex = remaining.indexOf('--run-generations-base64');
+  if (generationsFlagIndex >= 0) {
+    const encoded = remaining[generationsFlagIndex + 1];
+    if (!encoded) return undefined;
+    try {
+      runGenerations = decodeRunGenerations(encoded);
+    } catch {
+      return undefined;
+    }
+    remaining.splice(generationsFlagIndex, 2);
+  }
+  if ((codexBridgeFile === undefined) !== (runGenerations === undefined)) {
+    return undefined;
+  }
   if (remaining.length < 1 || remaining.some((arg) => arg.startsWith('-'))) {
     return undefined;
   }
-  return { runIds: remaining, ...(crewHome ? { crewHome } : {}) };
+  if (runGenerations !== undefined && runGenerations.length !== remaining.length) {
+    return undefined;
+  }
+  return {
+    runIds: remaining,
+    ...(crewHome ? { crewHome } : {}),
+    ...(codexBridgeFile ? { codexBridgeFile } : {}),
+    ...(runGenerations ? { runGenerations } : {}),
+  };
 }
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {

@@ -114,6 +114,7 @@ interface Harness {
   root: string;
   crewHome: string;
   home: string;
+  codexBridgeFile?: string;
   close: () => Promise<void>;
 }
 
@@ -153,6 +154,20 @@ function toolText(res: { content?: unknown }): string {
 
 function watcherPrefix(command: string, crewHome: string): string {
   return `${command} --crew-home-base64 ${Buffer.from(crewHome).toString('base64url')}`;
+}
+
+function hostedCodexWatcherPrefix(
+  command: string,
+  h: Harness,
+  generations: readonly number[] = [1],
+): string {
+  if (!h.codexBridgeFile) throw new Error('Expected hosted Codex bridge test fixture.');
+  const encodedBridge = Buffer.from(h.codexBridgeFile).toString('base64url');
+  const encodedGenerations = Buffer.from(JSON.stringify(generations)).toString('base64url');
+  return `${watcherPrefix(
+    `${command} --codex-bridge-base64 ${encodedBridge}`,
+    h.crewHome,
+  )} --run-generations-base64 ${encodedGenerations}`;
 }
 
 function expectStructuredJsonBytes(
@@ -291,6 +306,7 @@ async function startHarness(
     clientName?: string;
     clientVersion?: string;
     installCodexWatcher?: boolean;
+    hostCodexBridge?: boolean;
     projectInstallActive?: boolean;
     beforeBuild?: (paths: { root: string; crewHome: string; home: string }) => void;
   } = {},
@@ -335,6 +351,14 @@ async function startHarness(
     symlinkSync('../crew-mcp/dist/index.js', serverScriptPath);
   }
   options.beforeBuild?.({ root, crewHome, home });
+  let codexBridgeFile: string | undefined;
+  if (
+    options.hostCodexBridge !== false
+    && options.clientName?.toLowerCase().includes('codex')
+  ) {
+    codexBridgeFile = join(home, 'codex-test-bridge.json');
+    writeFileSync(codexBridgeFile, '{}', { encoding: 'utf-8', mode: 0o600 });
+  }
 
   const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
   const { server, dispatcher, runStateStore } = buildCrewMcpServer({
@@ -344,6 +368,7 @@ async function startHarness(
     registry: makeRegistry(adapters),
     worktreeManager,
     serverScriptPath,
+    env: codexBridgeFile ? { CREW_CODEX_BRIDGE_FILE: codexBridgeFile } : {},
   });
 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -366,6 +391,7 @@ async function startHarness(
     root,
     crewHome,
     home,
+    codexBridgeFile,
     close: async () => {
       await client.close();
       await server.close();
@@ -2055,7 +2081,7 @@ describe('crew serve — run_agent tool', () => {
     const adapter = makeMockAdapter({ name: 'mock-coder' });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
       projectInstallActive: true,
       beforeBuild: ({ root }) => {
         mkdirSync(join(root, '.crew'), { recursive: true });
@@ -2083,7 +2109,7 @@ describe('crew serve — run_agent tool', () => {
         join(h.root, 'node_modules', '.bin', 'crew-mcp'),
       )).toBe(true);
       expect(env.required_next_action).toMatchObject({
-        command: `${watcherPrefix('./node_modules/.bin/crew-wait', h.crewHome)} ${env.run_id}`,
+        command: `${hostedCodexWatcherPrefix('./node_modules/.bin/crew-wait', h)} ${env.run_id}`,
         working_directory: h.root,
         working_directory_json: JSON.stringify(h.root),
       });
@@ -2102,7 +2128,7 @@ describe('crew serve — run_agent tool', () => {
     const adapter = makeMockAdapter({ name: 'mock-coder' });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
       projectInstallActive: true,
       beforeBuild: ({ root }) => {
         mkdirSync(join(root, '.crew'), { recursive: true });
@@ -2124,7 +2150,7 @@ describe('crew serve — run_agent tool', () => {
       });
       const env = res.structuredContent as FullRunEnvelope;
       expect(env.required_next_action).toBeUndefined();
-      expect(env.summary).toContain('unavailable or untrusted');
+      expect(env.summary).toContain('watcher command is unavailable');
       expect(toolText(res)).toContain('recover terminal state on the next user turn');
       await pollUntilTerminal(h.client, env.run_id);
     } finally {
@@ -2136,7 +2162,7 @@ describe('crew serve — run_agent tool', () => {
     const adapter = makeMockAdapter({ name: 'mock-coder' });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
       projectInstallActive: true,
       installCodexWatcher: false,
     });
@@ -2147,7 +2173,7 @@ describe('crew serve — run_agent tool', () => {
       });
       const env = res.structuredContent as FullRunEnvelope;
       expect(env.required_next_action).toBeUndefined();
-      expect(env.summary).toContain('unavailable or untrusted');
+      expect(env.summary).toContain('watcher command is unavailable');
       await pollUntilTerminal(h.client, env.run_id);
     } finally {
       await h.close();
@@ -2158,7 +2184,7 @@ describe('crew serve — run_agent tool', () => {
     const adapter = makeMockAdapter({ name: 'mock-coder' });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
       beforeBuild: ({ root }) => {
         mkdirSync(join(root, '.crew'), { recursive: true });
         writeFileSync(
@@ -2188,7 +2214,7 @@ describe('crew serve — run_agent tool', () => {
       });
       const env = res.structuredContent as FullRunEnvelope;
       expect(env.required_next_action?.command).toBe(
-        `${watcherPrefix('crew-wait', h.crewHome)} ${env.run_id}`,
+        `${hostedCodexWatcherPrefix('crew-wait', h)} ${env.run_id}`,
       );
       expect(env.required_next_action?.command).not.toContain('./node_modules/.bin/crew-wait');
       await pollUntilTerminal(h.client, env.run_id);
@@ -2225,7 +2251,7 @@ describe('crew serve — run_agent tool', () => {
     const adapter = makeMockAdapter({ name: 'mock-coder' });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
       projectInstallActive: true,
       beforeBuild: ({ root }) => {
         mkdirSync(join(root, '.crew'), { recursive: true });
@@ -2906,14 +2932,14 @@ describe('crew serve — peer_messages integration', () => {
     }
   });
 
-  it('run_panel lists one deferred Codex panel watcher plus selective waits', async () => {
+  it('run_panel lists one hosted Codex panel watcher plus selective waits', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
       execute: async () => ({ output: 'review ok', filesModified: [], status: 'success', metadata: {} }),
     });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
     });
     try {
       const panel = await h.client.callTool({
@@ -2937,19 +2963,20 @@ describe('crew serve — peer_messages integration', () => {
         }>;
       };
       const runIds = panelEnv.reviewers.map((reviewer) => reviewer.run_id);
-      const commandPrefix = `crew-wait --crew-home-base64 ${Buffer.from(h.crewHome).toString('base64url')}`;
+      const commandPrefix = hostedCodexWatcherPrefix('crew-wait', h, [1, 1]);
       expect(panelEnv.required_next_action).toMatchObject({
-        mechanism: 'deferred_code',
+        mechanism: 'codex_app_server',
         command: `${commandPrefix} ${runIds.join(' ')}`,
         run_ids: runIds,
       });
       const text = toolText(panel);
-      expect(text).toContain('deferred `functions.exec` watcher');
+      expect(text).toContain('hosted background watcher');
       expect(text).toContain('required_next_action.command_json');
+      const reviewerCommandPrefix = hostedCodexWatcherPrefix('crew-wait', h);
       for (const reviewer of panelEnv.reviewers) {
         expect(reviewer.required_next_action).toMatchObject({
-          mechanism: 'deferred_code',
-          command: `${commandPrefix} ${reviewer.run_id}`,
+          mechanism: 'codex_app_server',
+          command: `${reviewerCommandPrefix} ${reviewer.run_id}`,
           run_id: reviewer.run_id,
         });
         await pollUntilTerminal(h.client, reviewer.run_id);
@@ -5111,9 +5138,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
 
   // The dispatch envelope's "next step" sentence is keyed off the MCP
   // `clientInfo.name` carried in the initialize handshake. These cases
-  // guard the non-Claude-Code branches (codex → deferred watcher,
+  // guard the non-Claude-Code branches (codex → hosted watcher,
   // unknown → neutral) so a future copy edit can't silently drift.
-  it('codex client gets the deferred watcher action', async () => {
+  it('hosted codex client gets the App Server watcher action', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-fast',
       execute: async () => ({
@@ -5125,7 +5152,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
     });
     try {
       const run = await h.client.callTool({
@@ -5133,16 +5160,16 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         arguments: { agent_id: 'mock-fast', prompt: 'go' },
       });
       const env = run.structuredContent as FullRunEnvelope;
-      expect(env.summary).toContain('deferred crew-wait watcher');
-      expect(env.summary).toContain('yield control');
+      expect(env.summary).toContain('hosted crew-wait bridge');
+      expect(env.summary).toContain('completion will start a new turn');
       expect(env.required_next_action).toMatchObject({
         type: 'spawn_watcher',
-        mechanism: 'deferred_code',
+        mechanism: 'codex_app_server',
         run_id: env.run_id,
         run_in_background: true,
       });
       expect(env.required_next_action?.command).toBe(
-        `crew-wait --crew-home-base64 ${Buffer.from(h.crewHome).toString('base64url')} ${env.run_id}`,
+        `${hostedCodexWatcherPrefix('crew-wait', h)} ${env.run_id}`,
       );
       expect(env.required_next_action?.command_json).toBe(
         JSON.stringify(env.required_next_action.command),
@@ -5151,11 +5178,36 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(env.required_next_action?.working_directory).toBe(h.root);
       expect(env.required_next_action?.working_directory_json).toBe(JSON.stringify(h.root));
       const text = toolText(run);
-      expect(text).toContain('deferred `functions.exec` watcher');
+      expect(text).toContain('hosted background watcher');
       expect(text).toContain('required_next_action.command_json');
       expect(text).toContain('REQUIRED before you end this turn');
     } finally {
       await h.close();
+    }
+  });
+
+  it('supported standalone Codex falls back to next-turn recovery', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-fast' });
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const h = await startHarness([adapter], {
+      clientName: 'codex-cli',
+      clientVersion: '0.144.3',
+      hostCodexBridge: false,
+    });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.required_next_action).toBeUndefined();
+      expect(env.summary).toContain('not using the Crew App Server bridge');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+        'Launch future sessions with `crew-mcp codex`',
+      ));
+    } finally {
+      await h.close();
+      warn.mockRestore();
     }
   });
 
@@ -5173,10 +5225,10 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       });
       const env = run.structuredContent as FullRunEnvelope;
       expect(env.required_next_action).toBeUndefined();
-      expect(env.summary).toContain('lacks the deferred watcher');
+      expect(env.summary).toContain('lacks the hosted watcher bridge');
       expect(toolText(run)).toContain('end your turn');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(
-        'Codex client version "0.144.0" does not support deferred watchers',
+        'Codex client version "0.144.0" does not support the hosted watcher bridge',
       ));
     } finally {
       await h.close();
@@ -5224,7 +5276,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     }
   });
 
-  it('continue_run emits deferred required_next_action for codex-cli', async () => {
+  it('continue_run emits hosted required_next_action for codex-cli', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-fast',
       execute: async () => ({
@@ -5236,7 +5288,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     });
     const h = await startHarness([adapter], {
       clientName: 'codex-cli',
-      clientVersion: '0.144.1',
+      clientVersion: '0.144.3',
     });
     try {
       const first = await h.client.callTool({
@@ -5253,14 +5305,14 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       const secondEnv = second.structuredContent as FullRunEnvelope;
       expect(secondEnv.required_next_action).toMatchObject({
         type: 'spawn_watcher',
-        mechanism: 'deferred_code',
+        mechanism: 'codex_app_server',
         run_id: firstEnv.run_id,
         run_in_background: true,
       });
       expect(secondEnv.required_next_action?.command).toBe(
-        `crew-wait --crew-home-base64 ${Buffer.from(h.crewHome).toString('base64url')} ${firstEnv.run_id}`,
+        `${hostedCodexWatcherPrefix('crew-wait', h, [2])} ${firstEnv.run_id}`,
       );
-      expect(toolText(second)).toContain('deferred `functions.exec` watcher');
+      expect(toolText(second)).toContain('hosted background watcher');
       expect(toolText(second)).toContain('REQUIRED before you end this turn');
       await pollUntilTerminal(h.client, firstEnv.run_id);
     } finally {
@@ -6573,9 +6625,9 @@ describe('classifyClient', () => {
     ['Claude Code', undefined, 'claude-code'],
     ['claude_code', undefined, 'claude-code'],
     ['claude', undefined, 'claude-code'],
-    ['codex', '0.144.1', 'codex'],
+    ['codex', '0.144.3', 'codex'],
     ['codex-cli', '0.145.0', 'codex'],
-    ['Codex CLI', '0.144.1-alpha.1', 'codex'],
+    ['Codex CLI', '0.144.3-alpha.1', 'codex'],
     ['codex_cli', '0.144.0', 'codex-legacy'],
     ['CODEX', undefined, 'codex-legacy'],
     ['gemini-cli', '1.0.0', 'unknown'],
@@ -6597,13 +6649,13 @@ describe('nextStepSentence', () => {
       'One required action: spawn the crew-wait watcher before ending your turn; user is free to chat.',
     );
   });
-  it('returns the deferred-watcher phrasing for codex', () => {
+  it('returns the hosted-watcher phrasing for codex', () => {
     expect(nextStepSentence('codex')).toBe(
-      'One required action: start the deferred crew-wait watcher and yield control before ending your turn; user is free to chat.',
+      'One required action: start the hosted crew-wait bridge before ending your turn; user is free to chat and completion will start a new turn.',
     );
   });
   it('returns next-turn recovery guidance for legacy codex', () => {
-    expect(nextStepSentence('codex-legacy')).toContain('lacks the deferred watcher');
+    expect(nextStepSentence('codex-legacy')).toContain('lacks the hosted watcher bridge');
   });
   it('returns a neutral fallback for unknown hosts', () => {
     expect(nextStepSentence('unknown')).toBe(

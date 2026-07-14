@@ -9,6 +9,7 @@ import {
   installRunLifecycleListeners,
 } from '../run-lifecycle-listeners.js';
 import type { RunStateStore, RunStateV1 } from '../run-state.js';
+import { encodeRunGenerations } from '../../codex/wake-delivery.js';
 import type { DispatchTask, ToolDispatcher } from '../tool-dispatcher.js';
 import type { ProgressNotifier } from '../progress.js';
 import type { QuotaSnapshot } from './list-agents.js';
@@ -25,12 +26,12 @@ export const MAX_LONG_POLL_MS = 60_000;
  * Classification of the MCP host CLI that initialized this server, derived
  * from the `clientInfo.name` carried in the MCP `initialize` request. Used
  * to tailor the dispatch envelope's "next step" copy: Claude Code captains
- * spawn a background-shell watcher, while Codex captains start a deferred
- * code-mode watcher that yields control before waiting.
+ * spawn a background-shell watcher, while hosted Codex captains start a
+ * background crew-wait process that wakes the idle thread through App Server.
  */
 export type ClientKind = 'claude-code' | 'codex' | 'codex-legacy' | 'unknown';
 
-export const MIN_CODEX_DEFERRED_WATCHER_VERSION = '0.144.1';
+export const MIN_CODEX_APP_SERVER_WATCHER_VERSION = '0.144.3';
 
 /**
  * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
@@ -48,14 +49,14 @@ export function classifyClient(
   const n = name.toLowerCase().replace(/[\s_]+/g, '-');
   if (n.includes('claude-code') || n === 'claude') return 'claude-code';
   if (n.includes('codex')) {
-    return supportsCodexDeferredWatcher(version) ? 'codex' : 'codex-legacy';
+    return supportsCodexAppServerWatcher(version) ? 'codex' : 'codex-legacy';
   }
   return 'unknown';
 }
 
-export function supportsCodexDeferredWatcher(version: string | undefined): boolean {
+export function supportsCodexAppServerWatcher(version: string | undefined): boolean {
   const actual = parseNumericVersion(version);
-  const minimum = parseNumericVersion(MIN_CODEX_DEFERRED_WATCHER_VERSION)!;
+  const minimum = parseNumericVersion(MIN_CODEX_APP_SERVER_WATCHER_VERSION)!;
   if (actual === undefined) return false;
   for (let index = 0; index < minimum.length; index += 1) {
     const delta = (actual[index] ?? 0) - minimum[index];
@@ -83,10 +84,10 @@ export function nextStepSentence(kind: ClientKind, watcherAvailable = true): str
         : 'The crew-wait watcher is unavailable; end your turn and recover terminal state on the next user turn.';
     case 'codex':
       return watcherAvailable
-        ? 'One required action: start the deferred crew-wait watcher and yield control before ending your turn; user is free to chat.'
-        : 'The installed Codex watcher command is unavailable or untrusted; end your turn and recover terminal state on the next user turn.';
+        ? 'One required action: start the hosted crew-wait bridge before ending your turn; user is free to chat and completion will start a new turn.'
+        : 'This Codex session is not using the Crew App Server bridge, or its watcher command is unavailable; end your turn and recover terminal state on the next user turn.';
     case 'codex-legacy':
-      return `This Codex version lacks the deferred watcher (requires ${MIN_CODEX_DEFERRED_WATCHER_VERSION}+); end your turn and recover terminal state on the next user turn.`;
+      return `This Codex version lacks the hosted watcher bridge (requires ${MIN_CODEX_APP_SERVER_WATCHER_VERSION}+); end your turn and recover terminal state on the next user turn.`;
     case 'unknown':
       return 'End your turn after dispatch; user is free to chat.';
   }
@@ -132,18 +133,20 @@ export interface FullRunEnvelope extends RunEnvelope {
 
 export interface RequiredNextAction {
   readonly type: 'spawn_watcher';
-  readonly mechanism: 'background_shell' | 'deferred_code';
+  readonly mechanism: 'background_shell' | 'codex_app_server';
   readonly command: string;
-  /** JSON string literal safe to paste directly into deferred JavaScript. */
+  /** JSON string literal safe to paste directly into the Codex launcher JavaScript. */
   readonly command_json: string;
-  /** JSON array literal safe to paste directly into deferred JavaScript. */
+  /** JSON array literal safe to paste directly into the Codex launcher JavaScript. */
   readonly run_ids_json: string;
   /** Working directory used by the watcher command. */
   readonly working_directory: string;
-  /** JSON string literal safe to paste directly into deferred JavaScript. */
+  /** JSON string literal safe to paste directly into the Codex launcher JavaScript. */
   readonly working_directory_json: string;
   readonly run_id?: string;
   readonly run_ids?: readonly string[];
+  readonly run_generation?: number;
+  readonly run_generations?: readonly number[];
   readonly run_in_background: true;
   readonly per_run: boolean;
   readonly consequence_if_skipped: string;
@@ -259,6 +262,7 @@ export async function runDispatchAndRespond(
     args.runId,
     args.crewHome,
     args.projectRoot,
+    args.runStateStore.read(args.runId)?.prompts.length,
   );
   const env: FullRunEnvelope = {
     run_id: args.runId,
@@ -319,7 +323,7 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
       );
     } else if (clientKind === 'codex') {
       lines.push(
-        `**REQUIRED before you end this turn:** start the Crew skill's deferred \`functions.exec\` watcher using \`required_next_action.command_json\` and yield control immediately. Command: ${mdInlineCode(env.required_next_action.command)}. Skip it and the run is orphaned.`,
+        `**REQUIRED before you end this turn:** start the Crew skill's hosted background watcher using \`required_next_action.command_json\`, then end the turn. Command: ${mdInlineCode(env.required_next_action.command)}. Skip it and completion cannot wake this thread.`,
       );
     }
   } else {
@@ -343,26 +347,45 @@ export function requiredNextActionForRun(
   runId: string,
   crewHome: string,
   projectRoot: string,
+  runGeneration?: number,
 ): RequiredNextAction | undefined {
   if (
     (clientKind !== 'claude-code' && clientKind !== 'codex')
     || crewWaitCommand === undefined
+    || (
+      clientKind === 'codex'
+      && (
+        runGeneration === undefined
+        || !Number.isSafeInteger(runGeneration)
+        || runGeneration < 1
+      )
+    )
   ) return undefined;
-  const command = watcherCommand(clientKind, crewWaitCommand, [runId], crewHome);
+  const runGenerations = runGeneration === undefined ? [] : [runGeneration];
+  const command = watcherCommand(
+    clientKind,
+    crewWaitCommand,
+    [runId],
+    runGenerations,
+    crewHome,
+  );
   return {
     type: 'spawn_watcher',
-    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'deferred_code',
+    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'codex_app_server',
     command,
     command_json: JSON.stringify(command),
     run_ids_json: JSON.stringify([runId]),
     working_directory: projectRoot,
     working_directory_json: JSON.stringify(projectRoot),
     run_id: runId,
+    ...(clientKind === 'codex' && runGeneration !== undefined
+      ? { run_generation: runGeneration }
+      : {}),
     run_in_background: true,
     per_run: true,
     consequence_if_skipped: clientKind === 'claude-code'
       ? 'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.'
-      : 'Skip it and the run is orphaned; no deferred completion event will surface the terminal state.',
+      : 'Skip it and completion cannot start a new turn on the hosted Codex thread.',
   };
 }
 
@@ -372,11 +395,20 @@ export function requiredNextActionForRuns(
   runIds: readonly string[],
   crewHome: string,
   projectRoot: string,
+  runGenerations: readonly number[] = [],
 ): RequiredNextAction | undefined {
   if (
     (clientKind !== 'claude-code' && clientKind !== 'codex')
     || crewWaitCommand === undefined
     || runIds.length === 0
+    || (
+      clientKind === 'codex'
+      && (
+        runGenerations.length !== runIds.length
+        || runGenerations.some((generation) =>
+          !Number.isSafeInteger(generation) || generation < 1)
+      )
+    )
   ) return undefined;
   if (runIds.length === 1) {
     return requiredNextActionForRun(
@@ -385,23 +417,33 @@ export function requiredNextActionForRuns(
       runIds[0],
       crewHome,
       projectRoot,
+      runGenerations[0],
     );
   }
-  const command = watcherCommand(clientKind, crewWaitCommand, runIds, crewHome);
+  const command = watcherCommand(
+    clientKind,
+    crewWaitCommand,
+    runIds,
+    runGenerations,
+    crewHome,
+  );
   return {
     type: 'spawn_watcher',
-    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'deferred_code',
+    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'codex_app_server',
     command,
     command_json: JSON.stringify(command),
     run_ids_json: JSON.stringify(runIds),
     working_directory: projectRoot,
     working_directory_json: JSON.stringify(projectRoot),
     run_ids: [...runIds],
+    ...(clientKind === 'codex' && runGenerations.length > 0
+      ? { run_generations: [...runGenerations] }
+      : {}),
     run_in_background: true,
     per_run: false,
     consequence_if_skipped: clientKind === 'claude-code'
       ? 'Skip it and the panel is orphaned; no watcher-triggered terminal turn will surface panel completion.'
-      : 'Skip it and the panel is orphaned; no deferred completion event will surface panel completion.',
+      : 'Skip it and panel completion cannot start a new turn on the hosted Codex thread.',
   };
 }
 
@@ -409,10 +451,14 @@ function watcherCommand(
   clientKind: Extract<ClientKind, 'claude-code' | 'codex'>,
   crewWaitCommand: string,
   runIds: readonly string[],
+  runGenerations: readonly number[],
   crewHome: string,
 ): string {
   const crewHomeArg = ` --crew-home-base64 ${Buffer.from(crewHome, 'utf-8').toString('base64url')}`;
-  return `${crewWaitCommand}${crewHomeArg} ${runIds.join(' ')}`;
+  const generationArg = clientKind === 'codex'
+    ? ` --run-generations-base64 ${encodeRunGenerations(runGenerations)}`
+    : '';
+  return `${crewWaitCommand}${crewHomeArg}${generationArg} ${runIds.join(' ')}`;
 }
 
 export function mergeEnvelopeWarnings(

@@ -6,8 +6,8 @@ import { CREW_MCP_VERSION } from './cli/version.js';
 import { registerAgentsCommand } from './cli/commands/agents.js';
 import { setLogLevel } from './utils/logger.js';
 
-// v2 entry points: `crew-mcp serve` (M1, stdio MCP server) and the
-// `crew-mcp install` / `crew-mcp verify` / `crew-mcp uninstall` commands (M3).
+// v2 entry points include `crew-mcp serve` (stdio MCP server), the hosted
+// `crew-mcp codex` launcher, and install/verify/uninstall/config commands.
 // The v0.1 commands (`run`, `init`, `config`, `profile`, `state reset`,
 // `resume`) are removed — see docs/plans/completed/mcp-pivot/IMPLEMENTATION_PLAN.md.
 
@@ -39,6 +39,19 @@ export function buildProgram(): Command {
       applyDebugFlag(program);
       const { serveCommand } = await import('./cli/commands/serve.js');
       await serveCommand({ logFile: opts.logFile });
+    });
+
+  program
+    .command('codex')
+    .description('Launch Codex with Crew\'s non-blocking App Server wake bridge')
+    .argument('[codexArgs...]', 'Arguments forwarded to Codex (use -- before Codex flags)')
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(async (codexArgs: string[]) => {
+      applyDebugFlag(program);
+      const { codexCommand } = await import('./cli/commands/codex.js');
+      const code = await codexCommand({ args: codexArgs });
+      if (code !== 0) process.exitCode = code;
     });
 
   program

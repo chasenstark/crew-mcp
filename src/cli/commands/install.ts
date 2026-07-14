@@ -484,6 +484,12 @@ export async function installSingleTarget(args: {
       + 'Dispatch envelopes use the same executable prefix.',
     );
   }
+  if (adapter.id === 'codex') {
+    logger.info(
+      'crew install: launch Codex with `crew-mcp codex -- <codex arguments>` '
+      + 'to enable non-blocking App Server watcher wake.',
+    );
+  }
 
   // 5. Update install manifest.
   const entry: InstalledTarget = {
@@ -586,6 +592,12 @@ export async function installSingleProjectTarget(args: {
     logger.info(
       `crew install: Claude Code project crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
       + 'Dispatch envelopes use the same executable prefix.',
+    );
+  }
+  if (adapter.id === 'codex') {
+    logger.info(
+      'crew install: launch project Codex through `npx crew-mcp codex -- <codex arguments>` '
+      + 'to enable non-blocking App Server watcher wake.',
     );
   }
 

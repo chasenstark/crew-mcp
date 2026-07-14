@@ -60,90 +60,41 @@ the turn, and:
   JSON-safe `required_next_action.command_json` and
   `required_next_action.run_ids_json`, with
   `required_next_action.working_directory_json` as the nested command's
-  `workdir`. Codex panels use ONE deferred
-  watcher with the panel-level multi-id command. Use this recipe:
+  `workdir`. Codex panels use ONE hosted background watcher with the
+  panel-level multi-id command. Use this launch-only recipe:
 
   ```js
   const command = <required_next_action.command_json>;
   const runIds = <required_next_action.run_ids_json>;
   const workdir = <required_next_action.working_directory_json>;
-  let output = '';
-  const appendOutput = (chunk) => {
-    if (!chunk) return;
-    if (!output) {
-      output = chunk;
-      return;
-    }
-    if (chunk.startsWith(output)) {
-      output = chunk;
-      return;
-    }
-    if (output.endsWith(chunk)) return;
-    let overlap = Math.min(output.length, chunk.length);
-    while (overlap > 0 && output.slice(-overlap) !== chunk.slice(0, overlap)) {
-      overlap -= 1;
-    }
-    output += chunk.slice(overlap);
-  };
-  const fail = (error, exitCode) => notify(JSON.stringify({
-    type: 'crew_wait_failed',
-    command,
-    run_ids: runIds,
-    exit_code: exitCode,
-    output: output.trim(),
-    error: String(error).slice(0, 2000),
-  }));
-  try {
-    const pending = tools.exec_command({
-      cmd: command,
-      workdir,
-      yield_time_ms: 1000,
-      max_output_tokens: 4000,
-    }).then(
-      (result) => ({ result }),
-      (error) => ({ error }),
-    );
-    await yield_control();
-    const started = await pending;
-    if ('error' in started) throw started.error;
-    let result = started.result;
-    appendOutput(result.output);
-    while (result.session_id !== undefined && result.exit_code === undefined) {
-      result = await tools.write_stdin({
-        session_id: result.session_id,
-        chars: '',
-        yield_time_ms: 30000,
-        max_output_tokens: 4000,
-      });
-      appendOutput(result.output);
-    }
-    if (result.exit_code !== 0 || !output.includes('CREW_WAIT_TERMINAL ')) {
-      fail('crew-wait exited without a terminal marker', result.exit_code);
-    } else {
-      notify(JSON.stringify({
-        type: 'crew_wait_terminal',
-        command,
-        run_ids: runIds,
-        exit_code: result.exit_code,
-        output: output.trim(),
-      }));
-    }
-  } catch (error) {
-    fail(error);
+  const result = await tools.exec_command({
+    cmd: command,
+    workdir,
+    yield_time_ms: 1000,
+    max_output_tokens: 1000,
+  });
+  if (result.exit_code !== undefined && result.exit_code !== 0) {
+    throw new Error(`crew-wait failed to start: ${result.output}`);
   }
+  text(JSON.stringify({
+    type: 'crew_wait_started',
+    run_ids: runIds,
+    session_id: result.session_id,
+  }));
   ```
 
-  `yield_control()` releases the model turn before the wait continues, so
-  the user remains free to chat. When `functions.exec` returns `Script
-  running with cell ID ...`, do not call `wait`; end the turn. If deferred
-  code mode is unavailable, report degradation and use next-user-turn
-  snapshot recovery. Never substitute a blocking `Stop` hook, foreground
-  shell, goal, or polling loop.
-  Treat `crew_wait_failed` as degradation, snapshot its `run_ids`, and
-  keep turn-start recovery active until all are terminal. Never remove the
-  server-supplied Crew-home argument from the command.
+  The nested command returns a background session after one second. Do not
+  poll it with `write_stdin`, `wait`, or another tool call; end the model
+  turn. The user remains free to chat, and terminal completion starts a real
+  follow-up turn through Codex App Server. If `required_next_action` is
+  absent, the session was not launched with `crew-mcp codex`; report degraded
+  auto-wake and use next-user-turn recovery. Never substitute `notify`,
+  `yield_control`, a blocking `Stop` hook, foreground shell, goal, or polling
+  loop. Never remove the server-supplied Crew-home, bridge, or generation
+  argument: the generation token and durable wake claim suppress stale and
+  duplicate completion turns.
 <!-- /host -->
-<!-- host:claude-code,codex -->
+<!-- host:claude-code -->
 - On any watcher shape, a harness-tracked native `Agent` / `Task` subagent
   completing tells you nothing about crew runs, which are not
   harness-tracked. The watcher will fire a completion event containing
@@ -155,9 +106,12 @@ the turn, and:
   the turn but never recognizes the resume.
 <!-- /host -->
 <!-- host:codex -->
-  On Codex the lines are in the `crew_wait_terminal.output` field. If the
-  completion arrives without that terminal line, or if a run
-  has been in-flight suspiciously long, fall back to:
+  A native `Agent` / `Task` completion is host harness-tracked and says
+  nothing about Crew runs. On hosted Codex, the watcher starts a synthetic
+  user turn listing the
+  terminal run ids. Call `get_run_status({run_id})` for each, or
+  `get_panel_status({panel_id})` for a panel before aggregation. If the wake
+  never arrives, or if a run has been in-flight suspiciously long, fall back to:
   `list_runs({status: ["success","partial","error","cancelled"],
   completedAfter: <last surfaced ISO timestamp>})`. Dedupe run IDs you
   already surfaced and process the remainder as normal terminal runs.

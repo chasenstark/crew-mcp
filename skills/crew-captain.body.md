@@ -226,7 +226,7 @@ If the user says the tail link does nothing, suggest
 the dispatch envelope.
 
 <!-- host:claude-code,codex -->
-### Step 2 - background watcher overlay (Claude Code and Codex, mandatory)
+### Step 2 - background watcher overlay (Claude Code and hosted Codex, mandatory)
 <!-- /host -->
 
 <!-- host:claude-code -->
@@ -248,7 +248,7 @@ pinned Crew home, and the run id. Do not rebuild it from the rendered
 
 <!-- host:codex -->
 On Codex, immediately after `run_agent` / `continue_run` returns, call
-`functions.exec` once per independent run with this recipe. Paste
+`functions.exec` once per independent run with this launch-only recipe. Paste
 `required_next_action.command_json` and
 `required_next_action.run_ids_json` and
 `required_next_action.working_directory_json` as JavaScript literals at
@@ -260,87 +260,37 @@ project installs whose watcher executable is repository-relative.
 const command = <required_next_action.command_json>;
 const runIds = <required_next_action.run_ids_json>;
 const workdir = <required_next_action.working_directory_json>;
-let output = '';
-const appendOutput = (chunk) => {
-  if (!chunk) return;
-  if (!output) {
-    output = chunk;
-    return;
-  }
-  if (chunk.startsWith(output)) {
-    output = chunk;
-    return;
-  }
-  if (output.endsWith(chunk)) return;
-  let overlap = Math.min(output.length, chunk.length);
-  while (overlap > 0 && output.slice(-overlap) !== chunk.slice(0, overlap)) {
-    overlap -= 1;
-  }
-  output += chunk.slice(overlap);
-};
-const fail = (error, exitCode) => notify(JSON.stringify({
-  type: 'crew_wait_failed',
-  command,
-  run_ids: runIds,
-  exit_code: exitCode,
-  output: output.trim(),
-  error: String(error).slice(0, 2000),
-}));
-
-try {
-  const pending = tools.exec_command({
-    cmd: command,
-    workdir,
-    yield_time_ms: 1000,
-    max_output_tokens: 4000,
-  }).then(
-    (result) => ({ result }),
-    (error) => ({ error }),
-  );
-  await yield_control();
-  const started = await pending;
-  if ('error' in started) throw started.error;
-  let result = started.result;
-  appendOutput(result.output);
-  while (result.session_id !== undefined && result.exit_code === undefined) {
-    result = await tools.write_stdin({
-      session_id: result.session_id,
-      chars: '',
-      yield_time_ms: 30000,
-      max_output_tokens: 4000,
-    });
-    appendOutput(result.output);
-  }
-  if (result.exit_code !== 0 || !output.includes('CREW_WAIT_TERMINAL ')) {
-    fail('crew-wait exited without a terminal marker', result.exit_code);
-  } else {
-    notify(JSON.stringify({
-      type: 'crew_wait_terminal',
-      command,
-      run_ids: runIds,
-      exit_code: result.exit_code,
-      output: output.trim(),
-    }));
-  }
-} catch (error) {
-  fail(error);
+const result = await tools.exec_command({
+  cmd: command,
+  workdir,
+  yield_time_ms: 1000,
+  max_output_tokens: 1000,
+});
+if (result.exit_code !== undefined && result.exit_code !== 0) {
+  throw new Error(`crew-wait failed to start: ${result.output}`);
 }
+text(JSON.stringify({
+  type: 'crew_wait_started',
+  run_ids: runIds,
+  session_id: result.session_id,
+}));
 ```
 
-`yield_control()` is the non-blocking boundary: the script keeps waiting
-after the current model turn is released, the user can keep chatting, and
-`notify(...)` injects the terminal event later. When `functions.exec`
-returns `Script running with cell ID ...`, do **not** call `wait`; end the
-turn. For panels, start one deferred script with the panel-level multi-id
-command. If `functions.exec`, `yield_control`, `notify`, or the nested
-`exec_command` / `write_stdin` tools are unavailable, report watcher
-degradation and use turn-start recovery. Do not substitute a blocking
-`Stop` hook, foreground shell, goal, or polling loop.
+The nested command returns a background session after one second; do not poll
+it with `write_stdin`, `wait`, or another tool call. End the model turn. The
+user can keep chatting while `crew-wait` waits, and completion calls Codex App
+Server `turn/start` to create a real follow-up turn on this same thread. For
+panels, launch one process with the panel-level multi-id command. If
+`required_next_action` is absent, this is a standalone Codex session rather
+than `crew-mcp codex`; report that auto-wake is unavailable and use turn-start
+recovery. Do not substitute `notify`, `yield_control`, a blocking `Stop` hook,
+foreground shell, goal, or polling loop.
 
-Treat `crew_wait_failed` as explicit watcher degradation: report it,
-snapshot the listed runs, and keep next-user-turn recovery active until
-every listed run is terminal. The command carries the server's Crew home
-through an internal argument, so do not remove or rewrite any arguments.
+If the launch returns a non-zero exit, report watcher degradation and keep
+next-user-turn recovery active until every listed run is terminal. The command
+carries the server's Crew home and private App Server bridge reference, so do
+not remove or rewrite any arguments. Its generation token and durable wake
+claim suppress stale and duplicate completion turns.
 <!-- /host -->
 
 <!-- host:claude-code,codex -->
@@ -348,10 +298,12 @@ A native `Agent` / `Task` subagent completion is host harness-tracked, not
 Crew-tracked, and tells you nothing about Crew runs.
 
 **Spawn failure is user-visible.** If the watcher fails to start (missing
-binary, allowlist denial, or missing deferred-code capability), tell the
+binary, allowlist denial, or missing hosted bridge capability), tell the
 user the watcher did not start and that results will surface on their next
 message. Then end the turn and use turn-start recovery.
+<!-- /host -->
 
+<!-- host:claude-code -->
 **Completion-event handling.** A successful watcher prints:
 
 ```
@@ -369,11 +321,15 @@ and continue from the recovered `run_id`.
 <!-- /host -->
 
 <!-- host:codex -->
-On Codex, read these lines from the `crew_wait_terminal.output` field. If a
-watcher completion arrives without `CREW_WAIT_TERMINAL`, use
-`list_runs` without `completedAfter`, filter to terminal statuses, and
-dedupe by `run_id` against runs already surfaced. Only use
-`completedAfter` when the timestamp is confidently visible in the chat.
+**Completion-event handling.** The hosted watcher starts a new user turn whose
+message lists the terminal run ids. For each id, call `get_run_status` and
+synthesize from `summary`, `filesChanged`, `warnings`, `commits`, and
+`events_tail`; never dump the tail verbatim. For a panel, call
+`get_panel_status({panel_id})` first and enforce `running_count == 0` before
+`aggregate_panel`. The synthetic turn is not merge or discard authorization.
+If the expected wake never arrives, use `list_runs` without `completedAfter`,
+filter to terminal statuses, and dedupe by `run_id` against runs already
+surfaced.
 <!-- /host -->
 
 <!-- host:claude-code -->
@@ -390,9 +346,8 @@ This blocks chat but uses one inference instead of an MCP long-poll loop.
 <!-- /host -->
 <!-- host:codex -->
 Do not use a foreground watcher on Codex. The supported Codex
-path is the deferred Step 2 recipe; it yields before waiting. If deferred
-code mode is unavailable, end the turn and recover by snapshot at the next
-user turn.
+path is the hosted Step 2 launch recipe. If `required_next_action` is absent,
+end the turn and recover by snapshot at the next user turn.
 <!-- /host -->
 
 <!-- host:claude-code,codex -->
@@ -400,8 +355,8 @@ user turn.
 
 Claude Code and Codex: while this conversation has known in-flight runs,
 opportunistically snapshot them at the start of every user turn. This is
-the recovery path for a lost deferred cell or notification. Also check when
-spawn failure was reported, deferred capability was unavailable, context
+the recovery path for a lost watcher or bridge wake. Also check when
+spawn failure was reported, hosted capability was unavailable, context
 was compacted or cleared, or the user mentions an unrecognized run.
 
 With more than one pending run, use one repo-scoped `list_runs` call
@@ -740,8 +695,8 @@ Spawn one watcher for the panel, not one per reviewer, because
 consolidation waits for all reviewers. Use the background `Bash` form above.
 <!-- /host -->
 <!-- host:codex -->
-Start one deferred watcher with the panel command, not one per reviewer,
-because consolidation waits for all reviewers.
+Start one hosted background watcher with the panel command, not one per
+reviewer, because consolidation waits for all reviewers.
 <!-- /host -->
 <!-- host:claude-code,codex -->
 The reviewer envelopes still carry per-run commands for selective/degraded

@@ -73,7 +73,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the linked contract; a different id is rejected. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async; start required_next_action crew-wait in a background shell on Claude Code or deferred code mode on Codex. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the linked contract; a different id is rejected. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async; start required_next_action crew-wait in a background shell on Claude Code or the hosted App Server bridge on Codex. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,

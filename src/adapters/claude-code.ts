@@ -26,6 +26,7 @@ import {
 } from './failure-classifier.js';
 import { defaultCrewBinaryResolver } from '../install/crew-binary.js';
 import { redactRunToken } from '../utils/redaction.js';
+import { codexSafeSpawnEnvironment } from '../codex/environment.js';
 
 /**
  * Schema for the JSON response from `claude -p ... --output-format json`.
@@ -579,6 +580,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   async getCliVersionTag(): Promise<string | undefined> {
     const result = await execa('claude', ['--version'], {
+      ...codexSafeSpawnEnvironment(),
       timeout: 10_000,
       reject: false,
     });
@@ -652,6 +654,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     let flushBufferedLine: (() => void) | undefined;
     try {
       const subprocess = execa('claude', args, {
+        ...codexSafeSpawnEnvironment(),
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout } : {}),
         ...processGroupSpawnOptions(),
@@ -900,6 +903,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private async probeVersion(): Promise<HealthCheckResult> {
     try {
       const versionResult = await execa('claude', ['--version'], {
+        ...codexSafeSpawnEnvironment(),
         timeout: 10_000,
         reject: false,
       });
@@ -931,6 +935,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         'claude',
         ['-p', 'respond with OK', '--output-format', 'json', '--max-turns', '1'],
         {
+          ...codexSafeSpawnEnvironment(),
           timeout: 30_000,
           reject: false,
           stdin: 'ignore',

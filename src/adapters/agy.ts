@@ -22,6 +22,7 @@ import type {
   Task,
   TaskResult,
 } from './types.js';
+import { codexSafeSpawnEnvironment } from '../codex/environment.js';
 
 /**
  * `agy` = the Antigravity CLI, Google's replacement for the now-dead
@@ -340,6 +341,7 @@ export class AgyAdapter implements AgentAdapter {
 
   async getCliVersionTag(): Promise<string | undefined> {
     const result = await execa('agy', ['--version'], {
+      ...codexSafeSpawnEnvironment(),
       timeout: 10_000,
       reject: false,
     });
@@ -458,6 +460,7 @@ export class AgyAdapter implements AgentAdapter {
     let result;
     try {
       const subprocess = execa('agy', args, {
+        ...codexSafeSpawnEnvironment(),
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout: timeout + PRINT_TIMEOUT_EXECA_BUFFER_MS } : {}),
         maxBuffer: AGY_MAX_BUFFER_BYTES,
@@ -593,6 +596,7 @@ export class AgyAdapter implements AgentAdapter {
   private async probeHealth(): Promise<HealthCheckResult> {
     try {
       const result = await execa('agy', ['--version'], {
+        ...codexSafeSpawnEnvironment(),
         timeout: 10_000,
         reject: false,
       });

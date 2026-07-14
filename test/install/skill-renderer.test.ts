@@ -181,12 +181,12 @@ describe('host-conditional real skill bodies', () => {
   const SENTINELS: Record<string, Record<HostId, string>> = {
     crew: {
       'claude-code': 'Complete this checklist before ending the turn:',
-      codex: '`yield_control()` is the non-blocking boundary',
+      codex: 'Server `turn/start` to create a real follow-up turn',
       agy: 'On hosts without the watcher capability, use next-turn snapshots.',
     },
     'crew:iterate': {
       'claude-code': 'Claude Code, panels (`run_panel`): spawn ONE watcher',
-      codex: '`yield_control()` releases the model turn before the wait continues',
+      codex: 'follow-up turn through Codex App Server',
       agy: 'Hosts without either watcher mechanism: discover terminal runs',
     },
   };
@@ -195,6 +195,8 @@ describe('host-conditional real skill bodies', () => {
       'functions.exec',
       'crew_wait_terminal',
       'yield_control',
+      'crew_wait_started',
+      'Server `turn/start` to create a real follow-up turn',
       'On hosts without the watcher capability, use next-turn snapshots.',
       'Hosts without either watcher mechanism: discover terminal runs',
     ],
@@ -348,7 +350,7 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('## Dispatch or inline');
     expect(out).toContain('## Merge boundary');
     expect(out).toContain('## Dispatch lifecycle');
-    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and hosted Codex, mandatory)');
     expect(out).toContain('Checking pending runs at turn start');
     expect(out).not.toContain('## Polling lifecycle — every dispatch');
     expect(out).not.toContain('Hard rule: stay in the same turn');
@@ -437,27 +439,27 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).not.toMatch(/Always pass\s+`wait_for_change_ms:\s*30000`/);
 
     // ADDED — Phase 2 + post-review revisions:
-    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and hosted Codex, mandatory)');
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
     expect(out).toContain('Completion-event handling');
-    expect(out).toContain('await yield_control()');
-    expect(out).toContain('notify(JSON.stringify({');
-    expect(out).toContain('tools.write_stdin({');
+    expect(out).toContain('tools.exec_command({');
+    expect(out).not.toContain('await yield_control()');
+    expect(out).not.toContain('notify(JSON.stringify({');
+    expect(out).not.toContain('tools.write_stdin({');
     expect(out).toContain('required_next_action.command_json');
     expect(out).toContain('required_next_action.run_ids_json');
     expect(out).toContain('required_next_action.working_directory_json');
     expect(out).toContain('workdir,');
-    expect(out).toContain('output.slice(-overlap)');
-    expect(out).toContain('chunk.slice(0, overlap)');
-    expect(out).toContain("type: 'crew_wait_failed'");
-    expect(out).toContain("result.session_id !== undefined && result.exit_code === undefined");
-    expect(out).toContain("output.includes('CREW_WAIT_TERMINAL ')");
-    expect(out).toContain('do **not** call `wait`');
+    expect(out).toContain("type: 'crew_wait_started'");
+    expect(out).toContain('result.exit_code !== undefined && result.exit_code !== 0');
+    expect(out).toContain('do not poll');
+    expect(out).toContain('completion calls Codex App');
+    expect(out).toContain('crew-mcp codex');
     expect(out).toContain('list_runs');
-    // Foreground waiting remains forbidden on Codex; only the deferred
-    // yield-before-wait recipe is allowed.
+    // Foreground waiting remains forbidden on Codex; only the hosted
+    // background-launch recipe is allowed.
     expect(out).toContain('Do not use a foreground watcher on Codex');
-    expect(out).toContain('deferred Step 2 recipe');
+    expect(out).toContain('hosted Step 2 launch recipe');
     expect(out).not.toContain('docs/status/captain-flow-review-2026-04-29.md');
     expect(out).toContain('panel-level');
     expect(out).toContain('commits');
@@ -486,6 +488,7 @@ describe('renderSkill (codex template)', () => {
     expect(out).toContain(SKILL_DESCRIPTION);
     expect(out).toContain('## Crew orchestration playbook');
     expect(out).toContain('mcp__crew__run_agent');
+    expect(out).toContain('generation token and durable wake');
     expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
   });
 });

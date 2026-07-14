@@ -197,10 +197,15 @@ describe('ClaudeCodeAdapter', () => {
       expect(args).not.toContain('--mcp-config');
       expect(args).not.toContain('--strict-mcp-config');
       expect(args).not.toContain(composedPrompt);
-      expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      const options = mockExeca.mock.calls[0]?.[2];
+      expect(options).toEqual(expect.objectContaining({
         buffer: false,
+        extendEnv: false,
         input: composedPrompt,
       }));
+      expect(options?.env?.CREW_CODEX_BRIDGE_FILE).toBeUndefined();
+      expect(options?.env?.CREW_CODEX_REMOTE_TOKEN).toBeUndefined();
+      expect(options?.env?.CODEX_THREAD_ID).toBeUndefined();
     });
 
     it('appends an inline crew MCP config when dispatchMcpEnv is present', async () => {

@@ -105,7 +105,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers as one panel. Optionally bind a terminal implementer to prepend summary/files; omitted reviewers use workflow.agentDefaults.panel. agy auto-routes to ephemeral_review. Returns panel_id, reviewer run_ids, failures, and on Claude Code/Codex a panel-level crew-wait watcher command in required_next_action; per-reviewer wait commands remain available for selective recovery. Do not block the turn long-polling get_run_status.';
+  'Dispatch parallel reviewers as one panel. Optionally bind a terminal implementer to prepend summary/files; omitted reviewers use workflow.agentDefaults.panel. agy auto-routes to ephemeral_review. Returns panel_id, reviewer run_ids, failures, and on Claude Code/hosted Codex a panel-level crew-wait watcher command in required_next_action; per-reviewer wait commands remain available for selective recovery. Do not block the turn long-polling get_run_status.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -322,6 +322,7 @@ export async function runPanelHandler(
         result.runId,
         ctx.crewHome,
         ctx.projectRoot,
+        1,
       );
       envelope = {
         run_id: result.runId,
@@ -354,6 +355,7 @@ export async function runPanelHandler(
     successfulReviewers.map((envelope) => envelope.run_id),
     ctx.crewHome,
     ctx.projectRoot,
+    successfulReviewers.map(() => 1),
   );
 
   return {
@@ -393,10 +395,10 @@ function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): st
       lines.push(`- \`Bash(${out.required_next_action.command}, run_in_background: true)\``);
     } else if (clientKind === 'codex') {
       lines.push(
-        `- Start the Crew skill's deferred \`functions.exec\` watcher using \`required_next_action.command_json\` and yield control immediately. Command: ${mdInlineCode(out.required_next_action.command)}.`,
+        `- Start the Crew skill's hosted background watcher using \`required_next_action.command_json\`, then end the turn. Command: ${mdInlineCode(out.required_next_action.command)}.`,
       );
     }
-    lines.push('Skip it and the panel is orphaned.');
+    lines.push('Skip it and panel completion cannot automatically wake this thread.');
     const selectiveActions = out.reviewers
       .map((reviewer) => reviewer.required_next_action)
       .filter((action): action is RequiredNextAction =>

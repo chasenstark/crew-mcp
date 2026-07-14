@@ -47,9 +47,14 @@ describe('GenericAdapter', () => {
       ['--prompt', composedPrompt],
       expect.objectContaining({
         cwd: '/tmp/project',
+        extendEnv: false,
         reject: false,
       }),
     );
+    const options = mockExeca.mock.calls[0]?.[2];
+    expect(options?.env?.CREW_CODEX_BRIDGE_FILE).toBeUndefined();
+    expect(options?.env?.CREW_CODEX_REMOTE_TOKEN).toBeUndefined();
+    expect(options?.env?.CODEX_THREAD_ID).toBeUndefined();
   });
 
   it('ignores dispatchMcpEnv instead of emitting MCP env argv', async () => {

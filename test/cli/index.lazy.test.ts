@@ -31,4 +31,10 @@ describe('crew-mcp CLI lazy command imports', () => {
     ).rejects.toThrow(/process\.exit unexpectedly called/);
     expect(serveImported).toBe(false);
   });
+
+  it('registers the hosted Codex launcher command', async () => {
+    const { buildProgram } = await import('../../src/index.js');
+    const codex = buildProgram().commands.find((command) => command.name() === 'codex');
+    expect(codex?.description()).toContain('App Server wake bridge');
+  });
 });

@@ -163,11 +163,15 @@ import {
 } from '../../orchestrator/tools/send-message.js';
 import {
   classifyClient,
-  MIN_CODEX_DEFERRED_WATCHER_VERSION,
+  MIN_CODEX_APP_SERVER_WATCHER_VERSION,
   type ClientKind,
   type ProgressTokenSeen,
   type ToolHandlerDeps,
 } from '../../orchestrator/tools/shared.js';
+import {
+  CODEX_BRIDGE_FILE_ENV,
+  encodeCodexBridgeFile,
+} from '../../codex/app-server-bridge.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { manifestPath } from '../../install/install-manifest.js';
 import { projectManifestPath } from '../../install/project-install-manifest.js';
@@ -264,6 +268,9 @@ export interface ServeOptions {
    * path so the env stays clean.
    */
   logFile?: string;
+
+  /** Test seam for the hosted Codex bridge environment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
@@ -416,14 +423,14 @@ const LEGACY_CREW_WAIT_COMMAND = 'crew-wait';
 
 /**
  * Resolve the watcher command that dispatch envelopes tell Claude Code or
- * Codex to spawn. Selection is deliberately host-scoped and deterministic:
+ * hosted Codex to spawn. Selection is deliberately host-scoped and deterministic:
  * client kind -> HostId, then the project install manifest when this server
  * is itself project-local, then the user-scope manifest. A project command is
  * accepted only when it exactly matches one of the fixed forms emitted by
  * Crew's project installer: the project manifest belongs to the checkout and
  * is not a trusted source of arbitrary shell. Legacy Claude installs retain
- * the old PATH fallback; Codex degrades to next-turn recovery instead of
- * auto-executing a command Crew cannot establish as installed.
+ * the old PATH fallback; Codex degrades to next-turn recovery unless both
+ * the installed watcher command and Crew's App Server bridge are present.
  */
 export function resolveCrewWaitCommandForClientKind(args: {
   readonly clientKind: ClientKind;
@@ -567,6 +574,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const captainServeInstance = randomUUID();
   const workerAuth = resolveWorkerServeAuth(crewHome);
   const installManifestHome = options.home ?? inferInstallManifestHome(crewHome);
+  const runtimeEnv = options.env ?? process.env;
   const projectInstallActive = isActiveProjectCrewInstall(
     projectRoot,
     options.serverScriptPath,
@@ -673,7 +681,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       loggedLegacyCodexClient = true;
       logger.warn(
         `crew-mcp serve: Codex client version ${JSON.stringify(info?.version ?? '(missing)')} `
-        + `does not support deferred watchers (requires ${MIN_CODEX_DEFERRED_WATCHER_VERSION}+); `
+        + `does not support the hosted watcher bridge (requires ${MIN_CODEX_APP_SERVER_WATCHER_VERSION}+); `
         + 'dispatch remains available with next-turn status recovery.',
       );
     }
@@ -708,12 +716,24 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         );
       } else if (resolution.source === 'legacy-fallback' && clientKind === 'codex') {
         logger.warn(
-          'crew-mcp serve: no stored crewWaitCommand found for Codex; deferred watcher '
+          'crew-mcp serve: no stored crewWaitCommand found for Codex; hosted watcher '
           + 'auto-execution is disabled. Re-run `crew-mcp install -t codex` and restart Codex.',
         );
       }
     }
     cachedCrewWaitCommand = resolution.command;
+    if (clientKind === 'codex' && cachedCrewWaitCommand !== undefined) {
+      const bridgeFile = runtimeEnv[CODEX_BRIDGE_FILE_ENV];
+      if (!bridgeFile || !isAbsolute(bridgeFile) || !existsSync(bridgeFile)) {
+        logger.warn(
+          'crew-mcp serve: this Codex session is not attached to Crew\'s App Server bridge; '
+          + 'watcher auto-wake is disabled. Launch future sessions with `crew-mcp codex`.',
+        );
+        cachedCrewWaitCommand = undefined;
+      } else {
+        cachedCrewWaitCommand += ` --codex-bridge-base64 ${encodeCodexBridgeFile(bridgeFile)}`;
+      }
+    }
     return cachedCrewWaitCommand;
   };
 

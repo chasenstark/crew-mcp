@@ -214,7 +214,7 @@ describe('runPanelHandler', () => {
     ]);
   });
 
-  it('adds deferred panel and selective watcher actions for Codex panels', async () => {
+  it('adds hosted panel and selective watcher actions for Codex panels', async () => {
     const h = makeHarness([
       makeMockAdapter({ name: 'codex-reviewer' }),
       makeMockAdapter({ name: 'agy-reviewer' }),
@@ -238,23 +238,24 @@ describe('runPanelHandler', () => {
     });
 
     const runIds = out.reviewers.map((reviewer) => reviewer.run_id);
-    const commandPrefix = `.\\node_modules\\.bin\\crew-wait.cmd --crew-home-base64 ${Buffer.from(h.ctx.crewHome).toString('base64url')}`;
+    const commandPrefix = `.\\node_modules\\.bin\\crew-wait.cmd --crew-home-base64 ${Buffer.from(h.ctx.crewHome).toString('base64url')} --run-generations-base64 ${Buffer.from(JSON.stringify([1, 1])).toString('base64url')}`;
     expect(out.required_next_action).toEqual({
       type: 'spawn_watcher',
-      mechanism: 'deferred_code',
+      mechanism: 'codex_app_server',
       command: `${commandPrefix} ${runIds.join(' ')}`,
       command_json: JSON.stringify(`${commandPrefix} ${runIds.join(' ')}`),
       run_ids_json: JSON.stringify(runIds),
       working_directory: h.ctx.projectRoot,
       working_directory_json: JSON.stringify(h.ctx.projectRoot),
       run_ids: runIds,
+      run_generations: [1, 1],
       run_in_background: true,
       per_run: false,
       consequence_if_skipped:
-        'Skip it and the panel is orphaned; no deferred completion event will surface panel completion.',
+        'Skip it and panel completion cannot start a new turn on the hosted Codex thread.',
     });
     expect(out.reviewers.map((reviewer) => reviewer.required_next_action?.mechanism))
-      .toEqual(['deferred_code', 'deferred_code']);
+      .toEqual(['codex_app_server', 'codex_app_server']);
   });
 
   it('injects a passed criteria contract into reviewer runs without relinking implementerRunId', async () => {

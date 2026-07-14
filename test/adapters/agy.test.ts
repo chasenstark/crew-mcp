@@ -84,8 +84,16 @@ describe('AgyAdapter', () => {
         context: { workingDirectory: '/crew/review-wt' },
         constraints: { reviewIntent: true, sandbox: 'workspace-write' },
       });
-      const [, , options] = mockExeca.mock.calls[0] as [string, string[], { input?: string }];
+      const [, , options] = mockExeca.mock.calls[0] as [string, string[], {
+        env?: NodeJS.ProcessEnv;
+        extendEnv?: boolean;
+        input?: string;
+      }];
       const input = options.input ?? '';
+      expect(options.extendEnv).toBe(false);
+      expect(options.env?.CREW_CODEX_BRIDGE_FILE).toBeUndefined();
+      expect(options.env?.CREW_CODEX_REMOTE_TOKEN).toBeUndefined();
+      expect(options.env?.CODEX_THREAD_ID).toBeUndefined();
       // Review contract replaces the write contract — never stacked.
       expect(input.startsWith('Crew review contract')).toBe(true);
       expect(input).not.toContain('Crew workspace contract');

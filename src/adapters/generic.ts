@@ -13,6 +13,7 @@ import {
 } from './process-group.js';
 import { argvPromptTooLargeResult } from './prompt-transport.js';
 import { classifyTextFailure } from './failure-classifier.js';
+import { codexSafeSpawnEnvironment } from '../codex/environment.js';
 
 const PROMPT_VALUE_FLAGS = new Set(['--prompt']);
 
@@ -152,6 +153,7 @@ export class GenericAdapter implements AgentAdapter {
     let result;
     try {
       const subprocess = execa(this.command, args, {
+        ...codexSafeSpawnEnvironment(),
         cwd: task.context.workingDirectory,
         ...(timeout ? { timeout } : {}),
         ...processGroupSpawnOptions(),
@@ -254,6 +256,7 @@ export class GenericAdapter implements AgentAdapter {
     try {
       const cmd = process.platform === 'win32' ? 'where' : 'which';
       const result = await execa(cmd, [this.command], {
+        ...codexSafeSpawnEnvironment(),
         timeout: 5_000,
         reject: false,
       });

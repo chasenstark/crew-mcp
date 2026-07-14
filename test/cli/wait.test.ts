@@ -237,7 +237,135 @@ describe('crew-wait', () => {
     } finally {
       process.stderr.write = originalWrite;
     }
-    expect(writes.join('')).toContain('Usage: crew-wait [--crew-home-base64 <base64url>] <run_id...>');
+    expect(writes.join('')).toContain(
+      'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>] <run_id...>',
+    );
+  });
+
+  it('rejects either orphaned Codex wake flag before waiting for run state', async () => {
+    const encodedBridge = Buffer.from('/tmp/crew-bridge.json').toString('base64url');
+    const encodedGenerations = Buffer.from(JSON.stringify([1])).toString('base64url');
+    const writes: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await expect(main([
+        '--codex-bridge-base64', encodedBridge, 'run-never-created',
+      ])).resolves.toBe(2);
+      await expect(main([
+        '--run-generations-base64', encodedGenerations, 'run-never-created',
+      ])).resolves.toBe(2);
+      await expect(main([
+        '--codex-bridge-base64', encodedBridge,
+        '--run-generations-base64', encodedGenerations,
+        'run-never-created', 'run-also-never-created',
+      ])).resolves.toBe(2);
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    expect(writes.join('')).toContain('Usage: crew-wait');
+  });
+
+  it('wires a hosted Codex wake through the durable claim guard', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-codex-main-'));
+    cleanup.push(crewHome);
+    const runId = 'run-codex-main';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/worktree',
+      prompts: [{ turn: 1 }],
+    });
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-bridge-base64', Buffer.from('/tmp/bridge.json').toString('base64url'),
+        '--run-generations-base64', Buffer.from('[1]').toString('base64url'),
+        runId,
+      ], {
+        env: { CODEX_THREAD_ID: threadId },
+        runClaimedCodexWake: async (options) => ({
+          started: true,
+          result: await options.startTurn(),
+        }),
+        wakeCodexThread: async (options) => {
+          const result = await options.guardTurnStart!(async () => ({
+            turn: { id: 'turn-sent' },
+          }));
+          expect(options.threadId).toBe(threadId);
+          expect(options.runIds).toEqual([runId]);
+          expect(result).toEqual({
+            action: 'start',
+            result: { turn: { id: 'turn-sent' } },
+          });
+          return { turnId: 'turn-sent' };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_SENT thread_id=${threadId} turn_id=turn-sent`);
+  });
+
+  it('prints the durable claim reason when a hosted Codex wake is suppressed', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-codex-skip-'));
+    cleanup.push(crewHome);
+    const runId = 'run-codex-skip';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/worktree',
+      prompts: [{ turn: 1 }],
+    });
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-bridge-base64', Buffer.from('/tmp/bridge.json').toString('base64url'),
+        '--run-generations-base64', Buffer.from('[1]').toString('base64url'),
+        runId,
+      ], {
+        env: { CODEX_THREAD_ID: threadId },
+        runClaimedCodexWake: async () => ({
+          started: false,
+          reason: 'stale_generation',
+        }),
+        wakeCodexThread: async (options) => {
+          const result = await options.guardTurnStart!(async () => ({
+            turn: { id: 'must-not-start' },
+          }));
+          expect(result).toEqual({ action: 'skip' });
+          return { skipped: true };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(writes.join('')).toContain(
+      `CREW_WAIT_CODEX_WAKE_SKIPPED thread_id=${threadId} reason=stale_generation`,
+    );
   });
 
   it('uses the explicit base64url Crew home instead of process env', async () => {
@@ -573,7 +701,9 @@ describe('crew-wait', () => {
     } finally {
       process.stdout.write = originalWrite;
     }
-    expect(writes.join('')).toMatch(/Usage: crew-wait \[--crew-home-base64 <base64url>\] <run_id\.\.\.>/);
+    expect(writes.join('')).toMatch(
+      /Usage: crew-wait \[--crew-home-base64 <base64url>\] \[--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>\] <run_id\.\.\.>/,
+    );
   });
 });
 

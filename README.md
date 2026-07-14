@@ -146,8 +146,25 @@ Verify the install:
 crew-mcp verify
 ```
 
-Restart your host CLI session. The `mcp__crew__*` tools and the captain
-skill are now available.
+Restart Claude Code normally. For Codex, launch through Crew when you want
+terminal Crew runs to resume the same conversation automatically:
+
+```sh
+crew-mcp codex -- -C /path/to/project
+```
+
+This starts an authenticated loopback Codex App Server and attaches the TUI to
+it. The captain turn ends immediately after starting `crew-wait`; when the run
+finishes, the watcher starts a new turn in that same Codex thread. A normal
+standalone `codex` launch remains supported, but completion is recovered on
+the next user message instead of waking the idle thread. Hosted wake requires
+Codex CLI 0.144.3 or newer.
+
+The server-returned watcher command also pins the exact run generation. Crew
+revalidates it at delivery and takes a durable one-shot claim, so stale or
+duplicate watcher processes do not create duplicate Codex turns.
+
+The `mcp__crew__*` tools and captain skill are then available.
 
 ### Project-scoped install
 
