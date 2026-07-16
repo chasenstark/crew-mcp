@@ -28,7 +28,7 @@ describe('config TUI single-select screen', () => {
     expect(activeLines).toEqual(['> (•) claude-code']);
   });
 
-  it('selects with enter', () => {
+  it('picks with space; enter saves without changing the selection', () => {
     const state = new AgentDefaultsState(undefined);
     const screen = new SingleSelectScreen({
       title: 'Pick iterate.implementer',
@@ -38,7 +38,12 @@ describe('config TUI single-select screen', () => {
       state,
     });
 
-    expect(screen.onKey({ name: 'return' })).toBe('pop');
+    // enter is a whole-config save — it does not pick the cursor row.
+    expect(screen.onKey({ name: 'return' })).toBe('save');
+    expect(state.getSingle(AGENT_DEFAULT_PATHS.iterateImplementer)).toBeUndefined();
+
+    // space is what commits a pick and returns to the parent.
+    expect(screen.onKey({ name: 'space' })).toBe('pop');
     expect(state.getSingle(AGENT_DEFAULT_PATHS.iterateImplementer)).toBe('codex');
   });
 

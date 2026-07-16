@@ -39,7 +39,7 @@ describe('CleanupScreen', () => {
     screen.onKey(key('down')); // run-dir
     screen.onKey(key('down')); // criteria
     screen.onKey(key('down')); // preview
-    expect(screen.onKey(key('return'))).toBe('save');
+    expect(screen.onKey(key('space'))).toBe('save'); // space activates the row
     expect(screen.requested).toBe('dry');
   });
 
@@ -49,7 +49,7 @@ describe('CleanupScreen', () => {
     screen.onKey(key('down')); // criteria
     screen.onKey(key('down')); // preview
     screen.onKey(key('down')); // run
-    expect(screen.onKey(key('return'))).toBe('save');
+    expect(screen.onKey(key('space'))).toBe('save'); // space activates the row
     expect(screen.requested).toBe('run');
   });
 
@@ -60,7 +60,7 @@ describe('CleanupScreen', () => {
     screen.onKey(key('down')); // preview
     screen.onKey(key('down')); // run
     screen.onKey(key('down')); // back
-    expect(screen.onKey(key('return'))).toBe('pop');
+    expect(screen.onKey(key('space'))).toBe('pop'); // space on `back` leaves
     expect(screen.requested).toBeUndefined();
   });
 });

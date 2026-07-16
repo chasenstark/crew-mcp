@@ -208,7 +208,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       },
     ],
   });
-  const result = await driveTui({ stdin, stdout, screens: [rootScreen] });
+  const result = await driveTui({
+    stdin,
+    stdout,
+    screens: [rootScreen],
+    beforeSave: () => agentDefaultsState.validateForSave(),
+  });
 
   // A "Run cleanup now" / "Preview" pick in the submenu exits the TUI via
   // `save` (cleanup is async and can't run inside the key handler). Treat
@@ -456,6 +461,16 @@ interface TuiArgs {
   readonly stdin: NodeJS.ReadStream;
   readonly stdout: NodeJS.WriteStream;
   readonly screens: readonly Screen[];
+  /**
+   * Validation gate run whenever ANY screen returns `save` (enter now
+   * means "save the whole config" from any depth, not just the root).
+   * Return an error string to block the save and surface it under the
+   * current frame; return undefined to allow it. The root screen also
+   * runs its own inline copy of this, so a root-initiated save that
+   * passed there passes here too — this catches saves fired from a
+   * submenu where the root's inline check never runs.
+   */
+  readonly beforeSave?: () => string | undefined;
 }
 
 type TuiResult = 'saved' | 'cancelled';
@@ -467,6 +482,9 @@ export function driveTui(args: TuiArgs): Promise<TuiResult> {
     throw new Error('driveTui requires at least one screen.');
   }
   let renderedLines = 0;
+  // A validation error from a save attempt, shown under the current
+  // frame until the next keypress clears it.
+  let pendingError: string | undefined;
 
   // Clip each line to the terminal width so a narrow terminal can't
   // wrap a description and break the cursor-up-by-N redraw math.
@@ -487,6 +505,9 @@ export function driveTui(args: TuiArgs): Promise<TuiResult> {
       stdout.write('\x1b[0J');
     }
     const lines = currentScreen().render();
+    if (pendingError !== undefined) {
+      lines.push('', pendingError);
+    }
     for (const line of lines) stdout.write(`${clip(line)}\n`);
     renderedLines = lines.length;
   };
@@ -550,6 +571,8 @@ export function driveTui(args: TuiArgs): Promise<TuiResult> {
           cleanup('cancelled');
           return;
         }
+        // Any keypress dismisses a stale save-validation error.
+        pendingError = undefined;
         const result = currentScreen().onKey(key);
         if (isPushResult(result)) {
           screenStack.push(result.push);
@@ -568,9 +591,19 @@ export function driveTui(args: TuiArgs): Promise<TuiResult> {
             }
             cleanup('cancelled');
             return;
-          case 'save':
+          case 'save': {
+            // Enter means "save the whole config" from any screen; gate
+            // it centrally so a save fired from inside a submenu still
+            // hits validation the root screen would otherwise run.
+            const error = args.beforeSave?.();
+            if (error !== undefined) {
+              pendingError = error;
+              render();
+              return;
+            }
             cleanup('saved');
             return;
+          }
           case 'cancel':
             cleanup('cancelled');
             return;

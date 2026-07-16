@@ -28,11 +28,12 @@ function nextPreset(current: number): number {
 }
 
 /**
- * Cleanup & retention submenu. Two TTL rows cycle through day presets on
- * space/enter; "Run cleanup now" / "Preview" record the requested action
- * and return `save` so the parent can persist settings and then run the
- * GC after the raw-mode TUI has torn down (cleanup is async and can't run
- * inside the synchronous key handler).
+ * Cleanup & retention submenu. TTL rows cycle through day presets on
+ * space; "Run cleanup now" / "Preview" are space-activated and record
+ * the requested action, returning `save` so the parent can persist
+ * settings and then run the GC after the raw-mode TUI has torn down
+ * (cleanup is async and can't run inside the synchronous key handler).
+ * Enter is a plain whole-config save (no cleanup run) from any row.
  */
 export class CleanupScreen implements Screen {
   private cursor = 0;
@@ -72,7 +73,7 @@ export class CleanupScreen implements Screen {
       }
     }
     lines.push('');
-    lines.push('↑/↓ or j/k: move    space/enter: select    q/esc: back');
+    lines.push('↑/↓ or j/k: move    space: change/run    enter: save    q/esc: back');
     lines.push('(-1 / "off" disables a window. Env CREW_*_TTL_DAYS overrides config.)');
     return lines;
   }
@@ -89,9 +90,14 @@ export class CleanupScreen implements Screen {
         this.move(1);
         return 'continue';
       case 'space':
+        // Space acts on the focused row: cycle a TTL preset, trigger a
+        // cleanup run, or leave on the `back` row.
+        return this.activate();
       case 'return':
       case 'enter':
-        return this.activate();
+        // Enter saves the whole config (TTL edits) without running a
+        // cleanup — the preview/run rows are space-activated.
+        return 'save';
       case 'q':
       case 'escape':
         return 'pop';

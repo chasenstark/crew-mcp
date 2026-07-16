@@ -10,6 +10,39 @@ import { AgentDefaultsScreen } from '../../../../src/cli/commands/config-tui/age
 import { isPushResult } from '../../../../src/cli/commands/config-tui/screen.js';
 
 describe('config TUI agent-defaults screen', () => {
+  it('saves the whole config when enter is pressed on an action row', () => {
+    // Regression: enter used to open the submenu on an action row; it
+    // must save now. space is the only key that opens a submenu.
+    const submenu = new AgentDefaultsScreen(new AgentDefaultsState(undefined), {
+      agentIds: ['codex'],
+      knownIds: new Set(['codex']),
+    });
+    const root = new CheckboxListScreen({
+      title: 'crew-mcp config — toggle settings',
+      state: { enabled: true },
+      entries: [
+        {
+          label: 'one',
+          description: 'toggle',
+          get: (state) => state.enabled,
+          set: (state, value) => {
+            state.enabled = value;
+          },
+        },
+        {
+          kind: 'action',
+          label: 'Agent defaults...',
+          description: 'Configure default agents',
+          onActivate: () => ({ push: submenu }),
+        },
+      ],
+    });
+
+    root.onKey({ name: 'down' }); // move onto the action row
+    expect(root.onKey({ name: 'return' })).toBe('save');
+    expect(isPushResult(root.onKey({ name: 'space' }))).toBe(true);
+  });
+
   it('pushes from the root list and preserves cursors on pop', () => {
     const crewState = { enabled: true };
     const agentState = new AgentDefaultsState(undefined);
@@ -39,17 +72,18 @@ describe('config TUI agent-defaults screen', () => {
     });
 
     root.onKey({ name: 'down' });
-    const pushed = root.onKey({ name: 'return' });
+    // space opens submenus now; enter is reserved for saving.
+    const pushed = root.onKey({ name: 'space' });
     expect(isPushResult(pushed)).toBe(true);
     expect(root.getCursorIndex()).toBe(1);
 
     submenu.onKey({ name: 'down' });
-    const child = submenu.onKey({ name: 'return' });
+    const child = submenu.onKey({ name: 'space' });
     expect(isPushResult(child)).toBe(true);
     expect(submenu.getCursorIndex()).toBe(1);
     if (!isPushResult(child)) throw new Error('expected child push');
     child.push.onKey({ name: 'space' });
-    child.push.onKey({ name: 'return' });
+    child.push.onKey({ name: 'q' }); // commit-on-leave, back to submenu
     expect(submenu.getCursorIndex()).toBe(1);
     expect(root.getCursorIndex()).toBe(1);
   });
@@ -61,13 +95,13 @@ describe('config TUI agent-defaults screen', () => {
       knownIds: new Set(['codex']),
     });
     submenu.onKey({ name: 'down' });
-    const child = submenu.onKey({ name: 'return' });
+    const child = submenu.onKey({ name: 'space' });
     if (!isPushResult(child)) throw new Error('expected child push');
 
     const setCalls: string[] = [];
     const unsetCalls: string[] = [];
     child.push.onKey({ name: 'space' });
-    child.push.onKey({ name: 'return' });
+    child.push.onKey({ name: 'return' }); // commit buffer to in-memory state + save
     expect(agentState.getList(AGENT_DEFAULT_PATHS.iterateReviewers)).toEqual(['codex']);
     expect(setCalls).toEqual([]);
     expect(unsetCalls).toEqual([]);

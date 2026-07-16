@@ -12,10 +12,12 @@ export interface MultiSelectScreenArgs {
 export class MultiSelectScreen implements Screen {
   private cursor = 0;
   private selected: string[];
+  private readonly initial: readonly string[];
   private readonly options: readonly string[];
 
   constructor(private readonly args: MultiSelectScreenArgs) {
     this.selected = [...args.state.getList(args.path)];
+    this.initial = [...this.selected];
     this.options = unique([
       ...args.agentIds,
       ...this.selected.filter((id) => !args.agentIds.includes(id)),
@@ -50,7 +52,7 @@ export class MultiSelectScreen implements Screen {
     const backCursor = this.options.length;
     lines.push(`${backCursor === this.cursor ? '>' : ' '} back`);
     lines.push('');
-    lines.push('space: toggle    j/k or arrows: move    enter: confirm    q / esc: cancel');
+    lines.push('space: toggle    j/k or arrows: move    enter: save    q / esc: back');
     return lines;
   }
 
@@ -66,20 +68,34 @@ export class MultiSelectScreen implements Screen {
         this.move(1);
         return 'continue';
       case 'space':
-        if (this.cursor === this.options.length) return 'pop';
+        // On the `back` row, space leaves; on an item it toggles in the
+        // local buffer (committed on leave).
+        if (this.cursor === this.options.length) return this.commitAndLeave('pop');
         this.toggle(this.options[this.cursor]);
         return 'continue';
       case 'return':
       case 'enter':
-        if (this.cursor === this.options.length) return 'pop';
-        this.args.state.setList(this.args.path, this.selected);
-        return 'pop';
+        return this.commitAndLeave('save');
       case 'q':
       case 'escape':
-        return 'pop';
+        return this.commitAndLeave('pop');
       default:
         return 'continue';
     }
+  }
+
+  /**
+   * Flush the local selection buffer into shared state, then leave.
+   * Commit-on-leave means edits survive `esc`/`back` so the user can
+   * edit several fields before pressing enter to save everything. Skip
+   * the write when nothing changed so merely opening and backing out of
+   * a picker doesn't mark the config dirty.
+   */
+  private commitAndLeave(result: 'pop' | 'save'): KeyResult {
+    if (!sameOrder(this.initial, this.selected)) {
+      this.args.state.setList(this.args.path, this.selected);
+    }
+    return result;
   }
 
   private move(delta: number): void {
@@ -93,6 +109,10 @@ export class MultiSelectScreen implements Screen {
     }
     this.selected = [...this.selected, id];
   }
+}
+
+function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function unique(values: readonly string[]): string[] {

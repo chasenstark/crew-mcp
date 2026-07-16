@@ -10,10 +10,12 @@ export interface StrengthsMultiSelectScreenArgs {
 export class StrengthsMultiSelectScreen implements Screen {
   private cursor = 0;
   private selected: string[];
+  private readonly initial: readonly string[];
   private readonly options: readonly string[];
 
   constructor(private readonly args: StrengthsMultiSelectScreenArgs) {
     this.selected = [...args.state.getStrengths(args.agentName)];
+    this.initial = [...this.selected];
     this.options = unique([
       ...CURATED_STRENGTH_TAGS,
       ...this.selected.filter((tag) => !CURATED_STRENGTH_TAGS.includes(tag)),
@@ -34,7 +36,7 @@ export class StrengthsMultiSelectScreen implements Screen {
     const backCursor = this.options.length;
     lines.push(`${backCursor === this.cursor ? '>' : ' '} back`);
     lines.push('');
-    lines.push('space: toggle    j/k or arrows: move    enter: confirm    q / esc: cancel');
+    lines.push('space: toggle    j/k or arrows: move    enter: save    q / esc: back');
     return lines;
   }
 
@@ -50,20 +52,32 @@ export class StrengthsMultiSelectScreen implements Screen {
         this.move(1);
         return 'continue';
       case 'space':
-        if (this.cursor === this.options.length) return 'pop';
+        // On the `back` row, space leaves; on a tag it toggles in the
+        // local buffer (committed on leave).
+        if (this.cursor === this.options.length) return this.commitAndLeave('pop');
         this.toggle(this.options[this.cursor]);
         return 'continue';
       case 'return':
       case 'enter':
-        if (this.cursor === this.options.length) return 'pop';
-        this.args.state.setStrengths(this.args.agentName, this.selected);
-        return 'pop';
+        return this.commitAndLeave('save');
       case 'q':
       case 'escape':
-        return 'pop';
+        return this.commitAndLeave('pop');
       default:
         return 'continue';
     }
+  }
+
+  /**
+   * Flush the local selection buffer into shared state, then leave.
+   * Commit-on-leave keeps edits when the user backs out with `esc`; the
+   * unchanged guard avoids marking the config dirty on a no-op visit.
+   */
+  private commitAndLeave(result: 'pop' | 'save'): KeyResult {
+    if (!sameOrder(this.initial, this.selected)) {
+      this.args.state.setStrengths(this.args.agentName, this.selected);
+    }
+    return result;
   }
 
   private move(delta: number): void {
@@ -77,6 +91,10 @@ export class StrengthsMultiSelectScreen implements Screen {
     }
     this.selected = [...this.selected, tag];
   }
+}
+
+function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function unique(values: readonly string[]): string[] {

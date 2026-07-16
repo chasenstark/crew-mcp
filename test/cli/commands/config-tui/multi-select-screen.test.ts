@@ -25,7 +25,7 @@ describe('config TUI multi-select screen', () => {
       '> [x] 2. claude-code',
       '  [x] 1. codex',
     ]));
-    expect(screen.onKey({ name: 'return' })).toBe('pop');
+    expect(screen.onKey({ name: 'return' })).toBe('save');
     expect(state.getList(AGENT_DEFAULT_PATHS.iterateReviewers)).toEqual([
       'codex',
       'claude-code',
@@ -50,7 +50,7 @@ describe('config TUI multi-select screen', () => {
       '> [x] 2. codex',
       '  [x] 1. claude-code',
     ]));
-    expect(screen.onKey({ name: 'return' })).toBe('pop');
+    expect(screen.onKey({ name: 'return' })).toBe('save');
     expect(state.getList(AGENT_DEFAULT_PATHS.iterateReviewers)).toEqual([
       'claude-code',
       'codex',
@@ -70,7 +70,7 @@ describe('config TUI multi-select screen', () => {
     });
 
     screen.onKey({ name: 'space' });
-    expect(screen.onKey({ name: 'return' })).toBe('pop');
+    expect(screen.onKey({ name: 'return' })).toBe('save');
 
     const setCalls: string[] = [];
     const unsetCalls: string[] = [];

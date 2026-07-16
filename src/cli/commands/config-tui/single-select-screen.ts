@@ -59,7 +59,7 @@ export class SingleSelectScreen implements Screen {
       lines.push(`${pointer} back`);
     }
     lines.push('');
-    lines.push('↑/↓ or j/k: move    space / enter: select    q / esc: back');
+    lines.push('↑/↓ or j/k: move    space: select    enter: save    q / esc: back');
     return lines;
   }
 
@@ -75,9 +75,10 @@ export class SingleSelectScreen implements Screen {
         this.move(1);
         return 'continue';
       case 'space':
+        return this.selectCurrent();
       case 'return':
       case 'enter':
-        return this.selectCurrent();
+        return 'save';
       case 'q':
       case 'escape':
         return 'pop';

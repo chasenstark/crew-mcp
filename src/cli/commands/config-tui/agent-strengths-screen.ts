@@ -18,7 +18,7 @@ export class AgentStrengthsListScreen implements Screen {
       lines.push('');
       lines.push(`${this.cursor === 0 ? '>' : ' '} back`);
       lines.push('');
-      lines.push('enter: back    q / esc: back');
+      lines.push('space: back    enter: save    q / esc: back');
       return lines;
     }
     for (let i = 0; i < agents.length; i++) {
@@ -29,7 +29,7 @@ export class AgentStrengthsListScreen implements Screen {
     const backIndex = agents.length;
     lines.push(`${backIndex === this.cursor ? '>' : ' '} back`);
     lines.push('');
-    lines.push('↑/↓ or j/k: move    space / enter: open    q / esc: back');
+    lines.push('↑/↓ or j/k: move    space: open    enter: save    q / esc: back');
     return lines;
   }
 
@@ -46,9 +46,10 @@ export class AgentStrengthsListScreen implements Screen {
         this.cursor = (this.cursor + 1) % entryCount;
         return 'continue';
       case 'space':
+        return this.activateCurrent();
       case 'return':
       case 'enter':
-        return this.activateCurrent();
+        return 'save';
       case 'q':
       case 'escape':
         return 'pop';
@@ -90,7 +91,7 @@ export class AgentStrengthEditScreen implements Screen {
       lines.push(`${pointer} ${entries[i].label.padEnd(12)}  ${entries[i].value}`);
     }
     lines.push('');
-    lines.push('↑/↓ or j/k: move    space / enter: open    q / esc: back');
+    lines.push('↑/↓ or j/k: move    space: open    enter: save    q / esc: back');
     return lines;
   }
 
@@ -107,9 +108,10 @@ export class AgentStrengthEditScreen implements Screen {
         this.cursor = (this.cursor + 1) % count;
         return 'continue';
       case 'space':
+        return this.activateCurrent();
       case 'return':
       case 'enter':
-        return this.activateCurrent();
+        return 'save';
       case 'q':
       case 'escape':
         return 'pop';

@@ -20,12 +20,12 @@ describe('config TUI agent strengths screens', () => {
     ]);
     const list = new AgentStrengthsListScreen(state);
 
-    const edit = list.onKey({ name: 'return' });
+    const edit = list.onKey({ name: 'space' });
     expect(isPushResult(edit)).toBe(true);
     if (!isPushResult(edit)) throw new Error('expected edit push');
     expect(edit.push).toBeInstanceOf(AgentStrengthEditScreen);
 
-    const picker = edit.push.onKey({ name: 'return' });
+    const picker = edit.push.onKey({ name: 'space' });
     expect(isPushResult(picker)).toBe(true);
     if (!isPushResult(picker)) throw new Error('expected picker push');
     expect(picker.push).toBeInstanceOf(StrengthsMultiSelectScreen);
@@ -38,7 +38,7 @@ describe('config TUI agent strengths screens', () => {
     const edit = new AgentStrengthEditScreen(state, 'codex');
     edit.onKey({ name: 'down' });
 
-    const child = edit.onKey({ name: 'return' });
+    const child = edit.onKey({ name: 'space' });
     expect(isPushResult(child)).toBe(true);
     if (!isPushResult(child)) throw new Error('expected child push');
     expect(child.push).toBeInstanceOf(UseWhenInputScreen);
@@ -68,7 +68,7 @@ describe('StrengthsMultiSelectScreen', () => {
     }
     expect(screen.render().some((line) => line.startsWith('> [x] typescript'))).toBe(true);
     screen.onKey({ name: 'space' }); // typescript off
-    expect(screen.onKey({ name: 'return' })).toBe('pop');
+    expect(screen.onKey({ name: 'return' })).toBe('save');
 
     expect(state.getStrengths('codex')).toEqual([]);
     expect(state.patches()[0]).toEqual({

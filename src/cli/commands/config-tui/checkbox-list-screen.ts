@@ -27,7 +27,7 @@ export interface CheckboxListScreenArgs<State> {
   readonly beforeSave?: () => string | undefined;
 }
 
-const DEFAULT_FOOTER = '↑/↓ or j/k: move    space: toggle    enter: save    q / esc: cancel';
+const DEFAULT_FOOTER = '↑/↓ or j/k: move    space: toggle/open    enter: save    q / esc: cancel';
 
 export class CheckboxListScreen<State> implements Screen {
   private cursor = 0;
@@ -107,8 +107,9 @@ export class CheckboxListScreen<State> implements Screen {
   }
 
   private submitCurrent(): KeyResult {
-    const entry = this.args.entries[this.cursor];
-    if (entry.kind === 'action') return entry.onActivate();
+    // Enter always saves the whole config — including when the cursor is
+    // on an action row. Opening a submenu is `space`'s job; enter never
+    // navigates.
     const error = this.args.beforeSave?.();
     if (error) {
       this.inlineError = error;

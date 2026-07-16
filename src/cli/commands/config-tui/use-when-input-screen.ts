@@ -43,8 +43,10 @@ export class UseWhenInputScreen implements Screen {
     switch (key.name) {
       case 'return':
       case 'enter':
+        // Enter commits this field and saves the whole config (esc still
+        // cancels the edit without committing).
         this.args.state.setUseWhen(this.args.agentName, this.value);
-        return 'pop';
+        return 'save';
       case 'escape':
         return 'pop';
       case 'left':

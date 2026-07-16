@@ -9,7 +9,9 @@ import {
   configSetCommand,
   configShowCommand,
   configUnsetCommand,
+  driveTui,
 } from '../../../src/cli/commands/config.js';
+import type { Screen, TuiKey } from '../../../src/cli/commands/config-tui/screen.js';
 import { readConfigFile } from '../../../src/utils/config-store.js';
 
 // workflow.agentDefaults.* writes resolve to the GLOBAL workflow config
@@ -264,16 +266,11 @@ describe('crew-mcp config subcommands', () => {
     stdin.press('down'); // confirmBeforeMerge
     stdin.press('down'); // Agent defaults
     stdin.press('down'); // Agent strengths
-    stdin.press('return'); // push AgentStrengthsListScreen
-    stdin.press('return'); // push AgentStrengthEditScreen for codex
-    stdin.press('return'); // push StrengthsMultiSelectScreen
+    stdin.press('space'); // open AgentStrengthsListScreen
+    stdin.press('space'); // open AgentStrengthEditScreen for codex
+    stdin.press('space'); // open StrengthsMultiSelectScreen
     stdin.press('space'); // deselect fast-iteration
-    stdin.press('return'); // commit strengths: []
-    stdin.press('q'); // back to strengths list
-    stdin.press('q'); // back to root
-    stdin.press('up'); // Agent defaults
-    stdin.press('up'); // confirmBeforeMerge toggle
-    stdin.press('return'); // save
+    stdin.press('return'); // commit strengths: [] and save the whole config
 
     await expect(run).resolves.toBe(1);
     expect(stdin.isRaw).toBe(false);
@@ -300,7 +297,7 @@ describe('crew-mcp config subcommands', () => {
     stdin.press('down');
     stdin.press('down');
     stdin.press('down');
-    stdin.press('return'); // push CleanupScreen
+    stdin.press('space'); // open CleanupScreen
     await waitForOutput(stdout, 'Cleanup & retention');
     // Cleanup rows: worktree(0), rundir(1), criteria(2), preview(3), run(4), back(5).
     stdin.press('space'); // worktree TTL 7 → 14
@@ -308,13 +305,42 @@ describe('crew-mcp config subcommands', () => {
     stdin.press('down'); // criteria
     stdin.press('down'); // preview
     stdin.press('down'); // run
-    stdin.press('return'); // "Run cleanup now" → save + run
+    stdin.press('space'); // "Run cleanup now" → save + run
 
     await expect(run).resolves.toBe(0);
     expect(stdin.isRaw).toBe(false);
     expect(readConfigFile(crewHome).cleanup.worktreeTtlDays).toBe(14);
     expect(stdout.text).toContain('crew cleanup');
     expect(stdout.text).toMatch(/Reclaimed: \d+ worktree/);
+  });
+});
+
+describe('driveTui central save validation', () => {
+  it('blocks a save from any screen when beforeSave errors, then allows it', async () => {
+    const stdin = new TtyStdin();
+    const stdout = new TtyStdout();
+    let allow = false;
+    const screen: Screen = {
+      render: () => ['stub screen'],
+      onKey: (key: TuiKey) => (key.name === 'return' ? 'save' : 'continue'),
+    };
+
+    const run = driveTui({
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      screens: [screen],
+      beforeSave: () => (allow ? undefined : 'Conflict: fix before saving.'),
+    });
+
+    stdin.press('return'); // save attempt is gated and blocked
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stdout.text).toContain('Conflict: fix before saving.');
+    expect(stdin.isRaw).toBe(true); // still open
+
+    allow = true;
+    stdin.press('return'); // now the save is permitted
+    await expect(run).resolves.toBe('saved');
+    expect(stdin.isRaw).toBe(false);
   });
 });
 
