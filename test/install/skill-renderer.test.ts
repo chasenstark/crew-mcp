@@ -7,7 +7,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
@@ -27,6 +28,7 @@ import {
   type SkillManifestEntry,
   type SkillTool,
 } from '../../src/install/skill-renderer.js';
+import { CREW_MCP_VERSION } from '../../src/cli/version.js';
 import { HOST_ADAPTERS, type HostId } from '../../src/install/hosts/index.js';
 import { CATALOG_TOOLS } from '../../src/install/tool-catalog.js';
 
@@ -84,6 +86,28 @@ describe('resolvePackageRoot', () => {
     // skills/crew-captain.body.md is found.
     const root = resolvePackageRoot();
     expect(root).toBe(REPO_ROOT);
+  });
+});
+
+describe('skill renderer module boundary', () => {
+  it('imports the thin version module and renders the same package version', async () => {
+    const source = await readFile(join(REPO_ROOT, 'src', 'install', 'skill-renderer.ts'), 'utf-8');
+    expect(source).toContain("import { CREW_MCP_VERSION } from '../cli/version.js';");
+    expect(source).not.toContain("from '../cli/commands/serve.js'");
+
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'crew-skill-version-'));
+    const templatePath = join(fixtureRoot, 'skill.md.tmpl');
+    try {
+      await writeFile(templatePath, '{{BODY}}\nrendered-version={{CREW_VERSION}}\n', 'utf-8');
+      const rendered = await renderSkill({
+        templatePath,
+        tools: [],
+        packageRoot: REPO_ROOT,
+      });
+      expect(rendered).toContain(`rendered-version=${CREW_MCP_VERSION}`);
+    } finally {
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
 

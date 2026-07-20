@@ -11,6 +11,7 @@ import {
   runClaimedCodexWake,
 } from '../../src/codex/wake-delivery.js';
 import { CodexWakeRpcError } from '../../src/codex/app-server-bridge.js';
+import { withStateLock } from '../../src/orchestrator/run-state-lock.js';
 
 const THREAD_ID = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
 
@@ -69,6 +70,52 @@ describe('Codex wake delivery claims', () => {
 
     expect(result).toEqual({ started: false, reason: 'stale_generation' });
     expect(starts).toBe(0);
+  });
+
+  it('releases the run-state lock before awaiting turn/start', async () => {
+    const crewHome = await makeCrewHome(cleanup, 'run-unlocked', 1, 'success');
+    const startEntered = deferred();
+    const releaseStart = deferred();
+    const lockAcquired = deferred();
+    let acquired = false;
+
+    const wake = runClaimedCodexWake({
+      crewHome,
+      threadId: THREAD_ID,
+      runIds: ['run-unlocked'],
+      runGenerations: [1],
+      startTurn: async () => {
+        startEntered.resolve();
+        await releaseStart.promise;
+        return 'turn-after-unlocked-mutation';
+      },
+    });
+
+    await startEntered.promise;
+    const concurrentMutation = withStateLock({ crewHome, runId: 'run-unlocked' }, async () => {
+      acquired = true;
+      lockAcquired.resolve();
+    });
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        lockAcquired.promise,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 1_000);
+        }),
+      ]);
+      expect(acquired).toBe(true);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseStart.resolve();
+    }
+
+    await expect(concurrentMutation).resolves.toBeUndefined();
+    await expect(wake).resolves.toEqual({
+      started: true,
+      result: 'turn-after-unlocked-mutation',
+    });
   });
 
   it('releases a definitively rejected delivery claim so the idle race can retry', async () => {
@@ -136,4 +183,15 @@ async function makeCrewHome(
     prompts: Array.from({ length: generations }, (_, index) => ({ turn: index + 1 })),
   }));
   return crewHome;
+}
+
+function deferred(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }

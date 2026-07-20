@@ -376,7 +376,7 @@ describe('runPanelHandler', () => {
     expect(dispatched).toEqual([{ agent_id: 'explicit-reviewer', prompt: 'review explicitly' }]);
   });
 
-  it('dispatches two bound reviewers with stub and incremental panel writes', async () => {
+  it('dispatches two bound reviewers with one pending write and one final write each', async () => {
     const terminals = [createDeferred<TaskResult>(), createDeferred<TaskResult>()];
     const executions: Array<{
       prompt: string;
@@ -403,7 +403,7 @@ describe('runPanelHandler', () => {
       summary: 'Implemented the feature',
       filesChanged: ['src/impl.ts'],
     });
-    const writeSizes: number[] = [];
+    const writeSnapshots: Array<readonly string[]> = [];
 
     const out = await runPanelHandler({
       implementer_run_id: 'impl',
@@ -414,15 +414,21 @@ describe('runPanelHandler', () => {
     }, {
       ...h.ctx,
       onPanelStateWritten: (state) => {
-        writeSizes.push(state.reviewers.length);
+        writeSnapshots.push(state.reviewers.map((reviewer) => {
+          if (reviewer.dispatched) return `run:${reviewer.runId}`;
+          if ('pending' in reviewer && reviewer.pending) return `pending:${reviewer.agentId}`;
+          return `failed:${reviewer.agentId}`;
+        }));
       },
     });
 
     expect(out.partial).toBe(false);
     expect(out.reviewers).toHaveLength(2);
     expect(out.failed_reviewers).toEqual([]);
-    expect(writeSizes.slice(0, 2)).toEqual([0, 2]);
-    expect(writeSizes.every((size) => size === 0 || size === 2)).toBe(true);
+    expect(writeSnapshots).toHaveLength(3);
+    expect(writeSnapshots[0]).toEqual(['pending:reviewer', 'pending:reviewer']);
+    expect(writeSnapshots.slice(1).map((snapshot) =>
+      snapshot.filter((record) => record.startsWith('run:')).length)).toEqual([1, 2]);
 
     const panelState = readPanelState(panelDir(h.crewHome, out.panel_id));
     expect(panelState?.panelRepoRoot).toBe(h.runStateStore.repoRoot);
@@ -587,7 +593,7 @@ describe('runPanelHandler', () => {
 
     expect(out.reviewers).toHaveLength(2);
     expect(out.failed_reviewers).toHaveLength(1);
-    expect(snapshots[1]).toEqual([
+    expect(snapshots[0]).toEqual([
       'pending:reviewer',
       'pending:missing',
       'pending:reviewer',
@@ -604,11 +610,11 @@ describe('runPanelHandler', () => {
     }
   });
 
-  it('keeps started reviewer records durable when a later setup write crashes', async () => {
+  it('keeps a final reviewer record durable when a later setup write crashes', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);
     let panelId = '';
-    const firstStarted = createDeferred<void>();
+    const firstRecordWritten = createDeferred<void>();
 
     await expect(runPanelHandler({
       reviewers: [
@@ -619,19 +625,14 @@ describe('runPanelHandler', () => {
       ...h.ctx,
       dispatchRunAgentInternalImpl: async (args) => {
         if (args.input.prompt === 'review 1') {
-          await args.onStart?.({
-            agentName: args.input.agent_id,
-            runId: 'reviewer-run-1',
-            worktreePath: '/tmp/reviewer-run-1',
-          });
-          firstStarted.resolve();
           return fakeDispatchResult(args.input.agent_id, 1);
         }
-        await firstStarted.promise;
+        await firstRecordWritten.promise;
         throw new DispatchError('simulated later setup failure');
       },
       onPanelStateWritten: (state) => {
         panelId = state.panelId;
+        if (state.reviewers[0]?.dispatched) firstRecordWritten.resolve();
         if (state.reviewers.some((reviewer) =>
           !reviewer.dispatched && !('pending' in reviewer && reviewer.pending))) {
           throw new Error('simulated crash after later setup failure');
@@ -703,21 +704,20 @@ describe('runPanelHandler', () => {
 
     const out = await runPanelHandler({
       implementer_run_id: 'impl',
-      reviewers: [
-        { agent_id: 'reviewer', prompt: 'review 1' },
-        { agent_id: 'reviewer', prompt: 'review 2' },
-        { agent_id: 'reviewer', prompt: 'review 3' },
-      ],
+      reviewers: Array.from({ length: 5 }, (_, index) => ({
+        agent_id: 'reviewer',
+        prompt: `review ${index + 1}`,
+      })),
     }, {
       ...h.ctx,
       onPanelStateWritten: (state) => {
-        if (state.reviewers.filter((reviewer) => reviewer.dispatched).length === 2) {
+        if (state.reviewers.filter((reviewer) => reviewer.dispatched).length === 1) {
           rmSync(implementer.worktreePath, { recursive: true, force: true });
         }
       },
     });
 
-    expect(out.reviewers).toHaveLength(2);
+    expect(out.reviewers).toHaveLength(4);
     expect(out.failed_reviewers).toEqual([
       {
         agent_id: 'reviewer',
@@ -880,7 +880,6 @@ describe('runPanelHandler', () => {
       reviewers: [
         { agent_id: 'reviewer', prompt: 'review 1' },
         { agent_id: 'reviewer', prompt: 'review 2' },
-        { agent_id: 'reviewer', prompt: 'review 3' },
       ],
     }, {
       ...h.ctx,
@@ -888,7 +887,7 @@ describe('runPanelHandler', () => {
         panelId = state.panelId;
         if (state.reviewers.filter((reviewer) => reviewer.dispatched).length === 2) {
           twoDispatchedWrites += 1;
-          if (twoDispatchedWrites === 2) {
+          if (twoDispatchedWrites === 1) {
             throw new Error('simulated crash after record write');
           }
         }
@@ -1045,7 +1044,7 @@ describe('runPanelHandler', () => {
     });
   });
 
-  it('sets up reviewer dispatches concurrently while preserving output order', async () => {
+  it('uses a sliding-window setup pool while preserving output order', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);
     const releaseFirst = createDeferred<void>();
@@ -1054,7 +1053,10 @@ describe('runPanelHandler', () => {
     const outPromise = runPanelHandler({
       reviewers: [
         { agent_id: 'reviewer', prompt: 'slow' },
-        { agent_id: 'reviewer', prompt: 'fast' },
+        { agent_id: 'reviewer', prompt: 'fast 2' },
+        { agent_id: 'reviewer', prompt: 'fast 3' },
+        { agent_id: 'reviewer', prompt: 'fast 4' },
+        { agent_id: 'reviewer', prompt: 'fast 5' },
       ],
     }, {
       ...h.ctx,
@@ -1062,19 +1064,23 @@ describe('runPanelHandler', () => {
         started.push(args.input.prompt);
         if (args.input.prompt === 'slow') {
           await releaseFirst.promise;
-          return fakeDispatchResult(args.input.agent_id, 1);
+          return fakeDispatchResult(args.input.agent_id, 0);
         }
-        return fakeDispatchResult(args.input.agent_id, 2);
+        return fakeDispatchResult(args.input.agent_id, Number(args.input.prompt.slice(-1)));
       },
     });
 
-    await waitFor(() => started.length === 2);
-    expect(started).toEqual(['slow', 'fast']);
+    await waitFor(() => started.length === 5);
+    expect(started.slice(0, 4)).toEqual(['slow', 'fast 2', 'fast 3', 'fast 4']);
+    expect(started[4]).toBe('fast 5');
     releaseFirst.resolve();
     const out = await outPromise;
     expect(out.reviewers.map((reviewer) => reviewer.run_id)).toEqual([
-      'reviewer-run-1',
+      'reviewer-run-0',
       'reviewer-run-2',
+      'reviewer-run-3',
+      'reviewer-run-4',
+      'reviewer-run-5',
     ]);
   });
 });

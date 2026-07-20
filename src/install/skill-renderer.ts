@@ -25,7 +25,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SERVE_VERSION } from '../cli/commands/serve.js';
+import { CREW_MCP_VERSION } from '../cli/version.js';
 
 /**
  * Phrase tuned for Claude Code's skill auto-matcher. Uses the
@@ -317,7 +317,7 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
     .replace('{{BODY}}', bodyWithTools)
     .replace(/\{\{NAME\}\}/g, frontmatterName)
     .replace(/\{\{DESCRIPTION\}\}/g, skill.description)
-    .replace(/\{\{CREW_VERSION\}\}/g, SERVE_VERSION)
+    .replace(/\{\{CREW_VERSION\}\}/g, CREW_MCP_VERSION)
     .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
 
   return rendered.trimEnd() + '\n';

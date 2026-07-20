@@ -69,38 +69,51 @@ export async function runClaimedCodexWake<T>(
   mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') chmodSync(stateLockRoot, 0o700);
 
-  return withRunLocks(options.crewHome, pairs.map((pair) => pair.runId), 0, async () => {
-    if (!generationsAreTerminal(options.crewHome, pairs)) {
-      return { started: false, reason: 'stale_generation' };
-    }
-
-    const ownerId = randomUUID();
-    const claimPath = wakeClaimPath(options.crewHome, options.threadId, pairs);
-    try {
-      writeFileSync(claimPath, `${JSON.stringify({ ownerId, threadId: options.threadId, pairs })}\n`, {
-        encoding: 'utf-8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-    } catch (error) {
-      if (isNodeError(error) && error.code === 'EEXIST') {
-        return { started: false, reason: 'already_claimed' };
+  const claim = await withRunLocks(
+    options.crewHome,
+    pairs.map((pair) => pair.runId),
+    0,
+    async () => {
+      if (!generationsAreTerminal(options.crewHome, pairs)) {
+        return { claimed: false, reason: 'stale_generation' } as const;
       }
-      throw error;
-    }
 
-    try {
-      const result = await options.startTurn();
-      return { started: true, result };
-    } catch (error) {
-      // Release only when App Server definitively rejected turn/start. A
-      // timeout or transport failure is ambiguous: the server may already
-      // have accepted the turn, so preserving the claim prevents a duplicate
-      // synthetic turn at the cost of next-user-turn recovery.
-      if (error instanceof CodexWakeRpcError) removeOwnedClaim(claimPath, ownerId);
-      throw error;
+      const ownerId = randomUUID();
+      const claimPath = wakeClaimPath(options.crewHome, options.threadId, pairs);
+      try {
+        writeFileSync(claimPath, `${JSON.stringify({ ownerId, threadId: options.threadId, pairs })}\n`, {
+          encoding: 'utf-8',
+          flag: 'wx',
+          mode: 0o600,
+        });
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'EEXIST') {
+          return { claimed: false, reason: 'already_claimed' } as const;
+        }
+        throw error;
+      }
+
+      return { claimed: true, claimPath, ownerId } as const;
+    },
+  );
+
+  if (!claim.claimed) {
+    return { started: false, reason: claim.reason };
+  }
+
+  try {
+    const result = await options.startTurn();
+    return { started: true, result };
+  } catch (error) {
+    // Release only when App Server definitively rejected turn/start. A
+    // timeout or transport failure is ambiguous: the server may already
+    // have accepted the turn, so preserving the claim prevents a duplicate
+    // synthetic turn at the cost of next-user-turn recovery.
+    if (error instanceof CodexWakeRpcError) {
+      removeOwnedClaim(claim.claimPath, claim.ownerId);
     }
-  });
+    throw error;
+  }
 }
 
 interface RunGenerationPair {

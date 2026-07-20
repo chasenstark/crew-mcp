@@ -142,7 +142,7 @@ const DEFAULT_PANEL_REVIEW_PROMPT =
 // Parallelizes reviewer validation/dispatch setup. Ephemeral reviewers bound
 // to the same implementer still serialize their snapshot copy on the source
 // run lock so they cannot review a torn source worktree.
-const PANEL_REVIEWER_SETUP_CONCURRENCY = 2;
+const PANEL_REVIEWER_SETUP_CONCURRENCY = 4;
 
 export async function runPanelHandler(
   args: unknown,
@@ -167,10 +167,8 @@ export async function runPanelHandler(
   const clientKind = ctx.clientKind ?? 'unknown';
   const crewWaitCommand = ctx.crewWaitCommand;
 
-  let panelState = buildStubPanelState(panelId, ctx.runStateStore.repoRoot, implementerState);
-  await writeAndNotify(targetPanelDir, panelState, ctx);
-  panelState = {
-    ...panelState,
+  let panelState: PanelStateV1 = {
+    ...buildStubPanelState(panelId, ctx.runStateStore.repoRoot, implementerState),
     reviewers: reviewers.map((reviewer) => pendingReviewerRecord(reviewer.agent_id)),
   };
   await writeAndNotify(targetPanelDir, panelState, ctx);
@@ -201,7 +199,7 @@ export async function runPanelHandler(
     });
   };
 
-  await mapBounded(reviewers, PANEL_REVIEWER_SETUP_CONCURRENCY, async (reviewer, index) => {
+  await mapWithConcurrency(reviewers, PANEL_REVIEWER_SETUP_CONCURRENCY, async (reviewer, index) => {
     const composed = composePeerMessages(implementerMessage, reviewer.peer_messages);
     // Reviewer placement is derived from the ADAPTER's reviewDispatchMode,
     // not from a panel-wide read_only: an ephemeral-worktree adapter (agy)
@@ -267,6 +265,10 @@ export async function runPanelHandler(
 
     let record: PanelReviewerRecord;
     let envelope: ReviewerDispatchEnvelope | undefined;
+    let settleReviewerRecord!: () => void;
+    const reviewerRecordSettled = new Promise<void>((resolve) => {
+      settleReviewerRecord = resolve;
+    });
     try {
       const result = await dispatchImpl({
         input: {
@@ -292,13 +294,12 @@ export async function runPanelHandler(
         progress: ctx.progress,
         ...(criteriaContract !== undefined ? { criteriaContract } : {}),
         linkCriteriaImplementerRun: false,
-        onStart: async (info) => {
-          await replaceReviewer(
-            index,
-            dispatchedReviewerPlaceholderRecord(reviewer.agent_id, info.runId),
-          );
-        },
         onTerminalPersisted: async (state) => {
+          // dispatchRunAgentInternal can reach a very fast terminal state
+          // before it returns its envelope. Wait for the same-call final
+          // reviewer record instead of fsyncing an onStart placeholder that
+          // the final record immediately supersedes.
+          await reviewerRecordSettled;
           try {
             await enqueuePanelWrite(async () => {
               panelState = snapshotPanelReviewerTerminal(
@@ -339,7 +340,11 @@ export async function runPanelHandler(
       record = failedReviewerRecord(reviewer.agent_id, errorMessage(err), warnings);
     }
 
-    await replaceReviewer(index, record);
+    try {
+      await replaceReviewer(index, record);
+    } finally {
+      settleReviewerRecord();
+    }
     if (envelope) {
       dispatchEnvelopes[index] = envelope;
     }
@@ -436,15 +441,23 @@ function resolvePanelCriteriaContract(
   });
 }
 
-async function mapBounded<T>(
+async function mapWithConcurrency<T>(
   items: readonly T[],
   concurrency: number,
   worker: (item: T, index: number) => Promise<void>,
 ): Promise<void> {
-  for (let start = 0; start < items.length; start += concurrency) {
-    const batch = items.slice(start, start + concurrency);
-    await Promise.all(batch.map((item, offset) => worker(item, start + offset)));
-  }
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
 }
 
 function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalSnapshot {
@@ -657,19 +670,6 @@ function dispatchedReviewerRecord(
     dispatched: true,
     dispatchedAt: new Date().toISOString(),
     dispatchWarnings: result.warnings,
-  };
-}
-
-function dispatchedReviewerPlaceholderRecord(
-  agentId: string,
-  runId: string,
-): PanelReviewerRecord {
-  return {
-    runId,
-    agentId,
-    dispatched: true,
-    dispatchedAt: new Date().toISOString(),
-    dispatchWarnings: [],
   };
 }
 
