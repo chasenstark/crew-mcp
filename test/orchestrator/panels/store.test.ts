@@ -117,12 +117,13 @@ describe('panel store', () => {
     expect(existsSync(freshDir)).toBe(true);
   });
 
-  it('gcPanelStates skips panels with incomplete reviewer terminal snapshots', () => {
+  it('gcPanelStates falls back to createdAt for incomplete reviewer snapshots', () => {
     const crewHome = root;
     const dir = panelDir(crewHome, 'pending-panel');
     mkdirSync(dir, { recursive: true });
     writePanelStateAtomic(dir, {
       ...state('pending-panel'),
+      createdAt: '2026-01-01T00:00:00.000Z',
       reviewers: [
         terminalReviewer('run-1', '2026-01-01T00:00:00.000Z'),
         {
@@ -141,8 +142,8 @@ describe('panel store', () => {
       Date.parse('2026-01-10T00:00:00.000Z'),
     );
 
-    expect(deleted).toBe(0);
-    expect(existsSync(dir)).toBe(true);
+    expect(deleted).toBe(1);
+    expect(existsSync(dir)).toBe(false);
   });
 
   it('gcPanelStates evicts parsed panel cache entries after deletion', () => {

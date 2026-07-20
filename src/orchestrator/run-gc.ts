@@ -1,11 +1,12 @@
 import {
   existsSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
+  type Dirent,
 } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { logger } from '../utils/logger.js';
@@ -28,10 +29,12 @@ import { runModeFromState } from './run-mode.js';
  * windows, both measured from when the run reached a terminal state:
  *
  *   1. Worktree TTL (`CREW_WORKTREE_TTL_DAYS`, default 7) — once a terminal
- *      run is older than this, its worktree directory is removed. The
- *      `crew-run/*` branch is KEPT (so any unmerged commits survive as a
- *      recoverable ref) EXCEPT for `merged` runs, whose commits already live
- *      in the target, and `discarded` runs, whose work was explicitly abandoned.
+ *      run is older than this, its worktree directory is removed. Disposable
+ *      `ephemeral_review` snapshots use a shorter 24h default when this window
+ *      is enabled; other modes retain the configured window. The `crew-run/*`
+ *      branch is KEPT (so any unmerged commits survive as a recoverable ref)
+ *      EXCEPT for `merged` runs, whose commits already live in the target, and
+ *      `discarded` runs, whose work was explicitly abandoned.
  *
  *   2. Run-dir TTL (`CREW_RUNDIR_TTL_DAYS`, default 30) — once a terminal
  *      run is older than this, the entire run-dir (state.json + events.log
@@ -48,6 +51,8 @@ import { runModeFromState } from './run-mode.js';
  */
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_REVIEWER_WORKTREE_TTL_MS = MS_PER_DAY;
+const RUN_GC_YIELD_EVERY = 25;
 const DEFAULT_ORPHAN_REPO_ROOT_GRACE_MS = 6 * 60 * 60 * 1000;
 const ORPHAN_REPO_ROOT_MISSING_MARKER = '.repo-root-missing-at';
 
@@ -161,8 +166,16 @@ export type RunGcArgs = {
   now?: number;
   /** Injectable TTLs for tests; default to the env-resolved values. */
   worktreeTtlMs?: number;
+  /**
+   * Worktree TTL for disposable ephemeral_review snapshots. Defaults to 24h
+   * when ordinary worktree GC is enabled; never lengthens a shorter ordinary
+   * worktree TTL and leaves an explicitly disabled worktree window disabled.
+   */
+  reviewerWorktreeTtlMs?: number;
   runDirTtlMs?: number;
   criteriaSetTtlMs?: number;
+  /** Boot-only state snapshots populated by the stale-run sweep. */
+  bootStateCache?: ReadonlyMap<string, RunGcStateCacheEntry>;
   /**
    * Grace window after first observing a missing repoRoot before orphan
    * cleanup can delete anything. Protects transiently-unmounted volumes.
@@ -170,12 +183,20 @@ export type RunGcArgs = {
   orphanRepoRootGraceMs?: number;
   /** Test seam: invoked by WorktreeManager after the per-run orphan cleanup lock is held. */
   onOrphanRunLockAcquired?: (runId: string) => void | Promise<void>;
+  /** Test seams for proving the long directory walk yields. */
+  yieldEveryEntries?: number;
+  yieldToEventLoop?: () => Promise<void>;
   /**
    * When true, compute and return what WOULD be reclaimed without touching
    * the filesystem or git. Used by `crew-mcp cleanup --dry-run`.
    */
   dryRun?: boolean;
 };
+
+export interface RunGcStateCacheEntry {
+  readonly mtimeMs: number;
+  readonly state: RunStateV1;
+}
 
 /** What the GC did (or would do, under `dryRun`) to one run. */
 export interface RunGcOutcome {
@@ -217,6 +238,10 @@ export interface RunGcResult {
 export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
   const now = args.now ?? Date.now();
   const worktreeTtlMs = args.worktreeTtlMs ?? resolveWorktreeTtlMs(args.crewHome);
+  const reviewerWorktreeTtlMs = args.reviewerWorktreeTtlMs
+    ?? (worktreeTtlMs === Number.POSITIVE_INFINITY
+      ? Number.POSITIVE_INFINITY
+      : Math.min(DEFAULT_REVIEWER_WORKTREE_TTL_MS, worktreeTtlMs));
   const runDirTtlMs = args.runDirTtlMs ?? resolveRunDirTtlMs(args.crewHome);
   const orphanRepoRootGraceMs = args.orphanRepoRootGraceMs ?? DEFAULT_ORPHAN_REPO_ROOT_GRACE_MS;
   const empty: RunGcResult = {
@@ -227,8 +252,12 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     runDirsPending: 0,
     outcomes: [],
   };
-  // Both windows disabled → nothing to do.
-  if (worktreeTtlMs === Number.POSITIVE_INFINITY && runDirTtlMs === Number.POSITIVE_INFINITY) {
+  // All worktree/run-dir windows disabled → nothing to do.
+  if (
+    worktreeTtlMs === Number.POSITIVE_INFINITY
+    && reviewerWorktreeTtlMs === Number.POSITIVE_INFINITY
+    && runDirTtlMs === Number.POSITIVE_INFINITY
+  ) {
     return empty;
   }
 
@@ -236,9 +265,9 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
   if (!existsSync(runsDir)) return empty;
   const currentRepoRoot = resolveComparablePath(args.projectRoot);
 
-  let entries;
+  let entries: Dirent[];
   try {
-    entries = readdirSync(runsDir, { withFileTypes: true });
+    entries = await readdir(runsDir, { withFileTypes: true });
   } catch (err) {
     logger.warn(
       `run GC: failed to read ${runsDir}: ${err instanceof Error ? err.message : String(err)}`,
@@ -248,14 +277,21 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
 
   const outcomes: RunGcOutcome[] = [];
   let scanned = 0;
+  let visited = 0;
+  const yieldEveryEntries = args.yieldEveryEntries ?? RUN_GC_YIELD_EVERY;
+  const yieldToEventLoop = args.yieldToEventLoop ?? defaultYieldToEventLoop;
 
   for (const entry of entries) {
+    visited += 1;
+    if (yieldEveryEntries > 0 && visited % yieldEveryEntries === 0) {
+      await yieldToEventLoop();
+    }
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     if (runId === '.meta' || runId === '.locks') continue;
     let state: RunStateV1 | undefined;
     try {
-      state = args.runStateStore.read(runId);
+      state = await readRunStateForGc(args, runsDir, runId);
     } catch (err) {
       logger.warn(
         `run GC: failed to read state for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -287,13 +323,30 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     const ageMs = now - terminalMs;
     if (!Number.isFinite(ageMs) || ageMs < 0) continue;
 
-    const pastWorktreeTtl = ageMs >= worktreeTtlMs;
+    const effectiveWorktreeTtlMs = runModeFromState(state) === 'ephemeral_review'
+      ? reviewerWorktreeTtlMs
+      : worktreeTtlMs;
+    const pastWorktreeTtl = ageMs >= effectiveWorktreeTtlMs;
     const deleteRunDir = ageMs >= runDirTtlMs;
     if (!pastWorktreeTtl && !deleteRunDir) continue;
 
     if (!isCurrentRepo) {
       args.runStateStore.dropParsedStateCache(runId);
-      if (!stateRepoRootExists && isOrphanReclaimAllowed(state)) {
+      if (!stateRepoRootExists) {
+        const worktreePath = join(runsDir, runId, 'worktree');
+        const hasWorktree = existsSync(worktreePath);
+        const statusOrModeAllowsReclaim = isOrphanReclaimAllowed(state);
+        const presentWorktreeReclaimSafe = worktreePresentReclaimSafe(state);
+        // T4-1 protects every potentially-continuable write run while its
+        // worktree exists: success, partial, cancelled, error, and
+        // merge_conflict may hold the only copy of uncommitted work. Only an
+        // explicitly safe disposition may remove a present worktree. Once no
+        // worktree exists, any terminal mode can age out at the run-dir TTL.
+        const worktreeLessRunDirReclaim = deleteRunDir && !hasWorktree;
+        if (!statusOrModeAllowsReclaim && !worktreeLessRunDirReclaim) {
+          continue;
+        }
+
         const missingSinceMs = readOrStartMissingRepoRootGrace({
           markerPath: missingRootMarkerPath,
           now,
@@ -302,9 +355,10 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
         if (missingSinceMs === undefined || now - missingSinceMs < orphanRepoRootGraceMs) {
           continue;
         }
+        if (hasWorktree && !presentWorktreeReclaimSafe) {
+          continue;
+        }
 
-        const worktreePath = join(runsDir, runId, 'worktree');
-        const hasWorktree = existsSync(worktreePath);
         let hasOwnedRecord: boolean;
         try {
           hasOwnedRecord = args.worktreeManager.hasOwnedRunWorktreeRecord(runId);
@@ -331,50 +385,64 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
         }
 
         let worktreeReclaimed = false;
-        if (shouldReclaimWorktree) {
-          try {
-            const onOrphanRunLockAcquired = args.onOrphanRunLockAcquired;
-            const orphanCleanupOptions = onOrphanRunLockAcquired
-              ? { onLockAcquired: () => onOrphanRunLockAcquired(runId) }
-              : {};
-            const cleanup = await args.worktreeManager.cleanupOrphanedRunWorktree(
-              runId,
-              orphanCleanupOptions,
-            );
-            worktreeReclaimed = cleanup.worktreeRemoved || cleanup.recordDeleted;
-            if (!cleanup.success) {
-              logger.warn(
-                `run GC: orphaned worktree reclaim incomplete for ${runId}: ${cleanup.errors.join('; ')}`,
-              );
-            }
-          } catch (err) {
-            logger.warn(
-              `run GC: orphaned worktree reclaim failed for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-        }
-
-        let ownedRecordRemaining = hasOwnedRecord;
-        try {
-          ownedRecordRemaining = args.worktreeManager.hasOwnedRunWorktreeRecord(runId);
-        } catch (err) {
-          logger.warn(
-            `run GC: failed to re-read orphaned worktree metadata for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          ownedRecordRemaining = true;
-        }
-        const worktreeRemaining = existsSync(worktreePath);
         let runDirDeleted = false;
-        if (deleteRunDir && !ownedRecordRemaining && !worktreeRemaining) {
-          try {
+        try {
+          await args.worktreeManager.withRunWorktreeLock(runId, async () => {
+            await args.onOrphanRunLockAcquired?.(runId);
+
+            const fresh = freshOrphanEligibility({
+              args,
+              runId,
+              now,
+              runsDir,
+              worktreeTtlMs,
+              reviewerWorktreeTtlMs,
+              runDirTtlMs,
+            });
+            if (!fresh?.eligible) return;
+
+            let cleanupSucceeded = true;
+            if (fresh.shouldReclaimWorktree) {
+              const cleanup = await args.worktreeManager.cleanupOrphanedRunWorktree(runId, {
+                lockAlreadyHeld: true,
+              });
+              worktreeReclaimed = cleanup.worktreeRemoved || cleanup.recordDeleted;
+              cleanupSucceeded = cleanup.success;
+              if (!cleanup.success) {
+                logger.warn(
+                  `run GC: orphaned worktree reclaim incomplete for ${runId}: ${cleanup.errors.join('; ')}`,
+                );
+              }
+            }
+            if (!cleanupSucceeded) return;
+
+            // Still under the run lock: continuation cannot append a prompt
+            // between this final fresh read and deletion. Re-check every
+            // destructive eligibility input because cleanup may have yielded.
+            const final = freshOrphanEligibility({
+              args,
+              runId,
+              now,
+              runsDir,
+              worktreeTtlMs,
+              reviewerWorktreeTtlMs,
+              runDirTtlMs,
+            });
+            if (
+              !final?.deleteRunDir
+              || existsSync(worktreePath)
+              || args.worktreeManager.hasOwnedRunWorktreeRecord(runId)
+            ) {
+              return;
+            }
             rmSync(missingRootMarkerPath, { force: true });
             args.runStateStore.deleteRunDir(runId);
             runDirDeleted = true;
-          } catch (err) {
-            logger.warn(
-              `run GC: failed to delete orphaned run-dir for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
+          });
+        } catch (err) {
+          logger.warn(
+            `run GC: orphaned reclaim failed for ${runId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
 
         outcomes.push({
@@ -514,11 +582,94 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
 }
 
 function isOrphanReclaimAllowed(state: RunStateV1): boolean {
-  if (runModeFromState(state) === 'ephemeral_review') return true;
+  const runMode = runModeFromState(state);
+  if (runMode === 'read_only' || runMode === 'ephemeral_review') return true;
   return state.status === 'merged'
     || state.status === 'discarded'
     || state.status === 'cancelled'
     || state.status === 'error';
+}
+
+function worktreePresentReclaimSafe(state: RunStateV1): boolean {
+  return runModeFromState(state) === 'ephemeral_review'
+    || state.status === 'merged'
+    || state.status === 'discarded';
+}
+
+function freshOrphanEligibility(args: {
+  readonly args: RunGcArgs;
+  readonly runId: string;
+  readonly now: number;
+  readonly runsDir: string;
+  readonly worktreeTtlMs: number;
+  readonly reviewerWorktreeTtlMs: number;
+  readonly runDirTtlMs: number;
+}): {
+  readonly eligible: boolean;
+  readonly shouldReclaimWorktree: boolean;
+  readonly deleteRunDir: boolean;
+} | undefined {
+  const state = args.args.runStateStore.read(args.runId);
+  if (
+    state === undefined
+    || state.status === 'running'
+    || state.repoRoot === undefined
+    || existsSync(state.repoRoot)
+  ) {
+    return undefined;
+  }
+  const terminalMs = terminalAtMs(state);
+  if (terminalMs === undefined) return undefined;
+  const ageMs = args.now - terminalMs;
+  if (!Number.isFinite(ageMs) || ageMs < 0) return undefined;
+
+  const effectiveWorktreeTtlMs = runModeFromState(state) === 'ephemeral_review'
+    ? args.reviewerWorktreeTtlMs
+    : args.worktreeTtlMs;
+  const pastWorktreeTtl = ageMs >= effectiveWorktreeTtlMs;
+  const deleteRunDir = ageMs >= args.runDirTtlMs;
+  if (!pastWorktreeTtl && !deleteRunDir) return undefined;
+
+  const worktreePath = join(args.runsDir, args.runId, 'worktree');
+  const hasWorktree = existsSync(worktreePath);
+  const hasOwnedRecord = args.args.worktreeManager.hasOwnedRunWorktreeRecord(args.runId);
+  const worktreeLessRunDirReclaim = deleteRunDir && !hasWorktree;
+  const eligible = (!hasWorktree || worktreePresentReclaimSafe(state))
+    && (isOrphanReclaimAllowed(state) || worktreeLessRunDirReclaim);
+  return {
+    eligible,
+    shouldReclaimWorktree:
+      eligible && (hasOwnedRecord || hasWorktree) && (pastWorktreeTtl || deleteRunDir),
+    deleteRunDir: eligible && deleteRunDir,
+  };
+}
+
+async function readRunStateForGc(
+  args: RunGcArgs,
+  runsDir: string,
+  runId: string,
+): Promise<RunStateV1 | undefined> {
+  const cached = args.bootStateCache?.get(runId);
+  if (cached) {
+    try {
+      const current = await stat(join(runsDir, runId, 'state.json'));
+      if (current.mtimeMs === cached.mtimeMs) return cached.state;
+    } catch (err) {
+      if (isEnoent(err)) return undefined;
+      throw err;
+    }
+  }
+  return args.runStateStore.read(runId);
+}
+
+function defaultYieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'ENOENT';
 }
 
 function readOrStartMissingRepoRootGrace(args: {

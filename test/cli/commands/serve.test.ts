@@ -1758,6 +1758,42 @@ describe('crew serve — stale-run sweeper', () => {
     }
   });
 
+  it('runs startup GC after the stale sweep and shares its boot state cache', async () => {
+    await getStaleRunSweep();
+    await getRunGc();
+
+    const root = mkdtempSync(join(tmpdir(), 'crew-serve-gc-cache-'));
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-gc-cache-home-'));
+    const order: string[] = [];
+    let sweepCache: unknown;
+
+    try {
+      const built = buildCrewMcpServer({
+        cwd: root,
+        crewHome,
+        registry: makeRegistry([makeMockAdapter({ name: 'mock-coder' })]),
+        staleRunSweeper: async (args) => {
+          order.push('sweep');
+          sweepCache = args.bootStateCache;
+          await new Promise((resolve) => setImmediate(resolve));
+        },
+        runGc: (args) => {
+          order.push('gc');
+          expect(args.bootStateCache).toBe(sweepCache);
+        },
+      });
+      await getRunGc();
+      await built.server.close();
+
+      expect(order).toEqual(['sweep', 'gc']);
+    } finally {
+      await getStaleRunSweep();
+      await getRunGc();
+      rmSync(root, { recursive: true, force: true });
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
   it('logs deferred run GC errors without failing server startup', async () => {
     await getRunGc();
 

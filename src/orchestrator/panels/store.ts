@@ -155,9 +155,9 @@ export function gcPanelStates(
       continue;
     }
     if (!state) continue;
-    const completedAtMs = newestReviewerTerminalCompletedAtMs(state);
-    if (completedAtMs === undefined) continue;
-    const ageMs = now - completedAtMs;
+    const ageBasisMs = newestReviewerTerminalCompletedAtMs(state)
+      ?? Date.parse(state.createdAt);
+    const ageMs = now - ageBasisMs;
     if (!Number.isFinite(ageMs) || ageMs < ttlMs) continue;
     try {
       rmSync(dir, { recursive: true, force: true });

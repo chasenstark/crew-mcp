@@ -29,7 +29,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, type Dirent } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -57,7 +57,11 @@ import {
 } from '../../orchestrator/quota-cache.js';
 import { seedCodexRolloutQuota } from '../../orchestrator/codex-rollout-quota.js';
 import { RunStateStore, type RunStateV1 } from '../../orchestrator/run-state.js';
-import { gcTerminalRunsAndCriteriaSets, type RunGcArgs } from '../../orchestrator/run-gc.js';
+import {
+  gcTerminalRunsAndCriteriaSets,
+  type RunGcArgs,
+  type RunGcStateCacheEntry,
+} from '../../orchestrator/run-gc.js';
 import { sweepExpiredMessages } from '../../orchestrator/captain-inbox/store.js';
 import {
   RunAuthError,
@@ -300,6 +304,8 @@ export type StaleRunSweepArgs = {
   projectRoot: string;
   runStateStore: RunStateStore;
   dispatcher: ToolDispatcher;
+  /** Boot-only snapshots reused by the immediately following run-GC pass. */
+  bootStateCache?: Map<string, RunGcStateCacheEntry>;
 };
 
 const staleRunSweepPromises = new Map<string, Promise<void>>();
@@ -349,6 +355,7 @@ export function getRunGc(): Promise<void> | null {
 export function scheduleRunGc(
   args: RunGcArgs,
   gc: (args: RunGcArgs) => void | Promise<unknown> = gcTerminalRunsAndCriteriaSets,
+  after: Promise<unknown> = Promise.resolve(),
 ): Promise<void> {
   const key = singleFlightKey(args.crewHome, args.projectRoot);
   const existing = runGcPromises.get(key);
@@ -358,6 +365,7 @@ export function scheduleRunGc(
     setImmediate(resolve);
   })
     .then(async () => {
+      await after;
       await gc(args);
     })
     .catch((err) => {
@@ -637,13 +645,15 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   });
   const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
   const quotaCache = new QuotaCache();
-  void scheduleStaleRunSweep(
-    { crewHome, projectRoot, runStateStore, dispatcher },
+  const bootStateCache = new Map<string, RunGcStateCacheEntry>();
+  const staleRunSweep = scheduleStaleRunSweep(
+    { crewHome, projectRoot, runStateStore, dispatcher, bootStateCache },
     options.staleRunSweeper,
   );
   void scheduleRunGc(
-    { crewHome, projectRoot, runStateStore, worktreeManager },
+    { crewHome, projectRoot, runStateStore, worktreeManager, bootStateCache },
     options.runGc,
+    staleRunSweep,
   );
   const periodicRunGcTimer = startPeriodicRunGc(
     { crewHome, projectRoot, runStateStore, worktreeManager },
@@ -1225,6 +1235,14 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
     if (!entry.isDirectory()) continue;
     const runId = entry.name;
     if (runId === '.meta' || runId === '.locks') continue;
+    let beforeReadMtimeMs: number | undefined;
+    if (args.bootStateCache) {
+      try {
+        beforeReadMtimeMs = (await stat(join(runsDir, runId, 'state.json'))).mtimeMs;
+      } catch {
+        // The normal read path below owns missing/unreadable state handling.
+      }
+    }
     let state: RunStateV1 | undefined;
     try {
       state = args.runStateStore.read(runId);
@@ -1235,6 +1253,16 @@ async function markAbandonedRunningRuns(args: StaleRunSweepArgs): Promise<void> 
       continue;
     }
     if (!state) continue;
+    if (args.bootStateCache && beforeReadMtimeMs !== undefined) {
+      try {
+        const afterReadMtimeMs = (await stat(join(runsDir, runId, 'state.json'))).mtimeMs;
+        if (afterReadMtimeMs === beforeReadMtimeMs) {
+          args.bootStateCache.set(runId, { mtimeMs: afterReadMtimeMs, state });
+        }
+      } catch {
+        // A concurrent replacement invalidates this optional boot cache.
+      }
+    }
 
     if (state.repoRoot === undefined) continue;
     if (resolveComparableRepoRoot(state.repoRoot) !== currentRepoRoot) {

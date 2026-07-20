@@ -1511,7 +1511,10 @@ export class WorktreeManager {
    */
   async cleanupOrphanedRunWorktree(
     runId: string,
-    options: { onLockAcquired?: () => void | Promise<void> } = {},
+    options: {
+      onLockAcquired?: () => void | Promise<void>;
+      lockAlreadyHeld?: boolean;
+    } = {},
   ): Promise<WorktreeCleanupResult> {
     let result: WorktreeCleanupResult = {
       success: true,
@@ -1521,7 +1524,7 @@ export class WorktreeManager {
       branchDeleted: false,
       recordDeleted: false,
     };
-    await this.withRunLock(runId, async () => {
+    const cleanup = async (): Promise<void> => {
       await options.onLockAcquired?.();
       const metadataPath = this.runMetadataFilePath(runId);
       const runDir = join(this.runBasePath, this.toRunToken(runId));
@@ -1554,7 +1557,12 @@ export class WorktreeManager {
         branchDeleted: false,
         recordDeleted: hadRecord && !existsSync(metadataPath),
       };
-    });
+    };
+    if (options.lockAlreadyHeld) {
+      await cleanup();
+    } else {
+      await this.withRunLock(runId, cleanup);
+    }
     return result;
   }
 

@@ -7,7 +7,15 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -211,6 +219,38 @@ describe('gcTerminalRuns', () => {
     expect(existsSync(statePath(runId))).toBe(true); // run-dir/state kept
     expect(existsSync(join(crewHome, 'runs', '.meta', `${runId}.json`))).toBe(false);
     expect(branchExists(branch)).toBe(true); // branch preserved
+  });
+
+  it('reclaims ephemeral-review worktrees after 24h without shortening write-mode TTL', async () => {
+    const reviewerRunId = 'aaaaaaaa-0000-0000-0000-000000000021';
+    const writeRunId = 'aaaaaaaa-0000-0000-0000-000000000022';
+    await seedRun(reviewerRunId, {
+      status: 'success',
+      runMode: 'ephemeral_review',
+      repoRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    await seedRun(writeRunId, {
+      status: 'success',
+      runMode: 'write',
+      repoRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 2 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(existsSync(wtPath(reviewerRunId))).toBe(false);
+    expect(existsSync(wtPath(writeRunId))).toBe(true);
+    expect(existsSync(statePath(reviewerRunId))).toBe(true);
+    expect(result.outcomes.map((outcome) => outcome.runId)).toEqual([reviewerRunId]);
   });
 
   it('deletes the whole run-dir past the run-dir TTL', async () => {
@@ -470,10 +510,8 @@ describe('gcTerminalRuns', () => {
   it.each([
     ['merged', 'write'],
     ['discarded', 'write'],
-    ['cancelled', 'write'],
-    ['error', 'write'],
     ['success', 'ephemeral_review'],
-  ])('reclaims orphaned cross-repo %s/%s runs after TTL and grace', async (status, runMode) => {
+  ])('reclaims explicitly safe orphaned %s/%s worktrees after TTL and grace', async (status, runMode) => {
     const runId = `aaaaaaaa-0000-0000-0000-10000000000${status.length}`;
     const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
     await seedRun(runId, {
@@ -508,15 +546,56 @@ describe('gcTerminalRuns', () => {
     ]);
   });
 
-  it('does not reclaim an orphaned WRITE-mode success worktree', async () => {
-    const runId = 'aaaaaaaa-0000-0000-0000-000000000101';
+  it.each([
+    ['success', '1'],
+    ['partial', '2'],
+    ['cancelled', '3'],
+    ['error', '4'],
+    ['merge_conflict', '5'],
+  ])(
+    'does not reclaim an orphaned write-mode %s worktree',
+    async (status, suffix) => {
+      const runId = `aaaaaaaa-0000-0000-0000-20000000000${suffix}`;
+      const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+      await seedRun(runId, {
+        status,
+        runMode: 'write',
+        repoRoot: missingRoot,
+        completedAt: '2026-01-01T00:00:00.000Z',
+      });
+      rmSync(missingRoot, { recursive: true, force: true });
+      markMissingRootGraceElapsed(runId);
+
+      const result = await gcTerminalRuns({
+        crewHome,
+        projectRoot: repoRoot,
+        runStateStore: store,
+        worktreeManager: manager,
+        now: T0 + 31 * DAY_MS,
+        worktreeTtlMs: 7 * DAY_MS,
+        runDirTtlMs: 30 * DAY_MS,
+        orphanRepoRootGraceMs: 1,
+      });
+
+      expect(existsSync(wtPath(runId))).toBe(true);
+      expect(existsSync(metaPath(runId))).toBe(true);
+      expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
+      expect(result.outcomes).toEqual([]);
+    },
+  );
+
+  it('reclaims a worktree-less success/read-only orphan and purges its owned record', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000105';
     const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
     await seedRun(runId, {
       status: 'success',
-      runMode: 'write',
+      runMode: 'read_only',
       repoRoot: missingRoot,
       completedAt: '2026-01-01T00:00:00.000Z',
     });
+    execSync(`git worktree remove --force ${JSON.stringify(wtPath(runId))}`, { cwd: repoRoot });
+    expect(existsSync(wtPath(runId))).toBe(false);
+    expect(existsSync(metaPath(runId))).toBe(true);
     rmSync(missingRoot, { recursive: true, force: true });
     markMissingRootGraceElapsed(runId);
 
@@ -531,10 +610,113 @@ describe('gcTerminalRuns', () => {
       orphanRepoRootGraceMs: 1,
     });
 
-    expect(existsSync(wtPath(runId))).toBe(true);
-    expect(existsSync(metaPath(runId))).toBe(true);
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+    expect(existsSync(metaPath(runId))).toBe(false);
+    expect(result.outcomes).toMatchObject([
+      { runId, worktreeReclaimed: true, runDirDeleted: true },
+    ]);
+  });
+
+  it('reclaims a worktree-less success/write orphan only after locked metadata cleanup', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000106';
+    const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+    await seedRun(runId, {
+      status: 'success',
+      runMode: 'write',
+      repoRoot: missingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    execSync(`git worktree remove --force ${JSON.stringify(wtPath(runId))}`, { cwd: repoRoot });
+    rmSync(missingRoot, { recursive: true, force: true });
+    markMissingRootGraceElapsed(runId);
+    const cleanup = vi.spyOn(manager, 'cleanupOrphanedRunWorktree');
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 1,
+    });
+
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+    expect(existsSync(metaPath(runId))).toBe(false);
+    expect(result.outcomes).toMatchObject([
+      { runId, worktreeReclaimed: true, runDirDeleted: true },
+    ]);
+  });
+
+  it.each(['cancelled', 'error'])(
+    'reclaims a worktree-less write-mode %s orphan after run-dir TTL',
+    async (status) => {
+      const runId = `aaaaaaaa-0000-0000-0000-30000000000${status.length}`;
+      const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+      await seedRun(runId, {
+        status,
+        runMode: 'write',
+        repoRoot: missingRoot,
+        completedAt: '2026-01-01T00:00:00.000Z',
+      });
+      execSync(`git worktree remove --force ${JSON.stringify(wtPath(runId))}`, { cwd: repoRoot });
+      rmSync(missingRoot, { recursive: true, force: true });
+      markMissingRootGraceElapsed(runId);
+
+      const result = await gcTerminalRuns({
+        crewHome,
+        projectRoot: repoRoot,
+        runStateStore: store,
+        worktreeManager: manager,
+        now: T0 + 31 * DAY_MS,
+        worktreeTtlMs: 7 * DAY_MS,
+        runDirTtlMs: 30 * DAY_MS,
+        orphanRepoRootGraceMs: 1,
+      });
+
+      expect(existsSync(join(crewHome, 'runs', runId))).toBe(false);
+      expect(existsSync(metaPath(runId))).toBe(false);
+      expect(result.outcomes).toMatchObject([
+        { runId, worktreeReclaimed: true, runDirDeleted: true },
+      ]);
+    },
+  );
+
+  it('keeps the run-dir when a continuation wins after the initial orphan read', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000108';
+    const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
+    await seedRun(runId, {
+      status: 'success',
+      runMode: 'write',
+      repoRoot: missingRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    execSync(`git worktree remove --force ${JSON.stringify(wtPath(runId))}`, { cwd: repoRoot });
+    rmSync(missingRoot, { recursive: true, force: true });
+    markMissingRootGraceElapsed(runId);
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 31 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      orphanRepoRootGraceMs: 1,
+      onOrphanRunLockAcquired: async () => {
+        await store.appendPrompt(runId, { userPrompt: 'continue' });
+      },
+    });
+
+    expect(store.read(runId)?.status).toBe('running');
     expect(existsSync(join(crewHome, 'runs', runId))).toBe(true);
-    expect(result.outcomes).toEqual([]);
+    expect(existsSync(metaPath(runId))).toBe(true);
+    expect(result.outcomes).toMatchObject([
+      { runId, worktreeReclaimed: false, runDirDeleted: false },
+    ]);
   });
 
   it('respects the orphan missing-root grace window before deleting', async () => {
@@ -621,7 +803,7 @@ describe('gcTerminalRuns', () => {
     const runId = 'aaaaaaaa-0000-0000-0000-000000000103';
     const missingRoot = mkdtempSync(join(tmpdir(), 'crew-gc-missing-root-'));
     await seedRun(runId, {
-      status: 'error',
+      status: 'merged',
       repoRoot: missingRoot,
       completedAt: '2026-01-01T00:00:00.000Z',
     });
@@ -686,6 +868,55 @@ describe('gcTerminalRuns', () => {
 
     expect(existsSync(wtPath(runId))).toBe(true);
     expect(existsSync(statePath(runId))).toBe(true);
+  });
+
+  it('yields during long run-directory scans', async () => {
+    for (let index = 0; index < 26; index += 1) {
+      mkdirSync(join(crewHome, 'runs', `empty-${String(index).padStart(2, '0')}`));
+    }
+    const yieldToEventLoop = vi.fn(async () => undefined);
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      worktreeTtlMs: 0,
+      runDirTtlMs: 0,
+      yieldToEventLoop,
+    });
+
+    expect(yieldToEventLoop).toHaveBeenCalledOnce();
+    expect(result.scanned).toBe(0);
+  });
+
+  it('reuses an unchanged boot state snapshot instead of re-reading state.json', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000107';
+    await seedRun(runId, {
+      status: 'success',
+      repoRoot: otherRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const state = store.read(runId);
+    expect(state).toBeDefined();
+    const bootStateCache = new Map([
+      [runId, { mtimeMs: statSync(statePath(runId)).mtimeMs, state: state! }],
+    ]);
+    store.dropParsedStateCache(runId);
+    const read = vi.spyOn(store, 'read');
+
+    await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 8 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      bootStateCache,
+    });
+
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('skips records rejected by the run-state schema guard', async () => {
