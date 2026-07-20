@@ -10,6 +10,7 @@
 
 import { z } from 'zod';
 
+import { logger } from '../../utils/logger.js';
 import { deleteRunAuthSidecar, deleteWorkerReadyMarker } from '../auth/index.js';
 import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import type { DiscardEnvelope, ToolCallReturn, ToolHandlerDeps } from './shared.js';
@@ -45,7 +46,7 @@ export async function discardRunToolHandler(
       `(${existingInFlight.toolName}); retry after it finishes or call cancel_run first.`,
     );
   }
-  const cleanupErrors: string[] = [];
+  let shouldCleanupWorktree = false;
   try {
     if (state) {
       assertNoBusyWorktreeBlockers({
@@ -65,18 +66,7 @@ export async function discardRunToolHandler(
         // ephemeral_review — discarding an ephemeral review is what actually
         // throws its disposable snapshot away); read_only runs have no
         // worktree, so discard is metadata-only.
-        if (ownsWorktree(runModeFromState(fresh))) {
-          try {
-            const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id, {
-              lockAlreadyHeld: true,
-            });
-            if (!cleanup.success) {
-              cleanupErrors.push(...cleanup.errors);
-            }
-          } catch (err) {
-            cleanupErrors.push(err instanceof Error ? err.message : String(err));
-          }
-        }
+        shouldCleanupWorktree = ownsWorktree(runModeFromState(fresh));
       });
     }
   } catch (err) {
@@ -84,12 +74,30 @@ export async function discardRunToolHandler(
       err instanceof Error ? err.message : `discard_run failed: ${String(err)}`,
     );
   }
+  if (shouldCleanupWorktree) {
+    const backgroundCleanup = deps.worktreeManager.withRunWorktreeLock(args.run_id, async () => {
+      const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id, {
+        lockAlreadyHeld: true,
+      });
+      if (!cleanup.success) {
+        logger.warn(
+          `discard_run ${args.run_id}: worktree cleanup failed after `
+          + `successful discard — periodic GC will retry. Error: `
+          + cleanup.errors.join('; '),
+        );
+      }
+    }).catch((err: unknown) => {
+      logger.warn(
+        `discard_run ${args.run_id}: worktree cleanup failed after `
+        + `successful discard — periodic GC will retry. Error: `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    deps.worktreeManager.trackBackgroundCleanup(backgroundCleanup);
+  }
   const env: DiscardEnvelope = {
     run_id: args.run_id,
     ok: true,
-    ...(cleanupErrors.length > 0
-      ? { cleanup_failed: true as const, cleanup_errors: cleanupErrors }
-      : {}),
   };
   return markdownContent(renderDiscardMarkdown(env), env);
 }

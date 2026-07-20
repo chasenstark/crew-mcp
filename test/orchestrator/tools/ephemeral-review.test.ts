@@ -293,12 +293,12 @@ describe('ephemeral_review — retention, discard, merge', () => {
     expect(h.runStateStore.read(runId)?.status).toBe('success');
     expect(existsSync(worktreePath)).toBe(true);
 
-    // discard_run is what disposes the snapshot — worktree removal happens
-    // because ephemeral_review OWNS its worktree (resolver, not readOnly).
+    // discard_run is what disposes the snapshot — background worktree removal
+    // happens because ephemeral_review OWNS its worktree (resolver, not readOnly).
     const first = await discardRunToolHandler({ run_id: runId }, depsFor(h));
     expect(first.isError).not.toBe(true);
-    expect(existsSync(worktreePath)).toBe(false);
     expect(h.runStateStore.read(runId)?.status).toBe('discarded');
+    await waitFor(() => !existsSync(worktreePath));
 
     const second = await discardRunToolHandler({ run_id: runId }, depsFor(h));
     expect(second.isError).not.toBe(true);

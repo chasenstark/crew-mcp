@@ -431,6 +431,30 @@ describe('AgyAdapter', () => {
       expect(result.status).toBe('error');
     });
 
+    it('bounds multi-megabyte garbled stdout before returning or classifying it', async () => {
+      const stdout = [
+        'AGY_FAILURE_HEAD',
+        'x'.repeat(2 * 1024 * 1024),
+        'RESOURCE_EXHAUSTED hidden in truncated middle',
+        'y'.repeat(2 * 1024 * 1024),
+        'AGY_FAILURE_TAIL',
+      ].join('\n');
+      mockOnce(stdout, 1);
+
+      const result = await adapter.execute({
+        prompt: 'go',
+        context: { workingDirectory: '/crew/wt' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('AGY_FAILURE_HEAD');
+      expect(result.output).toContain('AGY_FAILURE_TAIL');
+      expect(result.output).toMatch(/\[\.\.\. \d+ bytes truncated \.\.\.\]/);
+      expect(result.output).not.toContain('RESOURCE_EXHAUSTED');
+      expect(Buffer.byteLength(result.output, 'utf8')).toBeLessThan(70 * 1024);
+      expect(result.failure?.kind).toBe('process');
+    });
+
     it('treats SUCCESS with an empty response as a failure', async () => {
       mockOnce(successEnvelope({ response: '' }), 0);
       const result = await adapter.execute({
@@ -491,6 +515,35 @@ describe('AgyAdapter', () => {
       expect(result.status).toBe('error');
       expect(result.output).toContain('spawn agy ENOENT');
       expect(result.failure).toBeDefined();
+    });
+
+    it('bounds captured stdout from a non-MaxBuffer process throw before classification', async () => {
+      const stdout = [
+        'AGY_THROW_HEAD',
+        'x'.repeat(2 * 1024 * 1024),
+        'RESOURCE_EXHAUSTED hidden in truncated middle',
+        'y'.repeat(2 * 1024 * 1024),
+        'AGY_THROW_TAIL',
+      ].join('\n');
+      const error = Object.assign(new Error('agy subprocess failed'), {
+        name: 'ProcessError',
+        stdout,
+        stderr: '',
+      });
+      mockExeca.mockRejectedValueOnce(error as never);
+
+      const result = await adapter.execute({
+        prompt: 'go',
+        context: { workingDirectory: '/crew/wt' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('AGY_THROW_HEAD');
+      expect(result.output).toContain('AGY_THROW_TAIL');
+      expect(result.output).toMatch(/\[\.\.\. \d+ bytes truncated \.\.\.\]/);
+      expect(result.output).not.toContain('RESOURCE_EXHAUSTED');
+      expect(Buffer.byteLength(result.output, 'utf8')).toBeLessThan(70 * 1024);
+      expect(result.failure?.kind).toBe('process');
     });
   });
 

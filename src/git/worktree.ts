@@ -141,6 +141,7 @@ export class WorktreeManager {
   private runLockPath: string;
   private repoCommonDirRealpathPromise?: Promise<string>;
   private mergeTreeSupportConfirmed = false;
+  private readonly backgroundCleanups = new Set<Promise<unknown>>();
   /**
    * Absolute path of the host repo this manager was constructed against.
    * Exposed via `getProjectRoot()` so callers (e.g., run-agent's
@@ -477,6 +478,20 @@ export class WorktreeManager {
 
   async withRunWorktreeLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
     return this.withRunLock(runId, operation);
+  }
+
+  trackBackgroundCleanup(cleanup: Promise<unknown>): void {
+    this.backgroundCleanups.add(cleanup);
+    void cleanup.then(
+      () => this.backgroundCleanups.delete(cleanup),
+      () => this.backgroundCleanups.delete(cleanup),
+    );
+  }
+
+  async drainBackgroundCleanups(): Promise<void> {
+    while (this.backgroundCleanups.size > 0) {
+      await Promise.allSettled([...this.backgroundCleanups]);
+    }
   }
 
   /**
@@ -1436,9 +1451,9 @@ export class WorktreeManager {
    * Remove a run's worktree and metadata record. By default the run's
    * branch is deleted too (the `discard_run` / merged-cleanup contract).
    * Pass `{ keepBranch: true }` to remove only the working tree + record
-   * while preserving the branch ref — used by the run GC so reclaiming a
-   * stale worktree never drops unmerged commits (they survive as a
-   * recoverable `crew-run/*` branch).
+   * while preserving the branch ref — used by the run GC for terminal states
+   * whose unmerged commits remain recoverable (merged/discarded runs delete
+   * their branches instead).
    *
    * Returns a best-effort cleanup outcome. `success: false` means the caller
    * must assume the git worktree registration and/or branch still exists.
@@ -1660,8 +1675,8 @@ export class WorktreeManager {
     record: RunWorktreeRecord,
     options: { keepBranch?: boolean } = {},
   ): Promise<WorktreeCleanupResult> {
-    // T7-4 deferred: returning before worktree removal would change
-    // merge/discard timing; current cleanup stays synchronous and GC-backed.
+    // Cleanup stays synchronous once invoked. Ordering-sensitive callers await
+    // it; captain-facing merge/discard launch it in a locked background task.
     const errors: string[] = [];
     let worktreeRemoved = false;
     let branchDeleted = false;

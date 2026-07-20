@@ -42,7 +42,10 @@ import {
 import { crewTailUrl } from '../../../src/cli/commands/tail-url.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
-import { WorktreeManager } from '../../../src/git/worktree.js';
+import {
+  WorktreeManager,
+  type WorktreeCleanupResult,
+} from '../../../src/git/worktree.js';
 import { RunStateStore, type RunStateV1 } from '../../../src/orchestrator/run-state.js';
 import { installRunLifecycleListeners } from '../../../src/orchestrator/run-lifecycle-listeners.js';
 import { DEFAULT_PEER_MESSAGE_CAPS } from '../../../src/orchestrator/peer-messages/caps.js';
@@ -396,6 +399,7 @@ async function startHarness(
       await client.close();
       await server.close();
       await getStaleRunSweep();
+      await worktreeManager.drainBackgroundCleanups();
       if (previousFullEnvelope === undefined) {
         delete process.env.CREW_FULL_ENVELOPE;
       } else {
@@ -461,6 +465,7 @@ async function startDefaultRegistryHarness(
       await client.close();
       await server.close();
       await getStaleRunSweep();
+      await worktreeManager.drainBackgroundCleanups();
       if (previousFullEnvelope === undefined) {
         delete process.env.CREW_FULL_ENVELOPE;
       } else {
@@ -3551,9 +3556,9 @@ describe('crew serve — merge_run tool', () => {
       });
       // Post-merge: file lives in host HEAD.
       expect(existsSync(join(h.root, 'NEW.md'))).toBe(true);
-      // Post-merge: worktree directory is auto-cleaned (the changes
-      // are durably in main, so the worktree has no remaining value).
-      expect(existsSync(runEnv.worktree_path)).toBe(false);
+      // Post-merge: worktree directory is auto-cleaned in the background (the
+      // changes are durably in main, so the worktree has no remaining value).
+      await vi.waitFor(() => expect(existsSync(runEnv.worktree_path)).toBe(false));
 
       // state.json reflects the merge.
       const statusRes = await h.client.callTool({
@@ -3707,7 +3712,9 @@ describe('crew serve — merge_run tool', () => {
       expect(mergeEnv.restore_failed).toBe(true);
       expect(mergeEnv.restore_warning).toContain("couldn't return you to feature");
       expect(toolText(mergeRes)).toContain("couldn't return you to feature");
-      expect(cleanup).toHaveBeenCalledWith(runEnv.run_id);
+      await vi.waitFor(() => {
+        expect(cleanup).toHaveBeenCalledWith(runEnv.run_id, { lockAlreadyHeld: true });
+      });
 
       const statusRes = await h.client.callTool({
         name: 'get_run_status',
@@ -3720,6 +3727,112 @@ describe('crew serve — merge_run tool', () => {
       expect(status.status).toBe('merged');
       expect(status.mergeStatus?.commitSha).toBe('abc123');
     } finally {
+      await h.close();
+    }
+  });
+
+  it('returns the merged envelope before locked background cleanup completes', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-coder' });
+    const h = await startHarness([adapter]);
+    const cleanupDeferred = createDeferred<WorktreeCleanupResult>();
+    const cleanupEntered = createDeferred<void>();
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'finish without changes' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+      await vi.waitFor(() => {
+        expect(readRunAuthSidecar(h.crewHome, runEnv.run_id).revoked).toBe(true);
+      });
+      await issueRunAuthSidecar({
+        crewHome: h.crewHome,
+        runId: runEnv.run_id,
+        agentId: 'mock-coder',
+        repoRoot: h.root,
+        captainServeInstance: 'async-cleanup-test',
+        writeMode: 'replace-existing',
+      });
+      const authBeforeMerge = readRunAuthSidecar(h.crewHome, runEnv.run_id);
+      expect(authBeforeMerge.revoked).toBe(false);
+
+      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId')
+        .mockImplementation(async (_runId, options) => {
+          expect(options).toEqual({ lockAlreadyHeld: true });
+          cleanupEntered.resolve();
+          return cleanupDeferred.promise;
+        });
+      const trackBackgroundCleanup = vi.spyOn(
+        h.worktreeManager,
+        'trackBackgroundCleanup',
+      );
+      vi.spyOn(h.worktreeManager, 'mergeRunWorktree').mockResolvedValue({
+        status: 'merged',
+        commitSha: 'async-cleanup-commit',
+        targetBranch: 'main',
+        originalBranch: 'main',
+        originalHead: 'original-head',
+        landedOffCurrentBranch: false,
+      });
+
+      let mergeSettled = false;
+      const mergePromise = h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id, confirmed: true },
+      }).then((result) => {
+        mergeSettled = true;
+        return result;
+      });
+
+      await cleanupEntered.promise;
+      expect(trackBackgroundCleanup).toHaveBeenCalledTimes(1);
+      let drainSettled = false;
+      const drainPromise = h.worktreeManager.drainBackgroundCleanups().then(() => {
+        drainSettled = true;
+      });
+      let contenderEntered = false;
+      const contender = h.worktreeManager.withRunWorktreeLock(runEnv.run_id, async () => {
+        contenderEntered = true;
+      });
+      try {
+        await vi.waitFor(() => expect(mergeSettled).toBe(true));
+        expect(readPersistedState(h, runEnv.run_id).status).toBe('merged');
+        expect(readRunAuthSidecar(h.crewHome, runEnv.run_id).revoked).toBe(true);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(drainSettled).toBe(false);
+        expect(contenderEntered).toBe(false);
+      } finally {
+        cleanupDeferred.resolve({
+          success: true,
+          errors: [],
+          hadRecord: true,
+          worktreeRemoved: true,
+          branchDeleted: true,
+          recordDeleted: true,
+        });
+        await mergePromise;
+        await contender;
+        await drainPromise;
+      }
+
+      const mergeResult = await mergePromise;
+      expect(mergeResult.structuredContent).toMatchObject({
+        run_id: runEnv.run_id,
+        status: 'merged',
+        commit_sha: 'async-cleanup-commit',
+      });
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(contenderEntered).toBe(true);
+    } finally {
+      cleanupDeferred.resolve({
+        success: true,
+        errors: [],
+        hadRecord: true,
+        worktreeRemoved: true,
+        branchDeleted: true,
+        recordDeleted: true,
+      });
       await h.close();
     }
   });
@@ -4073,8 +4186,10 @@ describe('crew serve — merge_run tool', () => {
       expect(readPersistedState(h, runEnv.run_id).mergeStatus?.commitSha)
         .toBe(resolvedEnv.commit_sha);
       expect(readFileSync(join(h.root, 'shared.txt'), 'utf-8')).toBe('from worktree\n');
-      expect(existsSync(runEnv.worktree_path)).toBe(false);
-      expect(runWorktreeCount(h.crewHome)).toBe(0);
+      await vi.waitFor(() => {
+        expect(existsSync(runEnv.worktree_path)).toBe(false);
+        expect(runWorktreeCount(h.crewHome)).toBe(0);
+      });
     } finally {
       try {
         execSync('git reset --hard HEAD', { cwd: h.root, stdio: 'ignore' });
@@ -4204,7 +4319,7 @@ describe('crew serve — discard_run tool', () => {
         run_id: runEnv.run_id,
         ok: true,
       });
-      expect(existsSync(runEnv.worktree_path)).toBe(false);
+      await vi.waitFor(() => expect(existsSync(runEnv.worktree_path)).toBe(false));
 
       const status = await h.client.callTool({
         name: 'get_run_status',
@@ -4217,7 +4332,7 @@ describe('crew serve — discard_run tool', () => {
     }
   });
 
-  it('marks discarded when cleanup fails and retries cleanup on repeat discard', async () => {
+  it('marks discarded and retries warn-only background cleanup on repeat discard', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-coder',
       execute: async (task) => {
@@ -4257,16 +4372,13 @@ describe('crew serve — discard_run tool', () => {
         arguments: { run_id: runEnv.run_id },
       });
       expect(first.isError).toBeFalsy();
-      expect(toolText(first)).toBe(
-        `**Discarded** \`${runEnv.run_id}\`\n\nCleanup warning: delete branch: mocked failure`,
-      );
+      expect(toolText(first)).toBe(`**Discarded** \`${runEnv.run_id}\``);
       expect(first.structuredContent).toEqual({
         run_id: runEnv.run_id,
         ok: true,
-        cleanup_failed: true,
-        cleanup_errors: ['delete branch: mocked failure'],
       });
       expect(readPersistedState(h, runEnv.run_id).status).toBe('discarded');
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
 
       const second = await h.client.callTool({
         name: 'discard_run',
@@ -4277,10 +4389,102 @@ describe('crew serve — discard_run tool', () => {
         run_id: runEnv.run_id,
         ok: true,
       });
-      expect(cleanup).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledTimes(2));
       expect(cleanup).toHaveBeenNthCalledWith(1, runEnv.run_id, { lockAlreadyHeld: true });
       expect(cleanup).toHaveBeenNthCalledWith(2, runEnv.run_id, { lockAlreadyHeld: true });
     } finally {
+      await h.close();
+    }
+  });
+
+  it('returns the discarded envelope before locked background cleanup completes', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    const cleanupDeferred = createDeferred<WorktreeCleanupResult>();
+    const cleanupEntered = createDeferred<void>();
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'do' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+      await vi.waitFor(() => {
+        expect(readRunAuthSidecar(h.crewHome, runEnv.run_id).revoked).toBe(true);
+      });
+      await issueRunAuthSidecar({
+        crewHome: h.crewHome,
+        runId: runEnv.run_id,
+        agentId: 'mock-coder',
+        repoRoot: h.root,
+        captainServeInstance: 'async-cleanup-test',
+        writeMode: 'replace-existing',
+      });
+      const markerPath = workerReadyMarkerPath(h.crewHome, runEnv.run_id);
+      writeFileSync(markerPath, '{}', 'utf-8');
+      expect(readRunAuthSidecar(h.crewHome, runEnv.run_id).revoked).toBe(false);
+
+      const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId')
+        .mockImplementation(async (_runId, options) => {
+          expect(options).toEqual({ lockAlreadyHeld: true });
+          cleanupEntered.resolve();
+          return cleanupDeferred.promise;
+        });
+      const trackBackgroundCleanup = vi.spyOn(
+        h.worktreeManager,
+        'trackBackgroundCleanup',
+      );
+
+      let discardSettled = false;
+      const discardPromise = h.client.callTool({
+        name: 'discard_run',
+        arguments: { run_id: runEnv.run_id },
+      }).then((result) => {
+        discardSettled = true;
+        return result;
+      });
+
+      await cleanupEntered.promise;
+      expect(trackBackgroundCleanup).toHaveBeenCalledTimes(1);
+      let contenderEntered = false;
+      const contender = h.worktreeManager.withRunWorktreeLock(runEnv.run_id, async () => {
+        contenderEntered = true;
+      });
+      try {
+        await vi.waitFor(() => expect(discardSettled).toBe(true));
+        expect(readPersistedState(h, runEnv.run_id).status).toBe('discarded');
+        expect(() => readRunAuthSidecar(h.crewHome, runEnv.run_id)).toThrow('sidecar_missing');
+        expect(existsSync(markerPath)).toBe(false);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(contenderEntered).toBe(false);
+      } finally {
+        cleanupDeferred.resolve({
+          success: true,
+          errors: [],
+          hadRecord: true,
+          worktreeRemoved: true,
+          branchDeleted: true,
+          recordDeleted: true,
+        });
+        await discardPromise;
+        await contender;
+      }
+
+      const discardResult = await discardPromise;
+      expect(discardResult.structuredContent).toEqual({
+        run_id: runEnv.run_id,
+        ok: true,
+      });
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(contenderEntered).toBe(true);
+    } finally {
+      cleanupDeferred.resolve({
+        success: true,
+        errors: [],
+        hadRecord: true,
+        worktreeRemoved: true,
+        branchDeleted: true,
+        recordDeleted: true,
+      });
       await h.close();
     }
   });

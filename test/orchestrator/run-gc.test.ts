@@ -1,8 +1,8 @@
 /**
  * Run GC: terminal runs age out of `<crewHome>/runs/` on two independent
- * windows — worktree reclaim (keeps the branch, except for merged runs) and
- * full run-dir deletion. Uses a real git repo + WorktreeManager so the
- * assertions are about the actual on-disk + git-ref state.
+ * windows — worktree reclaim (keeps the branch, except for merged/discarded
+ * runs) and full run-dir deletion. Uses a real git repo + WorktreeManager so
+ * the assertions are about the actual on-disk + git-ref state.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -376,6 +376,55 @@ describe('gcTerminalRuns', () => {
         worktreeReclaimed: true,
         branchDeleted: true,
         runDirDeleted: true,
+      },
+    ]);
+  });
+
+  it('deletes a discarded branch left behind by an earlier cleanup failure', async () => {
+    const runId = 'aaaaaaaa-0000-0000-0000-000000000016';
+    const branch = await seedRun(runId, {
+      status: 'discarded',
+      repoRoot,
+      completedAt: '2026-01-01T00:00:00.000Z',
+    });
+    execSync(`git worktree remove --force ${JSON.stringify(wtPath(runId))}`, { cwd: repoRoot });
+
+    expect(existsSync(wtPath(runId))).toBe(false);
+    expect(existsSync(metaPath(runId))).toBe(true);
+    expect(branchExists(branch)).toBe(true);
+
+    const dryRun = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 8 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+      dryRun: true,
+    });
+    expect(dryRun.outcomes).toMatchObject([
+      { runId, worktreeReclaimed: true, branchDeleted: true },
+    ]);
+
+    const result = await gcTerminalRuns({
+      crewHome,
+      projectRoot: repoRoot,
+      runStateStore: store,
+      worktreeManager: manager,
+      now: T0 + 8 * DAY_MS,
+      worktreeTtlMs: 7 * DAY_MS,
+      runDirTtlMs: 30 * DAY_MS,
+    });
+
+    expect(existsSync(metaPath(runId))).toBe(false);
+    expect(branchExists(branch)).toBe(false);
+    expect(result.outcomes).toMatchObject([
+      {
+        runId,
+        worktreeReclaimed: true,
+        branchDeleted: true,
+        runDirDeleted: false,
       },
     ]);
   });

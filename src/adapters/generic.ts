@@ -13,6 +13,7 @@ import {
 } from './process-group.js';
 import { argvPromptTooLargeResult } from './prompt-transport.js';
 import { classifyTextFailure } from './failure-classifier.js';
+import { boundFailureText } from './failure-output.js';
 import { codexSafeSpawnEnvironment } from '../codex/environment.js';
 
 const PROMPT_VALUE_FLAGS = new Set(['--prompt']);
@@ -29,12 +30,17 @@ function renderFailureOutput(
   stdout: string,
   stderr: string,
 ): string {
+  let output: string;
   if (stderr && stdout) {
-    return `${stderr}\n\n${stdout}`;
+    output = `${stderr}\n\n${stdout}`;
+  } else if (stderr) {
+    output = stderr;
+  } else if (stdout) {
+    output = stdout;
+  } else {
+    output = `${command} exited with code ${exitCode ?? 'unknown'}`;
   }
-  if (stderr) return stderr;
-  if (stdout) return stdout;
-  return `${command} exited with code ${exitCode ?? 'unknown'}`;
+  return boundFailureText(output);
 }
 
 export interface GenericAdapterOptions {
@@ -219,19 +225,20 @@ export class GenericAdapter implements AgentAdapter {
         stdoutPreview: preview(stdoutText),
         stderrPreview: preview(stderrText),
       });
+      const failureOutput = renderFailureOutput(
+        this.command,
+        result.exitCode,
+        stdoutText,
+        stderrText,
+      );
       return {
-        output: renderFailureOutput(
-          this.command,
-          result.exitCode,
-          stdoutText,
-          stderrText,
-        ),
+        output: failureOutput,
         filesModified: [],
         status: 'error',
-        failure: classifyTextFailure(
-          renderFailureOutput(this.command, result.exitCode, stdoutText, stderrText),
-          { defaultKind: 'process', providerCode: result.exitCode !== undefined ? String(result.exitCode) : undefined },
-        ),
+        failure: classifyTextFailure(failureOutput, {
+          defaultKind: 'process',
+          providerCode: result.exitCode !== undefined ? String(result.exitCode) : undefined,
+        }),
         metadata: {
           rawEvents: [
             {

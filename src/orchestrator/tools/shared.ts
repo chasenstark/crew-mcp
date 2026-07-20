@@ -168,8 +168,6 @@ export interface MergeEnvelope {
 export interface DiscardEnvelope {
   readonly run_id: string;
   readonly ok: true;
-  readonly cleanup_failed?: true;
-  readonly cleanup_errors?: readonly string[];
 }
 
 export type ToolCallReturn = {
@@ -602,11 +600,7 @@ export function checkoutEnvelope(result: {
 }
 
 export function renderDiscardMarkdown(env: DiscardEnvelope): string {
-  const base = `**Discarded** ${mdInlineCode(env.run_id)}`;
-  if (!env.cleanup_failed || !env.cleanup_errors || env.cleanup_errors.length === 0) {
-    return base;
-  }
-  return `${base}\n\nCleanup warning: ${env.cleanup_errors.join('; ')}`;
+  return `**Discarded** ${mdInlineCode(env.run_id)}`;
 }
 
 export function renderCancelMarkdown(env: {

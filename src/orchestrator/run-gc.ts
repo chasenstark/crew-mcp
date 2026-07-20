@@ -30,8 +30,8 @@ import { runModeFromState } from './run-mode.js';
  *   1. Worktree TTL (`CREW_WORKTREE_TTL_DAYS`, default 7) — once a terminal
  *      run is older than this, its worktree directory is removed. The
  *      `crew-run/*` branch is KEPT (so any unmerged commits survive as a
- *      recoverable ref) EXCEPT for `merged` runs, whose branch is also
- *      deleted because the commits already live in the merge target.
+ *      recoverable ref) EXCEPT for `merged` runs, whose commits already live
+ *      in the target, and `discarded` runs, whose work was explicitly abandoned.
  *
  *   2. Run-dir TTL (`CREW_RUNDIR_TTL_DAYS`, default 30) — once a terminal
  *      run is older than this, the entire run-dir (state.json + events.log
@@ -421,7 +421,8 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
         status: state.status,
         ageDays: Math.floor(ageMs / (24 * 60 * 60 * 1000)),
         worktreeReclaimed,
-        branchDeleted: worktreeReclaimed && state.status === 'merged',
+        branchDeleted:
+          worktreeReclaimed && (state.status === 'merged' || state.status === 'discarded'),
         runDirDeleted: runDirDeletedNow,
         runDirPending,
       });
@@ -431,14 +432,16 @@ export async function gcTerminalRuns(args: RunGcArgs): Promise<RunGcResult> {
     let worktreeReclaimed = false;
     let branchDeleted = false;
     if (shouldReclaimWorktree) {
-      // Keep the branch for everything except merged runs, whose commits
-      // are already in the merge target.
+      // Keep the branch for everything except merged runs (already landed)
+      // and discarded runs (explicitly abandoned by the user).
       try {
         const cleanup = await args.worktreeManager.cleanupByRunId(runId, {
-          keepBranch: state.status !== 'merged',
+          keepBranch: state.status !== 'merged' && state.status !== 'discarded',
         });
         worktreeReclaimed = cleanup.worktreeRemoved;
-        branchDeleted = state.status === 'merged' && cleanup.branchDeleted;
+        branchDeleted =
+          (state.status === 'merged' || state.status === 'discarded')
+          && cleanup.branchDeleted;
         if (!cleanup.success) {
           logger.warn(
             `run GC: worktree reclaim incomplete for ${runId}: ${cleanup.errors.join('; ')}`,

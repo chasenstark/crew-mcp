@@ -13,6 +13,7 @@ import {
   terminateProcessGroupOnAbort,
 } from './process-group.js';
 import { classifyTextFailure } from './failure-classifier.js';
+import { boundFailureText } from './failure-output.js';
 import { AGY_MODEL_LABELS, AGY_MODEL_LABEL_SET } from './agy-models.js';
 import type {
   AgentAdapter,
@@ -142,10 +143,7 @@ export function isAgyVersionBelowFloor(
 
 function renderProcessFailureOutput(stdout: string, stderr: string, message: string): string {
   const envelope = parseAgyEnvelope(stdout);
-  if (envelope?.error) return envelope.error;
-  if (stderr) return stderr;
-  if (stdout) return stdout;
-  return message;
+  return boundFailureText(envelope?.error || stderr || stdout || message);
 }
 
 function isMaxBufferError(error: unknown): boolean {
@@ -503,14 +501,15 @@ export class AgyAdapter implements AgentAdapter {
         model,
         error: capMessage ?? message,
       });
+      const failureText = capMessage ?? renderProcessFailureOutput(stdoutText, stderrText, message);
+      const classificationText = boundFailureText(
+        [capMessage ?? message, stdoutText, stderrText].filter(Boolean).join('\n'),
+      );
       return {
-        output: capMessage ?? renderProcessFailureOutput(stdoutText, stderrText, message),
+        output: failureText,
         filesModified: [],
         status: 'error',
-        failure: classifyTextFailure(
-          [capMessage ?? message, stdoutText, stderrText].filter(Boolean).join('\n'),
-          { defaultKind: 'process' },
-        ),
+        failure: classifyTextFailure(classificationText, { defaultKind: 'process' }),
         metadata: { rawEvents: [{ error: capMessage ?? message, stdout: stdoutText, stderr: stderrText }] },
       };
     }
@@ -531,10 +530,11 @@ export class AgyAdapter implements AgentAdapter {
       && envelope.response.length > 0;
 
     if (!succeeded) {
-      const failureText =
+      const failureText = boundFailureText(
         envelope?.error
         || [stdoutText, stderrText].filter(Boolean).join('\n')
-        || `agy exited with code ${result.exitCode}`;
+        || `agy exited with code ${result.exitCode}`,
+      );
       return {
         output: failureText,
         filesModified: [],

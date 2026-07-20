@@ -246,6 +246,41 @@ describe('GenericAdapter', () => {
     });
   });
 
+  it('bounds multi-megabyte nonzero output before returning or classifying it', async () => {
+    const stderr = `GENERIC_FAILURE_HEAD\n${'e'.repeat(2 * 1024 * 1024)}`;
+    const stdout = [
+      's'.repeat(1024 * 1024),
+      'RESOURCE_EXHAUSTED hidden in truncated middle',
+      't'.repeat(1024 * 1024),
+      'GENERIC_FAILURE_TAIL',
+    ].join('\n');
+    mockExeca.mockResolvedValueOnce(execaResult({
+      stdout,
+      stderr,
+      exitCode: 23,
+    }));
+
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    const result = await adapter.execute({
+      prompt: 'run task',
+      context: { workingDirectory: '/tmp/project' },
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.output).toContain('GENERIC_FAILURE_HEAD');
+    expect(result.output).toContain('GENERIC_FAILURE_TAIL');
+    expect(result.output).toMatch(/\[\.\.\. \d+ bytes truncated \.\.\.\]/);
+    expect(result.output).not.toContain('RESOURCE_EXHAUSTED');
+    expect(Buffer.byteLength(result.output, 'utf8')).toBeLessThan(70 * 1024);
+    expect(result.failure?.kind).toBe('process');
+  });
+
   it('classifies thrown process failures', async () => {
     mockExeca.mockRejectedValueOnce(new Error('spawn ENOENT'));
 

@@ -225,22 +225,25 @@ export async function mergeRunToolHandler(
           }`,
         );
       }
-      try {
-        const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id);
+      const backgroundCleanup = deps.worktreeManager.withRunWorktreeLock(args.run_id, async () => {
+        const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id, {
+          lockAlreadyHeld: true,
+        });
         if (!cleanup.success) {
           logger.warn(
             `merge_run ${args.run_id}: worktree cleanup failed after `
-            + `successful merge — call discard_run to retry. Error: `
+            + `successful merge — periodic GC will retry. Error: `
             + cleanup.errors.join('; '),
           );
         }
-      } catch (err) {
+      }).catch((err: unknown) => {
         logger.warn(
           `merge_run ${args.run_id}: worktree cleanup failed after `
-          + `successful merge — call discard_run to retry. Error: `
+          + `successful merge — periodic GC will retry. Error: `
           + `${err instanceof Error ? err.message : String(err)}`,
         );
-      }
+      });
+      deps.worktreeManager.trackBackgroundCleanup(backgroundCleanup);
       const env: MergeEnvelope = {
         run_id: args.run_id,
         status: 'merged',
