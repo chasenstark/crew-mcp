@@ -62,6 +62,10 @@ import {
   getRunStatusInputSchema,
   MAX_EVENTS_TAIL_CAP,
 } from '../../../src/orchestrator/tools/get-run-status.js';
+import {
+  LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS,
+  LIST_RUNS_FAILURE_TRUNCATION_MARKER,
+} from '../../../src/orchestrator/tools/list-runs.js';
 import { logger } from '../../../src/utils/logger.js';
 import * as configStore from '../../../src/utils/config-store.js';
 import { AGENT_PREFS_FILENAME } from '../../../src/agent-prefs/store.js';
@@ -1098,6 +1102,70 @@ describe('crew serve — list_runs tool', () => {
       await h.close();
     }
   });
+
+  it('caps list_runs failure rawSignal but keeps get_run_status full-fidelity', async () => {
+    const rawSignal = `${'codex resume stderr '.repeat(1000)}FULL_RAW_SIGNAL_TAIL`;
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async () => ({
+        output: 'resume failed',
+        filesModified: [],
+        status: 'error',
+        failure: {
+          kind: 'process',
+          confidence: 'high',
+          providerCode: 'resume_id_missing',
+          rawSignal,
+          recommendation: 'reroute',
+        },
+        metadata: {},
+      }),
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'resume' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const list = await h.client.callTool({ name: 'list_runs', arguments: {} });
+      const listed = (list.structuredContent as {
+        runs: Array<{
+          run_id: string;
+          failure?: {
+            kind: string;
+            confidence: string;
+            providerCode?: string;
+            rawSignal?: string;
+          };
+        }>;
+      }).runs.find((entry) => entry.run_id === runEnv.run_id);
+      expect(listed?.failure).toMatchObject({
+        kind: 'process',
+        confidence: 'high',
+        providerCode: 'resume_id_missing',
+      });
+      expect(Array.from(listed?.failure?.rawSignal ?? '')).toHaveLength(
+        LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS,
+      );
+      expect(listed?.failure?.rawSignal?.endsWith(
+        LIST_RUNS_FAILURE_TRUNCATION_MARKER,
+      )).toBe(true);
+      expect(JSON.stringify(list.structuredContent)).not.toContain('FULL_RAW_SIGNAL_TAIL');
+
+      const status = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: runEnv.run_id },
+      });
+      expect((status.structuredContent as {
+        failure?: { rawSignal?: string };
+      }).failure?.rawSignal).toBe(rawSignal);
+    } finally {
+      await h.close();
+    }
+  });
 });
 
 describe('crew serve — stale-run sweeper', () => {
@@ -2014,8 +2082,10 @@ describe('crew serve — run_agent tool', () => {
         run_in_background: true,
         per_run: true,
         working_directory: h.root,
-        working_directory_json: JSON.stringify(h.root),
       });
+      expect(env.required_next_action).not.toHaveProperty('command_json');
+      expect(env.required_next_action).not.toHaveProperty('run_ids_json');
+      expect(env.required_next_action).not.toHaveProperty('working_directory_json');
       expect(toolText(res)).toContain(
         `Bash(${watcherPrefix('crew-wait', h.crewHome)} ${env.run_id}, run_in_background: true)`,
       );
@@ -2071,7 +2141,9 @@ describe('crew serve — run_agent tool', () => {
         `${watcherPrefix('npx --no-install crew-wait', h.crewHome)} ${env.run_id}`,
       );
       expect(env.required_next_action?.working_directory).toBe(h.root);
-      expect(env.required_next_action?.working_directory_json).toBe(JSON.stringify(h.root));
+      expect(env.required_next_action).not.toHaveProperty('command_json');
+      expect(env.required_next_action).not.toHaveProperty('run_ids_json');
+      expect(env.required_next_action).not.toHaveProperty('working_directory_json');
       expect(toolText(res)).toContain(
         `Bash(${watcherPrefix('npx --no-install crew-wait', h.crewHome)} ${env.run_id}, run_in_background: true)`,
       );
@@ -2917,16 +2989,16 @@ describe('crew serve — peer_messages integration', () => {
           type: 'spawn_watcher',
           mechanism: 'background_shell',
           command: `${commandPrefix} ${reviewer.run_id}`,
-          command_json: JSON.stringify(`${commandPrefix} ${reviewer.run_id}`),
-          run_ids_json: JSON.stringify([reviewer.run_id]),
           working_directory: h.root,
-          working_directory_json: JSON.stringify(h.root),
           run_id: reviewer.run_id,
           run_in_background: true,
           per_run: true,
           consequence_if_skipped:
             'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
         });
+        expect(reviewer.required_next_action).not.toHaveProperty('command_json');
+        expect(reviewer.required_next_action).not.toHaveProperty('run_ids_json');
+        expect(reviewer.required_next_action).not.toHaveProperty('working_directory_json');
         expect(text).toContain(
           `${commandPrefix} ${reviewer.run_id}`,
         );
@@ -5316,16 +5388,16 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         type: 'spawn_watcher',
         mechanism: 'background_shell',
         command: `${watcherPrefix('crew-wait', h.crewHome)} ${env.run_id}`,
-        command_json: JSON.stringify(`${watcherPrefix('crew-wait', h.crewHome)} ${env.run_id}`),
-        run_ids_json: JSON.stringify([env.run_id]),
         working_directory: h.root,
-        working_directory_json: JSON.stringify(h.root),
         run_id: env.run_id,
         run_in_background: true,
         per_run: true,
         consequence_if_skipped:
           'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
       });
+      expect(env.required_next_action).not.toHaveProperty('command_json');
+      expect(env.required_next_action).not.toHaveProperty('run_ids_json');
+      expect(env.required_next_action).not.toHaveProperty('working_directory_json');
       const text = toolText(run);
       expect(text).toContain('**REQUIRED before you end this turn:**');
       expect(text).toContain(

@@ -6,7 +6,16 @@ import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { errorContent, isTerminalRunStatus, jsonContent } from './shared.js';
+import {
+  errorContent,
+  isTerminalRunStatus,
+  markdownContent,
+  mdInlineCode,
+} from './shared.js';
+
+export const PANEL_STATUS_SUMMARY_MAX_CHARS = 200;
+export const PANEL_STATUS_TRUNCATION_MARKER =
+  '… [truncated; full summary in structuredContent]';
 
 export const getPanelStatusInputSchema = z.object({
   panel_id: z.string().min(1),
@@ -63,10 +72,46 @@ export function getPanelStatusToolHandler(
       crewHome: deps.crewHome,
       runStateStore: deps.runStateStore,
     });
-    return jsonContent(out);
+    return markdownContent(renderPanelStatusMarkdown(out), out);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
+}
+
+function renderPanelStatusMarkdown(out: GetPanelStatusOutput): string {
+  const lines = [
+    `Panel ${mdInlineCode(out.panel_id)}: total=${out.total_count} terminal=${out.terminal_count} running=${out.running_count} failed_reviewers=${out.failed_reviewers.length}.`,
+  ];
+  for (const reviewer of out.reviewers) {
+    if (reviewer.state_unavailable) {
+      lines.push(
+        `- ${mdInlineCode(reviewer.agent_id)}: status=\`state_unavailable\` files_changed=0 summary=${truncatePanelStatusText(reviewer.state_unavailable_reason)}`,
+      );
+      continue;
+    }
+    const filesChanged = reviewer.files_changed?.length ?? 0;
+    const summary = reviewer.summary === undefined
+      ? ''
+      : ` summary=${truncatePanelStatusText(reviewer.summary)}`;
+    lines.push(
+      `- ${mdInlineCode(reviewer.agent_id)}: status=\`${reviewer.status}\` files_changed=${filesChanged}${summary}`,
+    );
+  }
+  for (const reviewer of out.failed_reviewers) {
+    lines.push(
+      `- ${mdInlineCode(reviewer.agent_id)}: status=\`dispatch_failed\` files_changed=0 summary=${truncatePanelStatusText(reviewer.error)}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function truncatePanelStatusText(value: string): string {
+  const compacted = value.replace(/\s+/g, ' ').trim();
+  const characters = Array.from(compacted);
+  if (characters.length <= PANEL_STATUS_SUMMARY_MAX_CHARS) return compacted;
+  const maxBodyChars = PANEL_STATUS_SUMMARY_MAX_CHARS
+    - Array.from(PANEL_STATUS_TRUNCATION_MARKER).length;
+  return `${characters.slice(0, maxBodyChars).join('').trimEnd()}${PANEL_STATUS_TRUNCATION_MARKER}`;
 }
 
 export function getPanelStatusHandler(

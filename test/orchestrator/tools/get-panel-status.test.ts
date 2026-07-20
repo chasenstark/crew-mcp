@@ -11,7 +11,13 @@ import {
   readPanelState,
   writePanelStateAtomic,
 } from '../../../src/orchestrator/panels/store.js';
-import { getPanelStatusHandler } from '../../../src/orchestrator/tools/get-panel-status.js';
+import {
+  getPanelStatusHandler,
+  getPanelStatusToolHandler,
+  PANEL_STATUS_SUMMARY_MAX_CHARS,
+  PANEL_STATUS_TRUNCATION_MARKER,
+  type GetPanelStatusOutput,
+} from '../../../src/orchestrator/tools/get-panel-status.js';
 import {
   createRunState,
   makeHarness,
@@ -98,6 +104,70 @@ describe('getPanelStatusHandler', () => {
       run_id: 'r-running',
       state_unavailable: false,
       status: 'running',
+    });
+  });
+
+  it('renders compact reviewer summaries while preserving the full structured payload', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    const longSummary = `${'review finding '.repeat(100)}FULL_SUMMARY_TAIL`;
+    await createRunState(h, {
+      runId: 'r-long-summary',
+      agentId: 'reviewer',
+      status: 'success',
+      summary: longSummary,
+      filesChanged: ['src/a.ts', 'src/b.ts'],
+    });
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: 'r-long-summary',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:01.000Z',
+          dispatchWarnings: [],
+        },
+        {
+          runId: null,
+          agentId: 'unavailable',
+          dispatched: false,
+          error: 'agent unavailable',
+          dispatchWarnings: [],
+        },
+      ],
+    }));
+
+    const result = getPanelStatusToolHandler({ panel_id: 'panel-1' }, h.ctx);
+    const text = result.content[0].text;
+    const structured = result.structuredContent as unknown as GetPanelStatusOutput;
+
+    expect(text).toContain(
+      'Panel `panel-1`: total=1 terminal=1 running=0 failed_reviewers=1.',
+    );
+    expect(text).toContain('- `reviewer`: status=`success` files_changed=2 summary=');
+    expect(text).toContain(PANEL_STATUS_TRUNCATION_MARKER);
+    expect(text).toContain(
+      '- `unavailable`: status=`dispatch_failed` files_changed=0 summary=agent unavailable',
+    );
+    expect(text).not.toContain('FULL_SUMMARY_TAIL');
+    const renderedSummary = text.split(' summary=')[1]?.split('\n')[0] ?? '';
+    expect(Array.from(renderedSummary)).toHaveLength(PANEL_STATUS_SUMMARY_MAX_CHARS);
+
+    expect(structured).toMatchObject({
+      panel_id: 'panel-1',
+      total_count: 1,
+      terminal_count: 1,
+      running_count: 0,
+      failed_reviewers: [
+        { agent_id: 'unavailable', error: 'agent unavailable', dispatch_warnings: [] },
+      ],
+    });
+    expect(structured.reviewers[0]).toMatchObject({
+      agent_id: 'reviewer',
+      status: 'success',
+      summary: longSummary,
+      files_changed: ['src/a.ts', 'src/b.ts'],
     });
   });
 

@@ -6,6 +6,8 @@ import { join } from 'path';
 
 import {
   clearListRunsCachesForTest,
+  LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS,
+  LIST_RUNS_FAILURE_TRUNCATION_MARKER,
   LIST_RUNS_SUMMARY_MAX_CHARS,
   listRuns,
   setListRunsFsForTest,
@@ -216,6 +218,39 @@ describe('listRuns', () => {
         recommendation: 'backoff',
       },
     });
+  });
+
+  it('caps failure rawSignal while preserving the other failure fields', () => {
+    const rawSignal = `${'resume stderr '.repeat(100)}FULL_RAW_SIGNAL_TAIL`;
+    writeState({
+      runId: 'run-large-failure',
+      status: 'error',
+      repoRoot,
+      completedAt: iso(4),
+      lastError: 'resume failed',
+      failure: {
+        kind: 'process',
+        confidence: 'high',
+        providerCode: 'resume_id_missing',
+        rawSignal,
+        recommendation: 'reroute',
+      },
+    });
+
+    const out = listRuns({}, { crewHome, repoRoot });
+    const failure = out.runs[0].failure;
+
+    expect(failure).toMatchObject({
+      kind: 'process',
+      confidence: 'high',
+      providerCode: 'resume_id_missing',
+      recommendation: 'reroute',
+    });
+    expect(Array.from(failure?.rawSignal ?? '')).toHaveLength(
+      LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS,
+    );
+    expect(failure?.rawSignal?.endsWith(LIST_RUNS_FAILURE_TRUNCATION_MARKER)).toBe(true);
+    expect(failure?.rawSignal).not.toContain('FULL_RAW_SIGNAL_TAIL');
   });
 
   it('surfaces corrupt state.json records after quarantining them', () => {

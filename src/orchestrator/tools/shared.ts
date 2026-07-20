@@ -136,13 +136,13 @@ export interface RequiredNextAction {
   readonly mechanism: 'background_shell' | 'codex_app_server';
   readonly command: string;
   /** JSON string literal safe to paste directly into the Codex launcher JavaScript. */
-  readonly command_json: string;
+  readonly command_json?: string;
   /** JSON array literal safe to paste directly into the Codex launcher JavaScript. */
-  readonly run_ids_json: string;
+  readonly run_ids_json?: string;
   /** Working directory used by the watcher command. */
   readonly working_directory: string;
   /** JSON string literal safe to paste directly into the Codex launcher JavaScript. */
-  readonly working_directory_json: string;
+  readonly working_directory_json?: string;
   readonly run_id?: string;
   readonly run_ids?: readonly string[];
   readonly run_generation?: number;
@@ -371,10 +371,16 @@ export function requiredNextActionForRun(
     type: 'spawn_watcher',
     mechanism: clientKind === 'claude-code' ? 'background_shell' : 'codex_app_server',
     command,
-    command_json: JSON.stringify(command),
-    run_ids_json: JSON.stringify([runId]),
+    ...(clientKind === 'codex'
+      ? {
+          command_json: JSON.stringify(command),
+          run_ids_json: JSON.stringify([runId]),
+        }
+      : {}),
     working_directory: projectRoot,
-    working_directory_json: JSON.stringify(projectRoot),
+    ...(clientKind === 'codex'
+      ? { working_directory_json: JSON.stringify(projectRoot) }
+      : {}),
     run_id: runId,
     ...(clientKind === 'codex' && runGeneration !== undefined
       ? { run_generation: runGeneration }
@@ -429,10 +435,16 @@ export function requiredNextActionForRuns(
     type: 'spawn_watcher',
     mechanism: clientKind === 'claude-code' ? 'background_shell' : 'codex_app_server',
     command,
-    command_json: JSON.stringify(command),
-    run_ids_json: JSON.stringify(runIds),
+    ...(clientKind === 'codex'
+      ? {
+          command_json: JSON.stringify(command),
+          run_ids_json: JSON.stringify(runIds),
+        }
+      : {}),
     working_directory: projectRoot,
-    working_directory_json: JSON.stringify(projectRoot),
+    ...(clientKind === 'codex'
+      ? { working_directory_json: JSON.stringify(projectRoot) }
+      : {}),
     run_ids: [...runIds],
     ...(clientKind === 'codex' && runGenerations.length > 0
       ? { run_generations: [...runGenerations] }

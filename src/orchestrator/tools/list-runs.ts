@@ -38,6 +38,9 @@ const RUN_STATUS_VALUES = [
 export const DEFAULT_LIST_RUNS_LIMIT = 20;
 export const MAX_LIST_RUNS_LIMIT = 500;
 export const LIST_RUNS_SUMMARY_MAX_CHARS = 400;
+export const LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS = 400;
+export const LIST_RUNS_FAILURE_TRUNCATION_MARKER =
+  '… [truncated; use get_run_status]';
 
 export const runStatusSchema = z.enum(RUN_STATUS_VALUES);
 
@@ -171,8 +174,20 @@ export function listRuns(
         ? { run_mode: runModeFromState(state) }
         : {}),
       ...summaryField(state),
-      ...(state.failure !== undefined ? { failure: state.failure } : {}),
+      ...(state.failure !== undefined ? { failure: listRunsFailure(state.failure) } : {}),
     })),
+  };
+}
+
+function listRunsFailure(failure: NonNullable<RunStateV1['failure']>): RunStateV1['failure'] {
+  if (failure.rawSignal === undefined) return failure;
+  const characters = Array.from(failure.rawSignal);
+  if (characters.length <= LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS) return failure;
+  const maxBodyChars = LIST_RUNS_FAILURE_RAW_SIGNAL_MAX_CHARS
+    - Array.from(LIST_RUNS_FAILURE_TRUNCATION_MARKER).length;
+  return {
+    ...failure,
+    rawSignal: `${characters.slice(0, maxBodyChars).join('').trimEnd()}${LIST_RUNS_FAILURE_TRUNCATION_MARKER}`,
   };
 }
 

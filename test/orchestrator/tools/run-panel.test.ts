@@ -172,10 +172,7 @@ describe('runPanelHandler', () => {
       type: 'spawn_watcher',
       mechanism: 'background_shell',
       command: `${commandPrefix} codex-run-1 gemini-cli-run-2`,
-      command_json: JSON.stringify(`${commandPrefix} codex-run-1 gemini-cli-run-2`),
-      run_ids_json: JSON.stringify(['codex-run-1', 'gemini-cli-run-2']),
       working_directory: h.ctx.projectRoot,
-      working_directory_json: JSON.stringify(h.ctx.projectRoot),
       run_ids: ['codex-run-1', 'gemini-cli-run-2'],
       run_in_background: true,
       per_run: false,
@@ -187,10 +184,7 @@ describe('runPanelHandler', () => {
         type: 'spawn_watcher',
         mechanism: 'background_shell',
         command: `${commandPrefix} codex-run-1`,
-        command_json: JSON.stringify(`${commandPrefix} codex-run-1`),
-        run_ids_json: JSON.stringify(['codex-run-1']),
         working_directory: h.ctx.projectRoot,
-        working_directory_json: JSON.stringify(h.ctx.projectRoot),
         run_id: 'codex-run-1',
         run_in_background: true,
         per_run: true,
@@ -201,10 +195,7 @@ describe('runPanelHandler', () => {
         type: 'spawn_watcher',
         mechanism: 'background_shell',
         command: `${commandPrefix} gemini-cli-run-2`,
-        command_json: JSON.stringify(`${commandPrefix} gemini-cli-run-2`),
-        run_ids_json: JSON.stringify(['gemini-cli-run-2']),
         working_directory: h.ctx.projectRoot,
-        working_directory_json: JSON.stringify(h.ctx.projectRoot),
         run_id: 'gemini-cli-run-2',
         run_in_background: true,
         per_run: true,
@@ -212,6 +203,14 @@ describe('runPanelHandler', () => {
           'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
       },
     ]);
+    for (const action of [
+      out.required_next_action,
+      ...out.reviewers.map((reviewer) => reviewer.required_next_action),
+    ]) {
+      expect(action).not.toHaveProperty('command_json');
+      expect(action).not.toHaveProperty('run_ids_json');
+      expect(action).not.toHaveProperty('working_directory_json');
+    }
   });
 
   it('adds hosted panel and selective watcher actions for Codex panels', async () => {
