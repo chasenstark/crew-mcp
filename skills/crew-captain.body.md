@@ -301,6 +301,20 @@ Crew-tracked, and tells you nothing about Crew runs.
 binary, allowlist denial, or missing hosted bridge capability), tell the
 user the watcher did not start and that results will surface on their next
 message. Then end the turn and use turn-start recovery.
+
+A watcher that finds a run already changed by a post-terminal user action
+prints:
+
+```
+CREW_WAIT_POST_TERMINAL run_id=<id> status=<merged|merge_conflict|discarded>
+```
+
+This is a successful watcher-liveness exit, not a dispatch termination. The
+run was already merged, conflicted, or discarded; do not treat the line as a
+`CREW_WAIT_TERMINAL` result and take no dispatch action for that run. A
+genuinely terminal run in the same watcher batch still emits its normal
+`CREW_WAIT_TERMINAL` line and is surfaced through the current host's normal
+completion path for that terminal subset.
 <!-- /host -->
 
 <!-- host:claude-code -->

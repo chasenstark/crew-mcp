@@ -22,6 +22,7 @@ import { resolveCrewHome } from '../utils/crew-home.js';
 const CREW_WAIT_POLL_INTERVAL_ENV = 'CREW_WAIT_POLL_INTERVAL_MS';
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_INTERVAL_MS = 5_000;
+const MAX_MULTI_RUN_POLL_INTERVAL_MS = 2_000;
 /**
  * Time to wait for `state.json` to appear before exiting with a
  * diagnostic. The producer normally writes state.json within
@@ -33,8 +34,9 @@ const STATE_FIRST_APPEARANCE_GRACE_MS = 30_000;
 /**
  * The four `markTerminal()` statuses per Decision 4 of the
  * non-blocking-captain plan. `merged`/`merge_conflict`/`discarded` are
- * post-terminal user actions, not dispatch terminations — `crew-wait`
- * does not target them. (Documented in
+ * post-terminal user actions, not dispatch terminations. `crew-wait`
+ * reports them distinctly as watcher exit conditions without presenting
+ * them as dispatch completions. (Documented in
  * `docs/architecture/run-state-contract.md`.)
  */
 const TERMINAL_STATUSES = new Set([
@@ -42,6 +44,11 @@ const TERMINAL_STATUSES = new Set([
   'partial',
   'error',
   'cancelled',
+]);
+const POST_TERMINAL_STATUSES = new Set([
+  'merged',
+  'merge_conflict',
+  'discarded',
 ]);
 
 interface PersistedRunState {
@@ -76,6 +83,8 @@ export interface WaitForRunTerminalOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
   readonly watch?: CrewWaitWatchFactory;
+  readonly maxPollIntervalMs?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface WaitForRunsTerminalOptions {
@@ -87,6 +96,14 @@ export interface WaitForRunsTerminalOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
   readonly watch?: CrewWaitWatchFactory;
+}
+
+export interface WaitForRunTerminalResult {
+  readonly postTerminal: boolean;
+}
+
+export interface WaitForRunsTerminalResult {
+  readonly postTerminalRunIds: readonly string[];
 }
 
 /**
@@ -107,7 +124,7 @@ export class CrewWaitUnknownRunError extends Error {
 
 export async function waitForRunTerminal(
   options: WaitForRunTerminalOptions,
-): Promise<void> {
+): Promise<WaitForRunTerminalResult> {
   const crewHome = options.crewHome ?? resolveCrewHome();
   const pollIntervalMs = options.pollIntervalMs ?? resolvePollIntervalMs();
   const graceMs = options.stateFirstAppearanceGraceMs ?? STATE_FIRST_APPEARANCE_GRACE_MS;
@@ -130,13 +147,14 @@ export async function waitForRunTerminal(
     now,
     writeStdout,
     watch: options.watch ?? defaultWatch,
+    signal: options.signal,
   });
 
   if (watchResult.completed) {
-    return;
+    return { postTerminal: watchResult.postTerminal };
   }
 
-  await waitForRunTerminalByPolling({
+  return waitForRunTerminalByPolling({
     runId: options.runId,
     statePath,
     pollIntervalMs,
@@ -146,17 +164,19 @@ export async function waitForRunTerminal(
     sleep,
     now,
     writeStdout,
+    maxPollIntervalMs: options.maxPollIntervalMs ?? MAX_POLL_INTERVAL_MS,
+    signal: options.signal,
   });
 }
 
 export async function waitForRunsTerminal(
   options: WaitForRunsTerminalOptions,
-): Promise<void> {
+): Promise<WaitForRunsTerminalResult> {
   if (options.runIds.length === 0) {
     throw new Error('crew-wait: at least one run_id is required');
   }
   if (options.runIds.length === 1) {
-    await waitForRunTerminal({
+    const result = await waitForRunTerminal({
       runId: options.runIds[0],
       crewHome: options.crewHome,
       pollIntervalMs: options.pollIntervalMs,
@@ -166,58 +186,59 @@ export async function waitForRunsTerminal(
       now: options.now,
       watch: options.watch,
     });
-    return;
+    return {
+      postTerminalRunIds: result.postTerminal ? [options.runIds[0]] : [],
+    };
   }
 
   const crewHome = options.crewHome ?? resolveCrewHome();
-  const pollIntervalMs = options.pollIntervalMs ?? resolvePollIntervalMs();
-  const graceMs = options.stateFirstAppearanceGraceMs ?? STATE_FIRST_APPEARANCE_GRACE_MS;
-  const sleep = options.sleep ?? defaultSleep;
-  const now = options.now ?? Date.now;
-  const writeStdout = options.writeStdout ?? ((line) => process.stdout.write(`${line}\n`));
-  const startedAtMs = now();
-  const pending = new Set(options.runIds);
-  const stateAppeared = new Set<string>();
-  const linesByRunId = new Map<string, string>();
-  const snapshotsByRunId = new Map<string, StateSnapshot>();
-  let currentPollIntervalMs = pollIntervalMs;
-  const statePathByRunId = new Map(
-    options.runIds.map((runId) => [runId, join(crewHome, 'runs', runId, 'state.json')]),
+  const pollIntervalMs = Math.min(
+    options.pollIntervalMs ?? resolvePollIntervalMs(),
+    MAX_MULTI_RUN_POLL_INTERVAL_MS,
   );
-
-  while (pending.size > 0) {
-    for (const runId of options.runIds) {
-      if (!pending.has(runId)) continue;
-
-      const statePath = statePathByRunId.get(runId)!;
-      const snapshot = await readStateSnapshotIfPresent(statePath, snapshotsByRunId.get(runId));
-      if (snapshot) {
-        snapshotsByRunId.set(runId, snapshot);
-        stateAppeared.add(runId);
-        const line = terminalLine(snapshot.state, runId);
-        if (line) {
-          linesByRunId.set(runId, line);
-          pending.delete(runId);
-        }
-        continue;
-      }
-
-      if (!stateAppeared.has(runId) && now() - startedAtMs >= graceMs) {
-        for (const completedRunId of options.runIds) {
-          const line = linesByRunId.get(completedRunId);
-          if (line !== undefined) writeStdout(line);
-        }
-        throw new CrewWaitUnknownRunError(runId, statePath);
-      }
+  const writeStdout = options.writeStdout ?? ((line) => process.stdout.write(`${line}\n`));
+  const linesByRunId = new Map<string, string>();
+  const postTerminalRunIds = new Set<string>();
+  const abortController = new AbortController();
+  const waits = options.runIds.map(async (runId) => {
+    const result = await waitForRunTerminal({
+      runId,
+      crewHome,
+      pollIntervalMs,
+      maxPollIntervalMs: MAX_MULTI_RUN_POLL_INTERVAL_MS,
+      stateFirstAppearanceGraceMs: options.stateFirstAppearanceGraceMs,
+      writeStdout: (line) => linesByRunId.set(runId, line),
+      sleep: options.sleep,
+      now: options.now,
+      watch: options.watch,
+      signal: abortController.signal,
+    });
+    if (result.postTerminal) {
+      postTerminalRunIds.add(runId);
     }
+  });
 
-    if (pending.size > 0) {
-      await sleep(currentPollIntervalMs);
-      currentPollIntervalMs = nextCrewWaitPollIntervalMs(currentPollIntervalMs, pollIntervalMs);
-    }
+  try {
+    await Promise.all(waits);
+  } catch (err) {
+    abortController.abort();
+    await Promise.allSettled(waits);
+    writeCompletedLines(options.runIds, linesByRunId, writeStdout);
+    throw err;
   }
 
-  for (const runId of options.runIds) {
+  writeCompletedLines(options.runIds, linesByRunId, writeStdout);
+  return {
+    postTerminalRunIds: options.runIds.filter((runId) => postTerminalRunIds.has(runId)),
+  };
+}
+
+function writeCompletedLines(
+  runIds: readonly string[],
+  linesByRunId: ReadonlyMap<string, string>,
+  writeStdout: (line: string) => void,
+): void {
+  for (const runId of runIds) {
     const line = linesByRunId.get(runId);
     if (line !== undefined) writeStdout(line);
   }
@@ -260,11 +281,13 @@ interface WatchWaitContext extends WaitContext {
   readonly runsPath: string;
   readonly runPath: string;
   readonly watch: CrewWaitWatchFactory;
+  readonly signal?: AbortSignal;
 }
 
 interface WatchWaitResult {
   readonly completed: boolean;
   readonly stateAppeared: boolean;
+  readonly postTerminal: boolean;
 }
 
 async function waitForRunTerminalWithWatch(
@@ -277,6 +300,7 @@ async function waitForRunTerminalWithWatch(
     let evaluating = false;
     let evaluateAgain = false;
     let stateAppeared = false;
+    let previousSnapshot: StateSnapshot | undefined;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
 
     const cleanup = (): void => {
@@ -289,13 +313,14 @@ async function waitForRunTerminalWithWatch(
         watcher = undefined;
       }
       watchedTarget = undefined;
+      context.signal?.removeEventListener('abort', abort);
     };
 
-    const finish = (): void => {
+    const finish = (postTerminal: boolean): void => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ completed: true, stateAppeared });
+      resolve({ completed: true, stateAppeared, postTerminal });
     };
 
     const fail = (err: unknown): void => {
@@ -309,7 +334,11 @@ async function waitForRunTerminalWithWatch(
       if (settled) return;
       settled = true;
       cleanup();
-      resolve({ completed: false, stateAppeared });
+      resolve({ completed: false, stateAppeared, postTerminal: false });
+    };
+
+    const abort = (): void => {
+      fail(new CrewWaitAbortedError());
     };
 
     const armGraceTimer = (): void => {
@@ -376,16 +405,17 @@ async function waitForRunTerminalWithWatch(
             return;
           }
 
-          const snapshot = await readStateSnapshotIfPresent(context.statePath);
+          const snapshot = await readStateSnapshotIfPresent(context.statePath, previousSnapshot);
+          previousSnapshot = snapshot;
           if (settled) return;
 
           if (snapshot) {
             stateAppeared = true;
             clearGraceTimer();
-            const line = terminalLine(snapshot.state, context.runId);
-            if (line) {
-              context.writeStdout(line);
-              finish();
+            const exit = watcherExit(snapshot.state, context.runId);
+            if (exit) {
+              context.writeStdout(exit.line);
+              finish(exit.postTerminal);
               return;
             }
           } else if (!stateAppeared && context.now() - context.startedAtMs >= context.graceMs) {
@@ -408,6 +438,11 @@ async function waitForRunTerminalWithWatch(
       }
     };
 
+    if (context.signal?.aborted) {
+      abort();
+      return;
+    }
+    context.signal?.addEventListener('abort', abort, { once: true });
     if (!ensureWatcher()) {
       fallbackToPolling();
       return;
@@ -421,31 +456,40 @@ interface PollingWaitContext extends WaitContext {
   readonly pollIntervalMs: number;
   readonly stateAppeared: boolean;
   readonly sleep: (ms: number) => Promise<void>;
+  readonly maxPollIntervalMs: number;
+  readonly signal?: AbortSignal;
 }
 
-async function waitForRunTerminalByPolling(context: PollingWaitContext): Promise<void> {
+async function waitForRunTerminalByPolling(
+  context: PollingWaitContext,
+): Promise<WaitForRunTerminalResult> {
   let stateAppeared = context.stateAppeared;
   let previousSnapshot: StateSnapshot | undefined;
   let hasPreviousSnapshot = false;
   let sleepMs = context.pollIntervalMs;
 
   for (;;) {
+    throwIfAborted(context.signal);
     const snapshot = await readStateSnapshotIfPresent(context.statePath, previousSnapshot);
     const changed = !hasPreviousSnapshot || snapshot?.raw !== previousSnapshot?.raw;
     if (changed) {
       sleepMs = context.pollIntervalMs;
     } else {
-      sleepMs = nextCrewWaitPollIntervalMs(sleepMs, context.pollIntervalMs);
+      sleepMs = nextCrewWaitPollIntervalMs(
+        sleepMs,
+        context.pollIntervalMs,
+        context.maxPollIntervalMs,
+      );
     }
     hasPreviousSnapshot = true;
     previousSnapshot = snapshot;
 
     if (snapshot) {
       stateAppeared = true;
-      const line = terminalLine(snapshot.state, context.runId);
-      if (line) {
-        context.writeStdout(line);
-        return;
+      const exit = watcherExit(snapshot.state, context.runId);
+      if (exit) {
+        context.writeStdout(exit.line);
+        return { postTerminal: exit.postTerminal };
       }
     }
 
@@ -454,6 +498,7 @@ async function waitForRunTerminalByPolling(context: PollingWaitContext): Promise
     }
 
     await context.sleep(sleepMs);
+    throwIfAborted(context.signal);
   }
 }
 
@@ -509,14 +554,31 @@ function isDirectory(path: string): boolean {
   }
 }
 
-function terminalLine(state: PersistedRunState, fallbackRunId: string): string | undefined {
-  if (typeof state.status !== 'string' || !TERMINAL_STATUSES.has(state.status)) {
+interface WatcherExit {
+  readonly line: string;
+  readonly postTerminal: boolean;
+}
+
+function watcherExit(state: PersistedRunState, fallbackRunId: string): WatcherExit | undefined {
+  if (typeof state.status !== 'string') {
     return undefined;
   }
   const runId = typeof state.runId === 'string' ? state.runId : fallbackRunId;
+  if (POST_TERMINAL_STATUSES.has(state.status)) {
+    return {
+      line: `CREW_WAIT_POST_TERMINAL run_id=${runId} status=${state.status}`,
+      postTerminal: true,
+    };
+  }
+  if (!TERMINAL_STATUSES.has(state.status)) {
+    return undefined;
+  }
   const agent = typeof state.agentId === 'string' ? state.agentId : '';
   const worktree = typeof state.worktreePath === 'string' ? state.worktreePath : '';
-  return `CREW_WAIT_TERMINAL run_id=${runId} agent=${agent} status=${state.status} worktree=${worktree}`;
+  return {
+    line: `CREW_WAIT_TERMINAL run_id=${runId} agent=${agent} status=${state.status} worktree=${worktree}`,
+    postTerminal: false,
+  };
 }
 
 function defaultWatch(
@@ -552,8 +614,8 @@ export function usage(): string {
   return [
     'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>] <run_id...>',
     '',
-    'Wait for one or more crew runs to reach terminal state and print one terminal metadata line per run.',
-    'When --codex-bridge-base64 is present, start a completion turn on the hosted Codex thread.',
+    'Wait for one or more crew runs to reach terminal or post-terminal state and print one metadata line per run.',
+    'When --codex-bridge-base64 is present, start a completion turn for the dispatch-terminal runs on the hosted Codex thread.',
   ].join('\n');
 }
 
@@ -583,26 +645,38 @@ export async function main(
   }
 
   const crewHome = parsed.crewHome ?? resolveCrewHome();
-  await waitForRunsTerminal({
+  const waitResult = await waitForRunsTerminal({
     runIds: parsed.runIds,
     crewHome,
   });
   if (parsed.codexBridgeFile) {
-    const threadId = (dependencies.env ?? process.env)[CODEX_THREAD_ID_ENV];
     if (!parsed.runGenerations || parsed.runGenerations.length !== parsed.runIds.length) {
       throw new Error('Codex bridge wake requires one run generation per run id');
     }
+    const postTerminalRunIds = new Set(waitResult.postTerminalRunIds);
+    const wakeTargets = parsed.runIds.flatMap((runId, index) => (
+      postTerminalRunIds.has(runId)
+        ? []
+        : [{ runId, generation: parsed.runGenerations![index] }]
+    ));
+    if (wakeTargets.length === 0) {
+      return 0;
+    }
+
+    const threadId = (dependencies.env ?? process.env)[CODEX_THREAD_ID_ENV];
+    const wakeRunIds = wakeTargets.map(({ runId }) => runId);
+    const wakeRunGenerations = wakeTargets.map(({ generation }) => generation);
     let claimResult: ClaimedCodexWakeResult<unknown> | undefined;
     const wake = await (dependencies.wakeCodexThread ?? wakeCodexThread)({
       bridgeFile: parsed.codexBridgeFile,
       threadId: threadId ?? '',
-      runIds: parsed.runIds,
+      runIds: wakeRunIds,
       guardTurnStart: async (startTurn) => {
         claimResult = await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
           crewHome,
           threadId: threadId ?? '',
-          runIds: parsed.runIds,
-          runGenerations: parsed.runGenerations!,
+          runIds: wakeRunIds,
+          runGenerations: wakeRunGenerations,
           startTurn,
         });
         return claimResult.started
@@ -694,6 +768,19 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+class CrewWaitAbortedError extends Error {
+  constructor() {
+    super('crew-wait aborted');
+    this.name = 'CrewWaitAbortedError';
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new CrewWaitAbortedError();
+  }
 }
 
 if (isInvokedAsCli()) {

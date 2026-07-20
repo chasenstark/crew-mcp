@@ -320,6 +320,64 @@ describe('crew-wait', () => {
     expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_SENT thread_id=${threadId} turn_id=turn-sent`);
   });
 
+  it('wakes hosted Codex for every run in an all-terminal batch', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-codex-batch-'));
+    cleanup.push(crewHome);
+    const runIds = ['run-success-batch', 'run-partial-batch'];
+    const runGenerations = [2, 4];
+    for (const [index, runId] of runIds.entries()) {
+      const runDir = join(crewHome, 'runs', runId);
+      mkdirSync(runDir, { recursive: true });
+      writeStateAtomic(runDir, {
+        runId,
+        agentId: 'codex',
+        status: index === 0 ? 'success' : 'partial',
+        worktreePath: `/tmp/${runId}`,
+        prompts: Array.from({ length: runGenerations[index] }, (_, turn) => ({ turn })),
+      });
+    }
+
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-bridge-base64', Buffer.from('/tmp/bridge.json').toString('base64url'),
+        '--run-generations-base64', Buffer.from(JSON.stringify(runGenerations)).toString('base64url'),
+        ...runIds,
+      ], {
+        env: { CODEX_THREAD_ID: threadId },
+        runClaimedCodexWake: async (options) => {
+          expect(options.runIds).toEqual(runIds);
+          expect(options.runGenerations).toEqual(runGenerations);
+          return {
+            started: true,
+            result: await options.startTurn(),
+          };
+        },
+        wakeCodexThread: async (options) => {
+          expect(options.runIds).toEqual(runIds);
+          const result = await options.guardTurnStart!(async () => ({
+            turn: { id: 'turn-batch' },
+          }));
+          expect(result.action).toBe('start');
+          return { turnId: 'turn-batch' };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(writes.join('')).toContain(
+      `CREW_WAIT_CODEX_WAKE_SENT thread_id=${threadId} turn_id=turn-batch`,
+    );
+  });
+
   it('prints the durable claim reason when a hosted Codex wake is suppressed', async () => {
     const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-codex-skip-'));
     cleanup.push(crewHome);
@@ -401,7 +459,7 @@ describe('crew-wait', () => {
     expect(writes.join('')).toContain('CREW_WAIT_TERMINAL run_id=run-explicit-home');
   });
 
-  it('waits for multiple run ids before printing terminal lines in argument order', async () => {
+  it('uses fs.watch for multiple run ids and prints terminal lines in argument order', async () => {
     const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-multi-'));
     cleanup.push(crewHome);
     const firstRunDir = join(crewHome, 'runs', 'run-first');
@@ -431,37 +489,40 @@ describe('crew-wait', () => {
     });
 
     const stdout: string[] = [];
-    let sleeps = 0;
+    const watcher = createManualWatchFactory();
+    setTimeout(() => {
+      writeStateAtomic(secondRunDir, {
+        schemaVersion: 1,
+        runId: 'run-second',
+        agentId: 'gemini-cli',
+        status: 'partial',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        worktreePath: '/tmp/second',
+        prompts: [],
+        filesChanged: [],
+      });
+      watcher.emit(secondRunDir, 'state.json');
+    }, 25);
+
     await waitForRunsTerminal({
       runIds: ['run-first', 'run-second'],
       crewHome,
       pollIntervalMs: 5,
       sleep: async () => {
-        expect(stdout).toEqual([]);
-        sleeps += 1;
-        writeStateAtomic(secondRunDir, {
-          schemaVersion: 1,
-          runId: 'run-second',
-          agentId: 'gemini-cli',
-          status: 'partial',
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          worktreePath: '/tmp/second',
-          prompts: [],
-          filesChanged: [],
-        });
+        throw new Error('unexpected polling fallback');
       },
+      watch: watcher.watch,
       writeStdout: (line) => stdout.push(line),
     });
 
-    expect(sleeps).toBe(1);
     expect(stdout).toEqual([
       'CREW_WAIT_TERMINAL run_id=run-first agent=codex status=success worktree=/tmp/first',
       'CREW_WAIT_TERMINAL run_id=run-second agent=gemini-cli status=partial worktree=/tmp/second',
     ]);
   });
 
-  it('backs off multi-id polling while preserving output order', async () => {
+  it('caps multi-id polling fallback at two seconds and resets after state changes', async () => {
     const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-multi-backoff-'));
     cleanup.push(crewHome);
     const firstRunDir = join(crewHome, 'runs', 'run-first');
@@ -494,10 +555,26 @@ describe('crew-wait', () => {
     await waitForRunsTerminal({
       runIds: ['run-first', 'run-second'],
       crewHome,
-      pollIntervalMs: 5,
+      pollIntervalMs: 1_000,
+      watch: () => {
+        throw new Error('watch unavailable');
+      },
       sleep: async (ms) => {
         sleeps.push(ms);
         if (sleeps.length === 2) {
+          writeStateAtomic(runDir, {
+            schemaVersion: 1,
+            runId: 'run-second',
+            agentId: 'codex',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+            worktreePath: '/tmp/second',
+            marker: 'snapshot-changed',
+            prompts: [],
+            filesChanged: [],
+          });
+        }
+        if (sleeps.length === 3) {
           writeStateAtomic(runDir, {
             schemaVersion: 1,
             runId: 'run-second',
@@ -514,7 +591,7 @@ describe('crew-wait', () => {
       writeStdout: () => {},
     });
 
-    expect(sleeps).toEqual([5, 10]);
+    expect(sleeps).toEqual([1_000, 2_000, 1_000]);
   });
 
   it('multi-id unknown run exits through the exit-3 diagnostic path after printing terminal peers', async () => {
@@ -561,63 +638,252 @@ describe('crew-wait', () => {
     ]);
   });
 
-  it('does not exit on post-terminal user-action statuses (merged / merge_conflict / discarded)', async () => {
-    // Decision 4: crew-wait targets the four markTerminal() statuses
-    // only. Post-terminal user actions are not dispatch terminations
-    // and the watcher must keep polling — otherwise it would race the
-    // captain's own merge_run/discard_run calls.
-    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-postterm-'));
+  it('exits promptly on merged status through the single-run watch path', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-postterm-watch-'));
     cleanup.push(crewHome);
-    const runId = 'run-postterm';
+    const runId = 'run-merged';
     const runDir = join(crewHome, 'runs', runId);
     mkdirSync(runDir, { recursive: true });
-    const writeStatus = (status: string): void => {
-      writeFileSync(
-        join(runDir, 'state.json'),
-        JSON.stringify({
-          schemaVersion: 1,
-          runId,
-          agentId: 'codex',
-          status,
-          startedAt: new Date().toISOString(),
-          worktreePath: '/tmp/wt',
-          prompts: [],
-          filesChanged: [],
-        }),
-        'utf-8',
-      );
-    };
-
-    // Start with a post-terminal user-action status. The watcher must
-    // ignore it and continue polling. Flip to a real terminal after a
-    // few polls and assert it exits.
-    writeStatus('merged');
-    let polls = 0;
-    setTimeout(() => {
-      writeStatus('merge_conflict');
-    }, 15);
-    setTimeout(() => {
-      writeStatus('discarded');
-    }, 30);
-    setTimeout(() => {
-      writeStatus('success');
-    }, 45);
+    writeStateAtomic(runDir, {
+      schemaVersion: 1,
+      runId,
+      agentId: 'codex',
+      status: 'merged',
+      startedAt: new Date().toISOString(),
+      worktreePath: '/tmp/wt',
+      prompts: [],
+      filesChanged: [],
+    });
 
     const stdout: string[] = [];
-    await waitForRunTerminal({
+    const result = await waitForRunTerminal({
       runId,
       crewHome,
       pollIntervalMs: 5,
-      writeStdout: (line) => {
-        polls += 1;
-        stdout.push(line);
+      watch: createManualWatchFactory().watch,
+      sleep: async () => {
+        throw new Error('unexpected polling fallback');
       },
+      writeStdout: (line) => stdout.push(line),
     });
 
+    expect(result).toEqual({ postTerminal: true });
+    expect(stdout).toEqual(['CREW_WAIT_POST_TERMINAL run_id=run-merged status=merged']);
+  });
+
+  it('exits promptly on discarded status through the single-run polling fallback', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-postterm-poll-'));
+    cleanup.push(crewHome);
+    const runId = 'run-discarded-poll';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      schemaVersion: 1,
+      runId,
+      agentId: 'codex',
+      status: 'discarded',
+      startedAt: new Date().toISOString(),
+      worktreePath: '/tmp/wt',
+      prompts: [],
+      filesChanged: [],
+    });
+
+    const stdout: string[] = [];
+    const result = await waitForRunTerminal({
+      runId,
+      crewHome,
+      pollIntervalMs: 5,
+      watch: () => {
+        throw new Error('watch unavailable');
+      },
+      sleep: async () => {
+        throw new Error('post-terminal state should exit before sleeping');
+      },
+      writeStdout: (line) => stdout.push(line),
+    });
+
+    expect(result).toEqual({ postTerminal: true });
     expect(stdout).toEqual([
-      'CREW_WAIT_TERMINAL run_id=run-postterm agent=codex status=success worktree=/tmp/wt',
+      'CREW_WAIT_POST_TERMINAL run_id=run-discarded-poll status=discarded',
     ]);
-    expect(polls).toBe(1);
+  });
+
+  it('removes post-terminal runs from a multi-run wait without changing terminal output', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-postterm-multi-'));
+    cleanup.push(crewHome);
+    const terminalDir = join(crewHome, 'runs', 'run-success');
+    const discardedDir = join(crewHome, 'runs', 'run-discarded');
+    mkdirSync(terminalDir, { recursive: true });
+    mkdirSync(discardedDir, { recursive: true });
+    writeStateAtomic(terminalDir, {
+      runId: 'run-success',
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/success',
+    });
+    writeStateAtomic(discardedDir, {
+      runId: 'run-discarded',
+      agentId: 'agy',
+      status: 'discarded',
+      worktreePath: '/tmp/discarded',
+    });
+
+    const stdout: string[] = [];
+    const result = await waitForRunsTerminal({
+      runIds: ['run-success', 'run-discarded'],
+      crewHome,
+      watch: createManualWatchFactory().watch,
+      sleep: async () => {
+        throw new Error('unexpected polling fallback');
+      },
+      writeStdout: (line) => stdout.push(line),
+    });
+
+    expect(result).toEqual({ postTerminalRunIds: ['run-discarded'] });
+    expect(stdout).toEqual([
+      'CREW_WAIT_TERMINAL run_id=run-success agent=codex status=success worktree=/tmp/success',
+      'CREW_WAIT_POST_TERMINAL run_id=run-discarded status=discarded',
+    ]);
+  });
+
+  it('wakes hosted Codex for only the terminal subset of a mixed batch', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-postterm-main-'));
+    cleanup.push(crewHome);
+    const terminalRunId = 'run-success-main';
+    const postTerminalRunId = 'run-merged-main';
+    const terminalRunDir = join(crewHome, 'runs', terminalRunId);
+    const postTerminalRunDir = join(crewHome, 'runs', postTerminalRunId);
+    mkdirSync(terminalRunDir, { recursive: true });
+    mkdirSync(postTerminalRunDir, { recursive: true });
+    writeStateAtomic(terminalRunDir, {
+      runId: terminalRunId,
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/success',
+      prompts: [{ turn: 1 }],
+    });
+    writeStateAtomic(postTerminalRunDir, {
+      runId: postTerminalRunId,
+      agentId: 'codex',
+      status: 'merged',
+      worktreePath: '/tmp/merged',
+      prompts: [{ turn: 1 }],
+    });
+
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-bridge-base64', Buffer.from('/tmp/bridge.json').toString('base64url'),
+        '--run-generations-base64', Buffer.from('[7,9]').toString('base64url'),
+        terminalRunId,
+        postTerminalRunId,
+      ], {
+        env: { CODEX_THREAD_ID: threadId },
+        runClaimedCodexWake: async (options) => {
+          expect(options.runIds).toEqual([terminalRunId]);
+          expect(options.runGenerations).toEqual([7]);
+          return {
+            started: true,
+            result: await options.startTurn(),
+          };
+        },
+        wakeCodexThread: async (options) => {
+          expect(options.runIds).toEqual([terminalRunId]);
+          const result = await options.guardTurnStart!(async () => ({
+            turn: { id: 'turn-mixed' },
+          }));
+          expect(result).toEqual({
+            action: 'start',
+            result: { turn: { id: 'turn-mixed' } },
+          });
+          return { turnId: 'turn-mixed' };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(writes.join('')).toContain(
+      'CREW_WAIT_TERMINAL run_id=run-success-main agent=codex status=success worktree=/tmp/success',
+    );
+    expect(writes.join('')).toContain(
+      'CREW_WAIT_POST_TERMINAL run_id=run-merged-main status=merged',
+    );
+    expect(writes.join('')).toContain(
+      `CREW_WAIT_CODEX_WAKE_SENT thread_id=${threadId} turn_id=turn-mixed`,
+    );
+  });
+
+  it('skips the hosted Codex wake when every watched run is post-terminal', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-all-postterm-main-'));
+    cleanup.push(crewHome);
+    const mergedRunId = 'run-merged-main';
+    const discardedRunId = 'run-discarded-main';
+    const mergedRunDir = join(crewHome, 'runs', mergedRunId);
+    const discardedRunDir = join(crewHome, 'runs', discardedRunId);
+    mkdirSync(mergedRunDir, { recursive: true });
+    mkdirSync(discardedRunDir, { recursive: true });
+    writeStateAtomic(mergedRunDir, {
+      runId: mergedRunId,
+      agentId: 'codex',
+      status: 'merged',
+      worktreePath: '/tmp/merged',
+      prompts: [{ turn: 1 }],
+    });
+    writeStateAtomic(discardedRunDir, {
+      runId: discardedRunId,
+      agentId: 'agy',
+      status: 'discarded',
+      worktreePath: '/tmp/discarded',
+      prompts: [{ turn: 1 }],
+    });
+
+    let wakeCalled = false;
+    let claimCalled = false;
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-bridge-base64', Buffer.from('/tmp/bridge.json').toString('base64url'),
+        '--run-generations-base64', Buffer.from('[1,1]').toString('base64url'),
+        mergedRunId,
+        discardedRunId,
+      ], {
+        env: { CODEX_THREAD_ID: '019f5d0f-a60c-7d53-9f35-2036d92d71ec' },
+        runClaimedCodexWake: async () => {
+          claimCalled = true;
+          return { started: false, reason: 'stale_generation' };
+        },
+        wakeCodexThread: async () => {
+          wakeCalled = true;
+          return { skipped: true };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(wakeCalled).toBe(false);
+    expect(claimCalled).toBe(false);
+    expect(writes.join('')).toContain(
+      'CREW_WAIT_POST_TERMINAL run_id=run-merged-main status=merged',
+    );
+    expect(writes.join('')).toContain(
+      'CREW_WAIT_POST_TERMINAL run_id=run-discarded-main status=discarded',
+    );
+    expect(writes.join('')).not.toContain('CREW_WAIT_CODEX_WAKE_');
   });
 
   it('exits with CrewWaitUnknownRunError when state.json never appears within the grace window', async () => {
