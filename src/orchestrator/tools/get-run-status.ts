@@ -30,7 +30,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
@@ -313,7 +314,8 @@ function collectRunCommits(
 
   try {
     const targetRoot = state.repoRoot ?? fallbackRepoRoot;
-    const targetHead = gitOutput(targetRoot, ['rev-parse', 'HEAD']);
+    const targetHead = resolveGitHead(targetRoot)
+      ?? gitOutput(targetRoot, ['rev-parse', 'HEAD']);
     const cached = terminalCommitSummaryCache.get(state.runId);
     if (
       cached !== undefined
@@ -368,6 +370,88 @@ function gitOutput(cwd: string, args: readonly string[]): string {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
+}
+
+/**
+ * Resolve HEAD from Git's metadata files so terminal status cache hits do not
+ * pay for a synchronous `git rev-parse HEAD` subprocess. This handles normal
+ * repositories, linked worktrees, loose refs, and packed refs; uncommon Git
+ * storage backends fall through to the existing CLI lookup above.
+ */
+function resolveGitHead(worktreeRoot: string): string | undefined {
+  const gitDir = resolveGitDir(worktreeRoot);
+  if (gitDir === undefined) return undefined;
+
+  const commonDir = resolveCommonGitDir(gitDir);
+  const head = readTrimmed(join(gitDir, 'HEAD'));
+  if (head === undefined) return undefined;
+  if (isGitObjectId(head)) return head;
+
+  const refMatch = head.match(/^ref:\s+(.+)$/);
+  if (!refMatch?.[1]) return undefined;
+  return resolveGitRef(refMatch[1], gitDir, commonDir, new Set());
+}
+
+function resolveGitDir(worktreeRoot: string): string | undefined {
+  const dotGitPath = join(worktreeRoot, '.git');
+  try {
+    if (statSync(dotGitPath).isDirectory()) return dotGitPath;
+    const gitFile = readFileSync(dotGitPath, 'utf-8');
+    const match = gitFile.match(/^gitdir:\s*(.+)\s*$/m);
+    return match?.[1] ? resolve(dirname(dotGitPath), match[1]) : undefined;
+  } catch {
+    // A bare repository has HEAD directly under the supplied root.
+    return existsSync(join(worktreeRoot, 'HEAD')) ? worktreeRoot : undefined;
+  }
+}
+
+function resolveCommonGitDir(gitDir: string): string {
+  const commonDir = readTrimmed(join(gitDir, 'commondir'));
+  return commonDir ? resolve(gitDir, commonDir) : gitDir;
+}
+
+function resolveGitRef(
+  refName: string,
+  gitDir: string,
+  commonDir: string,
+  visited: Set<string>,
+): string | undefined {
+  if (!refName.startsWith('refs/') || visited.has(refName)) return undefined;
+  visited.add(refName);
+
+  for (const root of gitDir === commonDir ? [gitDir] : [gitDir, commonDir]) {
+    const value = readTrimmed(join(root, refName));
+    if (value === undefined) continue;
+    if (isGitObjectId(value)) return value;
+    const nested = value.match(/^ref:\s+(.+)$/)?.[1];
+    if (nested) return resolveGitRef(nested, gitDir, commonDir, visited);
+  }
+
+  for (const root of commonDir === gitDir ? [commonDir] : [commonDir, gitDir]) {
+    const packedRefs = readTrimmed(join(root, 'packed-refs'));
+    if (packedRefs === undefined) continue;
+    for (const line of packedRefs.split('\n')) {
+      if (line.startsWith('#') || line.startsWith('^')) continue;
+      const [objectId, packedRefName] = line.trim().split(/\s+/, 2);
+      if (packedRefName === refName && objectId && isGitObjectId(objectId)) {
+        return objectId;
+      }
+    }
+  }
+  return undefined;
+}
+
+function readTrimmed(path: string): string | undefined {
+  try {
+    const value = readFileSync(path, 'utf-8').trim();
+    return value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isGitObjectId(value: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(value);
 }
 
 async function waitForRunChange(args: {

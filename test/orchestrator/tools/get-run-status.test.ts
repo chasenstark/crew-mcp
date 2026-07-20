@@ -4,6 +4,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const childProcessMocks = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  childProcessMocks.execFileSync.mockImplementation(actual.execFileSync as never);
+  return { ...actual, execFileSync: childProcessMocks.execFileSync };
+});
+
 import { RunStateStore } from '../../../src/orchestrator/run-state.js';
 import { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import { getRunStatusToolHandler } from '../../../src/orchestrator/tools/get-run-status.js';
@@ -20,6 +30,7 @@ describe('getRunStatusToolHandler', () => {
   let priorNotifications: string | undefined;
 
   beforeEach(() => {
+    childProcessMocks.execFileSync.mockClear();
     priorNotifications = process.env.CREW_OS_NOTIFICATIONS;
     process.env.CREW_OS_NOTIFICATIONS = 'off';
     crewHome = mkdtempSync(join(tmpdir(), 'crew-get-status-home-'));
@@ -144,16 +155,19 @@ describe('getRunStatusToolHandler', () => {
       { dispatcher: new ToolDispatcher(), runStateStore: store },
     );
     expect(first.structuredContent).toMatchObject({ commit_count: 1 });
+    expect(childProcessMocks.execFileSync).toHaveBeenCalledTimes(2);
 
     writeFileSync(join(worktreePath, 'run-2.txt'), 'run 2\n', 'utf-8');
     execSync('git add run-2.txt', { cwd: worktreePath });
     execSync('git commit -q -m "run: change 2"', { cwd: worktreePath });
 
+    childProcessMocks.execFileSync.mockClear();
     const unchangedHost = await getRunStatusToolHandler(
       { run_id: 'r-cache' },
       { dispatcher: new ToolDispatcher(), runStateStore: store },
     );
     expect(unchangedHost.structuredContent).toMatchObject({ commit_count: 1 });
+    expect(childProcessMocks.execFileSync).not.toHaveBeenCalled();
 
     writeFileSync(join(repoRoot, 'host.txt'), 'host moved\n', 'utf-8');
     execSync('git add host.txt', { cwd: repoRoot });
@@ -164,6 +178,7 @@ describe('getRunStatusToolHandler', () => {
       { dispatcher: new ToolDispatcher(), runStateStore: store },
     );
     expect(advancedHost.structuredContent).toMatchObject({ commit_count: 2 });
+    expect(childProcessMocks.execFileSync).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces commits for merge_conflict runs while the worktree remains present', async () => {

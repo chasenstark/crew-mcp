@@ -8,9 +8,7 @@ import type {
 } from '../../workflow/types.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import {
-  listAgents,
   type AgentListSource,
-  type ListAgentsContext,
 } from './list-agents.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { errorContent, jsonContent } from './shared.js';
@@ -32,7 +30,7 @@ export interface GetCrewPreferencesOutput {
 
 export interface GetCrewPreferencesContext {
   readonly projectRoot: string;
-  readonly registry: ListAgentsContext['registry'] | AgentListSource;
+  readonly registry: AgentListSource;
   readonly agentPrefs?: AgentPrefsMap;
   readonly refresh?: boolean;
   readonly loadConfig?: (projectRoot: string) => { workflow: { agentDefaults?: WorkflowAgentDefaultsConfig } };
@@ -78,20 +76,15 @@ export async function getCrewPreferencesHandler(
   }
   if (!output.iterate && !output.panel) return {};
 
-  const knownIds = await listAgentIds(ctx);
+  const knownIds = listAgentIds(ctx.registry);
   const warnings = buildWarnings(output, knownIds);
   output.warnings = warnings;
   return output;
 }
 
-async function listAgentIds(ctx: GetCrewPreferencesContext): Promise<Set<string>> {
-  const out = await listAgents({
-    registry: ctx.registry,
-    agentPrefs: ctx.agentPrefs,
-    refresh: ctx.refresh,
-  });
+function listAgentIds(registry: AgentListSource): Set<string> {
   const ids = new Set<string>();
-  for (const agent of out.agents) {
+  for (const agent of registry.listAvailable()) {
     ids.add(agent.name);
     for (const alias of agent.aliases ?? []) {
       ids.add(alias);

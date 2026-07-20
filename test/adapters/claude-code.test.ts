@@ -102,6 +102,7 @@ describe('ClaudeCodeAdapter', () => {
   };
 
   beforeEach(() => {
+    delete process.env.CREW_HEALTHCHECK_TTL_MS;
     healthCacheDir = mkdtempSync(join(tmpdir(), 'crew-claude-health-cache-'));
     originalHealthCachePath = process.env.CREW_HEALTHCHECK_CACHE_PATH;
     process.env.CREW_HEALTHCHECK_CACHE_PATH = join(healthCacheDir, 'healthcheck-cache.json');
@@ -110,6 +111,8 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.CREW_HEALTHCHECK_TTL_MS;
     if (originalHealthCachePath === undefined) {
       delete process.env.CREW_HEALTHCHECK_CACHE_PATH;
     } else {
@@ -721,6 +724,66 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.available).toBe(false);
       expect(result.authenticated).toBe(false);
       expect(result.error).toBe('Claude CLI not found');
+    });
+
+    it('does not spawn on a warm health check and re-probes after the TTL', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-20T00:00:00.000Z'));
+      mockExeca
+        .mockResolvedValueOnce({
+          stdout: 'claude 1.0.12',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: 'claude 1.0.13',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      const first = await adapter.healthCheck();
+      const warm = await adapter.healthCheck();
+
+      expect(first.version).toBe('claude 1.0.12');
+      expect(warm.version).toBe('claude 1.0.12');
+      expect(mockExeca).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date('2026-07-20T00:05:00.001Z'));
+      const expired = await adapter.healthCheck();
+
+      expect(expired.version).toBe('claude 1.0.13');
+      expect(mockExeca).toHaveBeenCalledTimes(2);
+      expect(mockExeca.mock.calls[1][1]).toEqual(['--version']);
+    });
+
+    it('bypasses the warm version memo when refresh is requested', async () => {
+      mockExeca
+        .mockResolvedValueOnce({
+          stdout: 'claude 1.0.12',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: 'claude 1.0.13',
+          stderr: '',
+          exitCode: 0,
+        } as any)
+        .mockResolvedValueOnce({
+          stdout: '{"type":"result","subtype":"success","result":"OK"}',
+          stderr: '',
+          exitCode: 0,
+        } as any);
+
+      await adapter.healthCheck();
+      const refreshed = await adapter.healthCheck({ refresh: true });
+
+      expect(refreshed).toMatchObject({
+        available: true,
+        authenticated: true,
+        version: 'claude 1.0.13',
+      });
+      expect(mockExeca).toHaveBeenCalledTimes(3);
+      expect(mockExeca.mock.calls[1][1]).toEqual(['--version']);
     });
 
     it('runs the prompt auth probe on refresh and prefers stdout error payload', async () => {

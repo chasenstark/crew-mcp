@@ -84,6 +84,31 @@ describe('getCrewPreferencesHandler', () => {
     ]);
   });
 
+  it('validates names and aliases without running adapter health checks', async () => {
+    setConfigValue(cwd, 'workflow.agentDefaults.iterate.implementer', 'claude');
+    setConfigValue(cwd, 'workflow.agentDefaults.iterate.reviewers', '["missing-agent"]');
+    const healthCheck = vi.fn(async () => ({
+      available: true,
+      authenticated: true,
+    }));
+
+    const out = await getCrewPreferencesHandler({ scope: 'iterate' }, {
+      projectRoot: cwd,
+      registry: makeRegistry([
+        makeMockAdapter({
+          name: 'claude-code',
+          aliases: ['claude'],
+          healthCheck,
+        }),
+      ]),
+    });
+
+    expect(healthCheck).not.toHaveBeenCalled();
+    expect(out.warnings).toEqual([
+      "preferred iterate reviewer 'missing-agent' is not in list_agents (agent unavailable or uninstalled)",
+    ]);
+  });
+
   it('narrows the response to the requested scope', async () => {
     setConfigValue(cwd, 'workflow.agentDefaults.iterate.implementer', 'codex');
     setConfigValue(cwd, 'workflow.agentDefaults.panel.reviewers', '["claude-code"]');
