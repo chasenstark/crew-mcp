@@ -7,7 +7,7 @@ import {
 import type { CaptainInboxMessage } from '../captain-inbox/schema.js';
 import { logger } from '../../utils/logger.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
-import { jsonContent } from './shared.js';
+import { markdownContent } from './shared.js';
 
 const inboxStatusFilterSchema = z.enum(['unread', 'read', 'dismissed', 'all']);
 
@@ -20,15 +20,29 @@ export const checkCaptainInboxInputSchema = z.object({
 
 export type CheckCaptainInboxInput = z.infer<typeof checkCaptainInboxInputSchema>;
 
+export const CAPTAIN_INBOX_BODY_PREVIEW_MAX_CHARS = 300;
+
+export interface CaptainInboxMessageIndexEntry {
+  readonly msg_id: string;
+  readonly from: CaptainInboxMessage['from'];
+  readonly kind: CaptainInboxMessage['kind'];
+  readonly status: CaptainInboxMessage['status'];
+  readonly created_at: string;
+  readonly body_preview: string;
+  readonly body_preview_truncated: boolean;
+  readonly body_preview_omitted_chars?: number;
+}
+
 export interface CheckCaptainInboxOutput {
-  readonly messages: readonly CaptainInboxMessage[];
+  readonly messages: readonly (CaptainInboxMessage | CaptainInboxMessageIndexEntry)[];
+  readonly message_detail: 'compact' | 'full';
   readonly total_unread: number;
   readonly total_in_inbox: number;
   readonly oldest_unread_at?: string;
 }
 
 export const CHECK_CAPTAIN_INBOX_DESCRIPTION =
-  'Read the captain inbox for worker send_message results in the current repo. Filters: status (default unread), since ISO timestamp, from_run_id, and limit. Returns chronological messages plus total unread/inbox counts without changing message status. Also opportunistically prunes read/dismissed messages past the retention window.';
+  'Read the captain inbox for worker send_message results in the current repo, newest-first. Filters: status (default unread), since ISO timestamp, from_run_id, and limit. Unscoped calls return a compact message index with body previews; set from_run_id to retrieve those messages with full bodies in structuredContent. Returns total unread/inbox counts without changing message status. Also opportunistically prunes read/dismissed messages past the retention window.';
 
 export async function checkCaptainInboxToolHandler(
   args: CheckCaptainInboxInput,
@@ -52,8 +66,70 @@ export async function checkCaptainInboxToolHandler(
     .filter((message) => matchesStatus(message, args.status))
     .filter((message) => sinceMs === undefined || Date.parse(message.created_at) >= sinceMs)
     .filter((message) => args.from_run_id === undefined || message.from.run_id === args.from_run_id)
-    .slice(0, args.limit);
-  return jsonContent({ messages, ...summary });
+    .slice(-args.limit)
+    .reverse();
+  const includeFullBodies = args.from_run_id !== undefined;
+  const output: CheckCaptainInboxOutput = {
+    messages: includeFullBodies ? messages : messages.map(toMessageIndexEntry),
+    message_detail: includeFullBodies ? 'full' : 'compact',
+    ...summary,
+  };
+  return markdownContent(renderCaptainInboxMarkdown(messages, summary, includeFullBodies), output);
+}
+
+function toMessageIndexEntry(message: CaptainInboxMessage): CaptainInboxMessageIndexEntry {
+  const preview = previewBody(message.body);
+  return {
+    msg_id: message.msg_id,
+    from: message.from,
+    kind: message.kind,
+    status: message.status,
+    created_at: message.created_at,
+    body_preview: preview.text,
+    body_preview_truncated: preview.omittedChars > 0,
+    ...(preview.omittedChars > 0 ? { body_preview_omitted_chars: preview.omittedChars } : {}),
+  };
+}
+
+function renderCaptainInboxMarkdown(
+  messages: readonly CaptainInboxMessage[],
+  summary: ReturnType<typeof summarizeMessages>,
+  includeFullBodies: boolean,
+): string {
+  const detail = includeFullBodies
+    ? 'Full bodies are in structuredContent.'
+    : 'Body previews only; use from_run_id to retrieve full bodies.';
+  const lines = [
+    `Inbox: ${summary.total_unread} unread / ${summary.total_in_inbox} total. ` +
+      `Returned ${messages.length} newest-first. ${detail}`,
+  ];
+  if (messages.length === 0) {
+    lines.push('No messages matched.');
+    return lines.join('\n');
+  }
+  for (const message of messages) {
+    const preview = previewBody(message.body);
+    const truncation = preview.omittedChars > 0
+      ? `… [body_truncated ${preview.omittedChars} chars omitted]`
+      : '';
+    lines.push(
+      `- msg_id=${message.msg_id} from.run_id=${message.from.run_id} ` +
+        `agent=${message.from.agent_id} kind=${message.kind} created_at=${message.created_at} ` +
+        `status=${message.status} body=${JSON.stringify(`${preview.text}${truncation}`)}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function previewBody(body: string): { readonly text: string; readonly omittedChars: number } {
+  const compact = body.replace(/\s+/g, ' ').trim();
+  if (compact.length <= CAPTAIN_INBOX_BODY_PREVIEW_MAX_CHARS) {
+    return { text: compact, omittedChars: 0 };
+  }
+  return {
+    text: compact.slice(0, CAPTAIN_INBOX_BODY_PREVIEW_MAX_CHARS).trimEnd(),
+    omittedChars: compact.length - CAPTAIN_INBOX_BODY_PREVIEW_MAX_CHARS,
+  };
 }
 
 function matchesStatus(message: CaptainInboxMessage, status: CheckCaptainInboxInput['status']): boolean {

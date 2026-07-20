@@ -11,6 +11,7 @@ import {
   transitionMessages,
 } from '../../../src/orchestrator/captain-inbox/store.js';
 import {
+  CAPTAIN_INBOX_BODY_PREVIEW_MAX_CHARS,
   checkCaptainInboxInputSchema,
   checkCaptainInboxToolHandler,
 } from '../../../src/orchestrator/tools/check-captain-inbox.js';
@@ -88,9 +89,10 @@ describe('check_captain_inbox', () => {
       );
       expect(defaults.structuredContent).toMatchObject({
         messages: [
-          expect.objectContaining({ msg_id: unreadOld.msg_id }),
           expect.objectContaining({ msg_id: unreadNew.msg_id }),
+          expect.objectContaining({ msg_id: unreadOld.msg_id }),
         ],
+        message_detail: 'compact',
         total_unread: 2,
         total_in_inbox: 4,
         oldest_unread_at: unreadOld.created_at,
@@ -101,7 +103,7 @@ describe('check_captain_inbox', () => {
         { crewHome: h.crewHome, projectRoot: h.repoRoot },
       );
       expect((allLimited.structuredContent?.messages as Array<{ msg_id: string }>).map((m) => m.msg_id))
-        .toEqual([unreadOld.msg_id, read.msg_id]);
+        .toEqual([unreadNew.msg_id, dismissed.msg_id]);
 
       const readOnly = await checkCaptainInboxToolHandler(
         checkCaptainInboxInputSchema.parse({ status: 'read' }),
@@ -128,8 +130,92 @@ describe('check_captain_inbox', () => {
       expect((sinceAndRun.structuredContent?.messages as Array<{ msg_id: string }>).map((m) => m.msg_id))
         .toEqual([unreadNew.msg_id]);
       expect(sinceAndRun.structuredContent).toMatchObject({ total_unread: 2, total_in_inbox: 4 });
+      expect(sinceAndRun.structuredContent).toMatchObject({ message_detail: 'full' });
     } finally {
       vi.useRealTimers();
+      h.cleanup();
+      clearCaptainInboxSweepStateForTest();
+    }
+  });
+
+  it('returns compact body previews by default and full bodies for a scoped run', async () => {
+    clearCaptainInboxSweepStateForTest();
+    const h = tempRoot();
+    try {
+      const tail = ' full-body-tail';
+      const fullBody = `${'x'.repeat((16 * 1024) - tail.length)}${tail}`;
+      const stored = await appendMessage({
+        crewHome: h.crewHome,
+        message: {
+          ...message(h.repoRoot, 1, 'run-large'),
+          body: fullBody,
+        },
+      });
+
+      const defaults = await checkCaptainInboxToolHandler(
+        checkCaptainInboxInputSchema.parse({}),
+        { crewHome: h.crewHome, projectRoot: h.repoRoot },
+      );
+      const defaultText = defaults.content[0].text;
+      expect(defaultText).toContain(`msg_id=${stored.msg_id}`);
+      expect(defaultText).toContain('from.run_id=run-large');
+      expect(defaultText).toContain('agent=codex');
+      expect(defaultText).toContain('kind=note');
+      expect(defaultText).toContain(`created_at=${stored.created_at}`);
+      expect(defaultText).toContain('[body_truncated ');
+      expect(defaultText).not.toContain('full-body-tail');
+      expect(defaultText).not.toContain(fullBody);
+      expect(defaultText).not.toContain('"messages":');
+      expect(defaultText.length).toBeLessThan(1_000);
+      expect(defaults.structuredContent).toMatchObject({
+        message_detail: 'compact',
+        messages: [{
+          msg_id: stored.msg_id,
+          body_preview_truncated: true,
+          body_preview_omitted_chars: expect.any(Number),
+        }],
+      });
+      const [defaultMessage] = defaults.structuredContent?.messages as Array<Record<string, unknown>>;
+      expect(defaultMessage).not.toHaveProperty('body');
+      expect(defaultMessage.body_preview).toHaveLength(CAPTAIN_INBOX_BODY_PREVIEW_MAX_CHARS);
+
+      const scoped = await checkCaptainInboxToolHandler(
+        checkCaptainInboxInputSchema.parse({ from_run_id: 'run-large' }),
+        { crewHome: h.crewHome, projectRoot: h.repoRoot },
+      );
+      expect(scoped.structuredContent).toMatchObject({
+        message_detail: 'full',
+        messages: [{ msg_id: stored.msg_id, body: fullBody }],
+      });
+      expect(scoped.content[0].text).not.toContain('full-body-tail');
+    } finally {
+      h.cleanup();
+      clearCaptainInboxSweepStateForTest();
+    }
+  });
+
+  it('returns the newest unread messages when unread exceeds the limit', async () => {
+    clearCaptainInboxSweepStateForTest();
+    const h = tempRoot();
+    try {
+      const unread = [];
+      for (let index = 1; index <= 4; index += 1) {
+        unread.push(await appendMessage({
+          crewHome: h.crewHome,
+          message: message(h.repoRoot, index),
+          now: new Date(`2026-07-06T00:00:0${index}.000Z`),
+        }));
+      }
+
+      const result = await checkCaptainInboxToolHandler(
+        checkCaptainInboxInputSchema.parse({ limit: 2 }),
+        { crewHome: h.crewHome, projectRoot: h.repoRoot },
+      );
+      expect((result.structuredContent?.messages as Array<{ msg_id: string }>).map((m) => m.msg_id))
+        .toEqual([unread[3].msg_id, unread[2].msg_id]);
+      expect(result.content[0].text).toContain(`msg_id=${unread[3].msg_id}`);
+      expect(result.content[0].text).not.toContain(`msg_id=${unread[0].msg_id}`);
+    } finally {
       h.cleanup();
       clearCaptainInboxSweepStateForTest();
     }
