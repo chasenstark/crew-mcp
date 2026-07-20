@@ -28,3 +28,4 @@ scripts/tail-handler/*.app/
 
 # Legacy state dir (pre-rename); keep ignored until local copies are cleaned up
 .orchestra/
+/node_modules
