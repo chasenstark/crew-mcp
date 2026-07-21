@@ -28,6 +28,7 @@ export interface CriteriaEpochSnapshot {
   readonly criteria: readonly CriterionV1[];
   readonly supersededAt: string;
   readonly note?: string;
+  readonly iterationContinuations?: number;
 }
 
 export interface ReviewRoundV1 {
@@ -59,6 +60,7 @@ export interface CriteriaSetStateV1 {
   readonly history: readonly CriteriaEpochSnapshot[];
   readonly rounds?: readonly ReviewRoundV1[];
   readonly naDecisions?: readonly NaDecisionV1[];
+  readonly iterationContinuations?: number;
 }
 
 const criterionTypeSchema = z.enum(['mechanical', 'behavioral', 'negative']);
@@ -116,6 +118,7 @@ export const criteriaEpochSnapshotSchema = z.object({
   criteria: z.array(criterionSchemaV1),
   supersededAt: z.string().min(1),
   note: z.string().min(1).optional(),
+  iterationContinuations: z.number().int().min(0).optional(),
 }).strict() satisfies z.ZodType<CriteriaEpochSnapshot>;
 
 export const reviewRoundSchemaV1 = z.object({
@@ -147,6 +150,7 @@ export const criteriaSetStateSchemaV1 = z.object({
   history: z.array(criteriaEpochSnapshotSchema),
   rounds: z.array(reviewRoundSchemaV1).optional(),
   naDecisions: z.array(naDecisionSchemaV1).optional(),
+  iterationContinuations: z.number().int().min(0).optional(),
 }).strict() satisfies z.ZodType<CriteriaSetStateV1>;
 
 export function applyCriteriaEditOps(

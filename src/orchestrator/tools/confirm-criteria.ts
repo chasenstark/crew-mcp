@@ -68,7 +68,13 @@ export async function confirmCriteriaHandler(
         throw new Error(`criteria.unknown: ${input.criteria_set_id}`);
       }
       const hasOps = input.ops !== undefined && Object.keys(input.ops).length > 0;
-      if (current.status === 'confirmed' && !hasOps) {
+      if (current.status === 'confirmed') {
+        if (hasOps) {
+          throw new Error(
+            `criteria.already_confirmed_use_revise: ${current.criteriaSetId} is already confirmed; `
+            + 'apply edits with revise_criteria so the epoch is snapshotted, bumped, and reconfirmed.',
+          );
+        }
         return outputFor(current);
       }
       const now = ctx.now?.() ?? new Date().toISOString();

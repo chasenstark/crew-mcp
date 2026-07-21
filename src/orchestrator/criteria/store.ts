@@ -132,6 +132,89 @@ export interface CriteriaContractResolution {
   readonly contractPrefix: string;
 }
 
+export const ITERATION_CONTINUATION_WARN_PER_EPOCH = 4;
+export const ITERATION_CONTINUATION_TOTAL_CAP = 12;
+
+export interface CriteriaIterationContinuationResult {
+  readonly epoch: number;
+  readonly epochContinuations: number;
+  readonly totalContinuations: number;
+  readonly warnings: readonly string[];
+}
+
+export async function recordCriteriaIterationContinuation(args: {
+  readonly crewHome: string;
+  readonly criteriaSetId: string;
+  readonly expectedEpoch: number;
+  readonly capOverride: boolean;
+  readonly now?: () => string;
+}): Promise<CriteriaIterationContinuationResult> {
+  return withCriteriaLock(
+    { crewHome: args.crewHome, criteriaSetId: args.criteriaSetId },
+    async () => {
+      const targetDir = criteriaDir(args.crewHome, args.criteriaSetId);
+      const current = readCriteriaState(targetDir);
+      if (!current) {
+        throw new Error(`criteria.unknown: ${args.criteriaSetId}`);
+      }
+      if (current.status !== 'confirmed') {
+        throw new Error(`criteria.not_confirmed: ${args.criteriaSetId} status=${current.status}`);
+      }
+      if (current.epoch !== args.expectedEpoch) {
+        throw new Error(
+          `criteria.epoch_changed: ${args.criteriaSetId} expected epoch ${args.expectedEpoch}, `
+          + `found ${current.epoch}; resolve the current confirmed contract and retry.`,
+        );
+      }
+
+      const epochContinuations = (current.iterationContinuations ?? 0) + 1;
+      const historicalContinuations = current.history.reduce(
+        (sum, snapshot) => sum + (snapshot.iterationContinuations ?? 0),
+        0,
+      );
+      const totalContinuations = historicalContinuations + epochContinuations;
+      writeCriteriaStateAtomic(targetDir, {
+        ...current,
+        iterationContinuations: epochContinuations,
+        updatedAt: args.now?.() ?? new Date().toISOString(),
+      });
+
+      if (
+        totalContinuations >= ITERATION_CONTINUATION_TOTAL_CAP
+        && !args.capOverride
+      ) {
+        throw new Error(
+          `criteria.iteration_continuation_cap: ${args.criteriaSetId} recorded `
+          + `${totalContinuations} total continue_run attempt(s), reaching the server cap of `
+          + `${ITERATION_CONTINUATION_TOTAL_CAP}. Ask the user whether to override the runaway-loop `
+          + 'backstop, then retry with cap_override:true. The refused attempt remains counted.',
+        );
+      }
+
+      const warnings: string[] = [];
+      if (epochContinuations >= ITERATION_CONTINUATION_WARN_PER_EPOCH) {
+        warnings.push(
+          `criteria.iteration_continuation_warning: ${args.criteriaSetId} has `
+          + `${epochContinuations} continuation(s) in epoch ${current.epoch} `
+          + `(${totalContinuations} total); review loop progress before continuing.`,
+        );
+      }
+      if (totalContinuations >= ITERATION_CONTINUATION_TOTAL_CAP) {
+        warnings.push(
+          `criteria.iteration_continuation_cap_override: ${args.criteriaSetId} is at `
+          + `${totalContinuations} total continuation(s); cap_override:true was supplied.`,
+        );
+      }
+      return {
+        epoch: current.epoch,
+        epochContinuations,
+        totalContinuations,
+        warnings,
+      };
+    },
+  );
+}
+
 export function resolveConfirmedCriteriaContract(args: {
   readonly crewHome: string;
   readonly repoRoot: string;

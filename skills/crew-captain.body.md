@@ -58,6 +58,18 @@ worktree isolation. For review panels, the host model is still a reviewer,
 but it reviews through a native subagent or inline fallback, not through
 `run_panel`.
 
+### Server override vocabulary
+
+Use only this consolidated set of journaled captain claims; never invent a
+synonym: `confirmed` (destructive merge/discard consent and every `force:true`
+call), `dispatch_anyway` (reserved for health/quota preflight), `same_host_ok`
+(the user explicitly approved an own-host `run_agent` / `continue_run`),
+`ban_override` (the user lifted the named ban), `cap_override` (the user chose
+to continue past the server loop backstop), and `user_requested_wait`
+(reserved for an explicit blocking wait). A tool rejection is the point to
+ask; never auto-pass an override. Relay any override warning in the returned
+envelope.
+
 ## Dispatch or inline
 
 Default to inline. Dispatch only when at least one signal is clear:
@@ -95,9 +107,11 @@ worse than a short clarifying question.
 5. **Ask what to do next.** For implementer runs, ask merge / iterate /
    discard. For read-only or ephemeral reviews, ask cleanup / keep.
    **Ask gate:** confirm via the Ask protocol. **Silence is not consent.**
-6. **Merge or discard only on instruction.** Pass `confirmed: true` to
-   `merge_run` only after explicit approval in the immediately preceding
-   user turn.
+6. **Merge or discard only on instruction.** Pass `confirmed: true` after
+   explicit approval in the immediately preceding user turn. The server
+   requires it for merge and for discarding write runs with committed,
+   indexed, tracked, or untracked deliverables; read-only and ephemeral-review
+   cleanup stays ungated.
 
 ## Merge boundary
 
@@ -123,7 +137,10 @@ concrete merge question, wait for an affirmative answer, then retry with
 `discard_run`, or `continue_run` rejects with `run_in_flight` or
 `busy_worktree`, tell the user which run is blocking and wait, or ask
 whether to cancel. Use `force: true` only after explicit approval and only
-when the blocker is safe to ignore.
+when the blocker is safe to ignore; `force:true` always travels with
+`confirmed:true`, even when `confirmBeforeMerge` is off. If discard returns
+`discard_run.confirmation_required`, name the deliverable delta, ask, and retry
+with `confirmed:true`. A `merge_conflict` discard always requires confirmation.
 
 After a successful merge, inspect the structured output. If
 `landed_off_current_branch: true`, tell the user which `target_branch`
@@ -151,6 +168,11 @@ With `confirmBeforeMerge` on, propose the strategy and show the commit
 count/list in the merge prompt ("3 commits: squash to one or keep all
 three?"). With it off, apply the same heuristic yourself; the user opted
 into landing without confirmation.
+
+The server rejects a squash call without `commit_title` as
+`merge_run.commit_title_required`; it never synthesizes `crew run <id>`.
+A title over 72 characters succeeds with a warning (the schema ceiling is
+200); relay the warning and prefer a shorter title on the next call.
 
 **Ask gate:** when the strategy is presented to the user, confirm via the
 Ask protocol. **Silence is not consent.**
@@ -437,8 +459,8 @@ the user to run `crew-mcp verify`; do not shell out yourself.
 ## Operating guardrails
 
 - **Never** call `merge_run` or `discard_run` without explicit user
-  approval. For `merge_run`, include `confirmed: true` only after the
-  explicit "yes" in the immediate prior turn.
+  approval. Include `confirmed: true` only after the explicit "yes" in the
+  immediate prior turn when the server gate applies.
 - `agent_id` for `run_agent` comes from `list_agents`. Do not invent
   agent names. `continue_run` takes `run_id`, not `agent_id`.
 - Skip agents where `list_agents` returns `available: false`; tell the
@@ -473,6 +495,9 @@ Caveats:
   run GC is the backstop: terminal worktrees are eligible after 7 days and
   run directories after 30 days, repo-scoped.
 - `continue_run` stays read-only; dispatch a fresh run to change mode.
+- A criteria-linked `continue_run` re-checks `iterate.banList` and the
+  server continuation counter. At 4 in an epoch it warns; at 12 total it
+  refuses. Ask before `ban_override:true` or `cap_override:true`.
 
 ### Ephemeral review dispatches (agy)
 
@@ -620,11 +645,16 @@ reviewers with the user. Call `list_agents`, then
 
 - `panel.banList` is an absolute filter. A banned agent is NEVER
   proposed, offered, or used. If bans empty the pool, say so and ask the
-  user to name an agent or lift a ban.
+  user to name an agent or lift a ban. After the user explicitly lifts the
+  named ban, retry that call with `ban_override: true`; explicit reviewer
+  arrays are checked too.
 - Use `panel.reviewers` as-is when present, after filtering unavailable
   and banned agents.
 - **Own-host gate:** remove your own host product from `run_panel` and
   include it only through the Own-host rule's native-review path.
+- Server-side own-host comparison currently recognizes the Claude Code and
+  Codex client kinds. On an agy host, keep applying the same routing rule in
+  the captain until the runtime has an agy `ClientKind`.
 - Fall back to heterogeneity only for slots not covered by preferences.
 
 Surface:

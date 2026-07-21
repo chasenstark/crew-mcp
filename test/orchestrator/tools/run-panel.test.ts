@@ -331,7 +331,7 @@ describe('runPanelHandler', () => {
     }, h.ctx)).rejects.toThrow(/^criteria\.linkage_mismatch:/);
   });
 
-  it('rejects empty preference-filled reviewers after banList filtering', async () => {
+  it('rejects a preference-filled reviewer with typed panel ban evidence', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'codex' })]);
     cleanupHarness(h);
 
@@ -349,18 +349,25 @@ describe('runPanelHandler', () => {
         };
         return config;
       },
-    })).rejects.toThrow(/^run_panel\.no_reviewers:/);
+    })).rejects.toThrow(
+      /^agent_banned: .*workflow\.agentDefaults\.panel\.banList.*ban_override:true/,
+    );
   });
 
-  it('lets explicit reviewers override preferences and banList', async () => {
+  it('enforces panel banList on explicit reviewers and allows ban_override with a warning', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'codex' })]);
     cleanupHarness(h);
     setConfigValue(h.root, 'workflow.agentDefaults.panel.reviewers', '["codex"]');
     setConfigValue(h.root, 'workflow.agentDefaults.panel.banList', '["explicit-reviewer"]');
     const dispatched: Array<{ agent_id: string; prompt: string }> = [];
 
+    await expect(runPanelHandler({
+      reviewers: [{ agent_id: 'explicit-reviewer', prompt: 'review explicitly' }],
+    }, h.ctx)).rejects.toThrow(/^agent_banned:/);
+
     const out = await runPanelHandler({
       reviewers: [{ agent_id: 'explicit-reviewer', prompt: 'review explicitly' }],
+      ban_override: true,
     }, {
       ...h.ctx,
       dispatchRunAgentInternalImpl: async (args) => {
@@ -373,7 +380,37 @@ describe('runPanelHandler', () => {
     });
 
     expect(out.reviewers.map((reviewer) => reviewer.agent_id)).toEqual(['explicit-reviewer']);
+    expect(out.reviewers[0].warnings).toEqual([
+      expect.stringContaining('ban_override:true was supplied'),
+    ]);
     expect(dispatched).toEqual([{ agent_id: 'explicit-reviewer', prompt: 'review explicitly' }]);
+  });
+
+  it('canonicalizes aliases before panel ban and same-host checks', async () => {
+    const h = makeHarness([
+      makeMockAdapter({ name: 'claude-code', aliases: ['claude'] }),
+      makeMockAdapter({ name: 'codex', aliases: ['codex-cli'] }),
+    ]);
+    cleanupHarness(h);
+    const config = getDefaultConfig();
+    config.workflow.agentDefaults = {
+      panel: { banList: ['claude'] },
+    };
+
+    await expect(runPanelHandler({
+      reviewers: [{ agent_id: 'claude-code', prompt: 'review' }],
+    }, {
+      ...h.ctx,
+      loadConfig: () => config,
+    })).rejects.toThrow(/agent_banned:.*entry "claude"/);
+
+    await expect(runPanelHandler({
+      reviewers: [{ agent_id: 'codex-cli', prompt: 'review' }],
+    }, {
+      ...h.ctx,
+      sameHostAgentId: 'codex',
+      loadConfig: () => getDefaultConfig(),
+    })).rejects.toThrow(/^same_host_reviewer:.*"codex"/);
   });
 
   it('dispatches two bound reviewers with one pending write and one final write each', async () => {

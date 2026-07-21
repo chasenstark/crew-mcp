@@ -23,6 +23,7 @@ import {
   revokeSidecarOnTerminal,
 } from '../dispatch-run-agent-internal.js';
 import {
+  recordCriteriaIterationContinuation,
   resolveConfirmedCriteriaContract,
   type CriteriaContractResolution,
 } from '../criteria/store.js';
@@ -31,6 +32,7 @@ import { appendWorkerFooterForAdapter } from '../peer-messages/worker-footer.js'
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
+import { loadWorkflowConfig } from '../../workflow/loader.js';
 import {
   deleteWorkerReadyMarker,
   issueRunAuthSidecar,
@@ -50,11 +52,19 @@ import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra } from './shared
 import {
   errorContent,
   errorMessage,
+  agentIdForClientKind,
   inFlightForRun,
   progressNotifierFrom,
   runDispatchAndRespond,
 } from './shared.js';
 import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
+import {
+  agentBannedMessage,
+  banOverrideWarning,
+  findAgentBanMatch,
+  isSameHostAgent,
+  sameHostOverrideWarning,
+} from './dispatch-policy.js';
 
 export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
@@ -68,12 +78,15 @@ export const continueRunInputSchema = z.object({
    * Vocabulary mirrors codex's `model_reasoning_effort` set.
    */
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-});
+  ban_override: z.boolean().optional(),
+  same_host_ok: z.boolean().optional(),
+  cap_override: z.boolean().optional(),
+}).strict();
 
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run in the same worktree with a new prompt and/or peer_messages. Omitted criteria_set_id reuses the linked contract; a different id is rejected. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async; start required_next_action crew-wait in a background shell on Claude Code or the hosted App Server bridge on Codex. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run with prompt and/or peer_messages. Linked criteria re-check iterate.banList and the continuation cap; ban_override, same_host_ok, and cap_override require user approval. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with override/cap warnings; start required_next_action crew-wait. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -158,6 +171,42 @@ export async function continueRunToolHandler(
     return errorContent(err instanceof Error ? err.message : String(err));
   }
 
+  const policyWarnings: string[] = [];
+  try {
+    const config = (deps.loadWorkflowConfig ?? loadWorkflowConfig)(deps.projectRoot);
+    const banMatch = findAgentBanMatch({
+      registry: deps.registry,
+      config,
+      agentId: adapter.name,
+      scopes: criteriaContract === undefined ? ['iterate', 'panel'] : ['iterate'],
+    });
+    if (banMatch !== undefined) {
+      if (args.ban_override !== true) {
+        return errorContent(agentBannedMessage(
+          banMatch,
+          `continue_run refused for run "${args.run_id}": the newly matching rule applies to `,
+        ));
+      }
+      policyWarnings.push(banOverrideWarning(banMatch));
+    }
+    if (isSameHostAgent({
+      registry: deps.registry,
+      agentId: adapter.name,
+      sameHostAgentId: agentIdForClientKind(deps.getClientKind()),
+    })) {
+      if (args.same_host_ok !== true) {
+        return errorContent(
+          `same_host_reviewer: continue_run refused for run "${args.run_id}" because agent `
+          + `"${adapter.name}" newly matches the current host. Ask the user to approve own-host `
+          + 'dispatch, then retry with same_host_ok:true.',
+        );
+      }
+      policyWarnings.push(sameHostOverrideWarning(adapter.name));
+    }
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
+
   const toolCallId = randomUUID();
   const continueAgentPrefs = deps.readAgentPrefs();
   const effectiveEffort = resolveEffectiveEffort(
@@ -185,6 +234,7 @@ export async function continueRunToolHandler(
   const dispatchWarnings: string[] = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
+  dispatchWarnings.push(...policyWarnings);
   if (modelPreflight.warning !== undefined) {
     dispatchWarnings.push(modelPreflight.warning);
   }
@@ -193,6 +243,19 @@ export async function continueRunToolHandler(
     validatedInput,
     criteriaContract,
   );
+  if (criteriaContract !== undefined) {
+    try {
+      const continuation = await recordCriteriaIterationContinuation({
+        crewHome: deps.crewHome,
+        criteriaSetId: criteriaContract.criteriaSetId,
+        expectedEpoch: criteriaContract.criteriaEpoch,
+        capOverride: args.cap_override === true,
+      });
+      dispatchWarnings.push(...continuation.warnings);
+    } catch (err) {
+      return errorContent(err instanceof Error ? err.message : String(err));
+    }
+  }
 
   const rollbackContinuation = async (err: unknown): Promise<DispatchError> => {
     const message = `continue_run dispatch failed for ${args.run_id}: ${errorMessage(err)}`;

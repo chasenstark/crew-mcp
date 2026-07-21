@@ -40,7 +40,14 @@ interface RunWorktreeRecord {
   runId: string;
   branchName: string;
   worktreePath: string;
+  branchPointSha: string;
   createdAt: string;
+}
+
+export interface RunDeliverableDelta {
+  readonly hasDelta: boolean;
+  readonly commitsAhead: number;
+  readonly hasWorktreeChanges: boolean;
 }
 
 /**
@@ -255,12 +262,14 @@ export class WorktreeManager {
           : existing.worktreePath;
       }
 
+      const branchPointSha = (await this.git.revparse(['HEAD'])).trim();
+
       for (let attempt = 0; attempt < WorktreeManager.CREATE_RETRY_ATTEMPTS; attempt++) {
-        const record = this.buildRunWorktreeRecord(runId);
+        const record = this.buildRunWorktreeRecord(runId, branchPointSha);
         let copiedDirtyPaths: readonly string[] | undefined;
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
-          await this.addRunWorktree(record);
+          await this.addRunWorktree(record, branchPointSha);
           // Mirror the host repo's uncommitted state into the fresh worktree
           // so the dispatched agent sees the same in-progress files the
           // user does (see syncUncommittedToWorktree). Best-effort: a sync
@@ -350,7 +359,7 @@ export class WorktreeManager {
       const before = await this.captureSourceSnapshotSignature(sourceGit, source.sourcePath);
 
       for (let attempt = 0; attempt < WorktreeManager.CREATE_RETRY_ATTEMPTS; attempt++) {
-        const record = this.buildRunWorktreeRecord(runId);
+        const record = this.buildRunWorktreeRecord(runId, before.headSha);
         try {
           mkdirSync(join(this.runBasePath, this.toRunToken(runId)), { recursive: true });
           await this.addRunWorktree(record, before.headSha);
@@ -673,11 +682,10 @@ export class WorktreeManager {
   }
 
   async getModifiedFilesByRun(runId: string): Promise<string[]> {
-    const path = this.getRunWorktreePath(runId);
-    const wGit = simpleGit(path);
-    const base = await this.resolveRunBranchPoint(wGit);
+    const record = this.requireRunWorktreeRecord(runId);
+    const wGit = simpleGit(record.worktreePath);
     const [diffOutput, status] = await Promise.all([
-      wGit.raw(['diff', '--name-only', base, '--']),
+      wGit.raw(['diff', '--name-only', record.branchPointSha, '--']),
       wGit.status(),
     ]);
     return Array.from(new Set([
@@ -686,14 +694,33 @@ export class WorktreeManager {
     ]));
   }
 
-  private async resolveRunBranchPoint(wGit: SimpleGit): Promise<string> {
-    const hostHead = (await this.git.revparse(['HEAD'])).trim();
-    try {
-      const base = (await wGit.raw(['merge-base', 'HEAD', hostHead])).trim();
-      return base || 'HEAD';
-    } catch {
-      return 'HEAD';
-    }
+  async getRunDeliverableDelta(
+    runId: string,
+    options: { readonly lockAlreadyHeld?: boolean } = {},
+  ): Promise<RunDeliverableDelta> {
+    const inspect = async (): Promise<RunDeliverableDelta> => {
+      const record = this.requireRunWorktreeRecord(runId);
+      const wGit = simpleGit(record.worktreePath);
+      const [commitsAheadRaw, status] = await Promise.all([
+        wGit.raw(['rev-list', '--count', `${record.branchPointSha}..HEAD`]),
+        wGit.status(),
+      ]);
+      const commitsAhead = Number.parseInt(commitsAheadRaw.trim(), 10);
+      if (!Number.isSafeInteger(commitsAhead) || commitsAhead < 0) {
+        throw new Error(
+          `worktree.invalid_commit_count: run ${runId} returned ${JSON.stringify(commitsAheadRaw.trim())}`,
+        );
+      }
+      const hasWorktreeChanges = !status.isClean();
+      return {
+        hasDelta: commitsAhead > 0 || hasWorktreeChanges,
+        commitsAhead,
+        hasWorktreeChanges,
+      };
+    };
+    return options.lockAlreadyHeld === true
+      ? inspect()
+      : this.withRunLock(runId, inspect);
   }
 
   async mergeRunWorktree(
@@ -710,7 +737,7 @@ export class WorktreeManager {
       mergeStrategy?: 'squash' | 'preserve';
       /**
        * Subject line for the squashed commit (squash strategy only).
-       * Captain-supplied, falls back to `crew run <runId>` if absent.
+       * Captain-supplied and required for squash merges.
        */
       commitTitle?: string;
       /**
@@ -811,6 +838,12 @@ export class WorktreeManager {
     });
 
     if ((options.mergeStrategy ?? 'squash') === 'squash') {
+      const commitTitle = options.commitTitle?.trim();
+      if (!commitTitle) {
+        throw new Error(
+          'merge_run.commit_title_required: squash merges require a captain-supplied commit title.',
+        );
+      }
       return this.squashRunWithPlumbing({
         runId,
         target,
@@ -818,7 +851,7 @@ export class WorktreeManager {
         targetHead,
         worktreeHead,
         originalCheckout,
-        commitTitle: options.commitTitle,
+        commitTitle,
         commitBody: options.commitBody,
       });
     }
@@ -896,12 +929,11 @@ export class WorktreeManager {
     targetHead: string;
     worktreeHead: string;
     originalCheckout: HostCheckout;
-    commitTitle?: string;
+    commitTitle: string;
     commitBody?: string;
   }): Promise<MergeRunResult> {
     await this.assertMergeTreeWriteTreeSupported();
     const mergeMessage = buildMergeCommitMessage({
-      runId: args.runId,
       title: args.commitTitle,
       body: args.commitBody,
     });
@@ -1727,13 +1759,14 @@ export class WorktreeManager {
     };
   }
 
-  private buildRunWorktreeRecord(runId: string): RunWorktreeRecord {
+  private buildRunWorktreeRecord(runId: string, branchPointSha: string): RunWorktreeRecord {
     const token = this.toRunToken(runId);
     const suffix = randomUUID().split('-')[0];
     return {
       runId,
       branchName: `crew-run/${token}-${suffix}`,
       worktreePath: join(this.runBasePath, token, 'worktree'),
+      branchPointSha,
       createdAt: new Date().toISOString(),
     };
   }
@@ -2033,12 +2066,12 @@ export class WorktreeManager {
 
 /**
  * Compose the squashed-commit message from the captain-supplied title +
- * body. Falls back to a generic title when the captain didn't pass one
- * (deliberately plain, since human git history is the audience).
+ * body. The title is mandatory; merge_run rejects missing titles before
+ * this helper is called.
  *
  * Format:
  *
- *   <title or fallback>
+ *   <title>
  *
  *   <body, when supplied>
  *
@@ -2048,11 +2081,13 @@ export class WorktreeManager {
  * `--no-ff` wrapper commit to carry it.
  */
 export function buildMergeCommitMessage(args: {
-  runId: string;
-  title?: string;
+  title: string;
   body?: string;
 }): string {
-  const subject = args.title?.trim() || `crew run ${args.runId}`;
+  const subject = args.title.trim();
+  if (!subject) {
+    throw new Error('merge_run.commit_title_required: squash merges require a commit title.');
+  }
   const parts = [subject];
   const body = args.body?.trim();
   if (body) parts.push('', body);

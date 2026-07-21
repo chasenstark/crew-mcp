@@ -35,7 +35,11 @@ export function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter
 }
 
 export function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
-  const map = new Map<string, AgentAdapter>(adapters.map((adapter) => [adapter.name, adapter]));
+  const map = new Map<string, AgentAdapter>();
+  for (const adapter of adapters) {
+    map.set(adapter.name, adapter);
+    for (const alias of adapter.aliases ?? []) map.set(alias, adapter);
+  }
   return {
     register: () => undefined,
     get: (name: string) => map.get(name),

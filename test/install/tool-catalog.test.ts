@@ -45,6 +45,40 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       const expected = captainSkillTools(CATALOG_TOOLS).map((t) => t.name).sort();
       expect(names).toEqual(expected);
       expect(names).not.toContain('send_message');
+
+      const propertiesFor = (name: string): Record<string, unknown> => {
+        const schema = result.tools.find((tool) => tool.name === name)?.inputSchema as {
+          properties?: Record<string, unknown>;
+        } | undefined;
+        return schema?.properties ?? {};
+      };
+      expect(Object.keys(propertiesFor('run_agent'))).toEqual(expect.arrayContaining([
+        'ban_override',
+        'same_host_ok',
+      ]));
+      expect(Object.keys(propertiesFor('continue_run'))).toEqual(expect.arrayContaining([
+        'ban_override',
+        'same_host_ok',
+        'cap_override',
+      ]));
+      expect(Object.keys(propertiesFor('run_panel'))).toContain('ban_override');
+      expect(Object.keys(propertiesFor('discard_run'))).toContain('confirmed');
+      expect(Object.keys(propertiesFor('merge_run'))).toEqual(expect.arrayContaining([
+        'confirmed',
+        'force',
+        'commit_title',
+      ]));
+
+      const overrideLikeFields = new Set(result.tools.flatMap((tool) =>
+        Object.keys((tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {})
+          .filter((field) => field.includes('override') || field.endsWith('_ok') || field === 'confirmed')),
+      );
+      expect([...overrideLikeFields].sort()).toEqual([
+        'ban_override',
+        'cap_override',
+        'confirmed',
+        'same_host_ok',
+      ]);
     } finally {
       await client.close();
       rmSync(crewHome, { recursive: true, force: true });

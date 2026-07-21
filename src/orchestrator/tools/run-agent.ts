@@ -53,10 +53,12 @@ import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
 import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
 import { makeRunId } from '../run-id.js';
+import { loadWorkflowConfig } from '../../workflow/loader.js';
 import type { DispatchMcpEnv } from '../auth/sidecar-schema.js';
 import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra, FullRunEnvelope } from './shared.js';
 import {
   errorContent,
+  agentIdForClientKind,
   fileUrlHref,
   mergeEnvelopeWarnings,
   nextStepSentence,
@@ -65,6 +67,14 @@ import {
   renderDispatchMarkdown,
   structuredRunEnvelope,
 } from './shared.js';
+import {
+  agentBannedMessage,
+  banOverrideWarning,
+  canonicalAgentId,
+  findAgentBanMatch,
+  isSameHostAgent,
+  sameHostOverrideWarning,
+} from './dispatch-policy.js';
 
 /**
  * Minimal registry surface for run_agent — anything exposing `get` (plus
@@ -124,12 +134,14 @@ export const runAgentInputSchema = z.object({
    * caller-supplied `working_directory` (the worktree is crew-allocated).
    */
   run_mode: z.enum(RUN_MODES).optional(),
-});
+  ban_override: z.boolean().optional(),
+  same_host_ok: z.boolean().optional(),
+}).strict();
 
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. peer_messages prepend untrusted context; a confirmed criteria_set_id injects a non-droppable contract. model/effort override defaults. run_mode is write (mergeable worktree), read_only (in place), or ephemeral_review (disposable snapshot, findings only, never mergeable). Returns async; start required_next_action crew-wait in a background shell on Claude Code or the hosted App Server bridge on Codex. Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override lifts a matched user ban; same_host_ok allows own-host dispatch, both only after user approval. run_mode is write, read_only, or ephemeral_review. Returns async with warnings for overrides; start required_next_action crew-wait. Do not block the turn long-polling get_run_status.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -137,11 +149,45 @@ export async function runAgentToolHandler(
   deps: ToolHandlerDeps,
 ): Promise<ToolCallReturn> {
   const agentPrefs = deps.readAgentPrefs();
-  const progress = progressNotifierFrom(extra, args.agent_id, deps.progressTokenSeen);
+  const canonicalId = canonicalAgentId(deps.registry, args.agent_id);
+  const policyWarnings: string[] = [];
+  try {
+    const config = (deps.loadWorkflowConfig ?? loadWorkflowConfig)(deps.projectRoot);
+    const banMatch = findAgentBanMatch({
+      registry: deps.registry,
+      config,
+      agentId: canonicalId,
+      scopes: args.criteria_set_id === undefined ? ['iterate', 'panel'] : ['iterate'],
+    });
+    if (banMatch !== undefined) {
+      if (args.ban_override !== true) {
+        return errorContent(agentBannedMessage(banMatch, 'run_agent refused: '));
+      }
+      policyWarnings.push(banOverrideWarning(banMatch));
+    }
+    if (isSameHostAgent({
+      registry: deps.registry,
+      agentId: canonicalId,
+      sameHostAgentId: agentIdForClientKind(deps.getClientKind()),
+    })) {
+      if (args.same_host_ok !== true) {
+        return errorContent(
+          `same_host_reviewer: run_agent refused agent "${canonicalId}" because it matches `
+          + 'the current host. Ask the user to approve own-host dispatch, then retry with '
+          + 'same_host_ok:true.',
+        );
+      }
+      policyWarnings.push(sameHostOverrideWarning(canonicalId));
+    }
+  } catch (err) {
+    return errorContent(err instanceof Error ? err.message : String(err));
+  }
+  const normalizedArgs: RunAgentInput = { ...args, agent_id: canonicalId };
+  const progress = progressNotifierFrom(extra, canonicalId, deps.progressTokenSeen);
   let dispatchResult: Awaited<ReturnType<typeof dispatchRunAgentInternal>>;
   try {
     dispatchResult = await dispatchRunAgentInternal({
-      input: args,
+      input: normalizedArgs,
       ctx: {
         registry: deps.registry,
         worktreeManager: deps.worktreeManager,
@@ -176,7 +222,7 @@ export async function runAgentToolHandler(
   );
   const env: FullRunEnvelope = {
     run_id: dispatchResult.runId,
-    agent_id: args.agent_id,
+    agent_id: canonicalId,
     worktree_path: dispatchResult.worktreePath,
     events_log_path: eventsLogPath,
     tail_command_path: dispatchResult.tailCommandPath,
@@ -189,6 +235,7 @@ export async function runAgentToolHandler(
     ...mergeEnvelopeWarnings(
       deps.runStateStore.read(dispatchResult.runId)?.warnings,
       dispatchResult.warnings,
+      policyWarnings,
     ),
   };
   return {

@@ -385,7 +385,7 @@ describe('ephemeral_review — frozen-snapshot continue', () => {
 
     writeFileSync(join(h.root, 'later.txt'), 'host edit between turns\n', 'utf-8');
     const out = await continueRunToolHandler(
-      { run_id: result.runId, prompt: 'keep going' },
+      { run_id: result.runId, prompt: 'keep going', same_host_ok: true },
       extra,
       depsFor(h),
     );

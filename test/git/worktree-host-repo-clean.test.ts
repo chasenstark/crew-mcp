@@ -117,7 +117,7 @@ describe('M3.5 host-repo cleanliness', () => {
     writeFileSync(hookPath, '#!/bin/sh\necho blocked by test hook >&2\nexit 1\n', 'utf-8');
     chmodSync(hookPath, 0o755);
 
-    const result = await manager.mergeRunWorktree('run-1', { targetBranch });
+    const result = await manager.mergeRunWorktree('run-1', { targetBranch, commitTitle: 'test merge' });
 
     expect(result.status).toBe('merged');
     expect(execSync('git branch --show-current', { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe('feature');

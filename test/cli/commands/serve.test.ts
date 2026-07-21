@@ -1030,7 +1030,7 @@ describe('crew serve — list_agents tool', () => {
 
       const run = await h.client.callTool({
         name: 'run_agent',
-        arguments: { agent_id: 'gemma4', prompt: 'say ok' },
+        arguments: { agent_id: 'gemma4', prompt: 'say ok', ban_override: true },
       });
       const runEnv = run.structuredContent as FullRunEnvelope;
       const terminal = await pollUntilTerminal(h.client, runEnv.run_id);
@@ -3645,7 +3645,11 @@ describe('crew serve — merge_run tool', () => {
 
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'feat: add NEW file',
+        },
       });
       const mergeEnv = mergeRes.structuredContent as {
         run_id: string;
@@ -3730,6 +3734,7 @@ describe('crew serve — merge_run tool', () => {
           run_id: runEnv.run_id,
           target_branch: target,
           confirmed: true,
+          commit_title: 'feat: land target file',
         },
       });
       const mergeEnv = mergeRes.structuredContent as {
@@ -3808,7 +3813,11 @@ describe('crew serve — merge_run tool', () => {
 
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'feat: add restore file',
+        },
       });
       const mergeEnv = mergeRes.structuredContent as {
         status: string;
@@ -3887,7 +3896,11 @@ describe('crew serve — merge_run tool', () => {
       let mergeSettled = false;
       const mergePromise = h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'chore: complete async cleanup run',
+        },
       }).then((result) => {
         mergeSettled = true;
         return result;
@@ -4011,7 +4024,7 @@ describe('crew serve — merge_run tool', () => {
 
       const merge = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, commit_title: 'feat: add no-gate file' },
       });
 
       expect(merge.isError).toBe(true);
@@ -4050,7 +4063,7 @@ describe('crew serve — merge_run tool', () => {
 
       const merge = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, commit_title: 'feat: add no-gate file' },
       });
 
       const env = merge.structuredContent as { status: string };
@@ -4083,7 +4096,7 @@ describe('crew serve — merge_run tool', () => {
 
       const merge = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, commit_title: 'feat: add env-gate file' },
       });
 
       const env = merge.structuredContent as { status: string };
@@ -4124,7 +4137,10 @@ describe('crew serve — merge_run tool', () => {
 
           const merge = await h.client.callTool({
             name: 'merge_run',
-            arguments: { run_id: runEnv.run_id },
+            arguments: {
+              run_id: runEnv.run_id,
+              commit_title: `feat: test confirmation value ${value || 'empty'}`,
+            },
           });
 
           expect(toolText(merge)).toContain(
@@ -4163,7 +4179,11 @@ describe('crew serve — merge_run tool', () => {
       await pollUntilTerminal(h.client, runEnv.run_id);
       await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'feat: add X file',
+        },
       });
       const second = await h.client.callTool({
         name: 'merge_run',
@@ -4235,7 +4255,11 @@ describe('crew serve — merge_run tool', () => {
 
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'fix: resolve shared file',
+        },
       });
       expect(mergeRes.isError).toBe(true);
       const env = mergeRes.structuredContent as { status: string; conflicts?: string[] };
@@ -4267,7 +4291,11 @@ describe('crew serve — merge_run tool', () => {
 
       const retry = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'fix: resolve shared file',
+        },
       });
       expect(retry.isError).toBe(true);
       const retryEnv = retry.structuredContent as { status: string; conflicts?: string[] };
@@ -4281,7 +4309,11 @@ describe('crew serve — merge_run tool', () => {
 
       const resolvedRetry = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'fix: resolve shared file',
+        },
       });
       expect(resolvedRetry.isError).toBeFalsy();
       const resolvedEnv = resolvedRetry.structuredContent as {
@@ -4345,6 +4377,7 @@ describe('crew serve — merge_run tool', () => {
           target_branch: target,
           confirmed: true,
           force: true,
+          commit_title: 'feat: add agent file',
         },
       });
 
@@ -4381,7 +4414,11 @@ describe('crew serve — merge_run tool', () => {
       await pollUntilTerminal(h.client, runEnv.run_id);
       const mergeRes = await h.client.callTool({
         name: 'merge_run',
-        arguments: { run_id: runEnv.run_id, confirmed: true },
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'chore: complete no-op run',
+        },
       });
       const env = mergeRes.structuredContent as { status: string };
       expect(env.status).toBe('no-changes');
@@ -4418,7 +4455,7 @@ describe('crew serve — discard_run tool', () => {
 
       const discard = await h.client.callTool({
         name: 'discard_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       const env = discard.structuredContent as { ok: boolean };
       expect(env.ok).toBe(true);
@@ -4477,7 +4514,7 @@ describe('crew serve — discard_run tool', () => {
 
       const first = await h.client.callTool({
         name: 'discard_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       expect(first.isError).toBeFalsy();
       expect(toolText(first)).toBe(`**Discarded** \`${runEnv.run_id}\``);
@@ -4490,7 +4527,7 @@ describe('crew serve — discard_run tool', () => {
 
       const second = await h.client.callTool({
         name: 'discard_run',
-        arguments: { run_id: runEnv.run_id },
+        arguments: { run_id: runEnv.run_id, confirmed: true },
       });
       expect(second.isError).toBeFalsy();
       expect(second.structuredContent).toEqual({

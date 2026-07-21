@@ -8,15 +8,15 @@
  *
  * Behavior:
  *   - Auto-commits any uncommitted changes in the worktree first
- *     (using `commit_title` if supplied, else "crew: auto-commit
- *     before merge").
+ *     (using `commit_title` when supplied, else "crew: auto-commit
+ *     before merge" on preserve-only calls).
  *   - Refuses if the host's working directory has uncommitted changes,
  *     unless force=true.
  *   - Lands the run linearly — never an empty `--no-ff` wrapper commit.
  *     Two strategies (see `merge_strategy`):
  *       - `squash` (default): collapse the whole run into one ordinary
  *         commit on the target, titled by `commit_title` / `commit_body`
- *         (falls back to `crew run <runId>`). For implement-then-iterate
+ *         (required; the server never synthesizes one). For implement-then-iterate
  *         runs (one feature + review fixups).
  *       - `preserve`: keep the run's individual commits, replayed onto
  *         the target tip — fast-forward when the target hasn't diverged
@@ -84,11 +84,9 @@ export const mergeRunInputSchema = z.object({
   merge_strategy: z.enum(['squash', 'preserve']).optional(),
   /**
    * Conventional-commit-style subject line for the squashed commit
-   * (`squash` strategy only). Should describe what the run actually
+   * (`squash` strategy only). Must describe what the run actually
    * changed (the captain has the prompt + summary + diff context to
-   * compose this). Recommended ≤72 chars; not enforced. When omitted,
-   * the commit falls back to `crew run <runId>` — strongly suboptimal
-   * for human-readable history.
+   * compose this). Titles over 72 chars warn; schema max remains 200.
    */
   commit_title: z.string().min(1).max(200).optional(),
   /**
@@ -100,7 +98,7 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run worktree into a target branch after user approval. Input: run_id plus optional target_branch, force, confirmed, merge_strategy, commit_title, commit_body. When confirmBeforeMerge is true, confirmed:true must follow explicit approval. Lands linearly: 'squash' creates one checkout-free plumbing commit; 'preserve' keeps individual commits. Squash conflicts appear in the run worktree. Returns merged+commit_sha, conflict+conflicts, or no-changes. Off-checkout success adds landed_off_current_branch plus target/original fields; restore failure adds restore_failed+restore_warning.";
+  "Merge a completed run after approval. force:true always requires confirmed:true. Squash (default) requires commit_title; titles over 72 chars warn, schema max 200. confirmBeforeMerge still gates non-force calls when enabled. Preserve keeps individual commits. Returns merged, conflict, or no-changes with checkout fields and warnings.";
 
 const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
   'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
@@ -166,6 +164,24 @@ export async function mergeRunToolHandler(
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
+  if (args.force === true && args.confirmed !== true) {
+    return errorContent(
+      'merge_run.force_requires_confirmed: force:true overrides the busy_worktree and dirty host '
+      + 'checkout safety blockers. Ask the user for explicit approval, then retry with '
+      + 'force:true and confirmed:true.',
+    );
+  }
+  const mergeStrategy = args.merge_strategy ?? 'squash';
+  const commitTitle = args.commit_title?.trim();
+  if (mergeStrategy === 'squash' && !commitTitle) {
+    return errorContent(
+      'merge_run.commit_title_required: squash merge_run requires a meaningful commit_title; '
+      + 'derive it from the run summary and retry. The server does not synthesize commit titles.',
+    );
+  }
+  const mergeWarnings = commitTitle !== undefined && commitTitle.length > 72
+    ? [`merge_run.commit_title_long: commit_title is ${commitTitle.length} characters; recommended maximum is 72 (warning only).`]
+    : [];
   const confirmationGate = resolveMergeConfirmationGate(deps.crewHome);
   if (confirmationGate.error) {
     return errorContent(confirmationGate.error);
@@ -177,8 +193,8 @@ export async function mergeRunToolHandler(
     const result = await deps.worktreeManager.mergeRunWorktree(args.run_id, {
       targetBranch: args.target_branch,
       force: args.force,
-      mergeStrategy: args.merge_strategy,
-      commitTitle: args.commit_title,
+      mergeStrategy,
+      commitTitle,
       commitBody: args.commit_body,
       assertCanMutateInsideLock: () => {
         const fresh = deps.runStateStore.read(args.run_id);
@@ -249,6 +265,7 @@ export async function mergeRunToolHandler(
         status: 'merged',
         commit_sha: result.commitSha,
         ...checkoutEnvelope(result),
+        ...(mergeWarnings.length > 0 ? { warnings: mergeWarnings } : {}),
       };
       return markdownContent(renderMergeMarkdown(env), env);
     }
@@ -263,6 +280,7 @@ export async function mergeRunToolHandler(
         run_id: args.run_id,
         status: 'conflict',
         conflicts: result.conflicts,
+        ...(mergeWarnings.length > 0 ? { warnings: mergeWarnings } : {}),
       };
       return markdownContent(renderMergeMarkdown(env), env, /* isError */ true);
     }
@@ -270,6 +288,7 @@ export async function mergeRunToolHandler(
       run_id: args.run_id,
       status: 'no-changes',
       ...checkoutEnvelope(result),
+      ...(mergeWarnings.length > 0 ? { warnings: mergeWarnings } : {}),
     };
     return markdownContent(renderMergeMarkdown(env), env);
   } catch (err) {

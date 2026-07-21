@@ -32,6 +32,9 @@ and for any reviewer the user explicitly invested in. **Carve-out:**
 read-only reviewer runs that have already produced their findings are
 metadata cleanup — the captain may `discard_run` them automatically
 as part of the iterate cycle (see invariant #7).
+For a gated discard or any `force:true` merge, pass `confirmed:true`
+only after that approval. Squash merges always require a meaningful
+`commit_title`; the server never synthesizes one.
 
 **2. Dispatch lifecycle (do NOT long-poll).** After `run_agent` /
 `continue_run` / `run_panel`, do NOT long-poll `get_run_status`
@@ -176,6 +179,12 @@ subagent rather than a Crew run, because same-host Crew dispatches lose
 the heterogeneity that makes review valuable and can cause
 nested-session resource conflicts. A native subagent is not a crew run —
 it won't appear in `list_runs` or `aggregate_panel`.
+If the user explicitly insists on an own-host Crew dispatch, retry
+`run_agent` / `continue_run` with `same_host_ok:true` and relay its
+warning. `run_panel` still refuses own-host reviewers.
+The server currently recognizes only Claude Code and Codex client kinds for
+this comparison; on an agy host, the captain keeps enforcing the same routing
+rule until the runtime has an agy `ClientKind`.
 
 **6. Never shell out to `crew-mcp`.** Use the MCP tool surface
 (`mcp__crew__*`). The MCP server is the authoritative interface;
@@ -189,6 +198,11 @@ leaves clutter in `list_runs`. This cleanup is the carve-out in
 invariant #1 — no user prompt required. If cleanup fails with typed
 `run_in_flight:` or `busy_worktree:` errors, retry after the blocking
 run reaches terminal; never drop cleanup silently.
+
+This standalone loop uses the umbrella playbook's consolidated server
+override vocabulary. In this skill the relevant claims are `confirmed`,
+`same_host_ok`, `ban_override`, and `cap_override`; ask before each and
+never invent or auto-pass a synonym.
 
 **8. Ask the user before dispatching on ambiguity.** Step 0 is the
 natural disambiguation gate. If criteria are unclear, scope is
@@ -286,6 +300,11 @@ the source of truth. Use them in this order:
    always sets `status: "confirmed"`. Hold the pending ops, re-surface
    the proposed criteria in prose, and wait for OK.
 
+Once a set is confirmed, never send edit ops back through
+`confirm_criteria`; `criteria.already_confirmed_use_revise` directs the
+caller to `revise_criteria`, which snapshots and bumps the epoch before
+reconfirmation.
+
 `create_criteria`, `confirm_criteria`, and `revise_criteria` may return
 `criteria.invalid` for malformed criteria or edit ops. That is a
 criteria-tool validation error, not a dispatch-time criteria error.
@@ -349,11 +368,12 @@ reveals a criterion is malformed or impossible:
 4. Require explicit re-confirmation with `confirm_criteria` before any
    new dispatch. The next round re-scores the FULL revised list.
 5. **Start a new loop epoch.** The revised criteria define a fresh
-   epoch with its own round counter starting at 0. Total rounds across
-   all epochs are bounded by an **epoch-aware safety cap (default 9
-   total, no more than 3 in any one epoch)**. This is captain-enforced
-   only; the runtime does not count rounds. The cap prevents both an
-   unfair revision-at-round-3 cap-out and infinite revision loops.
+   epoch with its own captain round counter starting at 0. Keep the
+   proactive **3 rounds per epoch / 9 total** captain cap. Separately,
+   the server counts every criteria-linked `continue_run`: it warns at
+   4 in one epoch and refuses at 12 total unless the user explicitly
+   approves `cap_override:true`. The looser server bound is a runaway-loop
+   backstop, not the round model; reviewer `rounds[]` remains separate.
 
 What counts as a "revision": any change altering a criterion's
 testable predicate. Pure wording clarifications that preserve the
@@ -378,6 +398,9 @@ hints. Heterogeneity is only a tiebreaker for roles the user left open.
 3. **Apply `iterate.banList` as an absolute filter.** Remove banned ids
    from every pool. Never propose, offer, or use one for heterogeneity
    or availability; if a role empties, leave it unfilled and ask.
+   The server canonicalizes aliases and re-checks the same preference on
+   criteria-linked `run_agent` and every `continue_run`. If the user lifts
+   a named ban, retry only that dispatch with `ban_override:true`.
 4. Remove any `available: false` agents, and remove your own host
    product from the **crew** candidate pools (invariant #5). Don't
    drop the host from the review plan, though: unless it's banned or
@@ -1025,17 +1048,21 @@ mandatory.
   rule (AskUserQuestion on Claude Code; if the host exposes no such
   tool, surface the options as prose and wait for a free-text reply).
   **Silence is not consent.** Do NOT silently continue.
-- **Iteration cap reached (default 3 rounds per epoch; 9 total).**
+- **Iteration cap reached (captain 3 rounds per epoch / 9 total; server
+  warning at 4 per epoch and refusal at 12 total).**
   Reframe with criteria context: "We've iterated 3 rounds; criteria
   still failing: [2, 4]. Options: revise criteria → starts a new
   epoch (epoch-aware total cap still applies); switch implementer →
   continues current epoch; accept failing finding(s) and merge →
   carries into Step 4 as user-accepted/deferred (recorded in commit
-  body); hand off → captain stops dispatching." This cap is
-  captain-enforced only; the runtime counts nothing. Apply the
+  body); hand off → captain stops dispatching." Apply the
   Structured-choice rule (AskUserQuestion on Claude Code; if the host
   exposes no such tool, surface the options as prose and wait for a
   free-text reply). **Silence is not consent.**
+  If the server returns `criteria.iteration_continuation_cap`, the refused
+  call is already counted. Only after an explicit Continue choice retry
+  with `cap_override:true`; otherwise revise, switch, accept/defer, or hand
+  off without another dispatch.
 - **Reviewer disagreement (one PASS, one FAIL on criterion N).**
   Treat as FAIL (conservative). Forward both reviewers' reasoning to
   the implementer. If disagreement persists across two rounds on the
@@ -1098,6 +1125,9 @@ merge_run({
 `commit_title` should describe what the run accomplished, not "crew
 run abc123…". The run lands as a single commit carrying this title —
 no merge-commit wrapper, no machine trailer.
+Missing titles fail with `merge_run.commit_title_required`. Titles over
+72 characters merge with a warning rather than failing; shorten them when
+practical and relay the warning.
 
 **Strategy for the iterate loop: default `squash`.** The loop inherently
 produces an implementation commit plus per-round fixup commits

@@ -286,7 +286,19 @@ describe('crew-iterate body — criteria-store adoption', () => {
     expect(step0).toContain('CriteriaEditOps');
     expectContainsCI(step0, 'confirmation is the point of no return');
     expectContainsCI(step0, 'always sets `status: "confirmed"`');
+    expectContainsCI(step0, 'criteria.already_confirmed_use_revise');
     expectContainsCI(step0, 'Silence is not consent');
+  });
+
+  it('documents the server continuation backstop without reusing reviewer rounds', async () => {
+    const body = await loadBody();
+    const flat = flattenWhitespace(body);
+    expectContainsCI(flat, 'warns at 4 in one epoch');
+    expectContainsCI(flat, 'refuses at 12 total');
+    expectContainsCI(flat, 'cap_override:true');
+    expectContainsCI(flat, 'reviewer `rounds[]` remains separate');
+    expectContainsCI(flat, 'criteria.iteration_continuation_cap');
+    expect(body).not.toContain('runtime counts nothing');
   });
 
   it('passes criteria_set_id through dispatch without acceptance-criteria peer messages', async () => {

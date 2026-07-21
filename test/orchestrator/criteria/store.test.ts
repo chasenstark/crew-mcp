@@ -10,6 +10,7 @@ import {
 import {
   criteriaDir,
   gcCriteriaSets,
+  recordCriteriaIterationContinuation,
   readCriteriaState,
   writeCriteriaStateAtomic,
 } from '../../../src/orchestrator/criteria/store.js';
@@ -68,6 +69,69 @@ describe('criteria store', () => {
 
   it('returns undefined when criteria.json is absent', () => {
     expect(readCriteriaState(criteriaDir(crewHome, 'missing'))).toBeUndefined();
+  });
+
+  it('warns at four per epoch, preserves rounds, and counts before cap refusal', async () => {
+    const dir = criteriaDir(crewHome, 'criteria-1');
+    mkdirSync(dir, { recursive: true });
+    const rounds = [{
+      roundId: 'review-round-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      reviewerRunIds: ['reviewer-run'],
+      status: 'complete' as const,
+    }];
+    writeCriteriaStateAtomic(dir, {
+      ...state('criteria-1'),
+      status: 'confirmed',
+      iterationContinuations: 3,
+      rounds,
+    });
+
+    const warned = await recordCriteriaIterationContinuation({
+      crewHome,
+      criteriaSetId: 'criteria-1',
+      expectedEpoch: 0,
+      capOverride: false,
+    });
+    expect(warned).toMatchObject({
+      epochContinuations: 4,
+      totalContinuations: 4,
+    });
+    expect(warned.warnings).toEqual([
+      expect.stringContaining('criteria.iteration_continuation_warning:'),
+    ]);
+    expect(readCriteriaState(dir)?.rounds).toEqual(rounds);
+
+    writeCriteriaStateAtomic(dir, {
+      ...readCriteriaState(dir)!,
+      history: [{
+        epoch: 0,
+        criteria: state().criteria,
+        supersededAt: '2026-01-02T00:00:00.000Z',
+        iterationContinuations: 7,
+      }],
+      epoch: 1,
+      iterationContinuations: 4,
+    });
+    await expect(recordCriteriaIterationContinuation({
+      crewHome,
+      criteriaSetId: 'criteria-1',
+      expectedEpoch: 1,
+      capOverride: false,
+    })).rejects.toThrow(/^criteria\.iteration_continuation_cap:/);
+    expect(readCriteriaState(dir)?.iterationContinuations).toBe(5);
+
+    const overridden = await recordCriteriaIterationContinuation({
+      crewHome,
+      criteriaSetId: 'criteria-1',
+      expectedEpoch: 1,
+      capOverride: true,
+    });
+    expect(overridden.totalContinuations).toBe(13);
+    expect(overridden.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('criteria.iteration_continuation_cap_override:'),
+    ]));
+    expect(readCriteriaState(dir)?.rounds).toEqual(rounds);
   });
 
   it('rejects unknown schema versions', () => {

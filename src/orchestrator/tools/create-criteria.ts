@@ -85,6 +85,7 @@ export function createCriteriaHandler(
     nextCriterionSeq: criteria.length + 1,
     criteria,
     history: [],
+    iterationContinuations: 0,
   } satisfies CriteriaSetStateV1);
   ensureCriteriaRoot(ctx.crewHome);
   const targetDir = criteriaDir(ctx.crewHome, criteriaSetId);

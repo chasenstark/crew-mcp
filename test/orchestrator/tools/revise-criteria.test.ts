@@ -65,6 +65,7 @@ describe('reviseCriteriaHandler', () => {
     const current = readCriteriaState(dir)!;
     writeCriteriaStateAtomic(dir, {
       ...current,
+      iterationContinuations: 5,
       rounds: [
         {
           roundId: 'round-1',
@@ -113,8 +114,10 @@ describe('reviseCriteriaHandler', () => {
         epoch: 0,
         supersededAt: '2026-01-03T00:00:00.000Z',
         note: 'tighten wording',
+        iterationContinuations: 5,
       },
     ]);
+    expect(state?.iterationContinuations).toBe(0);
     expect(state?.rounds).toBeUndefined();
     expect(state?.naDecisions).toBeUndefined();
   });

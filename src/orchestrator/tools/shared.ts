@@ -13,6 +13,7 @@ import { encodeRunGenerations } from '../../codex/wake-delivery.js';
 import type { DispatchTask, ToolDispatcher } from '../tool-dispatcher.js';
 import type { ProgressNotifier } from '../progress.js';
 import type { QuotaSnapshot } from './list-agents.js';
+import type { FullConfig } from '../../workflow/types.js';
 
 /**
  * Server-side cap on the long-poll wait that `get_run_status` honors
@@ -163,6 +164,7 @@ export interface MergeEnvelope {
   readonly landed_off_current_branch?: boolean;
   readonly restore_failed?: boolean;
   readonly restore_warning?: string;
+  readonly warnings?: readonly string[];
 }
 
 export interface DiscardEnvelope {
@@ -205,6 +207,7 @@ export interface ToolHandlerDeps {
   readonly quotaProbe?: (agentName: string) => Promise<QuotaSnapshot | undefined>;
   readonly clearQuotaCache?: () => void;
   readonly onTerminalPersisted?: (state: RunStateV1) => void | Promise<void>;
+  readonly loadWorkflowConfig?: (projectRoot: string) => FullConfig;
 }
 
 interface DispatchAndRespondArgs {
@@ -562,26 +565,32 @@ export function jsonContent<T extends object>(value: T, isError = false): ToolCa
 }
 
 export function renderMergeMarkdown(env: MergeEnvelope): string {
+  let rendered: string;
   if (env.status === 'merged') {
     const base = `**Merged** ${mdInlineCode(env.run_id)} → ${mdInlineCode(env.commit_sha ?? '')}`;
     if (env.restore_failed) {
-      return `${base}\n\n${env.restore_warning ?? 'Merge landed, but checkout restore failed.'}`;
+      rendered = `${base}\n\n${env.restore_warning ?? 'Merge landed, but checkout restore failed.'}`;
+    } else if (!env.landed_off_current_branch) {
+      rendered = base;
+    } else {
+      const original = env.original_branch
+        ? mdInlineCode(env.original_branch)
+        : `detached HEAD ${mdInlineCode(env.original_head ?? '')}`;
+      rendered = `${base}\n\nLanded on ${mdInlineCode(env.target_branch ?? '')}; restored ${original}.`;
     }
-    if (!env.landed_off_current_branch) return base;
-    const original = env.original_branch
-      ? mdInlineCode(env.original_branch)
-      : `detached HEAD ${mdInlineCode(env.original_head ?? '')}`;
-    return `${base}\n\nLanded on ${mdInlineCode(env.target_branch ?? '')}; restored ${original}.`;
-  }
-  if (env.status === 'conflict') {
+  } else if (env.status === 'conflict') {
     const conflicts = env.conflicts ?? [];
-    return `**Conflict** on ${mdInlineCode(env.run_id)} (${conflicts.length} files): ${conflicts.join(', ')}`;
+    rendered = `**Conflict** on ${mdInlineCode(env.run_id)} (${conflicts.length} files): ${conflicts.join(', ')}`;
+  } else {
+    const base = `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
+    rendered = env.restore_failed
+      ? `${base}\n\n${env.restore_warning ?? 'No changes were merged, but checkout restore failed.'}`
+      : base;
   }
-  const base = `**No changes** to merge from ${mdInlineCode(env.run_id)}`;
-  if (env.restore_failed) {
-    return `${base}\n\n${env.restore_warning ?? 'No changes were merged, but checkout restore failed.'}`;
+  if (env.warnings && env.warnings.length > 0) {
+    rendered += `\n\n## Warnings\n\n${env.warnings.map((warning) => `- ${warning}`).join('\n')}`;
   }
-  return base;
+  return rendered;
 }
 
 export function checkoutEnvelope(result: {

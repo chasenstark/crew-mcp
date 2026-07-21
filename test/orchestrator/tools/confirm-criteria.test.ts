@@ -76,6 +76,27 @@ describe('confirmCriteriaHandler', () => {
     expect(readCriteriaState(criteriaDir(crewHome, 'criteria-1'))).toEqual(before);
   });
 
+  it('rejects edit ops on a confirmed set without changing its epoch or contents', async () => {
+    await confirmCriteriaHandler({
+      criteria_set_id: 'criteria-1',
+    }, {
+      crewHome,
+      now: () => '2026-01-02T00:00:00.000Z',
+    });
+    const before = readCriteriaState(criteriaDir(crewHome, 'criteria-1'));
+
+    await expect(confirmCriteriaHandler({
+      criteria_set_id: 'criteria-1',
+      ops: { update: [{ id: 'c2', title: 'Silently changed' }] },
+    }, {
+      crewHome,
+      now: () => '2026-01-03T00:00:00.000Z',
+    })).rejects.toThrow(/^criteria\.already_confirmed_use_revise:/);
+
+    expect(readCriteriaState(criteriaDir(crewHome, 'criteria-1'))).toEqual(before);
+    expect(before?.epoch).toBe(0);
+  });
+
   it('returns markdown text while preserving structured fields for tool calls', async () => {
     const out = await confirmCriteriaToolHandler({
       criteria_set_id: 'criteria-1',

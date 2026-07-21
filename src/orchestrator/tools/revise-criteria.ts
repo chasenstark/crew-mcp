@@ -80,6 +80,7 @@ export async function reviseCriteriaHandler(
         epoch: current.epoch + 1,
         nextCriterionSeq: current.nextCriterionSeq,
         criteria: cloneCriteria(current.criteria),
+        iterationContinuations: 0,
         ...(current.implementerRunId !== undefined
           ? { implementerRunId: current.implementerRunId }
           : {}),
@@ -89,6 +90,7 @@ export async function reviseCriteriaHandler(
             epoch: current.epoch,
             criteria: cloneCriteria(current.criteria),
             supersededAt: now,
+            iterationContinuations: current.iterationContinuations ?? 0,
             ...(input.note !== undefined ? { note: input.note } : {}),
           },
         ],

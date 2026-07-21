@@ -52,6 +52,13 @@ import {
   requiredNextActionForRun,
   requiredNextActionForRuns,
 } from './shared.js';
+import {
+  agentBannedMessage,
+  banOverrideWarning,
+  canonicalAgentId,
+  findAgentBanMatch,
+  isSameHostAgent,
+} from './dispatch-policy.js';
 
 const runPanelReviewerInputSchema = z.object({
   agent_id: z.string().min(1),
@@ -67,10 +74,14 @@ export const runPanelInputSchema = z.object({
   implementer_run_id: z.string().min(1).optional(),
   criteria_set_id: z.string().min(1).optional(),
   reviewers: z.array(runPanelReviewerInputSchema).max(100).optional(),
+  ban_override: z.boolean().optional(),
 }).strict();
 
 export type RunPanelInput = z.infer<typeof runPanelInputSchema>;
 type RunPanelReviewerInput = z.infer<typeof runPanelReviewerInputSchema>;
+type ResolvedPanelReviewerInput = RunPanelReviewerInput & {
+  readonly policyWarnings: readonly string[];
+};
 
 export interface ReviewerDispatchEnvelope {
   readonly run_id: string;
@@ -105,7 +116,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers as one panel. Optionally bind a terminal implementer to prepend summary/files; omitted reviewers use workflow.agentDefaults.panel. agy auto-routes to ephemeral_review. Returns panel_id, reviewer run_ids, failures, and on Claude Code/hosted Codex a panel-level crew-wait watcher command in required_next_action; per-reviewer wait commands remain available for selective recovery. Do not block the turn long-polling get_run_status.';
+  'Dispatch parallel reviewers as one panel. Explicit and default reviewers are canonicalized, refuse panel.banList unless ban_override follows user approval, and always refuse the current host. agy auto-routes to ephemeral_review. Returns panel_id, reviewer runs/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available for recovery. Do not block the turn long-polling get_run_status.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -149,7 +160,7 @@ export async function runPanelHandler(
   ctx: RunPanelHandlerContext,
 ): Promise<RunPanelOutput> {
   const input = runPanelInputSchema.parse(args);
-  const reviewers = resolvePanelReviewers(input.reviewers, ctx);
+  const reviewers = resolvePanelReviewers(input.reviewers, input.ban_override === true, ctx);
   validateRunPanelPreflight(reviewers);
 
   const implementerState = input.implementer_run_id
@@ -313,7 +324,7 @@ export async function runPanelHandler(
           }
         },
       });
-      record = dispatchedReviewerRecord(reviewer.agent_id, result);
+      record = dispatchedReviewerRecord(reviewer.agent_id, result, reviewer.policyWarnings);
       // Reviewer-level actions remain available for selective/degraded
       // waits; the returned panel envelope adds the primary all-reviewer
       // watcher once the successful run ids are known.
@@ -330,7 +341,7 @@ export async function runPanelHandler(
         agent_id: reviewer.agent_id,
         tail_url: result.tailUrl,
         worktree_path: result.worktreePath,
-        warnings: result.warnings,
+        warnings: [...result.warnings, ...reviewer.policyWarnings],
         ...(requiredNextAction !== undefined
           ? { required_next_action: requiredNextAction }
           : {}),
@@ -502,7 +513,7 @@ function reviewerUsesEphemeralWorktree(
  * overridden. Also fails fast when the bound implementer worktree is gone.
  */
 function ephemeralPanelReviewerRejection(
-  reviewer: RunPanelReviewerInput,
+  reviewer: ResolvedPanelReviewerInput,
   implementerState: RunStateV1 | undefined,
 ): string | undefined {
   if (reviewer.read_only !== undefined) {
@@ -564,39 +575,57 @@ function implementerSnapshotSource(
 
 function resolvePanelReviewers(
   reviewers: readonly RunPanelReviewerInput[] | undefined,
+  banOverride: boolean,
   ctx: RunPanelHandlerContext,
-): RunPanelReviewerInput[] {
-  if (reviewers && reviewers.length > 0) {
-    return [...reviewers];
-  }
-
+): ResolvedPanelReviewerInput[] {
   const config = (ctx.loadConfig ?? loadWorkflowConfig)(ctx.projectRoot);
   const panelDefaults = config.workflow.agentDefaults?.panel;
-  const configuredReviewers = panelDefaults?.reviewers ?? [];
-  const banList = new Set(panelDefaults?.banList ?? []);
-  if (ctx.sameHostAgentId) {
-    banList.add(ctx.sameHostAgentId);
-  }
-
-  const selected = configuredReviewers.filter((agentId) => !banList.has(agentId));
+  const selected = reviewers && reviewers.length > 0
+    ? [...reviewers]
+    : (panelDefaults?.reviewers ?? []).map((agentId) => ({
+        agent_id: agentId,
+        prompt: DEFAULT_PANEL_REVIEW_PROMPT,
+        ...(reviewerUsesEphemeralWorktree(ctx.registry, agentId) ? {} : { read_only: true }),
+      }));
   if (selected.length === 0) {
     throw new Error(
       'run_panel.no_reviewers: no reviewers were provided and workflow.agentDefaults.panel.reviewers ' +
-      'is empty after banList and same-host filtering. Configure reviewers with ' +
+      'is empty. Configure reviewers with ' +
       '`crew-mcp config set workflow.agentDefaults.panel.reviewers \'["<agent_id>"]\'` ' +
       'or pass an explicit reviewers array for this run.',
     );
   }
-
-  // Preference-filled ephemeral-worktree reviewers must NOT carry
-  // read_only:true — the dispatch loop derives their run_mode from the
-  // adapter capability, and an explicit read_only is a validation error
-  // there (agy hard-rejects in-place read-only).
-  return selected.map((agentId) => ({
-    agent_id: agentId,
-    prompt: DEFAULT_PANEL_REVIEW_PROMPT,
-    ...(reviewerUsesEphemeralWorktree(ctx.registry, agentId) ? {} : { read_only: true }),
-  }));
+  return selected.map((reviewer) => {
+    const canonicalId = canonicalAgentId(ctx.registry, reviewer.agent_id);
+    const policyWarnings: string[] = [];
+    const banMatch = findAgentBanMatch({
+      registry: ctx.registry,
+      config,
+      agentId: canonicalId,
+      scopes: ['panel'],
+    });
+    if (banMatch !== undefined) {
+      if (!banOverride) {
+        throw new Error(agentBannedMessage(banMatch, 'run_panel refused: '));
+      }
+      policyWarnings.push(banOverrideWarning(banMatch));
+    }
+    if (isSameHostAgent({
+      registry: ctx.registry,
+      agentId: canonicalId,
+      sameHostAgentId: ctx.sameHostAgentId,
+    })) {
+      throw new Error(
+        `same_host_reviewer: run_panel refuses reviewer "${canonicalId}" because it matches `
+        + 'the current host. Choose a different reviewer.',
+      );
+    }
+    return {
+      ...reviewer,
+      agent_id: canonicalId,
+      policyWarnings,
+    };
+  });
 }
 
 function readImplementerState(
@@ -663,13 +692,14 @@ function composePeerMessages(
 function dispatchedReviewerRecord(
   agentId: string,
   result: DispatchRunAgentInternalResult,
+  policyWarnings: readonly string[],
 ): PanelReviewerRecord {
   return {
     runId: result.runId,
     agentId,
     dispatched: true,
     dispatchedAt: new Date().toISOString(),
-    dispatchWarnings: result.warnings,
+    dispatchWarnings: [...result.warnings, ...policyWarnings],
   };
 }
 

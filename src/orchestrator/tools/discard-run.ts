@@ -24,12 +24,13 @@ import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
 
 export const discardRunInputSchema = z.object({
   run_id: z.string().min(1),
-});
+  confirmed: z.boolean().optional(),
+}).strict();
 
 export type DiscardRunInput = z.infer<typeof discardRunInputSchema>;
 
 export const DISCARD_RUN_DESCRIPTION =
-  "Mark a run discarded and remove its owned worktree without merging. Use when the user chooses not to keep a run's changes, or to clean up a read-only run's metadata. Input is run_id; the operation is idempotent and returns { run_id, ok: true }.";
+  "Mark a run discarded and remove its owned worktree without merging. A write run with commits or worktree changes requires confirmed:true after user consent; merge_conflict always requires it. read_only and ephemeral_review remain ungated. Returns { run_id, ok: true }.";
 
 export async function discardRunToolHandler(
   args: DiscardRunInput,
@@ -57,6 +58,27 @@ export async function discardRunToolHandler(
       await deps.worktreeManager.withRunWorktreeLock(args.run_id, async () => {
         const fresh = deps.runStateStore.read(args.run_id);
         if (!fresh) return;
+        const runMode = runModeFromState(fresh);
+        if (fresh.status === 'merge_conflict' && args.confirmed !== true) {
+          throw discardConfirmationRequired(args.run_id, 'the run is in merge_conflict status');
+        }
+        if (
+          runMode === 'write'
+          && fresh.status !== 'merge_conflict'
+          && args.confirmed !== true
+          && deps.worktreeManager.hasOwnedRunWorktreeRecord(args.run_id)
+        ) {
+          const delta = await deps.worktreeManager.getRunDeliverableDelta(args.run_id, {
+            lockAlreadyHeld: true,
+          });
+          if (delta.hasDelta) {
+            const reasons = [
+              ...(delta.commitsAhead > 0 ? [`${delta.commitsAhead} commit(s) ahead of its persisted branch point`] : []),
+              ...(delta.hasWorktreeChanges ? ['index, tracked, or untracked worktree changes'] : []),
+            ];
+            throw discardConfirmationRequired(args.run_id, reasons.join(' and '));
+          }
+        }
         if (fresh.status !== 'discarded') {
           await deps.runStateStore.markDiscarded(args.run_id);
         }
@@ -66,7 +88,7 @@ export async function discardRunToolHandler(
         // ephemeral_review — discarding an ephemeral review is what actually
         // throws its disposable snapshot away); read_only runs have no
         // worktree, so discard is metadata-only.
-        shouldCleanupWorktree = ownsWorktree(runModeFromState(fresh));
+        shouldCleanupWorktree = ownsWorktree(runMode);
       });
     }
   } catch (err) {
@@ -100,4 +122,11 @@ export async function discardRunToolHandler(
     ok: true,
   };
   return markdownContent(renderDiscardMarkdown(env), env);
+}
+
+function discardConfirmationRequired(runId: string, reason: string): Error {
+  return new Error(
+    `discard_run.confirmation_required: discarding run "${runId}" would delete deliverable work because ${reason}. `
+    + 'Ask the user for explicit consent, then retry discard_run with confirmed:true.',
+  );
 }

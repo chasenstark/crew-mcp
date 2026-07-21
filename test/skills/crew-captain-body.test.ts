@@ -59,6 +59,22 @@ describe('crew-captain body — named protocols', () => {
     expect(body.match(/\*\*Ask gate:\*\*/g)?.length).toBeGreaterThanOrEqual(7);
     expect(body.match(/\*\*Own-host gate:\*\*/g)?.length).toBeGreaterThanOrEqual(2);
   });
+
+  it('documents the consolidated server override vocabulary exactly once', async () => {
+    const body = await loadBody();
+    expect(body.match(/^### Server override vocabulary$/gm)).toHaveLength(1);
+    const section = sliceBetween(body, '### Server override vocabulary', '## Dispatch or inline');
+    for (const field of [
+      'confirmed',
+      'dispatch_anyway',
+      'same_host_ok',
+      'ban_override',
+      'cap_override',
+      'user_requested_wait',
+    ]) {
+      expect(section).toContain(`\`${field}\``);
+    }
+  });
 });
 
 describe('crew-captain body — structured gates', () => {
@@ -135,6 +151,8 @@ describe('crew-captain body — merge and cleanup', () => {
     expectContainsCI(flat, 'commit_title');
     expectContainsCI(flat, 'squash');
     expectContainsCI(flat, 'preserve');
+    expectContainsCI(flat, 'merge_run.commit_title_required');
+    expectContainsCI(flat, 'title over 72 characters succeeds with a warning');
   });
 
   it('describes prompt-discard habit plus run-GC backstop for read-only and ephemeral runs', async () => {
