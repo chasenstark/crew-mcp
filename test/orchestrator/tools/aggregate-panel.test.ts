@@ -12,7 +12,11 @@ import {
   writePanelStateAtomic,
 } from '../../../src/orchestrator/panels/store.js';
 import { peerMessageInputSchema } from '../../../src/orchestrator/peer-messages/schema.js';
-import { aggregatePanelHandler } from '../../../src/orchestrator/tools/aggregate-panel.js';
+import {
+  aggregatePanelHandler,
+  aggregatePanelToolHandler,
+} from '../../../src/orchestrator/tools/aggregate-panel.js';
+import { UNTRUSTED_WORKER_CONTENT_LABEL } from '../../../src/orchestrator/untrusted-provenance.js';
 import {
   createRunState,
   makeHarness,
@@ -98,6 +102,7 @@ describe('aggregatePanelHandler', () => {
     writePanel(h, state);
 
     const out = aggregatePanelHandler({ panel_id: state.panelId }, h.ctx);
+    expect(out.provenance).toMatchObject({ label: UNTRUSTED_WORKER_CONTENT_LABEL });
     expect(out.peer_messages).toHaveLength(2);
     expect(out.peer_messages[0]).toMatchObject({
       body: 'Looks correct',
@@ -112,6 +117,32 @@ describe('aggregatePanelHandler', () => {
     for (const message of out.peer_messages) {
       peerMessageInputSchema.parse(message);
     }
+  });
+
+  it('labels peer_messages once in captain-read output and omits the label for an empty panel', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    await createRunState(h, { runId: 'r-labeled', status: 'success', summary: 'review' });
+    const labeledState = panel(h, [dispatched('r-labeled')]);
+    writePanel(h, labeledState);
+
+    const labeled = aggregatePanelToolHandler(
+      { panel_id: labeledState.panelId },
+      { crewHome: h.crewHome, runStateStore: h.runStateStore },
+    );
+    expect(labeled.content[0].text.match(new RegExp(UNTRUSTED_WORKER_CONTENT_LABEL, 'gu')))
+      .toHaveLength(1);
+    expect(labeled.content[0].text.indexOf('provenance'))
+      .toBeLessThan(labeled.content[0].text.indexOf('peer_messages'));
+
+    const emptyState = panel(h, []);
+    writePanel(h, emptyState);
+    const empty = aggregatePanelToolHandler(
+      { panel_id: emptyState.panelId },
+      { crewHome: h.crewHome, runStateStore: h.runStateStore },
+    );
+    expect(empty.structuredContent).not.toHaveProperty('provenance');
+    expect(empty.content[0].text).not.toContain(UNTRUSTED_WORKER_CONTENT_LABEL);
   });
 
   it('includes terminal reviewer failure details in peer messages', async () => {

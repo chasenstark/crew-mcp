@@ -14,6 +14,8 @@ import type { DispatchTask, ToolDispatcher } from '../tool-dispatcher.js';
 import type { ProgressNotifier } from '../progress.js';
 import type { QuotaSnapshot } from './list-agents.js';
 import type { FullConfig } from '../../workflow/types.js';
+import type { RunMode } from '../run-mode.js';
+import { renderUntrustedWorkerContentNotice } from '../untrusted-provenance.js';
 
 /**
  * Server-side cap on the long-poll wait that `get_run_status` honors
@@ -113,6 +115,8 @@ export interface RunEnvelope {
   readonly tail_url: string;
   readonly summary: string;
   readonly files_changed: readonly string[];
+  readonly relay_verbatim?: string;
+  readonly ledger_line?: string;
   readonly required_next_action?: RequiredNextAction;
   readonly warnings?: readonly string[];
   readonly status?: RunStatus;
@@ -132,7 +136,7 @@ export interface FullRunEnvelope extends RunEnvelope {
   readonly tail_command_url: string;
 }
 
-export interface RequiredNextAction {
+export interface SpawnWatcherRequiredNextAction {
   readonly type: 'spawn_watcher';
   readonly mechanism: 'background_shell' | 'codex_app_server';
   readonly command: string;
@@ -152,6 +156,35 @@ export interface RequiredNextAction {
   readonly per_run: boolean;
   readonly consequence_if_skipped: string;
 }
+
+export interface CheckInboxRequiredNextAction {
+  readonly type: 'check_inbox';
+  readonly run_id: string;
+  readonly unread_count: number;
+  readonly consequence_if_skipped: string;
+}
+
+export interface ConfirmWithUserRequiredNextAction {
+  readonly type: 'confirm_with_user';
+  readonly run_id: string;
+  readonly prompt: string;
+  readonly consequence_if_skipped: string;
+}
+
+export interface MergeOrDiscardRequiredNextAction {
+  readonly type: 'merge_or_discard';
+  readonly run_id: string;
+  readonly consequence_if_skipped: string;
+}
+
+export type RequiredNextAction =
+  | SpawnWatcherRequiredNextAction
+  | CheckInboxRequiredNextAction
+  | ConfirmWithUserRequiredNextAction
+  | MergeOrDiscardRequiredNextAction;
+
+export const DISPATCH_RELAY_FIELD_MAX_BYTES = 200;
+export const DISPATCH_RELAY_TRUNCATION_MARKER = '…';
 
 export interface MergeEnvelope {
   readonly run_id: string;
@@ -227,6 +260,7 @@ interface DispatchAndRespondArgs {
   crewWaitCommand?: string;
   crewHome: string;
   projectRoot: string;
+  runMode: RunMode;
 }
 
 export async function runDispatchAndRespond(
@@ -276,6 +310,12 @@ export async function runDispatchAndRespond(
     status: 'running',
     summary,
     files_changed: [],
+    ...dispatchRelayFields({
+      agentId: args.agentName,
+      runId: args.runId,
+      runMode: args.runMode,
+      tailUrl: crewTailUrl(eventsLogPath),
+    }),
     ...(requiredNextAction !== undefined ? { required_next_action: requiredNextAction } : {}),
     ...mergeEnvelopeWarnings(
       args.runStateStore.read(args.runId)?.warnings,
@@ -297,6 +337,8 @@ export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
     tail_url: env.tail_url,
     summary: env.summary,
     files_changed: env.files_changed,
+    ...(env.relay_verbatim !== undefined ? { relay_verbatim: env.relay_verbatim } : {}),
+    ...(env.ledger_line !== undefined ? { ledger_line: env.ledger_line } : {}),
     ...(env.required_next_action !== undefined
       ? { required_next_action: env.required_next_action }
       : {}),
@@ -307,6 +349,7 @@ export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
 export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientKind): string {
   const lines = [
     `**Dispatched** ${mdInlineCode(env.agent_id ?? 'agent')} as run \`${env.run_id}\`.`,
+    ...(env.relay_verbatim !== undefined ? [env.relay_verbatim] : []),
     '',
     `- Status: \`${env.status}\``,
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
@@ -317,7 +360,7 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
     );
   }
   lines.push(`- Tail manually: \`tail -F ${env.events_log_path}\``);
-  if (env.required_next_action !== undefined) {
+  if (env.required_next_action?.type === 'spawn_watcher') {
     if (clientKind === 'claude-code') {
       lines.push(
         `**REQUIRED before you end this turn:** spawn the watcher -> \`Bash(${env.required_next_action.command}, run_in_background: true)\`. Skip it and the run is orphaned.`,
@@ -342,6 +385,44 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
   return lines.join('\n');
 }
 
+export function dispatchRelayFields(args: {
+  readonly agentId: string;
+  readonly runId: string;
+  readonly runMode: RunMode;
+  readonly tailUrl: string;
+}): Pick<RunEnvelope, 'relay_verbatim' | 'ledger_line'> {
+  return {
+    relay_verbatim: singleLineUtf8Cap(
+      `Dispatched ${args.agentId} → run ${args.runId} · tail: ${args.tailUrl}`,
+      DISPATCH_RELAY_FIELD_MAX_BYTES,
+    ),
+    ledger_line: singleLineUtf8Cap(
+      `run ${args.runId} · ${args.agentId} · ${args.runMode} · dispatched`,
+      DISPATCH_RELAY_FIELD_MAX_BYTES,
+    ),
+  };
+}
+
+export function singleLineUtf8Cap(
+  value: string,
+  maxBytes: number,
+  marker = DISPATCH_RELAY_TRUNCATION_MARKER,
+): string {
+  const compact = value.replace(/\s+/gu, ' ').trim();
+  if (Buffer.byteLength(compact, 'utf8') <= maxBytes) return compact;
+  const markerBytes = Buffer.byteLength(marker, 'utf8');
+  const budget = Math.max(0, maxBytes - markerBytes);
+  const codePoints: string[] = [];
+  let usedBytes = 0;
+  for (const codePoint of Array.from(compact)) {
+    const codePointBytes = Buffer.byteLength(codePoint, 'utf8');
+    if (usedBytes + codePointBytes > budget) break;
+    codePoints.push(codePoint);
+    usedBytes += codePointBytes;
+  }
+  return `${codePoints.join('').trimEnd()}${marker}`;
+}
+
 export function requiredNextActionForRun(
   clientKind: ClientKind,
   crewWaitCommand: string | undefined,
@@ -349,7 +430,7 @@ export function requiredNextActionForRun(
   crewHome: string,
   projectRoot: string,
   runGeneration?: number,
-): RequiredNextAction | undefined {
+): SpawnWatcherRequiredNextAction | undefined {
   if (
     (clientKind !== 'claude-code' && clientKind !== 'codex')
     || crewWaitCommand === undefined
@@ -403,7 +484,7 @@ export function requiredNextActionForRuns(
   crewHome: string,
   projectRoot: string,
   runGenerations: readonly number[] = [],
-): RequiredNextAction | undefined {
+): SpawnWatcherRequiredNextAction | undefined {
   if (
     (clientKind !== 'claude-code' && clientKind !== 'codex')
     || crewWaitCommand === undefined
@@ -652,6 +733,7 @@ export function renderGetRunStatusMarkdown(
     readonly summary?: unknown;
     readonly failure?: unknown;
     readonly events_tail_skipped?: unknown;
+    readonly inbox?: unknown;
   },
 ): string {
   const status = typeof payload.status === 'string' ? payload.status : 'unknown';
@@ -680,8 +762,16 @@ export function renderGetRunStatusMarkdown(
       : '';
     lines.push(`${filesChanged.length} files changed: ${firstPaths}${more}`);
   }
-  if (typeof payload.summary === 'string') {
+  const inboxMessages = renderTerminalInboxMessages(payload.inbox);
+  const hasSummary = typeof payload.summary === 'string' && payload.summary.trim().length > 0;
+  if (hasSummary || inboxMessages.length > 0) {
+    lines.push('', renderUntrustedWorkerContentNotice());
+  }
+  if (hasSummary) {
     lines.push(`> ${truncateMarkdownSummary(payload.summary, 200)}`);
+  }
+  if (inboxMessages.length > 0) {
+    lines.push(...inboxMessages);
   }
   const failure = renderFailureSummary(payload.failure);
   if (failure) {
@@ -694,6 +784,21 @@ export function renderGetRunStatusMarkdown(
     lines.push(`${payload.events_tail_skipped} events skipped`);
   }
   return lines.join('\n');
+}
+
+function renderTerminalInboxMessages(inbox: unknown): string[] {
+  if (!inbox || typeof inbox !== 'object') return [];
+  const record = inbox as { unread_count?: unknown; messages?: unknown };
+  if (!Array.isArray(record.messages) || record.messages.length === 0) return [];
+  const unreadCount = typeof record.unread_count === 'number' ? record.unread_count : '?';
+  const lines = [`Inbox: ${unreadCount} unread from this run (previews only).`];
+  for (const message of record.messages) {
+    if (!message || typeof message !== 'object') continue;
+    const entry = message as { msg_id?: unknown; preview?: unknown };
+    if (typeof entry.msg_id !== 'string' || typeof entry.preview !== 'string') continue;
+    lines.push(`- msg_id=${entry.msg_id} preview=${JSON.stringify(entry.preview)}`);
+  }
+  return lines;
 }
 
 function renderFailureSummary(failure: unknown): string | undefined {

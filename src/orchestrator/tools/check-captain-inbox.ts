@@ -8,6 +8,11 @@ import type { CaptainInboxMessage } from '../captain-inbox/schema.js';
 import { logger } from '../../utils/logger.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { markdownContent } from './shared.js';
+import {
+  renderUntrustedWorkerContentNotice,
+  UNTRUSTED_WORKER_CONTENT_PROVENANCE,
+  type UntrustedWorkerContentProvenance,
+} from '../untrusted-provenance.js';
 
 const inboxStatusFilterSchema = z.enum(['unread', 'read', 'dismissed', 'all']);
 
@@ -39,6 +44,7 @@ export interface CheckCaptainInboxOutput {
   readonly total_unread: number;
   readonly total_in_inbox: number;
   readonly oldest_unread_at?: string;
+  readonly provenance?: UntrustedWorkerContentProvenance;
 }
 
 export const CHECK_CAPTAIN_INBOX_DESCRIPTION =
@@ -73,6 +79,7 @@ export async function checkCaptainInboxToolHandler(
     messages: includeFullBodies ? messages : messages.map(toMessageIndexEntry),
     message_detail: includeFullBodies ? 'full' : 'compact',
     ...summary,
+    ...(messages.length > 0 ? { provenance: UNTRUSTED_WORKER_CONTENT_PROVENANCE } : {}),
   };
   return markdownContent(renderCaptainInboxMarkdown(messages, summary, includeFullBodies), output);
 }
@@ -107,6 +114,7 @@ function renderCaptainInboxMarkdown(
     lines.push('No messages matched.');
     return lines.join('\n');
   }
+  lines.push('', renderUntrustedWorkerContentNotice());
   for (const message of messages) {
     const preview = previewBody(message.body);
     const truncation = preview.omittedChars > 0

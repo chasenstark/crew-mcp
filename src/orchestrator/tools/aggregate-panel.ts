@@ -8,6 +8,10 @@ import type { PanelReviewerRecord } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { errorContent, jsonContent } from './shared.js';
+import {
+  UNTRUSTED_WORKER_CONTENT_PROVENANCE,
+  type UntrustedWorkerContentProvenance,
+} from '../untrusted-provenance.js';
 
 export const aggregatePanelInputSchema = z.object({
   panel_id: z.string().min(1),
@@ -17,6 +21,7 @@ export type AggregatePanelInput = z.infer<typeof aggregatePanelInputSchema>;
 
 export interface AggregatePanelOutput {
   readonly panel_id: string;
+  readonly provenance?: UntrustedWorkerContentProvenance;
   readonly peer_messages: PeerMessageInput[];
 }
 
@@ -97,9 +102,11 @@ export function aggregatePanelHandler(
     );
   }
 
+  const peerMessages = aggregatePanel({ panelState, reviewerStates });
   return {
     panel_id: panelState.panelId,
-    peer_messages: aggregatePanel({ panelState, reviewerStates }),
+    ...(peerMessages.length > 0 ? { provenance: UNTRUSTED_WORKER_CONTENT_PROVENANCE } : {}),
+    peer_messages: peerMessages,
   };
 }
 

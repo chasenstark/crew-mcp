@@ -118,7 +118,8 @@ describe('crew-captain body — dispatch lifecycle', () => {
     expectContainsCI(flat, 'Exception');
     expectContainsCI(flat, 'prerequisite');
     expectContainsCI(flat, 'crew-mcp install-tail-handler');
-    expectContainsCI(flat, 'live runs:');
+    expectContainsCI(flat, '`relay_verbatim` verbatim');
+    expectContainsCI(flat, '`ledger_line`');
     expectContainsCI(flat, 'Complete this checklist before ending the turn');
     expectContainsCI(flat, 'Bash(<required_next_action.command>, run_in_background: true)');
     expectContainsCI(flat, 'required_next_action.working_directory_json');

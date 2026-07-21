@@ -86,7 +86,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with prompt and/or peer_messages. Linked criteria re-check iterate.banList and the continuation cap; ban_override, same_host_ok, and cap_override require user approval. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with override/cap warnings; start required_next_action crew-wait. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run with prompt and/or peer_messages. Linked criteria re-check iterate.banList and the continuation cap; ban_override, same_host_ok, and cap_override require user approval. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with bounded relay_verbatim/ledger_line, override/cap warnings, and required_next_action crew-wait watcher when available. Do not block the turn long-polling get_run_status.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -355,6 +355,7 @@ export async function continueRunToolHandler(
       crewWaitCommand: deps.getCrewWaitCommand(),
       crewHome: deps.crewHome,
       projectRoot: deps.projectRoot,
+      runMode,
       onStartFailure: rollbackContinuation,
     });
   } catch (err) {

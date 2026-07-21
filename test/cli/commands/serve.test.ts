@@ -69,6 +69,7 @@ import {
 import { logger } from '../../../src/utils/logger.js';
 import * as configStore from '../../../src/utils/config-store.js';
 import { AGENT_PREFS_FILENAME } from '../../../src/agent-prefs/store.js';
+import { renderUntrustedWorkerContentNotice } from '../../../src/orchestrator/untrusted-provenance.js';
 
 // --- helpers ---
 
@@ -2065,6 +2066,8 @@ describe('crew serve — run_agent tool', () => {
       const env = res.structuredContent as RunEnvelope;
       expect(Object.keys(env).sort()).toEqual([
         'files_changed',
+        'ledger_line',
+        'relay_verbatim',
         'run_id',
         'summary',
         'tail_url',
@@ -2073,6 +2076,12 @@ describe('crew serve — run_agent tool', () => {
       expect(env.tail_url).toBe(crewTailUrl(join(h.crewHome, 'runs', env.run_id, 'events.log')));
       expect(env.summary).toContain(`Dispatched as "${env.run_id}"`);
       expect(env.files_changed).toEqual([]);
+      expect(env.relay_verbatim).toContain(`Dispatched mock-coder → run ${env.run_id} · tail: `);
+      expect(env.ledger_line).toBe(`run ${env.run_id} · mock-coder · write · dispatched`);
+      expect(Buffer.byteLength(env.relay_verbatim ?? '', 'utf8')).toBeLessThanOrEqual(200);
+      expect(Buffer.byteLength(env.ledger_line ?? '', 'utf8')).toBeLessThanOrEqual(200);
+      expect(env.relay_verbatim).not.toMatch(/[\r\n]/u);
+      expect(env.ledger_line).not.toMatch(/[\r\n]/u);
       expect(env.status).toBeUndefined();
       expect(env.agent_id).toBeUndefined();
       expect(env.worktree_path).toBeUndefined();
@@ -2105,6 +2114,8 @@ describe('crew serve — run_agent tool', () => {
       const env = res.structuredContent as RunEnvelope;
       expect(Object.keys(env).sort()).toEqual([
         'files_changed',
+        'ledger_line',
+        'relay_verbatim',
         'required_next_action',
         'run_id',
         'summary',
@@ -4907,12 +4918,15 @@ describe('crew serve — get_run_status tool', () => {
         commit_count: number;
         summary?: string;
         worker_ready?: unknown;
+        required_next_action?: unknown;
       };
       expect(s.status).toBe('success');
       expect(s.filesChanged).toEqual([]);
       expect(s.summary).toBe('all done');
       expect(s.prompts).toHaveLength(1);
-      expect(final.text).toBe(`**\`${runEnv.run_id}\` success**\n> all done`);
+      expect(final.text).toBe(
+        `**\`${runEnv.run_id}\` success**\n\n${renderUntrustedWorkerContentNotice()}\n> all done`,
+      );
       expectStructuredJsonBytes({ structuredContent: s }, {
         status: 'success',
         events_tail: s.events_tail,
@@ -4922,6 +4936,12 @@ describe('crew serve — get_run_status tool', () => {
         commits: [],
         commit_count: 0,
         summary: 'all done',
+        required_next_action: {
+          type: 'merge_or_discard',
+          run_id: runEnv.run_id,
+          consequence_if_skipped:
+            'Leaving a successful write run unresolved risks garbage collection and loss of its unmerged work.',
+        },
         ...(s.worker_ready !== undefined ? { worker_ready: s.worker_ready } : {}),
       });
       // Verbatim prompt text AND per-turn summary are intentionally
@@ -5616,6 +5636,12 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         run_id: firstEnv.run_id,
         run_in_background: true,
       });
+      expect(secondEnv.relay_verbatim).toContain(
+        `Dispatched mock-fast → run ${firstEnv.run_id} · tail: `,
+      );
+      expect(secondEnv.ledger_line).toBe(
+        `run ${firstEnv.run_id} · mock-fast · write · dispatched`,
+      );
       expect(toolText(second)).toContain(
         `Bash(${watcherPrefix('crew-wait', h.crewHome)} ${firstEnv.run_id}, run_in_background: true)`,
       );
@@ -6027,7 +6053,8 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(s.summary).toBe('terminal summary');
       expect(s.filesChanged).toEqual(['src/index.ts']);
       expect(toolText(res)).toBe(
-        `**\`${env.run_id}\` success**\n1 files changed: src/index.ts\n> terminal summary`,
+        `**\`${env.run_id}\` success**\n1 files changed: src/index.ts\n\n`
+        + `${renderUntrustedWorkerContentNotice()}\n> terminal summary`,
       );
       expect(Array.isArray(s.events_tail)).toBe(true);
     } finally {
@@ -6569,7 +6596,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         '[mock-streaming] message: line 8',
       ]);
       expect(c.events_tail_skipped).toBe(6);
-      expect(toolText(capped)).toBe(`**\`${env.run_id}\` success**\n> done\n6 events skipped`);
+      expect(toolText(capped)).toBe(
+        `**\`${env.run_id}\` success**\n\n${renderUntrustedWorkerContentNotice()}\n> done\n6 events skipped`,
+      );
       expect(toolText(capped)).not.toContain('line 7');
       expect(readEventsSinceSpy).not.toHaveBeenCalled();
       expect(readFilteredTailSpy).toHaveBeenCalledTimes(1);

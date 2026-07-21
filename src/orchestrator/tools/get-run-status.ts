@@ -36,18 +36,25 @@ import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { filterEventsTailNoise } from '../events-filter.js';
+import { listMessages } from '../captain-inbox/store.js';
+import type { CaptainInboxMessage } from '../captain-inbox/schema.js';
 import { formatProgressLines } from '../progress.js';
 import { runModeFromState } from '../run-mode.js';
 import { isTerminalPersistPending } from '../run-lifecycle-listeners.js';
 import type { RunStateStore, RunStateV1 } from '../run-state.js';
 import type { ToolDispatcher } from '../tool-dispatcher.js';
-import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import type { RequiredNextAction, ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import {
   errorContent,
   getRunStatusContent,
   isTerminalRunStatus,
   MAX_LONG_POLL_MS,
+  singleLineUtf8Cap,
 } from './shared.js';
+import {
+  UNTRUSTED_WORKER_CONTENT_PROVENANCE,
+  type UntrustedWorkerContentProvenance,
+} from '../untrusted-provenance.js';
 
 /**
  * Default per-poll cap on `events_tail` lines. Caller can request a
@@ -67,6 +74,9 @@ export const DEFAULT_MAX_EVENTS_TAIL = 10;
  * should read the file at `events_log_path` directly.
  */
 export const MAX_EVENTS_TAIL_CAP = 500;
+export const TERMINAL_INBOX_MAX_BYTES = 1024;
+export const TERMINAL_INBOX_MAX_MESSAGES = 2;
+export const TERMINAL_INBOX_PREVIEW_MAX_BYTES = 160;
 
 export const getRunStatusInputSchema = z.object({
   run_id: z.string().min(1),
@@ -118,11 +128,14 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read a run's current status by run_id. Default: omit wait params for an immediate snapshot (turn-start, post-watcher, status question). wait_for_change_ms / wait_for_terminal_only block until events arrive or terminal; opt-in only when the user explicitly asks to wait. Captain default is the crew-wait watcher (Claude Code/Codex) or next-turn snapshot, not a long-poll. Pass since_event_line to page events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal returns status, cursor, paths, summary/filesChanged/prompts/warnings, commits/commit_count, events_tail; timeouts return { status: "running", timed_out: true }.`;
+  `Read a run's current status by run_id. Omit wait params for an immediate turn-start/post-watcher snapshot. wait_for_change_ms / wait_for_terminal_only are explicit user-wait opt-ins; the captain default is crew-wait or a next-turn snapshot, not a long-poll. Pass since_event_line to page events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal returns status, cursor, summary/filesChanged/prompts/warnings, commits/commit_count, events_tail, scoped unread inbox previews when present, and required_next_action when follow-up is required. Timeouts return running with timed_out:true.`;
+
+type GetRunStatusDeps = Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>
+  & Partial<Pick<ToolHandlerDeps, 'crewHome'>>;
 
 export async function getRunStatusToolHandler(
   args: GetRunStatusInput,
-  deps: Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>,
+  deps: GetRunStatusDeps,
 ): Promise<ToolCallReturn> {
   const state = deps.runStateStore.read(args.run_id);
   if (!state) {
@@ -141,6 +154,7 @@ export async function getRunStatusToolHandler(
       cursor,
       args.log_lines,
       args.max_events_tail,
+      deps.crewHome,
     );
   }
 
@@ -156,6 +170,7 @@ export async function getRunStatusToolHandler(
         cursor,
         args.log_lines,
         args.max_events_tail,
+        deps.crewHome,
       );
     }
   }
@@ -182,6 +197,7 @@ export async function getRunStatusToolHandler(
     cursor,
     args.log_lines,
     args.max_events_tail,
+    deps.crewHome,
   );
 }
 
@@ -223,6 +239,7 @@ function buildGetRunStatusResponse(
   sinceLine: number,
   logLines: number | undefined,
   maxEventsTail: number | undefined,
+  crewHome: string | undefined,
 ): ToolCallReturn {
   const status = state.status;
   const terminal = isTerminalRunStatus(status);
@@ -274,6 +291,8 @@ function buildGetRunStatusResponse(
     ? state.prompts[state.prompts.length - 1]?.summary
     : undefined;
   const commitSummary = collectRunCommits(state, store.repoRoot);
+  const inbox = terminalInboxForRun({ crewHome, repoRoot: store.repoRoot, runId });
+  const requiredNextAction = terminalRequiredNextAction(state, inbox);
 
   const payload: GetRunStatusResponse = {
     status,
@@ -284,6 +303,10 @@ function buildGetRunStatusResponse(
     commits: commitSummary.commits,
     commit_count: commitSummary.commit_count,
     ...(lastSummary !== undefined ? { summary: lastSummary } : {}),
+    ...(inbox !== undefined ? { inbox } : {}),
+    ...(requiredNextAction !== undefined
+      ? { required_next_action: requiredNextAction }
+      : {}),
     ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
     ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
@@ -298,6 +321,82 @@ function buildGetRunStatusResponse(
     ...legacyLogTail,
   };
   return getRunStatusContent(runId, payload);
+}
+
+export interface TerminalInboxBlock {
+  readonly provenance: UntrustedWorkerContentProvenance;
+  readonly unread_count: number;
+  readonly messages: readonly {
+    readonly msg_id: string;
+    readonly preview: string;
+  }[];
+  readonly truncated?: true;
+}
+
+function terminalInboxForRun(args: {
+  readonly crewHome: string | undefined;
+  readonly repoRoot: string;
+  readonly runId: string;
+}): TerminalInboxBlock | undefined {
+  if (args.crewHome === undefined) return undefined;
+  let unread: readonly CaptainInboxMessage[];
+  try {
+    unread = listMessages({ crewHome: args.crewHome, repoRoot: args.repoRoot })
+      .filter((message) => message.status === 'unread' && message.from.run_id === args.runId)
+      .reverse();
+  } catch {
+    return undefined;
+  }
+  if (unread.length === 0) return undefined;
+
+  const messages = unread.slice(0, TERMINAL_INBOX_MAX_MESSAGES).map((message) => ({
+    msg_id: message.msg_id,
+    preview: singleLineUtf8Cap(message.body, TERMINAL_INBOX_PREVIEW_MAX_BYTES),
+  }));
+  const block: TerminalInboxBlock = {
+    provenance: UNTRUSTED_WORKER_CONTENT_PROVENANCE,
+    unread_count: unread.length,
+    messages,
+    ...(unread.length > messages.length ? { truncated: true as const } : {}),
+  };
+  if (Buffer.byteLength(JSON.stringify(block), 'utf8') > TERMINAL_INBOX_MAX_BYTES) {
+    // Defensive fallback for unexpected future msg_id/label growth. The
+    // current schema's fixed ASCII ids and caps keep the normal shape below
+    // 1 KiB, but the read path must stay bounded if either schema evolves.
+    return {
+      provenance: UNTRUSTED_WORKER_CONTENT_PROVENANCE,
+      unread_count: unread.length,
+      messages: [{
+        msg_id: unread[0].msg_id,
+        preview: singleLineUtf8Cap(unread[0].body, 40),
+      }],
+      truncated: true,
+    };
+  }
+  return block;
+}
+
+function terminalRequiredNextAction(
+  state: RunStateV1,
+  inbox: TerminalInboxBlock | undefined,
+): RequiredNextAction | undefined {
+  if (state.status === 'success' && runModeFromState(state) === 'write') {
+    return {
+      type: 'merge_or_discard',
+      run_id: state.runId,
+      consequence_if_skipped:
+        'Leaving a successful write run unresolved risks garbage collection and loss of its unmerged work.',
+    };
+  }
+  if (inbox !== undefined) {
+    return {
+      type: 'check_inbox',
+      run_id: state.runId,
+      unread_count: inbox.unread_count,
+      consequence_if_skipped: 'Worker-delivered findings from this run may be missed.',
+    };
+  }
+  return undefined;
 }
 
 function collectRunCommits(

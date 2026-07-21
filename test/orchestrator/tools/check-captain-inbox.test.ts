@@ -16,6 +16,7 @@ import {
   checkCaptainInboxToolHandler,
 } from '../../../src/orchestrator/tools/check-captain-inbox.js';
 import { logger } from '../../../src/utils/logger.js';
+import { UNTRUSTED_WORKER_CONTENT_LABEL } from '../../../src/orchestrator/untrusted-provenance.js';
 
 function tempRoot(): { readonly crewHome: string; readonly repoRoot: string; readonly cleanup: () => void } {
   const crewHome = mkdtempSync(join(tmpdir(), 'crew-check-inbox-home-'));
@@ -167,7 +168,9 @@ describe('check_captain_inbox', () => {
       expect(defaultText).not.toContain(fullBody);
       expect(defaultText).not.toContain('"messages":');
       expect(defaultText.length).toBeLessThan(1_000);
+      expect(defaultText.match(new RegExp(UNTRUSTED_WORKER_CONTENT_LABEL, 'gu'))).toHaveLength(1);
       expect(defaults.structuredContent).toMatchObject({
+        provenance: { label: UNTRUSTED_WORKER_CONTENT_LABEL },
         message_detail: 'compact',
         messages: [{
           msg_id: stored.msg_id,
@@ -184,10 +187,27 @@ describe('check_captain_inbox', () => {
         { crewHome: h.crewHome, projectRoot: h.repoRoot },
       );
       expect(scoped.structuredContent).toMatchObject({
+        provenance: { label: UNTRUSTED_WORKER_CONTENT_LABEL },
         message_detail: 'full',
         messages: [{ msg_id: stored.msg_id, body: fullBody }],
       });
       expect(scoped.content[0].text).not.toContain('full-body-tail');
+    } finally {
+      h.cleanup();
+      clearCaptainInboxSweepStateForTest();
+    }
+  });
+
+  it('omits the worker-content provenance label when no messages match', async () => {
+    clearCaptainInboxSweepStateForTest();
+    const h = tempRoot();
+    try {
+      const result = await checkCaptainInboxToolHandler(
+        checkCaptainInboxInputSchema.parse({}),
+        { crewHome: h.crewHome, projectRoot: h.repoRoot },
+      );
+      expect(result.structuredContent).not.toHaveProperty('provenance');
+      expect(result.content[0].text).not.toContain(UNTRUSTED_WORKER_CONTENT_LABEL);
     } finally {
       h.cleanup();
       clearCaptainInboxSweepStateForTest();

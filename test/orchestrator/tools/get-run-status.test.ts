@@ -19,6 +19,15 @@ import { ToolDispatcher } from '../../../src/orchestrator/tool-dispatcher.js';
 import { getRunStatusToolHandler } from '../../../src/orchestrator/tools/get-run-status.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
 import {
+  appendMessage,
+  setCaptainInboxFsForTest,
+} from '../../../src/orchestrator/captain-inbox/store.js';
+import {
+  TERMINAL_INBOX_MAX_BYTES,
+  TERMINAL_INBOX_MAX_MESSAGES,
+} from '../../../src/orchestrator/tools/get-run-status.js';
+import { UNTRUSTED_WORKER_CONTENT_LABEL } from '../../../src/orchestrator/untrusted-provenance.js';
+import {
   installRunLifecycleListeners,
   pendingTerminalPersistCount,
 } from '../../../src/orchestrator/run-lifecycle-listeners.js';
@@ -28,6 +37,7 @@ describe('getRunStatusToolHandler', () => {
   let repoRoot: string;
   let store: RunStateStore;
   let priorNotifications: string | undefined;
+  let resetCaptainInboxFs: (() => void) | undefined;
 
   beforeEach(() => {
     childProcessMocks.execFileSync.mockClear();
@@ -39,6 +49,8 @@ describe('getRunStatusToolHandler', () => {
   });
 
   afterEach(() => {
+    resetCaptainInboxFs?.();
+    resetCaptainInboxFs = undefined;
     if (priorNotifications === undefined) delete process.env.CREW_OS_NOTIFICATIONS;
     else process.env.CREW_OS_NOTIFICATIONS = priorNotifications;
     rmSync(crewHome, { recursive: true, force: true });
@@ -335,5 +347,197 @@ describe('getRunStatusToolHandler', () => {
         },
       ],
     });
+  });
+
+  it('embeds a scoped capped inbox and gives merge_or_discard precedence for success write runs', async () => {
+    await store.create({
+      runId: 'r-inbox-write',
+      agentId: 'codex',
+      worktreePath: '/wt/r-inbox-write',
+      initialPrompt: 'go',
+      runMode: 'write',
+    });
+    await store.markTerminal('r-inbox-write', {
+      status: 'success',
+      summary: 'worker summary',
+      filesChanged: [],
+    });
+    const scoped = [];
+    for (let index = 0; index < 3; index += 1) {
+      scoped.push(await appendMessage({
+        crewHome,
+        message: {
+          to: { kind: 'captain' },
+          from: { kind: 'run', run_id: 'r-inbox-write', agent_id: 'codex' },
+          kind: 'note',
+          body: `${'"\\\n'.repeat(120)} tail-${index}`,
+          worker_run_id_at_send: 'r-inbox-write',
+          worker_agent_id_at_send: 'codex',
+          repo_root_at_send: store.repoRoot,
+        },
+      }));
+    }
+    await appendMessage({
+      crewHome,
+      message: {
+        to: { kind: 'captain' },
+        from: { kind: 'run', run_id: 'other-run', agent_id: 'claude-code' },
+        kind: 'review',
+        body: 'must stay out of the scoped block',
+        worker_run_id_at_send: 'other-run',
+        worker_agent_id_at_send: 'claude-code',
+        repo_root_at_send: store.repoRoot,
+      },
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-inbox-write' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store, crewHome },
+    );
+    const inbox = response.structuredContent?.inbox as {
+      unread_count: number;
+      messages: Array<{ msg_id: string; preview: string; body?: string }>;
+      truncated?: true;
+    };
+    expect(inbox.unread_count).toBe(3);
+    expect(inbox.messages).toHaveLength(TERMINAL_INBOX_MAX_MESSAGES);
+    expect(inbox.messages.map((message) => message.msg_id)).toEqual([
+      scoped[2].msg_id,
+      scoped[1].msg_id,
+    ]);
+    expect(inbox.messages.every((message) => message.body === undefined)).toBe(true);
+    expect(inbox.messages.every((message) => !/[\r\n]/u.test(message.preview))).toBe(true);
+    expect(inbox.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(inbox), 'utf8')).toBeLessThanOrEqual(
+      TERMINAL_INBOX_MAX_BYTES,
+    );
+    expect(response.structuredContent?.required_next_action).toEqual({
+      type: 'merge_or_discard',
+      run_id: 'r-inbox-write',
+      consequence_if_skipped:
+        'Leaving a successful write run unresolved risks garbage collection and loss of its unmerged work.',
+    });
+    expect(response.content[0].text.match(new RegExp(UNTRUSTED_WORKER_CONTENT_LABEL, 'gu')))
+      .toHaveLength(1);
+    expect(response.content[0].text).toContain(`msg_id=${scoped[2].msg_id}`);
+    expect(response.content[0].text).not.toContain('must stay out of the scoped block');
+  });
+
+  it.each(['read_only', 'ephemeral_review'] as const)(
+    'does not emit merge_or_discard for successful %s runs',
+    async (runMode) => {
+      const runId = `r-${runMode}`;
+      await store.create({
+        runId,
+        agentId: 'codex',
+        worktreePath: `/wt/${runId}`,
+        initialPrompt: 'go',
+        runMode,
+      });
+      await store.markTerminal(runId, {
+        status: 'success',
+        summary: 'done',
+        filesChanged: [],
+      });
+
+      const response = await getRunStatusToolHandler(
+        { run_id: runId },
+        { dispatcher: new ToolDispatcher(), runStateStore: store, crewHome },
+      );
+      expect(response.structuredContent).not.toHaveProperty('required_next_action');
+    },
+  );
+
+  it('emits check_inbox for a non-write-success terminal run with scoped unread messages', async () => {
+    await store.create({
+      runId: 'r-inbox-error',
+      agentId: 'claude-code',
+      worktreePath: '/wt/r-inbox-error',
+      initialPrompt: 'go',
+      runMode: 'write',
+    });
+    await store.markTerminal('r-inbox-error', {
+      status: 'error',
+      summary: 'failed after sending findings',
+      filesChanged: [],
+      lastError: 'failed',
+    });
+    await appendMessage({
+      crewHome,
+      message: {
+        to: { kind: 'captain' },
+        from: { kind: 'run', run_id: 'r-inbox-error', agent_id: 'claude-code' },
+        kind: 'review',
+        body: 'finding',
+        worker_run_id_at_send: 'r-inbox-error',
+        worker_agent_id_at_send: 'claude-code',
+        repo_root_at_send: store.repoRoot,
+      },
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-inbox-error' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store, crewHome },
+    );
+    expect(response.structuredContent?.required_next_action).toEqual({
+      type: 'check_inbox',
+      run_id: 'r-inbox-error',
+      unread_count: 1,
+      consequence_if_skipped: 'Worker-delivered findings from this run may be missed.',
+    });
+  });
+
+  it('fails open when the terminal inbox store read throws', async () => {
+    await store.create({
+      runId: 'r-inbox-fail-open',
+      agentId: 'codex',
+      worktreePath: '/wt/r-inbox-fail-open',
+      initialPrompt: 'go',
+      runMode: 'read_only',
+    });
+    await store.markTerminal('r-inbox-fail-open', {
+      status: 'error',
+      summary: 'status still available',
+      filesChanged: [],
+      lastError: 'worker error',
+    });
+    resetCaptainInboxFs = setCaptainInboxFsForTest({
+      existsSync: () => true,
+      readdirSync: () => {
+        throw new Error('inbox unavailable');
+      },
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-inbox-fail-open' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store, crewHome },
+    );
+    expect(response.structuredContent).toMatchObject({
+      status: 'error',
+      summary: 'status still available',
+    });
+    expect(response.structuredContent).not.toHaveProperty('inbox');
+    expect(response.structuredContent).not.toHaveProperty('required_next_action');
+  });
+
+  it('omits the provenance notice when terminal worker content is empty', async () => {
+    await store.create({
+      runId: 'r-empty-content',
+      agentId: 'codex',
+      worktreePath: '/wt/r-empty-content',
+      initialPrompt: 'go',
+      runMode: 'read_only',
+    });
+    await store.markTerminal('r-empty-content', {
+      status: 'cancelled',
+      summary: '',
+      filesChanged: [],
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-empty-content' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store, crewHome },
+    );
+    expect(response.content[0].text).not.toContain(UNTRUSTED_WORKER_CONTENT_LABEL);
   });
 });

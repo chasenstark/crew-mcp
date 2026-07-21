@@ -62,6 +62,7 @@ import {
   fileUrlHref,
   mergeEnvelopeWarnings,
   nextStepSentence,
+  dispatchRelayFields,
   progressNotifierFrom,
   requiredNextActionForRun,
   renderDispatchMarkdown,
@@ -141,7 +142,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override lifts a matched user ban; same_host_ok allows own-host dispatch, both only after user approval. run_mode is write, read_only, or ephemeral_review. Returns async with warnings for overrides; start required_next_action crew-wait. Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override lifts a matched user ban; same_host_ok allows own-host dispatch, both only after user approval. run_mode is write, read_only, or ephemeral_review. Returns async with bounded relay_verbatim/ledger_line, warnings for overrides, and required_next_action crew-wait watcher when available. Do not block the turn long-polling get_run_status.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -231,6 +232,12 @@ export async function runAgentToolHandler(
     status: 'running',
     summary,
     files_changed: [],
+    ...dispatchRelayFields({
+      agentId: canonicalId,
+      runId: dispatchResult.runId,
+      runMode: dispatchResult.runMode,
+      tailUrl: dispatchResult.tailUrl,
+    }),
     ...(requiredNextAction !== undefined ? { required_next_action: requiredNextAction } : {}),
     ...mergeEnvelopeWarnings(
       deps.runStateStore.read(dispatchResult.runId)?.warnings,

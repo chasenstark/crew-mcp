@@ -23,6 +23,7 @@ import {
 } from '../run-state.js';
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { markdownContent } from './shared.js';
+import { renderUntrustedWorkerContentNotice } from '../untrusted-provenance.js';
 
 const RUN_STATUS_VALUES = [
   'running',
@@ -245,6 +246,9 @@ function renderListRunsMarkdown(out: ListRunsOutput): string {
   if (out.runs.length === 0) {
     lines.push('No runs found for this repo.');
     return lines.join('\n');
+  }
+  if (out.runs.some((run) => run.summary !== undefined)) {
+    lines.push('', renderUntrustedWorkerContentNotice());
   }
   for (const run of out.runs) {
     const completed = run.completedAt ? ` completed=${run.completedAt}` : '';

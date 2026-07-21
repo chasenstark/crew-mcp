@@ -37,7 +37,7 @@ import type { FullConfig } from '../../workflow/types.js';
 import { logBestEffortFailure } from '../../utils/best-effort.js';
 import type {
   ClientKind,
-  RequiredNextAction,
+  SpawnWatcherRequiredNextAction,
   ToolCallReturn,
   ToolHandlerDeps,
   ToolRequestExtra,
@@ -89,7 +89,7 @@ export interface ReviewerDispatchEnvelope {
   readonly tail_url: string;
   readonly worktree_path: string;
   readonly warnings: readonly string[];
-  readonly required_next_action?: RequiredNextAction;
+  readonly required_next_action?: SpawnWatcherRequiredNextAction;
 }
 
 export interface FailedReviewerEnvelope {
@@ -100,7 +100,7 @@ export interface FailedReviewerEnvelope {
 export interface RunPanelOutput {
   readonly panel_id: string;
   readonly partial: boolean;
-  readonly required_next_action?: RequiredNextAction;
+  readonly required_next_action?: SpawnWatcherRequiredNextAction;
   readonly reviewers: readonly ReviewerDispatchEnvelope[];
   readonly failed_reviewers: readonly FailedReviewerEnvelope[];
 }
@@ -417,7 +417,7 @@ function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): st
     lines.push('Skip it and panel completion cannot automatically wake this thread.');
     const selectiveActions = out.reviewers
       .map((reviewer) => reviewer.required_next_action)
-      .filter((action): action is RequiredNextAction =>
+      .filter((action): action is SpawnWatcherRequiredNextAction =>
         action !== undefined
         && action.command !== out.required_next_action?.command);
     if (selectiveActions.length > 0) {

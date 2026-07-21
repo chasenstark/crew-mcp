@@ -10,6 +10,7 @@ import {
   LIST_RUNS_FAILURE_TRUNCATION_MARKER,
   LIST_RUNS_SUMMARY_MAX_CHARS,
   listRuns,
+  listRunsToolHandler,
   setListRunsFsForTest,
 } from '../../../src/orchestrator/tools/list-runs.js';
 import type { RunStateV1, RunStatus } from '../../../src/orchestrator/run-state.js';
@@ -19,6 +20,7 @@ import {
   setCaptainInboxFsForTest,
   transitionMessages,
 } from '../../../src/orchestrator/captain-inbox/store.js';
+import { UNTRUSTED_WORKER_CONTENT_LABEL } from '../../../src/orchestrator/untrusted-provenance.js';
 
 describe('listRuns', () => {
   let crewHome: string;
@@ -159,6 +161,27 @@ describe('listRuns', () => {
       { run_id: 'sweeper-marked-error', summary: 'abandoned (server restart)' },
       { run_id: 'adapter-error', summary: 'adapter summary wins' },
     ]);
+  });
+
+  it('labels relayed summaries once and omits the label when no summaries exist', () => {
+    writeState({
+      runId: 'with-summary',
+      status: 'success',
+      repoRoot,
+      completedAt: iso(2),
+      promptSummary: 'worker-authored result',
+    });
+    writeState({ runId: 'without-summary', status: 'running', repoRoot, startedAt: iso(3) });
+
+    const labeled = listRunsToolHandler({}, { crewHome, projectRoot: repoRoot });
+    expect(labeled.content[0].text.match(new RegExp(UNTRUSTED_WORKER_CONTENT_LABEL, 'gu')))
+      .toHaveLength(1);
+
+    const unlabeled = listRunsToolHandler(
+      { status: 'running' },
+      { crewHome, projectRoot: repoRoot },
+    );
+    expect(unlabeled.content[0].text).not.toContain(UNTRUSTED_WORKER_CONTENT_LABEL);
   });
 
   it('truncates long summaries and marks the entry as truncated', () => {
