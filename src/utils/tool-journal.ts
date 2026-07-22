@@ -113,6 +113,20 @@ export function waitParamsFromArgs(
 }
 
 /**
+ * Match get_run_status's actual blocking modes. Parameter presence alone is
+ * not enough: zero/false are immediate snapshots and user_requested_wait is
+ * consent for terminal-only waiting, not a wait trigger.
+ */
+export function isWaitingWaitParams(
+  waitParams: Readonly<Record<string, number | boolean>> | undefined,
+): boolean {
+  return (
+    typeof waitParams?.wait_for_change_ms === 'number'
+    && waitParams.wait_for_change_ms > 0
+  ) || waitParams?.wait_for_terminal_only === true;
+}
+
+/**
  * Best-effort append. Serialization, directory creation, rotation, and write
  * failures are intentionally swallowed: diagnostics must never alter a tool
  * result. `open(..., 'a')` gives each JSONL record one O_APPEND write.

@@ -813,6 +813,19 @@ describe('crew serve — tool-call journal', () => {
   });
 });
 
+describe('crew serve — JIT nudge decoration', () => {
+  it('leaves the no-detection response shape and markdown untouched', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const result = await h.client.callTool({ name: 'list_agents', arguments: {} });
+      expect(Object.hasOwn(result.structuredContent ?? {}, 'warnings')).toBe(false);
+      expect(toolText(result)).not.toContain('\n## Warnings\n');
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe('crew serve — skill staleness warning', () => {
   it('checks once for supported hosts and adds skill_stale to dispatch and status envelopes', async () => {
     const check = vi.fn(async (): Promise<SkillStalenessResult> => ({
@@ -4247,6 +4260,53 @@ describe('crew serve — merge_run tool', () => {
         'Run this from the captain skill — never auto-pass confirmed:true without an explicit user "yes".',
       );
       expect(existsSync(join(h.root, 'GATE.md'))).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('injects a JIT warning for an impossible-latency confirmed retry', async () => {
+    const adapter = makeMockAdapter({
+      name: 'mock-coder',
+      execute: async (task) => {
+        const cwd = (task as { context: { workingDirectory: string } }).context.workingDirectory;
+        writeFileSync(join(cwd, 'TOO-FAST.md'), 'too fast\n', 'utf-8');
+        return { output: 'ok', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter]);
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'p' },
+      });
+      const runEnv = run.structuredContent as FullRunEnvelope;
+      await pollUntilTerminal(h.client, runEnv.run_id);
+
+      const rejected = await h.client.callTool({
+        name: 'merge_run',
+        arguments: { run_id: runEnv.run_id, commit_title: 'feat: add too-fast file' },
+      });
+      expect(rejected.isError).toBe(true);
+
+      const retried = await h.client.callTool({
+        name: 'merge_run',
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'feat: add too-fast file',
+        },
+      });
+      const retriedEnv = retried.structuredContent as {
+        status: string;
+        warnings?: readonly string[];
+      };
+      expect(retriedEnv.status).toBe('merged');
+      expect(retriedEnv.warnings).toContainEqual(
+        expect.stringContaining('impossible_confirmation_latency: merge_run'),
+      );
+      expect(toolText(retried)).toContain('\n## Warnings\n');
+      expect(toolText(retried)).toContain('obtain real user consent before retrying');
     } finally {
       await h.close();
     }

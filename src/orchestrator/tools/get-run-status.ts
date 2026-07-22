@@ -55,6 +55,10 @@ import {
   UNTRUSTED_WORKER_CONTENT_PROVENANCE,
   type UntrustedWorkerContentProvenance,
 } from '../untrusted-provenance.js';
+import {
+  isWaitingWaitParams,
+  waitParamsFromArgs,
+} from '../../utils/tool-journal.js';
 
 /**
  * Default per-poll cap on `events_tail` lines. Caller can request a
@@ -147,8 +151,7 @@ export async function getRunStatusToolHandler(
     return errorContent(`Unknown run_id "${args.run_id}".`);
   }
 
-  const waitBearing = (args.wait_for_change_ms ?? 0) > 0
-    || args.wait_for_terminal_only === true;
+  const waitBearing = isWaitingWaitParams(waitParamsFromArgs(args));
   if (args.wait_for_terminal_only === true && args.user_requested_wait !== true) {
     return errorContent(
       'get_run_status.wait_requires_user_request: wait_for_terminal_only blocks the captain turn. '

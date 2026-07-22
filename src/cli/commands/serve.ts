@@ -52,6 +52,12 @@ import {
   drainPendingTerminalPersists,
 } from '../../orchestrator/run-lifecycle-listeners.js';
 import {
+  detectJitNudges,
+  isConfirmationRequiredResult,
+  readRunGeneration,
+  type ConfirmationAttempt,
+} from '../../orchestrator/detection/jit-nudges.js';
+import {
   QuotaCache,
   probeQuota,
   recordQuotaObservation,
@@ -199,6 +205,7 @@ import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger, setLogFilePath } from '../../utils/logger.js';
 import {
   appendToolJournal,
+  isWaitingWaitParams,
   redactAndDigestArgs,
   waitParamsFromArgs,
 } from '../../utils/tool-journal.js';
@@ -636,15 +643,22 @@ async function resolveServeSkillStaleWarning(args: {
   }
 }
 
-function appendSkillWarning(result: ToolCallReturn, warning: string): ToolCallReturn {
+function appendEnvelopeWarnings(
+  result: ToolCallReturn,
+  incoming: readonly string[],
+): ToolCallReturn {
+  if (incoming.length === 0) return result;
   const structured = result.structuredContent;
   if (!structured) return result;
   const existing = Array.isArray(structured.warnings)
     ? structured.warnings.filter((value): value is string => typeof value === 'string')
     : [];
-  if (existing.includes(warning)) return result;
-  const warnings = mergeEnvelopeWarnings(existing, [warning]).warnings ?? [warning];
+  const existingSet = new Set(existing);
+  const additions = [...new Set(incoming)].filter((warning) => !existingSet.has(warning));
+  if (additions.length === 0) return result;
+  const warnings = mergeEnvelopeWarnings(existing, additions).warnings ?? additions;
   const firstTextHasWarnings = result.content[0]?.text.includes('\n## Warnings\n') === true;
+  const renderedAdditions = additions.map((warning) => `- ${warning}`).join('\n');
   return {
     ...result,
     structuredContent: { ...structured, warnings },
@@ -652,11 +666,15 @@ function appendSkillWarning(result: ToolCallReturn, warning: string): ToolCallRe
       ? {
           ...item,
           text: firstTextHasWarnings
-            ? `${item.text}\n- ${warning}`
-            : `${item.text}\n\n## Warnings\n\n- ${warning}`,
+            ? `${item.text}\n${renderedAdditions}`
+            : `${item.text}\n\n## Warnings\n\n${renderedAdditions}`,
         }
       : item),
   };
+}
+
+function appendSkillWarning(result: ToolCallReturn, warning: string): ToolCallReturn {
+  return appendEnvelopeWarnings(result, [warning]);
 }
 
 /**
@@ -695,6 +713,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   let skillStalenessCheckStarted = false;
   let skillStaleWarning: string | undefined;
   let skillStalenessPromise: Promise<void> | undefined;
+  const confirmationRejections = new Map<
+    string,
+    NonNullable<ConfirmationAttempt['previousRejection']>
+  >();
   const ensureSkillStalenessChecked = (): Promise<void> | undefined => {
     if (skillStalenessCheckStarted) return skillStalenessPromise;
     skillStalenessCheckStarted = true;
@@ -732,6 +754,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       args: z.infer<z.ZodObject<Shape>>,
       extra: ToolRequestExtra,
     ): Promise<ToolCallReturn> => {
+      const startedAtMs = Date.now();
       const started = process.hrtime.bigint();
       let isError = false;
       const skillCheck = workerAuth === undefined ? ensureSkillStalenessChecked() : undefined;
@@ -744,6 +767,66 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
             result = appendSkillWarning(result, skillStaleWarning);
           } catch {
             // Fail open: warning decoration must not alter the tool result.
+          }
+        }
+        if (workerAuth === undefined) {
+          try {
+            const source = args as Record<string, unknown>;
+            const nowMs = Date.now();
+            const waitParams = waitParamsFromArgs(source);
+            const runId = typeof source.run_id === 'string' ? source.run_id : undefined;
+            const generation = runId ? readRunGeneration(crewHome, runId) : undefined;
+            const confirmationKey = runId ? `${name}\0${runId}` : undefined;
+            const confirmationAttempt = runId && generation
+              ? {
+                  tool: name,
+                  runId,
+                  confirmed: source.confirmed === true,
+                  generation,
+                  attemptedAtMs: startedAtMs,
+                  ...(confirmationKey && confirmationRejections.has(confirmationKey)
+                    ? { previousRejection: confirmationRejections.get(confirmationKey) }
+                    : {}),
+                } satisfies ConfirmationAttempt
+              : undefined;
+            const nudges = detectJitNudges({
+              crewHome,
+              repoRoot: projectRoot,
+              clientKind: resolveJournalClientKind(),
+              currentCall: {
+                tsMs: startedAtMs,
+                tool: name,
+                ...(runId ? { runId } : {}),
+                waitBearing: isWaitingWaitParams(waitParams),
+              },
+              ...(confirmationAttempt ? { confirmationAttempt } : {}),
+              nowMs,
+            });
+            result = appendEnvelopeWarnings(result, nudges);
+
+            if (confirmationKey && source.confirmed === true) {
+              confirmationRejections.delete(confirmationKey);
+            }
+            if (
+              confirmationKey
+              && runId
+              && generation
+              && isConfirmationRequiredResult(result)
+            ) {
+              confirmationRejections.set(confirmationKey, {
+                tool: name,
+                runId,
+                generation,
+                rejectedAtMs: Date.now(),
+              });
+              while (confirmationRejections.size > 128) {
+                const oldest = confirmationRejections.keys().next().value as string | undefined;
+                if (oldest === undefined) break;
+                confirmationRejections.delete(oldest);
+              }
+            }
+          } catch {
+            // Fail open: JIT detection and decoration are diagnostics only.
           }
         }
         return result;

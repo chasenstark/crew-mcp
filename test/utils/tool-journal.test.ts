@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   appendToolJournal,
+  isWaitingWaitParams,
   redactAndDigestArgs,
   toolJournalPath,
   type ToolJournalRecord,
@@ -42,6 +43,16 @@ describe('tool journal', () => {
     expect(serialized).not.toContain('private commit body');
     expect(serialized).not.toContain('never-write-this-token');
     expect(serialized).not.toContain('also private');
+  });
+
+  it('distinguishes real waits from explicit snapshot and consent parameters', () => {
+    expect(isWaitingWaitParams({ wait_for_change_ms: 1 })).toBe(true);
+    expect(isWaitingWaitParams({ wait_for_terminal_only: true })).toBe(true);
+    expect(isWaitingWaitParams({ wait_for_change_ms: 0 })).toBe(false);
+    expect(isWaitingWaitParams({ wait_for_terminal_only: false })).toBe(false);
+    expect(isWaitingWaitParams({ user_requested_wait: false })).toBe(false);
+    expect(isWaitingWaitParams({ user_requested_wait: true })).toBe(false);
+    expect(isWaitingWaitParams(undefined)).toBe(false);
   });
 
   it('lands intact concurrent O_APPEND records and rotates under the configured cap', async () => {
