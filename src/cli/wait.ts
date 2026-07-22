@@ -18,6 +18,7 @@ import {
   type ClaimedCodexWakeResult,
 } from '../codex/wake-delivery.js';
 import { resolveCrewHome } from '../utils/crew-home.js';
+import { appendWatchIndex } from '../utils/watch-index.js';
 
 const CREW_WAIT_POLL_INTERVAL_ENV = 'CREW_WAIT_POLL_INTERVAL_MS';
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -56,6 +57,7 @@ interface PersistedRunState {
   readonly agentId?: unknown;
   readonly status?: unknown;
   readonly worktreePath?: unknown;
+  readonly completedAt?: unknown;
 }
 
 interface StateSnapshot {
@@ -135,38 +137,76 @@ export async function waitForRunTerminal(
   const runPath = join(runsPath, options.runId);
   const statePath = join(runPath, 'state.json');
   const startedAtMs = now();
+  const watcherInstance = String(process.pid);
+  const watchCrewHomeUntilRunAppears = !isDirectory(runsPath);
 
-  const watchResult = await waitForRunTerminalWithWatch({
-    runId: options.runId,
+  await appendWatchIndex({
     crewHome,
-    runsPath,
-    runPath,
-    statePath,
-    graceMs,
-    startedAtMs,
-    now,
-    writeStdout,
-    watch: options.watch ?? defaultWatch,
-    signal: options.signal,
+    record: {
+      event: 'start',
+      ts: watchTimestamp(startedAtMs),
+      run_id: options.runId,
+      watcher_pid: process.pid,
+      watcher_instance: watcherInstance,
+    },
+    nowMs: startedAtMs,
   });
 
-  if (watchResult.completed) {
-    return { postTerminal: watchResult.postTerminal };
+  try {
+    const watchResult = await waitForRunTerminalWithWatch({
+      runId: options.runId,
+      crewHome,
+      runsPath,
+      runPath,
+      statePath,
+      graceMs,
+      startedAtMs,
+      now,
+      writeStdout,
+      watch: options.watch ?? defaultWatch,
+      signal: options.signal,
+      watcherInstance,
+      watchCrewHomeUntilRunAppears,
+    });
+
+    if (watchResult.completed) {
+      return { postTerminal: watchResult.postTerminal };
+    }
+
+    return await waitForRunTerminalByPolling({
+      runId: options.runId,
+      crewHome,
+      statePath,
+      pollIntervalMs,
+      graceMs,
+      startedAtMs,
+      stateAppeared: watchResult.stateAppeared,
+      sleep,
+      now,
+      writeStdout,
+      maxPollIntervalMs: options.maxPollIntervalMs ?? MAX_POLL_INTERVAL_MS,
+      signal: options.signal,
+      watcherInstance,
+    });
+  } catch (err) {
+    if (err instanceof CrewWaitUnknownRunError) {
+      const observedAtMs = now();
+      await appendWatchIndex({
+        crewHome,
+        record: {
+          event: 'terminal_observed',
+          ts: watchTimestamp(observedAtMs),
+          run_id: options.runId,
+          watcher_pid: process.pid,
+          watcher_instance: watcherInstance,
+          status: 'unknown_run',
+          exit_outcome: 3,
+        },
+        nowMs: observedAtMs,
+      });
+    }
+    throw err;
   }
-
-  return waitForRunTerminalByPolling({
-    runId: options.runId,
-    statePath,
-    pollIntervalMs,
-    graceMs,
-    startedAtMs,
-    stateAppeared: watchResult.stateAppeared,
-    sleep,
-    now,
-    writeStdout,
-    maxPollIntervalMs: options.maxPollIntervalMs ?? MAX_POLL_INTERVAL_MS,
-    signal: options.signal,
-  });
 }
 
 export async function waitForRunsTerminal(
@@ -269,19 +309,21 @@ function resolvePollIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
 
 interface WaitContext {
   readonly runId: string;
+  readonly crewHome: string;
   readonly statePath: string;
   readonly graceMs: number;
   readonly startedAtMs: number;
   readonly now: () => number;
   readonly writeStdout: (line: string) => void;
+  readonly watcherInstance: string;
 }
 
 interface WatchWaitContext extends WaitContext {
-  readonly crewHome: string;
   readonly runsPath: string;
   readonly runPath: string;
   readonly watch: CrewWaitWatchFactory;
   readonly signal?: AbortSignal;
+  readonly watchCrewHomeUntilRunAppears: boolean;
 }
 
 interface WatchWaitResult {
@@ -414,6 +456,9 @@ async function waitForRunTerminalWithWatch(
             clearGraceTimer();
             const exit = watcherExit(snapshot.state, context.runId);
             if (exit) {
+              if (!exit.postTerminal) {
+                await recordTerminalObserved(context, exit.status, exit.terminalAt);
+              }
               context.writeStdout(exit.line);
               finish(exit.postTerminal);
               return;
@@ -488,6 +533,9 @@ async function waitForRunTerminalByPolling(
       stateAppeared = true;
       const exit = watcherExit(snapshot.state, context.runId);
       if (exit) {
+        if (!exit.postTerminal) {
+          await recordTerminalObserved(context, exit.status, exit.terminalAt);
+        }
         context.writeStdout(exit.line);
         return { postTerminal: exit.postTerminal };
       }
@@ -512,6 +560,9 @@ function selectWatchTarget(context: WatchWaitContext): WatchTarget | undefined {
   // through tmp-plus-rename, so file watchers detach on every update.
   if (isDirectory(context.runPath)) {
     return { path: context.runPath, kind: 'run-dir' };
+  }
+  if (context.watchCrewHomeUntilRunAppears && isDirectory(context.crewHome)) {
+    return { path: context.crewHome, kind: 'crew-home' };
   }
   if (isDirectory(context.runsPath)) {
     return { path: context.runsPath, kind: 'runs-dir' };
@@ -557,6 +608,8 @@ function isDirectory(path: string): boolean {
 interface WatcherExit {
   readonly line: string;
   readonly postTerminal: boolean;
+  readonly status: string;
+  readonly terminalAt?: string;
 }
 
 function watcherExit(state: PersistedRunState, fallbackRunId: string): WatcherExit | undefined {
@@ -568,6 +621,7 @@ function watcherExit(state: PersistedRunState, fallbackRunId: string): WatcherEx
     return {
       line: `CREW_WAIT_POST_TERMINAL run_id=${runId} status=${state.status}`,
       postTerminal: true,
+      status: state.status,
     };
   }
   if (!TERMINAL_STATUSES.has(state.status)) {
@@ -578,7 +632,39 @@ function watcherExit(state: PersistedRunState, fallbackRunId: string): WatcherEx
   return {
     line: `CREW_WAIT_TERMINAL run_id=${runId} agent=${agent} status=${state.status} worktree=${worktree}`,
     postTerminal: false,
+    status: state.status,
+    ...(typeof state.completedAt === 'string' ? { terminalAt: state.completedAt } : {}),
   };
+}
+
+async function recordTerminalObserved(
+  context: WaitContext,
+  status: string,
+  terminalAt?: string,
+): Promise<void> {
+  const observedAtMs = context.now();
+  await appendWatchIndex({
+    crewHome: context.crewHome,
+    record: {
+      event: 'terminal_observed',
+      ts: watchTimestamp(observedAtMs),
+      run_id: context.runId,
+      watcher_pid: process.pid,
+      watcher_instance: context.watcherInstance,
+      status,
+      exit_outcome: 0,
+      ...(terminalAt !== undefined ? { terminal_at: terminalAt } : {}),
+    },
+    nowMs: observedAtMs,
+  });
+}
+
+function watchTimestamp(timestampMs: number): string {
+  try {
+    return new Date(timestampMs).toISOString();
+  } catch {
+    return new Date().toISOString();
+  }
 }
 
 function defaultWatch(

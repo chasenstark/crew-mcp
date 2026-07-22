@@ -1,4 +1,4 @@
-import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import {
   waitForRunTerminal,
   waitForRunsTerminal,
 } from '../../src/cli/wait.js';
+import { watchIndexPath, type WatchIndexRecord } from '../../src/utils/watch-index.js';
 
 describe('crew-wait', () => {
   const cleanup: string[] = [];
@@ -72,6 +73,60 @@ describe('crew-wait', () => {
     expect(stdout).toEqual([
       'CREW_WAIT_TERMINAL run_id=run-123 agent=codex status=success worktree=/tmp/crew worktree',
     ]);
+    const watchRecords = readWatchRecords(crewHome);
+    expect(watchRecords.map((record) => record.event)).toEqual(['start', 'terminal_observed']);
+    expect(watchRecords[1]).toMatchObject({
+      run_id: runId,
+      status: 'success',
+      exit_outcome: 0,
+    });
+  });
+
+  it('records unknown_run with exit outcome 3 when state never appears', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-index-unknown-'));
+    cleanup.push(crewHome);
+    let nowMs = 0;
+    await expect(waitForRunTerminal({
+      runId: 'never-there',
+      crewHome,
+      stateFirstAppearanceGraceMs: 1,
+      pollIntervalMs: 1,
+      now: () => nowMs,
+      watch: () => {
+        throw new Error('poll');
+      },
+      sleep: async (ms) => {
+        nowMs += ms;
+      },
+    })).rejects.toBeInstanceOf(CrewWaitUnknownRunError);
+    expect(readWatchRecords(crewHome).at(-1)).toMatchObject({
+      event: 'terminal_observed',
+      run_id: 'never-there',
+      status: 'unknown_run',
+      exit_outcome: 3,
+    });
+  });
+
+  it('keeps terminal behavior when watch-index writes fail open', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-index-fail-'));
+    cleanup.push(crewHome);
+    const runId = 'run-index-fail-open';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(crewHome, 'runs', '.meta'), 'blocks metadata directory', 'utf-8');
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/worktree',
+    });
+    const stdout: string[] = [];
+    await expect(waitForRunTerminal({
+      runId,
+      crewHome,
+      writeStdout: (line) => stdout.push(line),
+    })).resolves.toEqual({ postTerminal: false });
+    expect(stdout[0]).toContain('CREW_WAIT_TERMINAL');
   });
 
   it('waits through the initial missing state.json race and attaches when it appears', async () => {
@@ -111,6 +166,43 @@ describe('crew-wait', () => {
 
     expect(stdout).toEqual([
       'CREW_WAIT_TERMINAL run_id=run-missing agent=claude-code status=success worktree=/tmp/late worktree',
+    ]);
+  });
+
+  it('tolerates a run directory disappearing mid-watch and observes its recreated terminal state', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-gc-race-'));
+    cleanup.push(crewHome);
+    const runId = 'run-gc-race';
+    const runsDir = join(crewHome, 'runs');
+    const runDir = join(runsDir, runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, { runId, agentId: 'codex', status: 'running' });
+    const watcher = createManualWatchFactory();
+    const stdout: string[] = [];
+
+    setTimeout(() => {
+      rmSync(runDir, { recursive: true, force: true });
+      watcher.emit(runDir, 'state.json');
+    }, 10);
+    setTimeout(() => {
+      mkdirSync(runDir, { recursive: true });
+      writeStateAtomic(runDir, {
+        runId,
+        agentId: 'codex',
+        status: 'success',
+        worktreePath: '/tmp/recreated',
+      });
+      watcher.emit(runsDir, runId);
+    }, 25);
+
+    await expect(waitForRunTerminal({
+      runId,
+      crewHome,
+      watch: watcher.watch,
+      writeStdout: (line) => stdout.push(line),
+    })).resolves.toEqual({ postTerminal: false });
+    expect(stdout).toEqual([
+      'CREW_WAIT_TERMINAL run_id=run-gc-race agent=codex status=success worktree=/tmp/recreated',
     ]);
   });
 
@@ -978,6 +1070,14 @@ function writeStateAtomic(runDir: string, state: Record<string, unknown>): void 
   const tmpPath = `${statePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8');
   renameSync(tmpPath, statePath);
+}
+
+function readWatchRecords(crewHome: string): WatchIndexRecord[] {
+  return readFileSync(watchIndexPath(crewHome), 'utf-8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as WatchIndexRecord);
 }
 
 function createManualWatchFactory(): {

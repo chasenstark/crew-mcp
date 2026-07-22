@@ -1154,3 +1154,5 @@ messages (Steps 2 and 3).
 The rendered installed tool list follows:
 
 {{TOOL_LIST}}
+
+Rendered by crew-mcp {{CREW_VERSION}}.

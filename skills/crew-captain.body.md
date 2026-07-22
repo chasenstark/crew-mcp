@@ -775,3 +775,5 @@ message. Decide whether to proceed based on coverage and user urgency.
 - You need auto-cancel-on-blocker; cancel per reviewer.
 - You are splitting a review by concern instead of asking each model for a
   full review.
+
+Rendered by crew-mcp {{CREW_VERSION}}.

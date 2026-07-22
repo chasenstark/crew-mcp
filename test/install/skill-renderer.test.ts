@@ -105,6 +105,8 @@ describe('skill renderer module boundary', () => {
         packageRoot: REPO_ROOT,
       });
       expect(rendered).toContain(`rendered-version=${CREW_MCP_VERSION}`);
+      expect(rendered).toContain(`Rendered by crew-mcp ${CREW_MCP_VERSION}.`);
+      expect(rendered).not.toContain('{{CREW_VERSION}}');
     } finally {
       await rm(fixtureRoot, { recursive: true, force: true });
     }

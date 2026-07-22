@@ -41,6 +41,10 @@ function expectAskGate(section: string): void {
 }
 
 describe('crew-captain body — named protocols', () => {
+  it('carries the render-time crew version marker', async () => {
+    expect(await loadBody()).toContain('Rendered by crew-mcp {{CREW_VERSION}}.');
+  });
+
   it('defines Ask protocol and Own-host rule once, then references short gates', async () => {
     const body = await loadBody();
     expect(body.match(/^### Ask protocol$/gm)).toHaveLength(1);

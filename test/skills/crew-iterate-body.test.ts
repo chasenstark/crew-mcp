@@ -67,6 +67,10 @@ function expectStructuredQuestionGuidance(section: string): void {
 }
 
 describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', () => {
+  it('carries the render-time crew version marker', async () => {
+    expect(await loadBody()).toContain('Rendered by crew-mcp {{CREW_VERSION}}.');
+  });
+
   it('mentions every load-bearing rule phrase', async () => {
     const body = await loadBody();
     const phrases = [

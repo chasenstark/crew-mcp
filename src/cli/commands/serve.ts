@@ -34,6 +34,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z, type ZodRawShape } from 'zod';
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import {
@@ -167,22 +168,40 @@ import {
 } from '../../orchestrator/tools/send-message.js';
 import {
   classifyClient,
+  mergeEnvelopeWarnings,
   MIN_CODEX_APP_SERVER_WATCHER_VERSION,
   type ClientKind,
   type ProgressTokenSeen,
+  type ToolCallReturn,
   type ToolHandlerDeps,
+  type ToolRequestExtra,
 } from '../../orchestrator/tools/shared.js';
 import {
   CODEX_BRIDGE_FILE_ENV,
   encodeCodexBridgeFile,
 } from '../../codex/app-server-bridge.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
-import { manifestPath } from '../../install/install-manifest.js';
-import { projectManifestPath } from '../../install/project-install-manifest.js';
+import { manifestPath, readInstallManifest } from '../../install/install-manifest.js';
+import {
+  absolutizeProjectTarget,
+  projectManifestPath,
+  readProjectInstallManifest,
+} from '../../install/project-install-manifest.js';
 import { isTrustedProjectCrewWaitCommand } from '../../install/crew-binary.js';
 import type { HostId } from '../../install/hosts/index.js';
+import { resolvePackageRoot } from '../../install/skill-renderer.js';
+import {
+  computeSkillStaleness,
+  type CanonicalSkillVerificationOptions,
+  type SkillStalenessResult,
+} from '../../install/skill-verify.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger, setLogFilePath } from '../../utils/logger.js';
+import {
+  appendToolJournal,
+  redactAndDigestArgs,
+  waitParamsFromArgs,
+} from '../../utils/tool-journal.js';
 import { CREW_MCP_VERSION } from '../version.js';
 
 export const SERVE_VERSION = CREW_MCP_VERSION;
@@ -262,6 +281,11 @@ export interface ServeOptions {
    * the same deferred scheduling path used in production.
    */
   runGc?: (args: RunGcArgs) => void | Promise<unknown>;
+
+  /** Test seam for a fail-open serve-time canonical skill comparison. */
+  skillStalenessCheck?: (
+    args: CanonicalSkillVerificationOptions,
+  ) => Promise<SkillStalenessResult>;
 
   /**
    * When set, every logger call also appends to this absolute path. Useful
@@ -568,6 +592,73 @@ function inferInstallManifestHome(crewHome: string): string {
   return homedir();
 }
 
+const SKILL_WARNING_TOOLS = new Set([
+  'run_agent',
+  'continue_run',
+  'run_panel',
+  'get_run_status',
+]);
+
+async function resolveServeSkillStaleWarning(args: {
+  readonly hostId: Extract<HostId, 'claude-code' | 'codex'>;
+  readonly projectRoot: string;
+  readonly home: string;
+  readonly projectInstallActive: boolean;
+  readonly packageRoot: string;
+  readonly check: (
+    options: CanonicalSkillVerificationOptions,
+  ) => Promise<SkillStalenessResult>;
+}): Promise<string | undefined> {
+  try {
+    const scope = args.projectInstallActive ? 'project' : 'global';
+    const installRoot = scope === 'project' ? args.projectRoot : args.home;
+    const projectEntry = scope === 'project'
+      ? (await readProjectInstallManifest(args.projectRoot)).targets[args.hostId]
+      : undefined;
+    const entry = scope === 'project'
+      ? (projectEntry ? absolutizeProjectTarget(args.projectRoot, projectEntry) : undefined)
+      : (await readInstallManifest(args.home)).targets[args.hostId];
+    // A missing/legacy-incomplete manifest is an indeterminate check, not a
+    // stale-content result. Serve fails open and leaves `crew verify` to
+    // report the detailed manifest issue.
+    if (!entry || !entry.skills || Object.keys(entry.skills).length === 0) return undefined;
+    const result = await args.check({
+      targetId: args.hostId,
+      entry,
+      installRoot,
+      packageRoot: args.packageRoot,
+      scope,
+    });
+    if (!result.stale) return undefined;
+    return `skill_stale: installed Crew skill content differs from crew-mcp ${CREW_MCP_VERSION}; run \`${result.fixCommand}\`.`;
+  } catch {
+    return undefined;
+  }
+}
+
+function appendSkillWarning(result: ToolCallReturn, warning: string): ToolCallReturn {
+  const structured = result.structuredContent;
+  if (!structured) return result;
+  const existing = Array.isArray(structured.warnings)
+    ? structured.warnings.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (existing.includes(warning)) return result;
+  const warnings = mergeEnvelopeWarnings(existing, [warning]).warnings ?? [warning];
+  const firstTextHasWarnings = result.content[0]?.text.includes('\n## Warnings\n') === true;
+  return {
+    ...result,
+    structuredContent: { ...structured, warnings },
+    content: result.content.map((item, index) => index === 0
+      ? {
+          ...item,
+          text: firstTextHasWarnings
+            ? `${item.text}\n- ${warning}`
+            : `${item.text}\n\n## Warnings\n\n- ${warning}`,
+        }
+      : item),
+  };
+}
+
 /**
  * Build a fully-configured `McpServer` for crew without binding it to any
  * transport. The caller is responsible for `server.connect(transport)`.
@@ -593,13 +684,109 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     version: SERVE_VERSION,
   });
 
+  let cachedClientKind: ClientKind | undefined;
+  const resolveJournalClientKind = (): ClientKind => {
+    cachedClientKind ??= classifyClient(
+      server.server.getClientVersion()?.name,
+      server.server.getClientVersion()?.version,
+    );
+    return cachedClientKind;
+  };
+  let skillStalenessCheckStarted = false;
+  let skillStaleWarning: string | undefined;
+  let skillStalenessPromise: Promise<void> | undefined;
+  const ensureSkillStalenessChecked = (): Promise<void> | undefined => {
+    if (skillStalenessCheckStarted) return skillStalenessPromise;
+    skillStalenessCheckStarted = true;
+    const clientKind = resolveJournalClientKind();
+    const hostId = clientKind === 'claude-code' || clientKind === 'codex'
+      ? clientKind
+      : undefined;
+    if (!hostId) return undefined;
+    skillStalenessPromise = (async () => {
+      try {
+        skillStaleWarning = await resolveServeSkillStaleWarning({
+          hostId,
+          projectRoot,
+          home: installManifestHome,
+          projectInstallActive,
+          packageRoot: resolvePackageRoot(),
+          check: options.skillStalenessCheck ?? computeSkillStaleness,
+        });
+      } catch {
+        // Fail open: canonical skill comparison is diagnostic only.
+      }
+    })();
+    return skillStalenessPromise;
+  };
+
+  const registerJournaledTool = <Shape extends ZodRawShape>(
+    name: string,
+    config: { readonly description: string; readonly inputSchema: Shape },
+    handler: (
+      args: z.infer<z.ZodObject<Shape>>,
+      extra: ToolRequestExtra,
+    ) => Promise<ToolCallReturn>,
+  ): void => {
+    const wrapped = async (
+      args: z.infer<z.ZodObject<Shape>>,
+      extra: ToolRequestExtra,
+    ): Promise<ToolCallReturn> => {
+      const started = process.hrtime.bigint();
+      let isError = false;
+      const skillCheck = workerAuth === undefined ? ensureSkillStalenessChecked() : undefined;
+      try {
+        let result = await handler(args, extra);
+        isError = result.isError === true;
+        await skillCheck;
+        if (skillStaleWarning && SKILL_WARNING_TOOLS.has(name)) {
+          try {
+            result = appendSkillWarning(result, skillStaleWarning);
+          } catch {
+            // Fail open: warning decoration must not alter the tool result.
+          }
+        }
+        return result;
+      } catch (err) {
+        isError = true;
+        throw err;
+      } finally {
+        try {
+          const source = args as Record<string, unknown>;
+          const durationMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+          const waitParams = waitParamsFromArgs(source);
+          await appendToolJournal({
+            crewHome,
+            record: {
+              ts: new Date().toISOString(),
+              tool: name,
+              ...(typeof source.run_id === 'string' ? { run_id: source.run_id } : {}),
+              ...(typeof source.panel_id === 'string' ? { panel_id: source.panel_id } : {}),
+              args_digest: redactAndDigestArgs(source),
+              ...(waitParams !== undefined ? { wait_params: waitParams } : {}),
+              isError,
+              duration_ms: durationMs,
+              clientKind: resolveJournalClientKind(),
+              captainServeInstance,
+            },
+          });
+        } catch {
+          // Fail open even if record preparation itself encounters bad data.
+        }
+      }
+    };
+    // The SDK's callback type includes every MCP content variant, while Crew
+    // intentionally returns the narrower text-only ToolCallReturn contract.
+    server.registerTool(name, config as never, wrapped as never);
+  };
+
   if (workerAuth !== undefined) {
     const dispatcher = new ToolDispatcher({
       streamingIdleTimeoutMs: resolveDispatchStallTimeoutMs(),
       bufferedAbsoluteTimeoutMs: resolveDispatchAbsoluteTimeoutMs(),
     });
     const runStateStore = new RunStateStore({ crewHome, repoRoot: projectRoot });
-    server.registerTool(
+    registerJournaledTool(
       'send_message',
       {
         description: SEND_MESSAGE_DESCRIPTION,
@@ -681,13 +868,11 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   // calls only fire post-initialize so the first dispatch will always
   // see a defined value. Cache so we don't re-classify on every
   // dispatch — the answer can't change within a single server lifetime.
-  let cachedClientKind: ClientKind | undefined;
   let loggedLegacyCodexClient = false;
   const getClientKind = (): ClientKind => {
-    if (cachedClientKind !== undefined) return cachedClientKind;
-    const info = server.server.getClientVersion();
-    cachedClientKind = classifyClient(info?.name, info?.version);
-    if (cachedClientKind === 'codex-legacy' && !loggedLegacyCodexClient) {
+    const clientKind = resolveJournalClientKind();
+    if (clientKind === 'codex-legacy' && !loggedLegacyCodexClient) {
+      const info = server.server.getClientVersion();
       loggedLegacyCodexClient = true;
       logger.warn(
         `crew-mcp serve: Codex client version ${JSON.stringify(info?.version ?? '(missing)')} `
@@ -695,7 +880,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         + 'dispatch remains available with next-turn status recovery.',
       );
     }
-    return cachedClientKind;
+    return clientKind;
   };
   let cachedCrewWaitCommand: string | undefined;
   let crewWaitCommandResolved = false;
@@ -788,7 +973,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   });
 
   // ---- list_agents -----------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'list_agents',
     {
       description: LIST_AGENTS_DESCRIPTION,
@@ -798,7 +983,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- get_crew_preferences -------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'get_crew_preferences',
     {
       description: GET_CREW_PREFERENCES_DESCRIPTION,
@@ -808,7 +993,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- list_runs -------------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'list_runs',
     {
       description: LIST_RUNS_DESCRIPTION,
@@ -818,7 +1003,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- check_captain_inbox --------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'check_captain_inbox',
     {
       description: CHECK_CAPTAIN_INBOX_DESCRIPTION,
@@ -828,7 +1013,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- acknowledge_messages -------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'acknowledge_messages',
     {
       description: ACKNOWLEDGE_MESSAGES_DESCRIPTION,
@@ -838,7 +1023,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- run_agent -------------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'run_agent',
     {
       description: RUN_AGENT_DESCRIPTION,
@@ -848,7 +1033,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- run_panel -------------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'run_panel',
     {
       description: RUN_PANEL_DESCRIPTION,
@@ -858,7 +1043,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- get_panel_status ------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'get_panel_status',
     {
       description: GET_PANEL_STATUS_DESCRIPTION,
@@ -868,7 +1053,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- aggregate_panel -------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'aggregate_panel',
     {
       description: AGGREGATE_PANEL_DESCRIPTION,
@@ -878,7 +1063,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- create_criteria -------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'create_criteria',
     {
       description: CREATE_CRITERIA_DESCRIPTION,
@@ -888,7 +1073,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- confirm_criteria ------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'confirm_criteria',
     {
       description: CONFIRM_CRITERIA_DESCRIPTION,
@@ -898,7 +1083,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- get_criteria ----------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'get_criteria',
     {
       description: GET_CRITERIA_DESCRIPTION,
@@ -908,7 +1093,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- revise_criteria -------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'revise_criteria',
     {
       description: REVISE_CRITERIA_DESCRIPTION,
@@ -918,7 +1103,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- continue_run ----------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'continue_run',
     {
       description: CONTINUE_RUN_DESCRIPTION,
@@ -928,7 +1113,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- merge_run -------------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'merge_run',
     {
       description: MERGE_RUN_DESCRIPTION,
@@ -938,7 +1123,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- discard_run -----------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'discard_run',
     {
       description: DISCARD_RUN_DESCRIPTION,
@@ -948,7 +1133,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- get_run_status --------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'get_run_status',
     {
       description: GET_RUN_STATUS_DESCRIPTION,
@@ -958,7 +1143,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   );
 
   // ---- cancel_run ------------------------------------------------------
-  server.registerTool(
+  registerJournaledTool(
     'cancel_run',
     {
       description: CANCEL_RUN_DESCRIPTION,

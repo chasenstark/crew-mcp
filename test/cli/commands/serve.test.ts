@@ -70,6 +70,10 @@ import { logger } from '../../../src/utils/logger.js';
 import * as configStore from '../../../src/utils/config-store.js';
 import { AGENT_PREFS_FILENAME } from '../../../src/agent-prefs/store.js';
 import { renderUntrustedWorkerContentNotice } from '../../../src/orchestrator/untrusted-provenance.js';
+import type {
+  CanonicalSkillVerificationOptions,
+  SkillStalenessResult,
+} from '../../../src/install/skill-verify.js';
 
 // --- helpers ---
 
@@ -202,6 +206,32 @@ function withEnv(overrides: Record<string, string | undefined>): () => void {
   };
 }
 
+function writeCompleteSkillManifestFixture(home: string, hostId: 'codex'): void {
+  const captainPath = join(home, '.codex', 'skills', 'crew', 'SKILL.md');
+  const iteratePath = join(home, '.codex', 'skills', 'iterate', 'SKILL.md');
+  mkdirSync(join(home, '.crew'), { recursive: true });
+  writeFileSync(
+    join(home, '.crew', 'install.json'),
+    JSON.stringify({
+      schemaVersion: 2,
+      targets: {
+        [hostId]: {
+          configPath: join(home, '.codex', 'config.toml'),
+          skillPath: captainPath,
+          skills: { crew: captainPath, 'crew:iterate': iteratePath },
+          writtenPaths: [captainPath, iteratePath],
+          version: '0.7.0',
+          installedAt: new Date().toISOString(),
+          serverCommand: 'crew-mcp',
+          serverArgs: ['serve'],
+          crewWaitCommand: 'crew-wait',
+        },
+      },
+    }),
+    'utf-8',
+  );
+}
+
 function readPersistedState(h: Harness, runId: string): RunStateV1 {
   return JSON.parse(
     readFileSync(join(h.crewHome, 'runs', runId, 'state.json'), 'utf-8'),
@@ -317,6 +347,9 @@ async function startHarness(
     hostCodexBridge?: boolean;
     projectInstallActive?: boolean;
     beforeBuild?: (paths: { root: string; crewHome: string; home: string }) => void;
+    skillStalenessCheck?: (
+      args: CanonicalSkillVerificationOptions,
+    ) => Promise<SkillStalenessResult>;
   } = {},
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'crew-serve-'));
@@ -377,6 +410,7 @@ async function startHarness(
     worktreeManager,
     serverScriptPath,
     env: codexBridgeFile ? { CREW_CODEX_BRIDGE_FILE: codexBridgeFile } : {},
+    skillStalenessCheck: options.skillStalenessCheck,
   });
 
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -638,6 +672,22 @@ describe('crew serve — restricted worker mode', () => {
 
       const result = await client.listTools();
       expect(result.tools.map((tool) => tool.name)).toEqual(['send_message']);
+      await client.callTool({
+        name: 'send_message',
+        arguments: { body: 'worker secret result', kind: 'note' },
+      });
+      const journal = readFileSync(
+        join(crewHome, 'runs', '.meta', 'tool-journal.jsonl'),
+        'utf-8',
+      );
+      const journalRecord = JSON.parse(journal.trim()) as Record<string, unknown>;
+      expect(journalRecord).toMatchObject({
+        tool: 'send_message',
+        isError: false,
+        clientKind: 'unknown',
+      });
+      expect(journal).not.toContain('worker secret result');
+      expect(journal).not.toContain(issued.sidecar.token);
       const marker = JSON.parse(
         readFileSync(workerReadyMarkerPath(crewHome, 'worker-run'), 'utf-8'),
       ) as { registered_tools: string[] };
@@ -699,6 +749,158 @@ describe('crew serve — restricted worker mode', () => {
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('crew serve — tool-call journal', () => {
+  it('journals success and error results with redacted arguments at the shared wrapper', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      await h.client.callTool({ name: 'list_agents', arguments: {} });
+      await h.client.callTool({
+        name: 'get_run_status',
+        arguments: {
+          run_id: 'missing-run',
+          wait_for_change_ms: 25,
+          wait_for_terminal_only: true,
+          user_requested_wait: true,
+        },
+      });
+      const dispatched = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'journal must not store this prompt' },
+      });
+      const runId = (dispatched.structuredContent as FullRunEnvelope).run_id;
+      await pollUntilTerminal(h.client, runId);
+
+      const raw = readFileSync(
+        join(h.crewHome, 'runs', '.meta', 'tool-journal.jsonl'),
+        'utf-8',
+      );
+      const records = raw.trim().split('\n').map((line) => JSON.parse(line) as {
+        tool: string;
+        isError: boolean;
+        duration_ms: number;
+        clientKind: string;
+        captainServeInstance: string;
+        args_digest: Record<string, unknown>;
+        wait_params?: Record<string, unknown>;
+      });
+      expect(records.find((record) => record.tool === 'list_agents')).toMatchObject({
+        isError: false,
+        clientKind: 'unknown',
+      });
+      expect(records.find((record) => record.tool === 'get_run_status')).toMatchObject({
+        isError: true,
+        wait_params: {
+          wait_for_change_ms: 25,
+          wait_for_terminal_only: true,
+          user_requested_wait: true,
+        },
+      });
+      const dispatchRecord = records.find((record) => record.tool === 'run_agent');
+      expect(dispatchRecord?.args_digest).toMatchObject({
+        agent_id: 'mock-coder',
+        prompt: { present: true },
+      });
+      expect(dispatchRecord?.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(new Set(records.map((record) => record.captainServeInstance)).size).toBe(1);
+      expect(raw).not.toContain('journal must not store this prompt');
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe('crew serve — skill staleness warning', () => {
+  it('checks once for supported hosts and adds skill_stale to dispatch and status envelopes', async () => {
+    const check = vi.fn(async (): Promise<SkillStalenessResult> => ({
+      stale: true,
+      issues: ['skill content stale: fixture'],
+      installedPaths: ['/tmp/fixture'],
+      fixCommand: 'crew-mcp install -t codex',
+    }));
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })], {
+      clientName: 'codex-cli',
+      clientVersion: '0.144.3',
+      beforeBuild: ({ home }) => writeCompleteSkillManifestFixture(home, 'codex'),
+      skillStalenessCheck: check,
+    });
+    try {
+      const dispatch = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-coder', prompt: 'go' },
+      });
+      const env = dispatch.structuredContent as FullRunEnvelope;
+      expect(env.warnings).toEqual([
+        expect.stringContaining('skill_stale:'),
+      ]);
+      expect(toolText(dispatch)).toContain('crew-mcp install -t codex');
+
+      const status = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id },
+      });
+      expect((status.structuredContent as { warnings?: string[] }).warnings).toEqual([
+        expect.stringContaining('skill_stale:'),
+      ]);
+      expect(check).toHaveBeenCalledTimes(1);
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('omits warnings when content is fresh, the client is unsupported, or comparison fails', async () => {
+    const cases = [
+      {
+        clientName: 'codex-cli',
+        check: vi.fn(async (): Promise<SkillStalenessResult> => ({
+          stale: false,
+          issues: [],
+          installedPaths: ['/tmp/fixture'],
+          fixCommand: 'crew-mcp install -t codex',
+        })),
+        expectedCalls: 1,
+      },
+      {
+        clientName: 'agy',
+        check: vi.fn(async (): Promise<SkillStalenessResult> => {
+          throw new Error('must be skipped');
+        }),
+        expectedCalls: 0,
+      },
+      {
+        clientName: 'codex-cli',
+        check: vi.fn(async (): Promise<SkillStalenessResult> => {
+          throw new Error('render failed');
+        }),
+        expectedCalls: 1,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })], {
+        clientName: testCase.clientName,
+        clientVersion: '0.144.3',
+        beforeBuild: ({ home }) => writeCompleteSkillManifestFixture(home, 'codex'),
+        skillStalenessCheck: testCase.check,
+      });
+      try {
+        const dispatch = await h.client.callTool({
+          name: 'run_agent',
+          arguments: { agent_id: 'mock-coder', prompt: 'go' },
+        });
+        expect((dispatch.structuredContent as FullRunEnvelope).warnings).toBeUndefined();
+        expect(testCase.check).toHaveBeenCalledTimes(testCase.expectedCalls);
+        await pollUntilTerminal(
+          h.client,
+          (dispatch.structuredContent as FullRunEnvelope).run_id,
+        );
+      } finally {
+        await h.close();
+      }
     }
   });
 });

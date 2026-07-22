@@ -23,7 +23,6 @@ import { join, posix, win32 } from 'node:path';
 import { HOST_ADAPTERS, isGlobalHostId, type HostId } from '../../install/hosts/index.js';
 import {
   readInstallManifest,
-  type InstalledTarget,
 } from '../../install/install-manifest.js';
 import {
   absolutizeProjectTarget,
@@ -36,12 +35,12 @@ import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import {
-  captainSkillTools,
-  renderSkill,
   resolvePackageRoot,
-  SKILL_MANIFEST,
-  templatePathForHost,
 } from '../../install/skill-renderer.js';
+import {
+  CAPTAIN_CATALOG_TOOLS,
+  verifyCanonicalSkillContent,
+} from '../../install/skill-verify.js';
 import { resolvePeerMessageCaps } from '../../orchestrator/peer-messages/caps.js';
 import { runPeerMessagesPipeline } from '../../orchestrator/peer-messages/pipeline.js';
 import { validatePeerMessagesPreflight } from '../../orchestrator/peer-messages/preflight.js';
@@ -50,8 +49,6 @@ import { resolveCrewHome } from '../../utils/crew-home.js';
 import { logger } from '../../utils/logger.js';
 import { resolveTargets } from './install.js';
 import { CREW_MCP_VERSION } from '../version.js';
-
-const CAPTAIN_CATALOG_TOOLS = captainSkillTools(CATALOG_TOOLS);
 
 export interface VerifyOptions {
   /** Install scope. Defaults to global. */
@@ -435,56 +432,6 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     logger.warn('crew verify: project drift detected. Run `crew-mcp install --scope project --target <host>` to re-sync.');
   }
   return { ok, probes, targets: reports };
-}
-
-async function verifyCanonicalSkillContent(args: {
-  readonly targetId: HostId;
-  readonly entry: InstalledTarget;
-  readonly installRoot: string;
-  readonly packageRoot: string;
-  readonly scope: InstallScope;
-}): Promise<string[]> {
-  const adapter = HOST_ADAPTERS[args.targetId];
-  const issues: string[] = [];
-  for (const skill of SKILL_MANIFEST) {
-    const spec = args.scope === 'project'
-      ? adapter.projectSkillInstallSpecFor?.(args.installRoot, skill)
-      : adapter.skillInstallSpecFor(args.installRoot, skill);
-    if (!spec || spec.skip) continue;
-    const installedPath = args.entry.skills?.[skill.id];
-    if (!installedPath) {
-      issues.push(
-        `install manifest missing expected skill ${skill.id}: ${spec.skillPath}`,
-      );
-      continue;
-    }
-    if (installedPath !== spec.skillPath) {
-      issues.push(
-        `install manifest skill path mismatch for ${skill.id}: expected ${spec.skillPath}, got ${installedPath}`,
-      );
-      continue;
-    }
-    if (!existsSync(installedPath)) {
-      // The general recorded-file pass reports the same missing path with
-      // host-neutral wording. Keep canonical verification focused on the
-      // manifest contract and avoid duplicating that issue.
-      continue;
-    }
-    const expected = await renderSkill({
-      templatePath: templatePathForHost(args.packageRoot, args.targetId),
-      hostId: args.targetId,
-      skill,
-      spec,
-      tools: CAPTAIN_CATALOG_TOOLS,
-      crewWaitCommand: args.entry.crewWaitCommand,
-      packageRoot: args.packageRoot,
-    });
-    const actual = await readFile(installedPath, 'utf-8');
-    if (actual !== expected) {
-      issues.push(`skill content stale: ${installedPath}`);
-    }
-  }
-  return issues;
 }
 
 /**
