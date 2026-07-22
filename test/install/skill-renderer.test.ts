@@ -251,6 +251,8 @@ describe('host-conditional real skill bodies', () => {
       'agy cannot honestly enforce read-only',
       'agy reviewers are auto-routed',
       'discover panel completeness',
+      'dispatch_anyway',
+      'user_requested_wait',
       '**Silence is not consent.**',
     ],
     'crew:iterate': [
@@ -260,6 +262,8 @@ describe('host-conditional real skill bodies', () => {
       '## Tools',
       'reviews the wrong diff',
       '**Ephemeral reviewers.**',
+      'dispatch_anyway',
+      'user_requested_wait',
       '**Silence is not consent.**',
     ],
   };

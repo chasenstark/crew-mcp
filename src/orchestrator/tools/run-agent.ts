@@ -76,6 +76,8 @@ import {
   isSameHostAgent,
   sameHostOverrideWarning,
 } from './dispatch-policy.js';
+import { preflightAgentDispatch } from './dispatch-preflight.js';
+import { criteriaDir, readCriteriaState } from '../criteria/store.js';
 
 /**
  * Minimal registry surface for run_agent — anything exposing `get` (plus
@@ -137,12 +139,13 @@ export const runAgentInputSchema = z.object({
   run_mode: z.enum(RUN_MODES).optional(),
   ban_override: z.boolean().optional(),
   same_host_ok: z.boolean().optional(),
+  dispatch_anyway: z.boolean().optional(),
 }).strict();
 
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override lifts a matched user ban; same_host_ok allows own-host dispatch, both only after user approval. run_mode is write, read_only, or ephemeral_review. Returns async with bounded relay_verbatim/ledger_line, warnings for overrides, and required_next_action crew-wait watcher when available. Do not block the turn long-polling get_run_status.';
+  'Start a bounded subagent run. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override, same_host_ok, and dispatch_anyway require user approval; dispatch_anyway overrides health/quota refusal. run_mode is write, read_only, or ephemeral_review. Returns async with bounded relay_verbatim/ledger_line, warnings for overrides, and required_next_action crew-wait watcher when available.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -180,8 +183,40 @@ export async function runAgentToolHandler(
       }
       policyWarnings.push(sameHostOverrideWarning(canonicalId));
     }
+    const dispatchPreflight = await preflightAgentDispatch({
+      registry: deps.registry,
+      agentId: canonicalId,
+      quotaProbe: deps.quotaProbe,
+      dispatchAnyway: args.dispatch_anyway,
+    });
+    if (dispatchPreflight.refuse !== undefined) {
+      return errorContent(dispatchPreflight.refuse.message);
+    }
+    policyWarnings.push(...dispatchPreflight.warnings);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
+  }
+  const requestedMode = runModeFromInput(args);
+  if (
+    requestedMode.ok
+    && requestedMode.mode === 'ephemeral_review'
+    && args.criteria_set_id !== undefined
+  ) {
+    try {
+      const implementerRunId = readCriteriaState(
+        criteriaDir(deps.crewHome, args.criteria_set_id),
+      )?.implementerRunId;
+      if (implementerRunId !== undefined) {
+        policyWarnings.push(
+          `ephemeral_review_wrong_diff: this solo ephemeral review snapshots the host repo, not `
+          + `implementer run ${implementerRunId}'s worktree, so it is not seeing the implementer's `
+          + 'diff and may false-APPROVE. Dispatch a bound run_panel or continue the implementer run instead.',
+        );
+      }
+    } catch {
+      // Advisory-only criteria lookup: fail open and let dispatch validation
+      // report any authoritative criteria error.
+    }
   }
   const normalizedArgs: RunAgentInput = { ...args, agent_id: canonicalId };
   const progress = progressNotifierFrom(extra, canonicalId, deps.progressTokenSeen);

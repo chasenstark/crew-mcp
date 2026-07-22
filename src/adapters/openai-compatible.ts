@@ -4,10 +4,12 @@ import { classifyHttpFailure, classifyTextFailure } from './failure-classifier.j
 import type {
   AgentAdapter,
   AgentStrength,
+  HealthCheckOptions,
   HealthCheckResult,
   Task,
   TaskResult,
 } from './types.js';
+import { HealthCheckCache } from '../utils/health-check-cache.js';
 
 class OpenAiCompatibleHttpError extends Error {
   constructor(
@@ -53,6 +55,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   private readonly defaultModel: string;
   private readonly apiBase: string;
   private readonly apiKey?: string;
+  private readonly healthCheckCache = new HealthCheckCache();
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.name = options.name;
@@ -118,7 +121,11 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
     };
   }
 
-  async healthCheck(): Promise<HealthCheckResult> {
+  async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
+    return this.healthCheckCache.get(options, () => this.probeHealth());
+  }
+
+  private async probeHealth(): Promise<HealthCheckResult> {
     try {
       const response = await fetch(`${this.apiBase}/models`, {
         headers: this.apiKey

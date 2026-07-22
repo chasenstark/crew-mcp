@@ -4,6 +4,11 @@ import { getDefaultConfig } from '../../../src/workflow/config-codec.js';
 import { confirmCriteriaHandler } from '../../../src/orchestrator/tools/confirm-criteria.js';
 import { createCriteriaHandler } from '../../../src/orchestrator/tools/create-criteria.js';
 import { runAgentToolHandler } from '../../../src/orchestrator/tools/run-agent.js';
+import {
+  criteriaDir,
+  readCriteriaState,
+  writeCriteriaStateAtomic,
+} from '../../../src/orchestrator/criteria/store.js';
 import type { ToolHandlerDeps, ToolRequestExtra } from '../../../src/orchestrator/tools/shared.js';
 import {
   makeHarness,
@@ -151,5 +156,80 @@ describe('run_agent dispatch policy', () => {
       expect.stringContaining('same_host_ok:true was supplied'),
     ]);
     expect(accepted.content[0].text).toContain('**Dispatched** `codex`');
+  });
+
+  it('refuses unavailable agents and dispatch_anyway downgrades the refusal', async () => {
+    const h = makeHarness([makeMockAdapter({
+      name: 'reviewer',
+      healthCheck: async () => ({
+        available: false,
+        authenticated: false,
+        error: 'login expired',
+      }),
+    })]);
+    cleanups.push(h.cleanup);
+    const deps = depsFor(h, () => getDefaultConfig());
+
+    const refused = await runAgentToolHandler({
+      agent_id: 'reviewer',
+      prompt: 'review',
+    }, extra, deps);
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toMatch(/^agent_unavailable:.*login expired/);
+
+    const accepted = await runAgentToolHandler({
+      agent_id: 'reviewer',
+      prompt: 'review',
+      dispatch_anyway: true,
+    }, extra, deps);
+    expect(accepted.isError).not.toBe(true);
+    expect(accepted.structuredContent?.warnings).toEqual([
+      expect.stringMatching(/^agent_unavailable:.*dispatch_anyway:true/),
+    ]);
+  });
+
+  it('warns when a solo ephemeral review would snapshot the host instead of the implementer', async () => {
+    const h = makeHarness([makeMockAdapter({
+      name: 'agy',
+      reviewDispatchMode: 'ephemeral-worktree',
+    })]);
+    cleanups.push(h.cleanup);
+    await createConfirmedCriteria(h);
+    const targetDir = criteriaDir(h.crewHome, 'criteria-1');
+    writeCriteriaStateAtomic(targetDir, {
+      ...readCriteriaState(targetDir)!,
+      implementerRunId: 'implementer-1',
+    });
+
+    const warned = await runAgentToolHandler({
+      agent_id: 'agy',
+      prompt: 'review',
+      criteria_set_id: 'criteria-1',
+      run_mode: 'ephemeral_review',
+    }, extra, depsFor(h, () => getDefaultConfig()));
+
+    expect(warned.isError).not.toBe(true);
+    expect(warned.structuredContent?.warnings).toEqual([
+      expect.stringMatching(/^ephemeral_review_wrong_diff:.*implementer-1.*not seeing the implementer's diff/),
+    ]);
+  });
+
+  it('does not warn for the first criteria-linked solo ephemeral run', async () => {
+    const h = makeHarness([makeMockAdapter({
+      name: 'agy',
+      reviewDispatchMode: 'ephemeral-worktree',
+    })]);
+    cleanups.push(h.cleanup);
+    await createConfirmedCriteria(h);
+
+    const out = await runAgentToolHandler({
+      agent_id: 'agy',
+      prompt: 'review',
+      criteria_set_id: 'criteria-1',
+      run_mode: 'ephemeral_review',
+    }, extra, depsFor(h, () => getDefaultConfig()));
+
+    expect(out.isError).not.toBe(true);
+    expect(out.structuredContent?.warnings).toBeUndefined();
   });
 });

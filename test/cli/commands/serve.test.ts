@@ -5819,6 +5819,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           run_id: env.run_id,
           wait_for_change_ms: 5000,
           wait_for_terminal_only: true,
+          user_requested_wait: true,
         },
       });
       const elapsed = Date.now() - t0;
@@ -5971,6 +5972,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           wait_for_change_ms: 1500,
           since_event_line: 0,
           wait_for_terminal_only: true,
+          user_requested_wait: true,
         },
       });
       let resolved = false;
@@ -6033,6 +6035,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           wait_for_change_ms: 5000,
           since_event_line: 0,
           wait_for_terminal_only: true,
+          user_requested_wait: true,
         },
       });
       await waitFor(() => adapterStarted);
@@ -6092,6 +6095,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           wait_for_change_ms: 5000,
           since_event_line: 0,
           wait_for_terminal_only: true,
+          user_requested_wait: true,
         },
       });
 
@@ -6163,6 +6167,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           wait_for_change_ms: 100,
           since_event_line: 0,
           wait_for_terminal_only: true,
+          user_requested_wait: true,
         },
       });
       expect(res.structuredContent).toEqual({
@@ -6323,6 +6328,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           wait_for_change_ms: 1500,
           since_event_line: 0,
           wait_for_terminal_only: true,
+          user_requested_wait: true,
         },
       });
       let resolved = false;
@@ -6706,6 +6712,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         wait_for_change_ms: 30000,
         since_event_line: 0,
         wait_for_terminal_only: true,
+        user_requested_wait: true,
       }),
     ).not.toThrow();
     expect(() =>

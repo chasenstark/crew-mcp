@@ -62,11 +62,11 @@ but it reviews through a native subagent or inline fallback, not through
 
 Use only this consolidated set of journaled captain claims; never invent a
 synonym: `confirmed` (destructive merge/discard consent and every `force:true`
-call), `dispatch_anyway` (reserved for health/quota preflight), `same_host_ok`
+call), `dispatch_anyway` (user-approved health/quota bypass), `same_host_ok`
 (the user explicitly approved an own-host `run_agent` / `continue_run`),
 `ban_override` (the user lifted the named ban), `cap_override` (the user chose
 to continue past the server loop backstop), and `user_requested_wait`
-(reserved for an explicit blocking wait). A tool rejection is the point to
+(the user explicitly requested a blocking wait). A tool rejection is the point to
 ask; never auto-pass an override. Relay any override warning in the returned
 envelope.
 
@@ -108,11 +108,8 @@ worse than a short clarifying question.
 5. **Ask what to do next.** For implementer runs, ask merge / iterate /
    discard. For read-only or ephemeral reviews, ask cleanup / keep.
    **Ask gate:** confirm via the Ask protocol. **Silence is not consent.**
-6. **Merge or discard only on instruction.** Pass `confirmed: true` after
-   explicit approval in the immediately preceding user turn. The server
-   requires it for merge and for discarding write runs with committed,
-   indexed, tracked, or untracked deliverables; read-only and ephemeral-review
-   cleanup stays ungated.
+6. **Merge or discard only on instruction.** After explicit approval in the
+   immediately preceding turn, follow the tool's typed `confirmed` remedy.
 
 ## Merge boundary
 
@@ -132,16 +129,10 @@ conflict and `git cherry-pick --abort` is the escape hatch, but ask first.
 consent: pass `confirmed: true` only after an explicit "yes / go / merge"
 or an explicit structured Merge choice in the immediately preceding turn.
 
-If `merge_run` rejects with `requires explicit user confirmation`, ask the
-concrete merge question, wait for an affirmative answer, then retry with
-`confirmed: true`. Do not retry automatically. If `merge_run`,
-`discard_run`, or `continue_run` rejects with `run_in_flight` or
+If `merge_run`, `discard_run`, or `continue_run` rejects with `run_in_flight` or
 `busy_worktree`, tell the user which run is blocking and wait, or ask
-whether to cancel. Use `force: true` only after explicit approval and only
-when the blocker is safe to ignore; `force:true` always travels with
-`confirmed:true`, even when `confirmBeforeMerge` is off. If discard returns
-`discard_run.confirmation_required`, name the deliverable delta, ask, and retry
-with `confirmed:true`. A `merge_conflict` discard always requires confirmation.
+whether to cancel. Never auto-retry a consent or override rejection; ask the
+user, then follow the typed remedy exactly.
 
 After a successful merge, inspect the structured output. If
 `landed_off_current_branch: true`, tell the user which `target_branch`
@@ -157,23 +148,16 @@ list newest-first commit subjects for the run (`target..HEAD`, capped at
 20). If those fields are absent on an old run, fall back to `git log` in
 the run worktree.
 
-- **`squash`** (default): one logical change plus fixups, WIP/review
-  commits, or a single commit. Always pass a meaningful `commit_title`
-  (optionally `commit_body`), ideally a conventional imperative subject
-  under 72 chars. Compose it from the terminal summary, files changed, and
-  commit subjects.
+- **`squash`** (default): one logical change plus fixups, WIP/review commits,
+  or a single commit. Compose a meaningful `commit_title` from the terminal
+  summary and commit subjects.
 - **`preserve`**: a deliberate stack of standalone commits with good
-  subjects. `commit_title` / `commit_body` are ignored.
+  subjects.
 
 With `confirmBeforeMerge` on, propose the strategy and show the commit
 count/list in the merge prompt ("3 commits: squash to one or keep all
 three?"). With it off, apply the same heuristic yourself; the user opted
 into landing without confirmation.
-
-The server rejects a squash call without `commit_title` as
-`merge_run.commit_title_required`; it never synthesizes `crew run <id>`.
-A title over 72 characters succeeds with a warning (the schema ceiling is
-200); relay the warning and prefer a shorter title on the next call.
 
 **Ask gate:** when the strategy is presented to the user, confirm via the
 Ask protocol. **Silence is not consent.**
@@ -205,10 +189,9 @@ normally be one dispatch confirmation, one terminal synthesis, and one
 merge/iterate/discard prompt. The user has the tail link for live
 progress.
 
-**Don't block the turn with `get_run_status`.** Do not call `get_run_status` with
-`wait_for_terminal_only: true` or a long `wait_for_change_ms` to keep the
-turn open. Bounded native subagent work is legitimate because it is not a
-Crew MCP long-poll.
+**Don't block the turn with `get_run_status`.** Use the watcher; the server
+rejects `wait_for_terminal_only: true` unless an explicit user request is
+journaled as `user_requested_wait:true`.
 <!-- host:claude-code -->
 Claude Code's explicit foreground `{{CREW_WAIT_COMMAND}}` opt-in is the one
 Crew watcher exception.
@@ -463,15 +446,9 @@ the user to run `crew-mcp verify`; do not shell out yourself.
   immediate prior turn when the server gate applies.
 - `agent_id` for `run_agent` comes from `list_agents`. Do not invent
   agent names. `continue_run` takes `run_id`, not `agent_id`.
-- Skip agents where `list_agents` returns `available: false`; tell the
-  user the healthcheck error instead of dispatching into a known failure.
 - Use `useWhen`, `strengths`, default `model`, and default `effort` from
-  `list_agents` as routing guidance. Do not invent model names; ask if
-  the user's requested model is fuzzy. A pinned `model` the agent does
-  not recognize is dropped at dispatch (the CLI's default model runs
-  instead) with a `model preflight` warning in the envelope — relay it
-  and re-dispatch with a correct model if the pin mattered. agy accepts
-  only exact labels from its pinned model list.
+  `list_agents` as routing guidance. Do not invent model names; relay any
+  model-preflight warning and re-dispatch only if the pin mattered.
 - Uncommitted host state is mirrored into write run worktrees. Do not
   manually copy files. `continue_run` re-syncs user edits between turns.
 - Prefer inline reasoning for work you can answer yourself.
@@ -495,9 +472,7 @@ Caveats:
   run GC is the backstop: terminal worktrees are eligible after 7 days and
   run directories after 30 days, repo-scoped.
 - `continue_run` stays read-only; dispatch a fresh run to change mode.
-- A criteria-linked `continue_run` re-checks `iterate.banList` and the
-  server continuation counter. At 4 in an epoch it warns; at 12 total it
-  refuses. Ask before `ban_override:true` or `cap_override:true`.
+- Follow typed `continue_run` policy/cap refusals; ask before any override.
 
 ### Ephemeral review dispatches (agy)
 
@@ -524,9 +499,9 @@ state it briefly in the prompt.
 
 ## Quota-aware routing
 
-Read `quota` from `list_agents` when present. Exclude `limited` agents
-unless forced by the user, down-rank `near_limit`, allow but penalize
-`unknown`, and prefer `local_unmetered` for cheap read-only triage.
+Use `list_agents` quota as routing context. Dispatch tools refuse hard
+unavailable/limited agents and warn on soft quota signals; ask before
+`dispatch_anyway:true`.
 <!-- host:codex -->
 After any codex run, its snapshot may carry real numeric headroom
 (`usedPercent` + `resetAt`, `source: "session-file"`) — trust the
@@ -535,14 +510,10 @@ number over the coarse state when weighing borderline routing.
 If the user resolves an upstream limit, call `list_agents({ refresh:
 true })` to clear cached quota and re-probe so the agent can un-stick.
 
-When a run terminates with `failure`, read `failure.kind` and
-`failure.recommendation`. Never retry the same agent on quota or rate
-stops. `rate_limited` means back off until reset; `quota_exhausted` means
-reroute or ask; `auth` means re-auth, not quota routing. Reroute
-read-only/review runs to a non-limited peer. For write runs with no edits,
-reroute fresh. For write runs with captured edits, ask whether to
-wait/backoff, continue later, or discard and reroute. Never auto-discard a
-half-done worktree.
+For terminal `rate_limited`, `quota_exhausted`, or `auth` failures, follow
+`failure.recommendation`; never retry the same agent blindly. If a write run
+has captured edits, ask whether to wait, continue later, or reroute. Never
+auto-discard a half-done worktree.
 
 **Ask gate:** quota remediation that may discard or abandon work uses the
 Ask protocol. **Silence is not consent.**

@@ -28,6 +28,37 @@ describe('OpenAiCompatibleAdapter', () => {
     }).unmetered).toBe(false);
   });
 
+  it('does not fetch for a cached-only health check', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleAdapter({ name: 'openai-test' });
+
+    await expect(adapter.healthCheck({ cachedOnly: true })).rejects.toMatchObject({
+      code: 'health_check.cache_miss',
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('caches unavailable health and refreshes it with a new request', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleAdapter({ name: 'openai-test' });
+
+    const unavailable = await adapter.healthCheck();
+    const cachedUnavailable = await adapter.healthCheck({ cachedOnly: true });
+    expect(unavailable.available).toBe(false);
+    expect(cachedUnavailable).toEqual(unavailable);
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    const refreshed = await adapter.healthCheck({ refresh: true });
+    const cachedRefreshed = await adapter.healthCheck({ cachedOnly: true });
+    expect(refreshed.available).toBe(true);
+    expect(cachedRefreshed).toEqual(refreshed);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('passes the composed prompt as the user chat message', async () => {
     const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
     const fetchMock = vi.fn().mockResolvedValueOnce({

@@ -548,6 +548,13 @@ describe('AgyAdapter', () => {
   });
 
   describe('health / version', () => {
+    it('does not spawn when cachedOnly is requested on a cold cache', async () => {
+      await expect(adapter.healthCheck({ cachedOnly: true })).rejects.toMatchObject({
+        code: 'health_check.cache_miss',
+      });
+      expect(mockExeca).not.toHaveBeenCalled();
+    });
+
     it('reports available for a version at or above the floor', async () => {
       mockExeca.mockResolvedValueOnce({ stdout: 'agy 1.0.14', stderr: '', exitCode: 0 } as never);
       const health = await adapter.healthCheck();

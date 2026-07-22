@@ -22,6 +22,48 @@ describe('GenericAdapter', () => {
     vi.clearAllMocks();
   });
 
+  it('does not spawn for a cached-only health check', async () => {
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    await expect(adapter.healthCheck({ cachedOnly: true })).rejects.toMatchObject({
+      code: 'health_check.cache_miss',
+    });
+    expect(mockExeca).not.toHaveBeenCalled();
+  });
+
+  it('caches unavailable health and refreshes it with a new probe', async () => {
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+    mockExeca
+      .mockResolvedValueOnce(execaResult({ stdout: '', stderr: '', exitCode: 1 }))
+      .mockResolvedValueOnce(execaResult({
+        stdout: '/usr/local/bin/generic-tool',
+        stderr: '',
+        exitCode: 0,
+      }));
+
+    const unavailable = await adapter.healthCheck();
+    const cachedUnavailable = await adapter.healthCheck({ cachedOnly: true });
+    expect(unavailable.available).toBe(false);
+    expect(cachedUnavailable).toEqual(unavailable);
+    expect(mockExeca).toHaveBeenCalledOnce();
+
+    const refreshed = await adapter.healthCheck({ refresh: true });
+    const cachedRefreshed = await adapter.healthCheck({ cachedOnly: true });
+    expect(refreshed.available).toBe(true);
+    expect(cachedRefreshed).toEqual(refreshed);
+    expect(mockExeca).toHaveBeenCalledTimes(2);
+  });
+
   it('passes the composed prompt through the configured argv template', async () => {
     const composedPrompt = '## Peer messages\n\nforwarded context\nactual task';
     mockExeca.mockResolvedValueOnce(execaResult({

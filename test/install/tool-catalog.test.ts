@@ -55,13 +55,19 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       expect(Object.keys(propertiesFor('run_agent'))).toEqual(expect.arrayContaining([
         'ban_override',
         'same_host_ok',
+        'dispatch_anyway',
       ]));
       expect(Object.keys(propertiesFor('continue_run'))).toEqual(expect.arrayContaining([
         'ban_override',
         'same_host_ok',
         'cap_override',
+        'dispatch_anyway',
       ]));
-      expect(Object.keys(propertiesFor('run_panel'))).toContain('ban_override');
+      expect(Object.keys(propertiesFor('run_panel'))).toEqual(expect.arrayContaining([
+        'ban_override',
+        'dispatch_anyway',
+      ]));
+      expect(Object.keys(propertiesFor('get_run_status'))).toContain('user_requested_wait');
       expect(Object.keys(propertiesFor('discard_run'))).toContain('confirmed');
       expect(Object.keys(propertiesFor('merge_run'))).toEqual(expect.arrayContaining([
         'confirmed',
@@ -90,6 +96,40 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     expect(entry).toBeDefined();
     expect(entry?.mode).toBe('worker');
     expect(captainSkillTools(CATALOG_TOOLS).map((tool) => tool.name)).not.toContain('send_message');
+  });
+
+  it('accepts only the new wait and dispatch preflight fields on strict schemas', () => {
+    expect(toolsIndex.runAgentInputSchema.safeParse({
+      agent_id: 'codex',
+      prompt: 'work',
+      dispatch_anyway: true,
+    }).success).toBe(true);
+    expect(toolsIndex.continueRunInputSchema.safeParse({
+      run_id: 'run-1',
+      prompt: 'continue',
+      dispatch_anyway: true,
+    }).success).toBe(true);
+    expect(toolsIndex.runPanelInputSchema.safeParse({
+      dispatch_anyway: true,
+      reviewers: [{
+        agent_id: 'codex',
+        prompt: 'review',
+        dispatch_anyway: true,
+      }],
+    }).success).toBe(true);
+    expect(toolsIndex.getRunStatusInputSchema.safeParse({
+      run_id: 'run-1',
+      user_requested_wait: true,
+    }).success).toBe(true);
+
+    expect(toolsIndex.runAgentInputSchema.safeParse({
+      agent_id: 'codex',
+      prompt: 'work',
+      unknown_override: true,
+    }).success).toBe(false);
+    expect(toolsIndex.runPanelInputSchema.safeParse({
+      reviewers: [{ agent_id: 'codex', prompt: 'review', unknown_override: true }],
+    }).success).toBe(false);
   });
 
   it('declares captain inbox tools as captain catalog tools', () => {
@@ -121,8 +161,8 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
   it('uses the on-demand get_run_status description from the tool source', () => {
     const catalogEntry = CATALOG_TOOLS.find((tool) => tool.name === 'get_run_status');
     expect(catalogEntry?.description).toBe(GET_RUN_STATUS_DESCRIPTION);
-    expect(catalogEntry?.description).toContain('Read a run\'s current status by run_id');
-    expect(catalogEntry?.description).toContain('wait_for_change_ms / wait_for_terminal_only');
+    expect(catalogEntry?.description).toContain('Read run status by run_id');
+    expect(catalogEntry?.description).toContain('user_requested_wait:true');
     expect(catalogEntry?.description).toContain('timed_out');
     expect(catalogEntry?.description).not.toContain('the captain confirms the dispatch');
     expect(catalogEntry?.description).not.toContain('Always poll after run_agent / continue_run');
@@ -133,12 +173,12 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
   // is load-bearing — its absence let captains treat `wait_for_terminal_only`
   // as a neutral "advanced in-turn wait" and block dispatch turns for
   // minutes (regression of d49bf6a). These strings stay in the description.
-  it('get_run_status description names the captain default and warns against long-poll', () => {
+  it('get_run_status description names the enforced wait claim and criteria warning', () => {
     expect(GET_RUN_STATUS_DESCRIPTION).toContain('snapshot');
     expect(GET_RUN_STATUS_DESCRIPTION).toContain('crew-wait');
-    expect(GET_RUN_STATUS_DESCRIPTION).toContain('opt-in');
-    expect(GET_RUN_STATUS_DESCRIPTION).toContain('not a long-poll');
-    expect(GET_RUN_STATUS_DESCRIPTION).toContain('commits/commit_count');
+    expect(GET_RUN_STATUS_DESCRIPTION).toContain('user_requested_wait:true');
+    expect(GET_RUN_STATUS_DESCRIPTION).toContain('Criteria-linked waits warn');
+    expect(GET_RUN_STATUS_DESCRIPTION).toContain('commits');
     // The neutral framing that masked the failure mode must not return.
     expect(GET_RUN_STATUS_DESCRIPTION).not.toContain('advanced in-turn waits');
     expect(GET_RUN_STATUS_DESCRIPTION).not.toContain('advanced/legacy');
@@ -148,13 +188,14 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
   // thing a captain reads before choosing the next action after dispatch.
   // They MUST point at the watcher, not at get_run_status, and they MUST
   // explicitly prohibit long-polling the turn open.
-  it('run_agent / continue_run descriptions point at the watcher and forbid long-polling', () => {
+  it('run_agent / continue_run descriptions point at the watcher and health/quota override', () => {
     for (const [name, description] of [
       ['run_agent', RUN_AGENT_DESCRIPTION],
       ['continue_run', CONTINUE_RUN_DESCRIPTION],
     ] as const) {
       expect(description, `${name}: names crew-wait`).toContain('crew-wait');
-      expect(description, `${name}: forbids long-polling`).toMatch(/Do not block the turn long-polling/);
+      expect(description, `${name}: documents dispatch_anyway`).toContain('dispatch_anyway');
+      expect(description, `${name}: documents health/quota`).toContain('health/quota');
       expect(description, `${name}: no lazy check-later branch`).not.toMatch(/check (?:status )?later/i);
       // The old framing that re-centered get_run_status as the next op
       // must not come back.
@@ -164,10 +205,11 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     }
   });
 
-  it('run_panel description points at panel-level watcher and forbids long-polling', () => {
+  it('run_panel description points at panel-level watcher and dispatch_anyway scopes', () => {
     expect(RUN_PANEL_DESCRIPTION).toContain('panel-level crew-wait watcher command');
     expect(RUN_PANEL_DESCRIPTION).toContain('per-reviewer wait commands remain available');
-    expect(RUN_PANEL_DESCRIPTION).toMatch(/Do not block the turn long-polling/);
+    expect(RUN_PANEL_DESCRIPTION).toContain('dispatch_anyway');
+    expect(RUN_PANEL_DESCRIPTION).toContain('top-level or per reviewer');
     expect(RUN_PANEL_DESCRIPTION).not.toMatch(/check (?:status )?later/i);
   });
 

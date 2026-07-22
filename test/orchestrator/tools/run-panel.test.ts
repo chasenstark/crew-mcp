@@ -30,7 +30,11 @@ import {
 } from '../../../src/orchestrator/tools/run-panel.js';
 import { confirmCriteriaHandler } from '../../../src/orchestrator/tools/confirm-criteria.js';
 import { createCriteriaHandler } from '../../../src/orchestrator/tools/create-criteria.js';
-import { criteriaDir, readCriteriaState } from '../../../src/orchestrator/criteria/store.js';
+import {
+  criteriaDir,
+  readCriteriaState,
+  writeCriteriaStateAtomic,
+} from '../../../src/orchestrator/criteria/store.js';
 import { setConfigValue } from '../../../src/workflow/config-service.js';
 import { getPanelStatusHandler } from '../../../src/orchestrator/tools/get-panel-status.js';
 import {
@@ -411,6 +415,92 @@ describe('runPanelHandler', () => {
       sameHostAgentId: 'codex',
       loadConfig: () => getDefaultConfig(),
     })).rejects.toThrow(/^same_host_reviewer:.*"codex"/);
+  });
+
+  it('records health refusal per reviewer and allows reviewer dispatch_anyway', async () => {
+    const h = makeHarness([makeMockAdapter({
+      name: 'reviewer',
+      healthCheck: async () => ({
+        available: false,
+        authenticated: false,
+        error: 'binary missing',
+      }),
+    })]);
+    cleanupHarness(h);
+    const dispatch = vi.fn(async () => fakeDispatchResult('reviewer', 1));
+
+    const refused = await runPanelHandler({
+      reviewers: [{ agent_id: 'reviewer', prompt: 'review' }],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: dispatch,
+    });
+    expect(refused.partial).toBe(true);
+    expect(refused.failed_reviewers).toEqual([{
+      agent_id: 'reviewer',
+      error: expect.stringMatching(/^agent_unavailable:.*binary missing/),
+    }]);
+    expect(dispatch).not.toHaveBeenCalled();
+
+    const accepted = await runPanelHandler({
+      reviewers: [{
+        agent_id: 'reviewer',
+        prompt: 'review',
+        dispatch_anyway: true,
+      }],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: dispatch,
+    });
+    expect(accepted.partial).toBe(false);
+    expect(accepted.reviewers[0].warnings).toEqual([
+      expect.stringMatching(/^agent_unavailable:.*dispatch_anyway:true/),
+    ]);
+    expect(dispatch).toHaveBeenCalledOnce();
+
+    const topLevelAccepted = await runPanelHandler({
+      reviewers: [{ agent_id: 'reviewer', prompt: 'review' }],
+      dispatch_anyway: true,
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: dispatch,
+    });
+    expect(topLevelAccepted.reviewers[0].warnings).toEqual([
+      expect.stringMatching(/^agent_unavailable:.*dispatch_anyway:true/),
+    ]);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not emit the solo wrong-diff warning for panel-routed ephemeral reviewers', async () => {
+    const h = makeHarness([makeMockAdapter({
+      name: 'agy',
+      reviewDispatchMode: 'ephemeral-worktree',
+    })]);
+    cleanupHarness(h);
+    await createConfirmedCriteria(h);
+    const implementer = await createRunState(h, { runId: 'impl' });
+    await h.runStateStore.update(implementer.runId, (state) => ({
+      ...state,
+      criteriaSetId: 'criteria-1',
+      criteriaEpoch: 0,
+    }));
+    const targetDir = criteriaDir(h.crewHome, 'criteria-1');
+    const criteria = readCriteriaState(targetDir)!;
+    // The real implementer link normally writes this during run_agent.
+    writeCriteriaStateAtomic(targetDir, { ...criteria, implementerRunId: implementer.runId });
+
+    const out = await runPanelHandler({
+      implementer_run_id: implementer.runId,
+      criteria_set_id: 'criteria-1',
+      reviewers: [{ agent_id: 'agy', prompt: 'review' }],
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: async () => fakeDispatchResult('agy', 1),
+    });
+
+    expect(out.reviewers[0].warnings).not.toEqual(expect.arrayContaining([
+      expect.stringContaining('ephemeral_review_wrong_diff'),
+    ]));
   });
 
   it('dispatches two bound reviewers with one pending write and one final write each', async () => {

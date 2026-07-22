@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { HealthCheckCache } from '../../src/utils/health-check-cache.js';
+import {
+  HealthCheckCache,
+  HealthCheckCacheMissError,
+} from '../../src/utils/health-check-cache.js';
 import type { HealthCheckResult } from '../../src/adapters/types.js';
 
 describe('HealthCheckCache', () => {
@@ -56,5 +59,24 @@ describe('HealthCheckCache', () => {
     expect(cached).toEqual(result);
     expect(firstProbe).toHaveBeenCalledOnce();
     expect(secondProbe).not.toHaveBeenCalled();
+  });
+
+  it('cachedOnly returns warm state and never probes on a cold cache', async () => {
+    const cache = new HealthCheckCache();
+    const result: HealthCheckResult = { available: false, authenticated: false, error: 'offline' };
+    const warmProbe = vi.fn(async () => result);
+    await cache.get(undefined, warmProbe);
+
+    const forbiddenProbe = vi.fn(async () => {
+      throw new Error('must not probe');
+    });
+    await expect(cache.get({ cachedOnly: true }, forbiddenProbe)).resolves.toEqual(result);
+    expect(forbiddenProbe).not.toHaveBeenCalled();
+
+    const coldProbe = vi.fn(async () => result);
+    await expect(
+      new HealthCheckCache().get({ cachedOnly: true }, coldProbe),
+    ).rejects.toBeInstanceOf(HealthCheckCacheMissError);
+    expect(coldProbe).not.toHaveBeenCalled();
   });
 });

@@ -24,7 +24,11 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()?.();
 });
 
-function depsFor(h: PanelHarness, config?: FullConfig): ToolHandlerDeps {
+function depsFor(
+  h: PanelHarness,
+  config?: FullConfig,
+  quotaProbe?: ToolHandlerDeps['quotaProbe'],
+): ToolHandlerDeps {
   return {
     registry: h.ctx.registry as ToolHandlerDeps['registry'],
     worktreeManager: h.worktreeManager,
@@ -39,6 +43,7 @@ function depsFor(h: PanelHarness, config?: FullConfig): ToolHandlerDeps {
       absentLogged: false,
     },
     readAgentPrefs: () => ({}),
+    ...(quotaProbe !== undefined ? { quotaProbe } : {}),
     ...(config !== undefined ? { loadWorkflowConfig: () => config } : {}),
   };
 }
@@ -243,6 +248,39 @@ describe('continue_run criteria linkage', () => {
     expect(accepted.structuredContent?.warnings).toEqual([
       expect.stringContaining('same_host_ok:true was supplied'),
     ]);
+  });
+
+  it('applies quota preflight to continue_run and allows dispatch_anyway', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'mock', enforcesReadOnly: true })]);
+    cleanups.push(h.cleanup);
+    await createConfirmedCriteria(h);
+    await seedTerminalLinkedRun(h);
+    const config = getDefaultConfig();
+    const quotaProbe: NonNullable<ToolHandlerDeps['quotaProbe']> = async () => ({
+      state: 'limited',
+      confidence: 'high',
+      source: 'provider',
+      checkedAt: '2026-07-21T12:00:00Z',
+      resetAt: '2026-07-22T00:00:00Z',
+    });
+
+    const refused = await continueRunToolHandler({
+      run_id: 'run-1',
+      prompt: 'next',
+    }, extra, depsFor(h, config, quotaProbe));
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toMatch(/^agent_quota_limited:.*resetAt=/);
+
+    const accepted = await continueRunToolHandler({
+      run_id: 'run-1',
+      prompt: 'next',
+      dispatch_anyway: true,
+    }, extra, depsFor(h, config, quotaProbe));
+    expect(accepted.isError).not.toBe(true);
+    expect(accepted.structuredContent?.warnings).toEqual([
+      expect.stringMatching(/^agent_quota_limited:.*dispatch_anyway:true/),
+    ]);
+    await waitFor(() => h.runStateStore.read('run-1')?.status === 'success');
   });
 
   it('warns on the fourth epoch continuation, refuses the twelfth total, and allows cap_override', async () => {

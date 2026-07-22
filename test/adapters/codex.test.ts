@@ -870,6 +870,13 @@ describe('CodexAdapter', () => {
   });
 
   describe('healthCheck', () => {
+    it('does not spawn when cachedOnly is requested on a cold cache', async () => {
+      await expect(adapter.healthCheck({ cachedOnly: true })).rejects.toMatchObject({
+        code: 'health_check.cache_miss',
+      });
+      expect(mockExeca).not.toHaveBeenCalled();
+    });
+
     it('returns available when codex --version succeeds', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: 'codex-cli 0.121.0',

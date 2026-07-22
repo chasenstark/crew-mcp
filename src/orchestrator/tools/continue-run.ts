@@ -65,6 +65,7 @@ import {
   isSameHostAgent,
   sameHostOverrideWarning,
 } from './dispatch-policy.js';
+import { preflightAgentDispatch } from './dispatch-preflight.js';
 
 export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
@@ -81,12 +82,13 @@ export const continueRunInputSchema = z.object({
   ban_override: z.boolean().optional(),
   same_host_ok: z.boolean().optional(),
   cap_override: z.boolean().optional(),
+  dispatch_anyway: z.boolean().optional(),
 }).strict();
 
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with prompt and/or peer_messages. Linked criteria re-check iterate.banList and the continuation cap; ban_override, same_host_ok, and cap_override require user approval. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with bounded relay_verbatim/ledger_line, override/cap warnings, and required_next_action crew-wait watcher when available. Do not block the turn long-polling get_run_status.';
+  'Resume an existing run with prompt and/or peer_messages. Linked criteria re-check policy and the continuation cap; ban_override, same_host_ok, cap_override, and health/quota dispatch_anyway require user approval. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with bounded relay_verbatim/ledger_line, warnings, and required_next_action crew-wait watcher when available.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -203,6 +205,16 @@ export async function continueRunToolHandler(
       }
       policyWarnings.push(sameHostOverrideWarning(adapter.name));
     }
+    const dispatchPreflight = await preflightAgentDispatch({
+      registry: deps.registry,
+      agentId: adapter.name,
+      quotaProbe: deps.quotaProbe,
+      dispatchAnyway: args.dispatch_anyway,
+    });
+    if (dispatchPreflight.refuse !== undefined) {
+      return errorContent(dispatchPreflight.refuse.message);
+    }
+    policyWarnings.push(...dispatchPreflight.warnings);
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }

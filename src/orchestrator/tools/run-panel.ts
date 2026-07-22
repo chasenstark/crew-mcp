@@ -59,6 +59,7 @@ import {
   findAgentBanMatch,
   isSameHostAgent,
 } from './dispatch-policy.js';
+import { preflightAgentDispatch } from './dispatch-preflight.js';
 
 const runPanelReviewerInputSchema = z.object({
   agent_id: z.string().min(1),
@@ -68,6 +69,7 @@ const runPanelReviewerInputSchema = z.object({
   working_directory: z.string().optional(),
   read_only: z.boolean().optional(),
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
+  dispatch_anyway: z.boolean().optional(),
 }).strict();
 
 export const runPanelInputSchema = z.object({
@@ -75,6 +77,7 @@ export const runPanelInputSchema = z.object({
   criteria_set_id: z.string().min(1).optional(),
   reviewers: z.array(runPanelReviewerInputSchema).max(100).optional(),
   ban_override: z.boolean().optional(),
+  dispatch_anyway: z.boolean().optional(),
 }).strict();
 
 export type RunPanelInput = z.infer<typeof runPanelInputSchema>;
@@ -113,10 +116,11 @@ export interface RunPanelHandlerContext extends DispatchContext {
   readonly sameHostAgentId?: string;
   readonly clientKind?: ClientKind;
   readonly crewWaitCommand?: string;
+  readonly quotaProbe?: ToolHandlerDeps['quotaProbe'];
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers as one panel. Explicit and default reviewers are canonicalized, refuse panel.banList unless ban_override follows user approval, and always refuse the current host. agy auto-routes to ephemeral_review. Returns panel_id, reviewer runs/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available for recovery. Do not block the turn long-polling get_run_status.';
+  'Dispatch parallel reviewers as one panel. Reviewers are canonicalized; ban_override and health/quota dispatch_anyway require user approval, while current-host reviewers stay refused. dispatch_anyway may be top-level or per reviewer. agy auto-routes to ephemeral_review. Returns panel_id, reviewer runs/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available for recovery.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -139,6 +143,7 @@ export async function runPanelToolHandler(
       sameHostAgentId: agentIdForClientKind(clientKind),
       clientKind,
       crewWaitCommand: deps.getCrewWaitCommand(),
+      quotaProbe: deps.quotaProbe,
       progress: progressNotifierFrom(extra, 'run_panel', deps.progressTokenSeen),
     });
     return markdownContent(renderRunPanelMarkdown(out, clientKind), out);
@@ -211,6 +216,27 @@ export async function runPanelHandler(
   };
 
   await mapWithConcurrency(reviewers, PANEL_REVIEWER_SETUP_CONCURRENCY, async (reviewer, index) => {
+    const dispatchPreflight = await preflightAgentDispatch({
+      registry: ctx.registry,
+      agentId: reviewer.agent_id,
+      quotaProbe: ctx.quotaProbe,
+      dispatchAnyway: reviewer.dispatch_anyway === true || input.dispatch_anyway === true,
+    });
+    const reviewerPolicyWarnings = [
+      ...reviewer.policyWarnings,
+      ...dispatchPreflight.warnings,
+    ];
+    if (dispatchPreflight.refuse !== undefined) {
+      await replaceReviewer(
+        index,
+        failedReviewerRecord(
+          reviewer.agent_id,
+          dispatchPreflight.refuse.message,
+          reviewerPolicyWarnings,
+        ),
+      );
+      return;
+    }
     const composed = composePeerMessages(implementerMessage, reviewer.peer_messages);
     // Reviewer placement is derived from the ADAPTER's reviewDispatchMode,
     // not from a panel-wide read_only: an ephemeral-worktree adapter (agy)
@@ -324,7 +350,7 @@ export async function runPanelHandler(
           }
         },
       });
-      record = dispatchedReviewerRecord(reviewer.agent_id, result, reviewer.policyWarnings);
+      record = dispatchedReviewerRecord(reviewer.agent_id, result, reviewerPolicyWarnings);
       // Reviewer-level actions remain available for selective/degraded
       // waits; the returned panel envelope adds the primary all-reviewer
       // watcher once the successful run ids are known.
@@ -341,7 +367,7 @@ export async function runPanelHandler(
         agent_id: reviewer.agent_id,
         tail_url: result.tailUrl,
         worktree_path: result.worktreePath,
-        warnings: [...result.warnings, ...reviewer.policyWarnings],
+        warnings: [...result.warnings, ...reviewerPolicyWarnings],
         ...(requiredNextAction !== undefined
           ? { required_next_action: requiredNextAction }
           : {}),

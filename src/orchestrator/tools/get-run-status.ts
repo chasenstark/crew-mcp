@@ -108,6 +108,11 @@ export const getRunStatusInputSchema = z.object({
    */
   wait_for_terminal_only: z.boolean().optional(),
   /**
+   * Explicit claim that the user asked the captain to block for terminal
+   * status. Required whenever wait_for_terminal_only is true.
+   */
+  user_requested_wait: z.boolean().optional(),
+  /**
    * Legacy: include the last `log_lines` of events as a tail. Deprecated
    * — prefer cursor semantics via `since_event_line`. Retained for
    * compatibility with snapshot callers; ignored when `since_event_line`
@@ -128,7 +133,7 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read a run's current status by run_id. Omit wait params for an immediate turn-start/post-watcher snapshot. wait_for_change_ms / wait_for_terminal_only are explicit user-wait opt-ins; the captain default is crew-wait or a next-turn snapshot, not a long-poll. Pass since_event_line to page events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal returns status, cursor, summary/filesChanged/prompts/warnings, commits/commit_count, events_tail, scoped unread inbox previews when present, and required_next_action when follow-up is required. Timeouts return running with timed_out:true.`;
+  `Read run status by run_id. Omit wait inputs for an immediate turn-start/post-watcher snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit user request; otherwise use the crew-wait watcher. Criteria-linked waits warn against long-polling. since_event_line pages events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal results include summary/filesChanged/prompts/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
 
 type GetRunStatusDeps = Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>
   & Partial<Pick<ToolHandlerDeps, 'crewHome'>>;
@@ -141,6 +146,22 @@ export async function getRunStatusToolHandler(
   if (!state) {
     return errorContent(`Unknown run_id "${args.run_id}".`);
   }
+
+  const waitBearing = (args.wait_for_change_ms ?? 0) > 0
+    || args.wait_for_terminal_only === true;
+  if (args.wait_for_terminal_only === true && args.user_requested_wait !== true) {
+    return errorContent(
+      'get_run_status.wait_requires_user_request: wait_for_terminal_only blocks the captain turn. '
+      + 'Use the crew-wait watcher; pass user_requested_wait:true only when the user explicitly '
+      + 'asked to block.',
+    );
+  }
+  const waitWarnings = waitBearing && state.criteriaSetId !== undefined
+    ? [
+        `get_run_status.criteria_linked_wait: run "${args.run_id}" is criteria-linked; prefer the `
+        + 'crew-wait watcher over long-polling the captain turn.',
+      ]
+    : [];
 
   const cursor = args.since_event_line ?? 0;
   const useLongPoll = (args.wait_for_change_ms ?? 0) > 0
@@ -155,6 +176,7 @@ export async function getRunStatusToolHandler(
       args.log_lines,
       args.max_events_tail,
       deps.crewHome,
+      waitWarnings,
     );
   }
 
@@ -171,6 +193,7 @@ export async function getRunStatusToolHandler(
         args.log_lines,
         args.max_events_tail,
         deps.crewHome,
+        waitWarnings,
       );
     }
   }
@@ -188,7 +211,11 @@ export async function getRunStatusToolHandler(
 
   const fresh = deps.runStateStore.read(args.run_id) ?? state;
   if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
-    return getRunStatusContent(args.run_id, { status: 'running', timed_out: true });
+    return getRunStatusContent(args.run_id, {
+      status: 'running',
+      timed_out: true,
+      ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
+    });
   }
   return buildGetRunStatusResponse(
     fresh,
@@ -198,6 +225,7 @@ export async function getRunStatusToolHandler(
     args.log_lines,
     args.max_events_tail,
     deps.crewHome,
+    waitWarnings,
   );
 }
 
@@ -240,6 +268,7 @@ function buildGetRunStatusResponse(
   logLines: number | undefined,
   maxEventsTail: number | undefined,
   crewHome: string | undefined,
+  waitWarnings: readonly string[] = [],
 ): ToolCallReturn {
   const status = state.status;
   const terminal = isTerminalRunStatus(status);
@@ -276,6 +305,7 @@ function buildGetRunStatusResponse(
       events_tail: cappedLines,
       next_event_line: cursorAfterDelta,
       ...(state.workerReady !== undefined ? { worker_ready: state.workerReady } : {}),
+      ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
       ...legacyLogTail,
     };
     return getRunStatusContent(runId, payload);
@@ -310,7 +340,9 @@ function buildGetRunStatusResponse(
     ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
     ...(state.mergeStatus !== undefined ? { mergeStatus: state.mergeStatus } : {}),
-    ...(state.warnings !== undefined ? { warnings: state.warnings } : {}),
+    ...((state.warnings?.length ?? 0) + waitWarnings.length > 0
+      ? { warnings: [...(state.warnings ?? []), ...waitWarnings] }
+      : {}),
     ...(state.workerReady !== undefined ? { worker_ready: state.workerReady } : {}),
     // run_mode only when it isn't the default lifecycle; readOnly kept for
     // legacy consumers (it is the persisted !isMergeable shim, so it also

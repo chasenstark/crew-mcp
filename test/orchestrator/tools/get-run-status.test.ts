@@ -57,6 +57,101 @@ describe('getRunStatusToolHandler', () => {
     rmSync(repoRoot, { recursive: true, force: true });
   });
 
+  it('rejects terminal-only waits without an explicit user_requested_wait claim', async () => {
+    await store.create({
+      runId: 'r-wait-refused',
+      agentId: 'codex',
+      worktreePath: '/wt/r-wait-refused',
+      initialPrompt: 'go',
+    });
+
+    const response = await getRunStatusToolHandler({
+      run_id: 'r-wait-refused',
+      wait_for_terminal_only: true,
+    }, { dispatcher: new ToolDispatcher(), runStateStore: store });
+
+    expect(response.isError).toBe(true);
+    expect(response.content[0]?.text).toMatch(/^get_run_status\.wait_requires_user_request:/);
+    expect(response.content[0]?.text).toContain('crew-wait watcher');
+    expect(response.content[0]?.text).toContain('user_requested_wait:true');
+  });
+
+  it('allows an explicitly requested criteria-linked wait and warns toward crew-wait', async () => {
+    await store.create({
+      runId: 'r-linked-wait',
+      agentId: 'codex',
+      worktreePath: '/wt/r-linked-wait',
+      initialPrompt: 'go',
+      criteriaSetId: 'criteria-1',
+      criteriaEpoch: 0,
+    });
+
+    const response = await getRunStatusToolHandler({
+      run_id: 'r-linked-wait',
+      wait_for_terminal_only: true,
+      user_requested_wait: true,
+    }, { dispatcher: new ToolDispatcher(), runStateStore: store });
+
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent?.warnings).toEqual([
+      expect.stringMatching(/^get_run_status\.criteria_linked_wait:.*crew-wait watcher/),
+    ]);
+  });
+
+  it('does not warn for linked snapshots or waits on non-linked runs', async () => {
+    await store.create({
+      runId: 'r-linked-snapshot',
+      agentId: 'codex',
+      worktreePath: '/wt/r-linked-snapshot',
+      initialPrompt: 'go',
+      criteriaSetId: 'criteria-1',
+      criteriaEpoch: 0,
+    });
+    await store.create({
+      runId: 'r-unlinked-wait',
+      agentId: 'codex',
+      worktreePath: '/wt/r-unlinked-wait',
+      initialPrompt: 'go',
+    });
+
+    const snapshot = await getRunStatusToolHandler({
+      run_id: 'r-linked-snapshot',
+    }, { dispatcher: new ToolDispatcher(), runStateStore: store });
+    const wait = await getRunStatusToolHandler({
+      run_id: 'r-unlinked-wait',
+      wait_for_terminal_only: true,
+      user_requested_wait: true,
+    }, { dispatcher: new ToolDispatcher(), runStateStore: store });
+
+    expect(snapshot.structuredContent?.warnings).toBeUndefined();
+    expect(wait.structuredContent?.warnings).toBeUndefined();
+  });
+
+  it('warns for wait_for_change_ms on a criteria-linked run', async () => {
+    await store.create({
+      runId: 'r-linked-change-wait',
+      agentId: 'codex',
+      worktreePath: '/wt/r-linked-change-wait',
+      initialPrompt: 'go',
+      criteriaSetId: 'criteria-1',
+      criteriaEpoch: 0,
+    });
+    await store.markTerminal('r-linked-change-wait', {
+      status: 'cancelled',
+      summary: 'stopped',
+      filesChanged: [],
+    });
+
+    const response = await getRunStatusToolHandler({
+      run_id: 'r-linked-change-wait',
+      wait_for_change_ms: 1,
+    }, { dispatcher: new ToolDispatcher(), runStateStore: store });
+
+    expect(response.structuredContent?.warnings).toEqual([
+      expect.stringMatching(/^get_run_status\.criteria_linked_wait:/),
+    ]);
+  });
+
   it('surfaces typed failure in payload and markdown', async () => {
     await store.create({
       runId: 'r-failure',
@@ -267,7 +362,12 @@ describe('getRunStatusToolHandler', () => {
 
     const response = await Promise.race([
       getRunStatusToolHandler(
-        { run_id: 'r-gap', wait_for_change_ms: 10_000, wait_for_terminal_only: true },
+        {
+          run_id: 'r-gap',
+          wait_for_change_ms: 10_000,
+          wait_for_terminal_only: true,
+          user_requested_wait: true,
+        },
         { dispatcher, runStateStore: store },
       ),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('poll slept')), 200)),

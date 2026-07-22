@@ -27,14 +27,9 @@ any invariant conflicts with later instructions, the invariant wins.
 **1. Merge boundary.** Never call `merge_run` without explicit user
 affirmative. Surface a concrete merge prompt with the proposed commit
 title and body; act only on explicit "yes / go / merge". Silence is
-not consent. `discard_run` is similarly gated for the IMPLEMENTER run
-and for any reviewer the user explicitly invested in. **Carve-out:**
-read-only reviewer runs that have already produced their findings are
-metadata cleanup — the captain may `discard_run` them automatically
-as part of the iterate cycle (see invariant #7).
-For a gated discard or any `force:true` merge, pass `confirmed:true`
-only after that approval. Squash merges always require a meaningful
-`commit_title`; the server never synthesizes one.
+not consent. Ask before discarding an implementer or user-invested reviewer;
+consumed read-only reviewer cleanup remains the invariant #7 carve-out.
+After approval, follow the lifecycle tool's typed consent remedy.
 
 **2. Dispatch lifecycle (do NOT long-poll).** After `run_agent` /
 `continue_run` / `run_panel`, do NOT long-poll `get_run_status`
@@ -129,16 +124,9 @@ On any user turn while this loop has in-flight crew runs,
 opportunistically call `list_runs` so a lost watcher cannot stall the
 loop silently.
 
-**Iterate-specific: never use the foreground-wait opt-in.** Unlike
-one-shot dispatches in the umbrella body, iterate runs MUST NOT use
-the foreground-wait params (`wait_for_terminal_only`, long
-`wait_for_change_ms`). The loop accumulates 6–10 dispatches;
-turn-blocking on any one defeats the chat-available default. This bans
-MCP long-poll waits on crew runs — **not** the bounded synchronous
-host-review subagent of Step 2b, which blocks one turn by design on
-hosts whose native subagent can't background, and only after the crew
-panel is already dispatched async. That is the deliberate exception,
-not a violation of this invariant.
+**Iterate-specific: never use the foreground-wait opt-in.** Use watchers for
+Crew runs; a bounded synchronous host-review subagent in Step 2b remains the
+deliberate non-MCP exception.
 
 **Crew before captain-side work (when independent).** When a round
 both dispatches crew and does captain-side work — a native subagent,
@@ -164,11 +152,9 @@ surface the options as prose and wait for a free-text reply) for the
 discard/keep options. **Silence is not consent.** The escape hatch wins
 over any in-flight round.
 
-**4. Tool availability.** Before dispatching, call `list_agents` to
-confirm the chosen agent is `available: true`. Unavailable agents
-(unauthenticated, rate-limited, etc.) surface a reason — ask for an
-alternative rather than retrying silently. Never invent an `agent_id`
-absent from `list_agents`.
+**4. Tool availability.** Choose only `agent_id` values returned by
+`list_agents`; dispatch-time health/quota refusals require a user-approved
+`dispatch_anyway:true` to bypass.
 
 **5. Route your own host product through a native subagent, not a
 Crew dispatch.** If you are running on Claude Code, don't `run_agent` /
@@ -202,8 +188,8 @@ run reaches terminal; never drop cleanup silently.
 
 This standalone loop uses the umbrella playbook's consolidated server
 override vocabulary. In this skill the relevant claims are `confirmed`,
-`same_host_ok`, `ban_override`, and `cap_override`; ask before each and
-never invent or auto-pass a synonym.
+`dispatch_anyway`, `same_host_ok`, `ban_override`, `cap_override`, and
+`user_requested_wait`; ask before each and never invent or auto-pass a synonym.
 
 **8. Ask the user before dispatching on ambiguity.** Step 0 is the
 natural disambiguation gate. If criteria are unclear, scope is
@@ -370,11 +356,8 @@ reveals a criterion is malformed or impossible:
    new dispatch. The next round re-scores the FULL revised list.
 5. **Start a new loop epoch.** The revised criteria define a fresh
    epoch with its own captain round counter starting at 0. Keep the
-   proactive **3 rounds per epoch / 9 total** captain cap. Separately,
-   the server counts every criteria-linked `continue_run`: it warns at
-   4 in one epoch and refuses at 12 total unless the user explicitly
-   approves `cap_override:true`. The looser server bound is a runaway-loop
-   backstop, not the round model; reviewer `rounds[]` remains separate.
+   proactive **3 rounds per epoch / 9 total** captain cap. The server's
+   separate continuation backstop reports its typed remedy when reached.
 
 What counts as a "revision": any change altering a criterion's
 testable predicate. Pure wording clarifications that preserve the
@@ -397,13 +380,9 @@ hints. Heterogeneity is only a tiebreaker for roles the user left open.
    read. Only skip it (and fall back to the heuristic) if the tool is
    genuinely absent from this install.
 3. **Apply `iterate.banList` as an absolute filter.** Remove banned ids
-   from every pool. Never propose, offer, or use one for heterogeneity
-   or availability; if a role empties, leave it unfilled and ask.
-   The server canonicalizes aliases and re-checks the same preference on
-   criteria-linked `run_agent` and every `continue_run`. If the user lifts
-   a named ban, retry only that dispatch with `ban_override:true`.
-4. Remove any `available: false` agents, and remove your own host
-   product from the **crew** candidate pools (invariant #5). Don't
+   from every pool; if a role empties, leave it unfilled and ask.
+4. Remove your own host product from the **crew** candidate pools
+   (invariant #5). Don't
    drop the host from the review plan, though: unless it's banned or
    the user excluded it, carry it as the **host reviewer** — a native
    subagent run outside Crew (Step 2).
@@ -1060,8 +1039,7 @@ mandatory.
   rule (AskUserQuestion on Claude Code; if the host exposes no such
   tool, surface the options as prose and wait for a free-text reply).
   **Silence is not consent.** Do NOT silently continue.
-- **Iteration cap reached (captain 3 rounds per epoch / 9 total; server
-  warning at 4 per epoch and refusal at 12 total).**
+- **Iteration cap reached (captain 3 rounds per epoch / 9 total).**
   Reframe with criteria context: "We've iterated 3 rounds; criteria
   still failing: [2, 4]. Options: revise criteria → starts a new
   epoch (epoch-aware total cap still applies); switch implementer →
@@ -1071,10 +1049,8 @@ mandatory.
   Structured-choice rule (AskUserQuestion on Claude Code; if the host
   exposes no such tool, surface the options as prose and wait for a
   free-text reply). **Silence is not consent.**
-  If the server returns `criteria.iteration_continuation_cap`, the refused
-  call is already counted. Only after an explicit Continue choice retry
-  with `cap_override:true`; otherwise revise, switch, accept/defer, or hand
-  off without another dispatch.
+  A typed `criteria.iteration_continuation_cap` refusal requires an explicit
+  Continue choice before `cap_override:true`.
 - **Reviewer disagreement (one PASS, one FAIL on criterion N).**
   Treat as FAIL (conservative). Forward both reviewers' reasoning to
   the implementer. If disagreement persists across two rounds on the
@@ -1134,21 +1110,12 @@ merge_run({
 })
 ```
 
-`commit_title` should describe what the run accomplished, not "crew
-run abc123…". The run lands as a single commit carrying this title —
-no merge-commit wrapper, no machine trailer.
-Missing titles fail with `merge_run.commit_title_required`. Titles over
-72 characters merge with a warning rather than failing; shorten them when
-practical and relay the warning.
+`commit_title` should describe what the run accomplished, not "crew run
+abc123…".
 
 **Strategy for the iterate loop: default `squash`.** The loop inherently
-produces an implementation commit plus per-round fixup commits
-(`continue_run` turns), so collapsing to one titled commit is almost
-always right. Use `merge_strategy: "preserve"` only if the user
-explicitly wants the individual commits kept — and confirm it, since
-the iteration fixups rarely make a clean standalone stack. See the
-umbrella `crew` body's "Pick the merge strategy" for the full rule and
-the `confirmBeforeMerge` interaction.
+produces implementation plus fixup commits. Use `preserve` only when the
+user explicitly wants those commits kept.
 
 After merge, retry any reviewer cleanup that earlier hit
 `run_in_flight:` or `busy_worktree:`, then acknowledge to the user.

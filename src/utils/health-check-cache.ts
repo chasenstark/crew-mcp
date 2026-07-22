@@ -38,6 +38,28 @@ export interface PersistentHealthCheckCacheOptions {
   readonly cliVersion: string;
 }
 
+export class HealthCheckCacheMissError extends Error {
+  readonly code = 'health_check.cache_miss';
+
+  constructor(agentName?: string) {
+    super(
+      agentName === undefined
+        ? 'No cached health state is available.'
+        : `No cached health state is available for agent "${agentName}".`,
+    );
+    this.name = 'HealthCheckCacheMissError';
+  }
+}
+
+export function isHealthCheckCacheMissError(err: unknown): boolean {
+  return err instanceof HealthCheckCacheMissError
+    || (
+      typeof err === 'object'
+      && err !== null
+      && (err as { code?: unknown }).code === 'health_check.cache_miss'
+    );
+}
+
 export class HealthCheckCache {
   private cached?: {
     result: HealthCheckResult;
@@ -78,6 +100,10 @@ export class HealthCheckCache {
         };
         return persisted.result;
       }
+    }
+
+    if (options?.cachedOnly === true) {
+      throw new HealthCheckCacheMissError();
     }
 
     const result = await probe();

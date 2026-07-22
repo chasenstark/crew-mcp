@@ -395,4 +395,10 @@ export interface HealthCheckOptions {
    * state immediately.
    */
   refresh?: boolean;
+  /**
+   * Return only an unexpired cached result. Implementations must not start a
+   * subprocess or network probe when no cached state exists; they signal a
+   * cache miss so dispatch preflight can fail open.
+   */
+  cachedOnly?: boolean;
 }

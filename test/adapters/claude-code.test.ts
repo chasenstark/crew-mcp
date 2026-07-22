@@ -700,6 +700,23 @@ describe('ClaudeCodeAdapter', () => {
   });
 
   describe('healthCheck', () => {
+    it('does not spawn when cachedOnly is requested on a cold cache', async () => {
+      await expect(adapter.healthCheck({ cachedOnly: true })).rejects.toMatchObject({
+        code: 'health_check.cache_miss',
+      });
+      expect(mockExeca).not.toHaveBeenCalled();
+    });
+
+    it('returns a cached unavailable result without spawning again', async () => {
+      mockExeca.mockRejectedValueOnce(new Error('ENOENT'));
+      const first = await adapter.healthCheck();
+      const cached = await adapter.healthCheck({ cachedOnly: true });
+
+      expect(first.available).toBe(false);
+      expect(cached).toEqual(first);
+      expect(mockExeca).toHaveBeenCalledOnce();
+    });
+
     it('returns available from the default non-LLM version probe', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: 'claude 1.0.12',

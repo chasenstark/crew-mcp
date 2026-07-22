@@ -152,8 +152,8 @@ describe('crew-captain body — merge and cleanup', () => {
     expectContainsCI(flat, 'commit_title');
     expectContainsCI(flat, 'squash');
     expectContainsCI(flat, 'preserve');
-    expectContainsCI(flat, 'merge_run.commit_title_required');
-    expectContainsCI(flat, 'title over 72 characters succeeds with a warning');
+    expectContainsCI(flat, 'meaningful');
+    expectContainsCI(flat, 'Ask gate');
   });
 
   it('describes prompt-discard habit plus run-GC backstop for read-only and ephemeral runs', async () => {
@@ -180,10 +180,9 @@ describe('crew-captain body — quota-aware routing', () => {
     const section = sliceBetween(body, '## Quota-aware routing', '## Peer context');
     const flat = flattenWhitespace(section);
 
-    expectContainsCI(flat, '`limited` agents');
-    expectContainsCI(flat, '`near_limit`');
-    expectContainsCI(flat, '`unknown`');
-    expectContainsCI(flat, '`local_unmetered`');
+    expectContainsCI(flat, 'unavailable/limited agents');
+    expectContainsCI(flat, 'soft quota signals');
+    expectContainsCI(flat, 'dispatch_anyway:true');
     expectContainsCI(flat, 'refresh:');
     expectContainsCI(flat, 'un-stick');
     expectContainsCI(flat, 'rate_limited');

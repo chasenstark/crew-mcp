@@ -2,7 +2,6 @@ import { execa } from 'execa';
 import { z } from 'zod';
 import {
   HealthCheckCache,
-  healthCheckTtlMs,
 } from '../utils/health-check-cache.js';
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 
@@ -574,7 +573,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     supportsPauseForUserInput: false,
   };
   private readonly healthCheckCache = new HealthCheckCache();
-  private versionMemo?: { readonly version: string; readonly expiresAt: number };
+  private readonly versionHealthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
     return typeof modelId === 'string'
@@ -883,26 +882,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
-    const now = Date.now();
-    const ttlMs = healthCheckTtlMs();
-    let version = !options?.refresh
-      && ttlMs > 0
-      && this.versionMemo !== undefined
-      && this.versionMemo.expiresAt > now
-      ? this.versionMemo.version
-      : undefined;
-
-    if (version === undefined) {
-      const versionProbe = await this.probeVersion();
-      if (!versionProbe.available || versionProbe.version === undefined) {
-        this.versionMemo = undefined;
-        return versionProbe;
-      }
-      version = versionProbe.version;
-      this.versionMemo = ttlMs > 0
-        ? { version, expiresAt: now + ttlMs }
-        : undefined;
+    const versionProbe = await this.versionHealthCheckCache.get(
+      options,
+      () => this.probeVersion(),
+    );
+    if (!versionProbe.available || versionProbe.version === undefined) {
+      return versionProbe;
     }
+    const version = versionProbe.version;
     return this.healthCheckCache.get(
       options,
       () => options?.refresh === true

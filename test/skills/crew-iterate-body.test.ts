@@ -290,14 +290,15 @@ describe('crew-iterate body — criteria-store adoption', () => {
     expectContainsCI(step0, 'Silence is not consent');
   });
 
-  it('documents the server continuation backstop without reusing reviewer rounds', async () => {
+  it('keeps the captain cap while deferring server continuation mechanics to typed errors', async () => {
     const body = await loadBody();
     const flat = flattenWhitespace(body);
-    expectContainsCI(flat, 'warns at 4 in one epoch');
-    expectContainsCI(flat, 'refuses at 12 total');
+    expectContainsCI(flat, '3 rounds per epoch / 9 total');
+    expectContainsCI(flat, 'separate continuation backstop');
     expectContainsCI(flat, 'cap_override:true');
-    expectContainsCI(flat, 'reviewer `rounds[]` remains separate');
     expectContainsCI(flat, 'criteria.iteration_continuation_cap');
+    expect(body).not.toContain('warns at 4 in one epoch');
+    expect(body).not.toContain('refuses at 12 total');
     expect(body).not.toContain('runtime counts nothing');
   });
 

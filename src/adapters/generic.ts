@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import type {
   AgentAdapter,
   AgentStrength,
+  HealthCheckOptions,
   HealthCheckResult,
   Task,
   TaskResult,
@@ -15,6 +16,7 @@ import { argvPromptTooLargeResult } from './prompt-transport.js';
 import { classifyTextFailure } from './failure-classifier.js';
 import { boundFailureText } from './failure-output.js';
 import { codexSafeSpawnEnvironment } from '../codex/environment.js';
+import { HealthCheckCache } from '../utils/health-check-cache.js';
 
 const PROMPT_VALUE_FLAGS = new Set(['--prompt']);
 
@@ -83,6 +85,7 @@ export class GenericAdapter implements AgentAdapter {
 
   private readonly command: string;
   private readonly argsTemplate: string[];
+  private readonly healthCheckCache = new HealthCheckCache();
 
   constructor(options: GenericAdapterOptions) {
     this.name = options.name;
@@ -259,7 +262,11 @@ export class GenericAdapter implements AgentAdapter {
     };
   }
 
-  async healthCheck(): Promise<HealthCheckResult> {
+  async healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult> {
+    return this.healthCheckCache.get(options, () => this.probeHealth());
+  }
+
+  private async probeHealth(): Promise<HealthCheckResult> {
     try {
       const cmd = process.platform === 'win32' ? 'where' : 'which';
       const result = await execa(cmd, [this.command], {
