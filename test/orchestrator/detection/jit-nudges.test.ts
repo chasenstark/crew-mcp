@@ -14,6 +14,7 @@ import {
   DETECTION_JOURNAL_TAIL_BYTES,
   JIT_NUDGE_MAX_BYTES,
   JIT_NUDGE_MAX_COUNT,
+  TERMINAL_NUDGE_RECENCY_CEILING_MS,
   type ConfirmationAttempt,
 } from '../../../src/orchestrator/detection/jit-nudges.js';
 import type { RunStateV1 } from '../../../src/orchestrator/run-state.js';
@@ -42,17 +43,50 @@ afterEach(() => {
 });
 
 describe('detectJitNudges', () => {
-  it('warns for a terminal watcher-capable run with no generation claim after grace', () => {
+  it('warns for a recent terminal write run with no current-generation watcher claim', () => {
     const fixture = makeFixture();
     writeState(fixture, stateFixture({
       runId: 'orphan-run',
       status: 'success',
       generationStartedAtMs: NOW_MS - 5 * MINUTE_MS,
       completedAtMs: NOW_MS - 3 * MINUTE_MS,
+      runMode: 'write',
     }));
 
     const warnings = detect(fixture, { clientKind: 'claude-code' });
     expect(warnings).toContainEqual(expect.stringContaining('orphan_recovery: run "orphan-run"'));
+  });
+
+  it('suppresses stale orphan and unsurfaced terminal warnings beyond the recency ceiling', () => {
+    const fixture = makeFixture();
+    writeState(fixture, stateFixture({
+      runId: 'stale-run',
+      status: 'success',
+      generationStartedAtMs: NOW_MS - TERMINAL_NUDGE_RECENCY_CEILING_MS - 2 * MINUTE_MS,
+      completedAtMs: NOW_MS - TERMINAL_NUDGE_RECENCY_CEILING_MS - MINUTE_MS,
+      runMode: 'write',
+    }));
+
+    const warnings = detect(fixture, { clientKind: 'claude-code' });
+    expect(warnings).not.toContainEqual(expect.stringContaining('orphan_recovery'));
+    expect(warnings).not.toContainEqual(expect.stringContaining('unsurfaced_terminal'));
+  });
+
+  it('suppresses orphan recovery for recent non-mergeable run modes', () => {
+    for (const runMode of ['read_only', 'ephemeral_review'] as const) {
+      const fixture = makeFixture();
+      const runId = `recent-${runMode}`;
+      writeState(fixture, stateFixture({
+        runId,
+        status: 'success',
+        generationStartedAtMs: NOW_MS - 5 * MINUTE_MS,
+        completedAtMs: NOW_MS - 3 * MINUTE_MS,
+        runMode,
+      }));
+
+      expect(detect(fixture, { clientKind: 'claude-code' }))
+        .not.toContainEqual(expect.stringContaining('orphan_recovery'));
+    }
   });
 
   it('suppresses orphan recovery without watcher semantics, inside grace, and on continued running generations', () => {
@@ -127,12 +161,13 @@ describe('detectJitNudges', () => {
       .not.toContainEqual(expect.stringContaining('orphan_recovery'));
   });
 
-  it('warns when a terminal run stays unread while other calls arrive', () => {
+  it('warns when a recent read-only terminal run stays unread while other calls arrive', () => {
     const fixture = makeFixture();
     writeState(fixture, stateFixture({
       runId: 'unread-run',
       status: 'error',
       completedAtMs: NOW_MS - 3 * MINUTE_MS,
+      runMode: 'read_only',
     }));
 
     expect(detect(fixture, { currentTool: 'list_agents' }))

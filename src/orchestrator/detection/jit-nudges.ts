@@ -25,6 +25,9 @@ import {
 
 export const ORPHAN_WATCHER_GRACE_MS = 2 * 60 * 1_000;
 export const UNSURFACED_TERMINAL_GRACE_MS = 2 * 60 * 1_000;
+// Covers an unusually long same-day captain session without excavating
+// day-old terminals that predate the watch index or no longer need attention.
+export const TERMINAL_NUDGE_RECENCY_CEILING_MS = 12 * 60 * 60 * 1_000;
 export const LONG_POLL_WINDOW_MS = 60 * 1_000;
 export const LONG_POLL_CALL_THRESHOLD = 3;
 export const CONFIRMATION_RETRY_MAX_MS = 1_000;
@@ -109,11 +112,14 @@ export function detectJitNudges(input: DetectJitNudgesInput): string[] {
     for (const state of states) {
       const generationStartMs = currentGenerationStartMs(state);
       const terminalMs = currentTerminalMs(state);
+      const terminalAgeMs = terminalMs === undefined ? undefined : nowMs - terminalMs;
       if (
         input.clientKind === 'claude-code'
-        && terminalMs !== undefined
-        && nowMs - terminalMs >= ORPHAN_WATCHER_GRACE_MS
+        && terminalAgeMs !== undefined
+        && terminalAgeMs >= ORPHAN_WATCHER_GRACE_MS
+        && terminalAgeMs <= TERMINAL_NUDGE_RECENCY_CEILING_MS
         && isUnresolvedTerminal(state.status)
+        && runModeFromState(state) === 'write'
         && !watch.some((record) => (
           record.run_id === state.runId
           && parseTimestamp(record.ts) >= generationStartMs
@@ -126,7 +132,9 @@ export function detectJitNudges(input: DetectJitNudgesInput): string[] {
 
       if (
         terminalMs !== undefined
-        && nowMs - terminalMs >= UNSURFACED_TERMINAL_GRACE_MS
+        && terminalAgeMs !== undefined
+        && terminalAgeMs >= UNSURFACED_TERMINAL_GRACE_MS
+        && terminalAgeMs <= TERMINAL_NUDGE_RECENCY_CEILING_MS
         && isUnresolvedTerminal(state.status)
       ) {
         const surfaced = observations.some((record) => (
