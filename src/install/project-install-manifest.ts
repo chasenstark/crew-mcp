@@ -19,7 +19,8 @@ export interface ProjectInstallManifest {
 }
 
 const PROJECT_SCHEMA_VERSION = 1 as const;
-const PROJECT_MANIFEST_RELATIVE_PATH = '.crew/install.project.json';
+/** Canonical repo-relative path of the project install manifest. */
+export const PROJECT_MANIFEST_RELATIVE_PATH = '.crew/install.project.json';
 const KNOWN_TOP_LEVEL_KEYS = new Set(['schemaVersion', 'scope', 'targets']);
 
 export function projectManifestPath(repoRoot: string): string {

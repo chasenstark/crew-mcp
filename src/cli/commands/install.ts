@@ -72,6 +72,7 @@ import {
   relativizeProjectTarget,
   type ProjectInstalledTarget,
 } from '../../install/project-install-manifest.js';
+import { ensureProjectManifestCommittable } from '../../install/project-gitignore.js';
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { withInstallLock, writeFileAtomic } from '../../install/atomic-write.js';
@@ -356,6 +357,19 @@ async function installProjectCommand(opts: InstallOptions): Promise<InstallResul
         const message = err instanceof Error ? err.message : String(err);
         logger.error(`crew install: ${adapter.displayName} project scope failed — ${message}`);
         result.skipped.push({ host: targetId, reason: message });
+      }
+    }
+
+    // Keep the just-written manifest committable even when the repo ignores
+    // .crew/. Non-fatal: a gitignore hiccup must never fail the install.
+    if (result.installed.length > 0) {
+      try {
+        await ensureProjectManifestCommittable(repoRoot);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          `crew install: could not verify .crew/install.project.json is committable — ${message}`,
+        );
       }
     }
   });
