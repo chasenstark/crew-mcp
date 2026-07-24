@@ -14,6 +14,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "canary": "npm run build && tsup --config tsup.canary.config.ts && node dist/canary/cli.js",
     "dev": "tsup --watch",
     "test": "vitest",
     "test:run": "vitest run",
