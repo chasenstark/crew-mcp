@@ -148,6 +148,16 @@ explicitly when the envelope or workflow shifts.
   loading, adapter dispatch, and CLI command handling.
 - Run `npm run test:run && npm run lint` before opening a PR.
 
+## Versioning
+- Bump the package version on every substantial change — a new feature, a
+  behavior change, or a bug fix that ships. Pure docs-only or test-only tweaks
+  do not need a bump. Follow semver intent (`minor` for features, `patch` for
+  fixes); with no production users this is a change marker, not a compatibility
+  contract.
+- The version lives in TWO places that MUST stay in sync: `version` in
+  `package.json` and `CREW_MCP_VERSION` in `src/cli/version.ts`. Update both in
+  the same change — `test/cli/version.test.ts` asserts they match.
+
 ## Commit & Pull Request Guidelines
 - Prefer concise, imperative commit subjects. Conventional prefixes are encouraged (for example `feat(cli): ...`, `fix(workflow): ...`).
 - Keep commits scoped to one logical change.
