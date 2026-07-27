@@ -364,7 +364,7 @@ describe('host-conditional real skill bodies', () => {
       expect(out).toContain('`ledger_line`');
       expect(out).toContain('`merge_or_discard`');
       expect(out).toContain('`check_inbox`');
-      expect(out).toContain('`confirm_with_user`');
+      expect(out).not.toContain('`confirm_with_user`');
       expect(out).toContain('terminal snapshot');
       expect(out).toContain('captain_inbox_summary');
       expect(out).toContain('`UNTRUSTED worker-authored context/data`');

@@ -28,6 +28,10 @@ async function loadBody(): Promise<string> {
   return stripHtmlComments(raw);
 }
 
+async function loadRawBody(): Promise<string> {
+  return readFile(BODY_PATH, 'utf-8');
+}
+
 function expectContainsCI(haystack: string, needle: string): void {
   const ok = haystack.toLowerCase().includes(needle.toLowerCase());
   if (!ok) {
@@ -59,8 +63,14 @@ function sliceBetween(
 
 function expectStructuredQuestionGuidance(section: string): void {
   const flat = flattenWhitespace(section);
-  expectContainsCI(flat, 'AskUserQuestion on Claude Code');
-  expectContainsCI(flat, 'if the host exposes no such tool');
+  expectContainsCI(flat, 'Apply the Structured-choice rule');
+  expectContainsCI(flat, 'Silence is not consent');
+}
+
+function expectFullStructuredQuestionGuidance(section: string): void {
+  const flat = flattenWhitespace(section);
+  expectContainsCI(flat, 'AskUserQuestion');
+  expectContainsCI(flat, 'if the host exposes no structured-question tool');
   expectContainsCI(flat, 'surface the options as prose');
   expectContainsCI(flat, 'free-text reply');
   expectContainsCI(flat, 'Silence is not consent');
@@ -131,6 +141,8 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     expectContainsCI(step2, 'run_in_background: true');
     expectContainsCI(step2, 'foreground');
     expectContainsCI(step2, 'last resort');
+    expectContainsCI(flattenWhitespace(step2), 'Never pre-allocate reviewer runs');
+    expectContainsCI(flattenWhitespace(step2), 'worktree is only stable post-terminal');
 
     // Order: crew dispatch precedes the foreground host path.
     expect(step2.toLowerCase().indexOf('dispatch the crew reviewer'))
@@ -143,6 +155,17 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
       'inline review is the last resort** — only when the host exposes no native subagent tool at all',
     );
     expect(flat).not.toContain('too large to review');
+  });
+
+  it('keeps timestamp-free list_runs recovery in shared host prose', async () => {
+    const raw = await loadRawBody();
+    const recovery = 'without `completedAfter`; filter terminal statuses and dedupe by `run_id`';
+    const recoveryIndex = raw.indexOf(recovery);
+
+    expect(recoveryIndex).toBeGreaterThanOrEqual(0);
+    expect(countOccurrences(raw, 'completedAfter')).toBe(1);
+    expect(raw.lastIndexOf('<!-- /host -->', recoveryIndex))
+      .toBeGreaterThan(raw.lastIndexOf('<!-- host:', recoveryIndex));
   });
 
   it('mentions a new-epoch concept (either "new epoch" or "new loop epoch")', async () => {
@@ -162,9 +185,14 @@ describe('crew-iterate body — structured-question gates', () => {
       '### When to use this skill',
     );
 
-    expectStructuredQuestionGuidance(section);
+    expectFullStructuredQuestionGuidance(section);
     expectContainsCI(section, 'Other/free-text escape');
     expectContainsCI(section, 'Genuinely open-ended asks are different');
+    expect(body.match(/if the host exposes no structured-question tool/gi) ?? []).toHaveLength(1);
+
+    const raw = await loadRawBody();
+    expect(raw).toContain('<!-- host:claude-code -->');
+    expect(raw).toContain('use `AskUserQuestion`');
   });
 
   it('routes the escape hatch discard/keep gate through structured questions', async () => {
@@ -176,7 +204,7 @@ describe('crew-iterate body — structured-question gates', () => {
     );
 
     expectStructuredQuestionGuidance(section);
-    expectContainsCI(section, 'discard/keep options');
+    expectContainsCI(section, 'discard/keep');
   });
 
   it('routes Step 0 criteria confirmation and revision gates through structured questions', async () => {
@@ -233,10 +261,10 @@ describe('crew-iterate body — structured-question gates', () => {
 
     const blockingStart = step3.indexOf('**BLOCKING verdict.');
     const capStart = step3.indexOf('**Iteration cap reached', blockingStart);
-    const disagreementStart = step3.indexOf('**Reviewer disagreement', capStart);
+    const implementerErrorStart = step3.indexOf('**Implementer `error`', capStart);
     expect(blockingStart).toBeGreaterThanOrEqual(0);
     expect(capStart).toBeGreaterThan(blockingStart);
-    expect(disagreementStart).toBeGreaterThan(capStart);
+    expect(implementerErrorStart).toBeGreaterThan(capStart);
 
     const blockingGate = step3.slice(blockingStart, capStart);
     const flatBlockingGate = flattenWhitespace(blockingGate);
@@ -246,7 +274,7 @@ describe('crew-iterate body — structured-question gates', () => {
     expectContainsCI(flatBlockingGate, 'discard');
     expectContainsCI(flatBlockingGate, 'continue anyway');
 
-    const capGate = step3.slice(capStart, disagreementStart);
+    const capGate = step3.slice(capStart, implementerErrorStart);
     const flatCapGate = flattenWhitespace(capGate);
     expectStructuredQuestionGuidance(capGate);
     expectContainsCI(flatCapGate, 'revise criteria');
@@ -260,7 +288,7 @@ describe('crew-iterate body — structured-question gates', () => {
     const step4 = sliceBetween(
       body,
       '### Step 4 — Merge',
-      '## Operating guardrails',
+      '## Tools',
     );
 
     expectStructuredQuestionGuidance(step4);
@@ -284,7 +312,7 @@ describe('crew-iterate body — criteria-store adoption', () => {
     expect(step0).toContain('create_criteria({criteria})');
     expect(step0).toContain('returned tool-result text');
     expectContainsCI(flatStep0, 'GFM markdown table');
-    expectContainsCI(flatStep0, 'Print the table before invoking AskUserQuestion');
+    expectContainsCI(flatStep0, 'Print the table before invoking the structured question tool');
     expect(step0).toContain('confirm_criteria({criteria_set_id})');
     expect(step0).toContain('confirm_criteria({criteria_set_id, ops})');
     expect(step0).toContain('CriteriaEditOps');
@@ -357,7 +385,7 @@ describe('crew-iterate body — criteria-store adoption', () => {
     }
     expectContainsCI(
       flat,
-      '`criteria.invalid` is a validation error for `create_criteria`, `confirm_criteria`, and `revise_criteria`',
+      'criteria-tool validation error, not a dispatch-time criteria error',
     );
   });
 });
@@ -383,10 +411,42 @@ describe('crew-iterate body — Step 0.5 agent picks', () => {
     const end = body.indexOf('### Step 1 — Dispatch implementer', start);
     const step = body.slice(start, end);
     // The count is a complexity-driven captain decision, not a fixed 1.
-    expectContainsCI(step, 'How many reviewers');
+    expectContainsCI(step, 'Change profile');
     expect(step).toContain('1 dispatched reviewer');
     expect(step).toContain('2 distinct-model reviewers');
     expect(step).toContain('3 distinct-model reviewers');
+  });
+
+  it('decides docs-only coverage before confirmation and reconfirms later roster changes', async () => {
+    const body = await loadBody();
+    const step05 = sliceBetween(body, '### Step 0.5 — Confirm agent picks', '### Step 1 — Dispatch implementer');
+    const step2 = sliceBetween(body, '### Step 2 — Review', '### Review prompt template');
+    const edgeCases = sliceBetween(body, '### Step 3 — Edge cases', '### Step 4 — Merge');
+
+    expectContainsCI(step05, 'Decide any docs-only roster reduction now');
+    expectContainsCI(step05, 'user must confirm that roster');
+    expectContainsCI(step2, 'explicit roster reconfirmation');
+    expectContainsCI(edgeCases, 'reconfirm the roster before replacement');
+  });
+});
+
+describe('crew-iterate body — compact contract structure', () => {
+  it('pins envelope spellings, reviewer placement, convergence, and tool-schema pointers', async () => {
+    const body = await loadBody();
+    const envelope = sliceBetween(body, '#### Envelope field spellings', 'For bound panels');
+
+    for (const field of ['files_changed', 'filesChanged', 'worktree_path', 'worktreePath']) {
+      expect(envelope).toContain(`\`${field}\``);
+    }
+    const flatEnvelope = flattenWhitespace(envelope);
+    expectContainsCI(flatEnvelope, '`run_agent` / `continue_run` dispatch envelopes use `files_changed`');
+    expectContainsCI(flatEnvelope, '`run_panel` reviewer dispatch envelopes use `agent_id` and `worktree_path`, never `files_changed`');
+    expectContainsCI(flatEnvelope, '`get_panel_status` reviewer entries use `files_changed`');
+    expectContainsCI(flatEnvelope, '`get_run_status` uses `filesChanged` and returns no worktree path');
+    expectContainsCI(body, '| Confirmed crew roster | Placement | Reason |');
+    expectContainsCI(body, '| Outcome | Required state | Next action |');
+    expect(body).not.toContain('## Operating guardrails');
+    expect(body).not.toContain('{{TOOL_LIST}}');
   });
 });
 

@@ -131,15 +131,26 @@ describe('crew-captain body — dispatch lifecycle', () => {
     expectContainsCI(flat, 'Agent');
     expectContainsCI(flat, 'Task');
     expectContainsCI(flat, 'not Crew-tracked');
-    expectContainsCI(flat, 'diagnostic code 3');
-    expectContainsCI(flat, 'unknown');
-    expectContainsCI(flat, '$CREW_HOME');
+    expectContainsCI(flat, '`crew-wait` exit code 3');
+    expectContainsCI(flat, 'wrong/stale `CREW_HOME`');
+    expectContainsCI(flat, 'watcher stderr signal');
+    expect(flat).not.toContain('act on its warning');
+    expectContainsCI(flat, 'repo-scoped `list_runs`');
+    expectContainsCI(flat, 'visible conversation context');
     expectContainsCI(flat, 'Do not respawn in a loop');
     expectContainsCI(flat, 'without `completedAfter`');
     expectContainsCI(flat, 'dedupe by `run_id`');
     expectContainsCI(flat, 'context was compacted or cleared');
     expectContainsCI(flat, 'more than one pending run');
     expectContainsCI(flat, 'one repo-scoped `list_runs` call');
+  });
+
+  it('uses relative dispatch guidance without a hardcoded latency threshold', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '## Dispatch or inline', '## Default flow');
+
+    expectContainsCI(section, 'clarify before a needless run');
+    expect(section).not.toMatch(/30[-–]60s/u);
   });
 });
 
@@ -167,9 +178,9 @@ describe('crew-captain body — merge and cleanup', () => {
 
     expect(flat).not.toContain("Read-only runs don't auto-clean");
     expectContainsCI(flat, 'Prompt discard remains the habit');
-    expectContainsCI(flat, 'terminal worktrees are eligible after 7 days');
-    expectContainsCI(flat, 'run directories after 30 days');
-    expectContainsCI(flat, 'repo-scoped');
+    expectContainsCI(flat, 'runtime GC warnings');
+    expectContainsCI(flat, 'only the backstop');
+    expectContainsCI(flat, 'discard');
     expectContainsCI(flat, 'run_mode: "ephemeral_review"');
     expectContainsCI(flat, 'disposable snapshot worktree');
     expectContainsCI(flat, 'never mergeable');
@@ -206,13 +217,41 @@ describe('crew-captain body — peer context', () => {
 
     expectContainsCI(flat, 'peer_messages.composed_prompt_too_large');
     expectContainsCI(flat, 'peer_messages.item_too_large');
-    expectContainsCI(flat, 'peer_messages.too_many_items');
+    expectContainsCI(flat, 'peer_messages.too_many');
+    expectContainsCI(flat, 'peer_messages.too_many_excerpts');
     expectContainsCI(flat, 'peer_messages.run_unknown');
     expectContainsCI(flat, 'peer_messages.run_in_flight');
     expectContainsCI(flat, 'peer_messages.run_terminal');
     expect(flat).not.toContain('See plan');
     expect(flat).not.toContain('in this plan');
     expect(flat).not.toContain('peer_messages.<code>');
+  });
+
+  it('pins exact envelope spellings and real worktree recovery sources', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Envelope field spellings', '### Cancellation');
+    const flat = flattenWhitespace(section);
+
+    for (const field of ['files_changed', 'filesChanged', 'worktree_path', 'worktreePath']) {
+      expect(section).toContain(`\`${field}\``);
+    }
+    expectContainsCI(flat, '`run_agent` / `continue_run` dispatch envelopes use `files_changed`');
+    expectContainsCI(flat, '`run_panel` reviewer dispatch envelopes use `agent_id` and `worktree_path`, never `files_changed`');
+    expectContainsCI(flat, '`get_panel_status` reviewer entries use `files_changed`');
+    expectContainsCI(flat, '`get_run_status` uses `filesChanged` and returns no worktree path');
+    expectContainsCI(flat, 'retain the worktree path from the dispatch envelope');
+    expectContainsCI(flat, 'recover it from `list_runs`');
+    expect(body).not.toContain('{{TOOL_LIST}}');
+  });
+
+  it('keeps captain consent stricter than the optional server merge gate', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '## Merge boundary', '## When to ask before dispatch');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'captain always asks');
+    expectContainsCI(flat, "controls the *server's* gate");
+    expectContainsCI(flat, 'always waits for explicit approval');
   });
 });
 
@@ -274,5 +313,16 @@ describe('crew-captain body — review panels', () => {
     expectContainsCI(flat, 'which models agree');
     expectContainsCI(flat, 'Full reviewer text stays in run records');
     expectContainsCI(flat, 'not chat');
+  });
+
+  it('routes a solo agy reviewer through a bound panel snapshot', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Do not use `run_panel` when', 'Rendered by crew-mcp');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'only one crew reviewer **and that reviewer can review in place**');
+    expectContainsCI(flat, 'ephemeral-worktree reviewer (agy) is the exception');
+    expectContainsCI(flat, 'snapshots the host repo');
+    expectContainsCI(flat, 'bound `run_panel` with one reviewer');
   });
 });

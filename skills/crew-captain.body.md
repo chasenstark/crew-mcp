@@ -85,16 +85,15 @@ confirm via the Ask protocol. **Silence is not consent.**
 **Own-host gate:** if the user names your own host product and did not ask
 for worktree isolation, follow the Own-host rule instead of Crew-dispatch.
 
-Most maybe-fits should not dispatch. A 30-60s run followed by discard is
-worse than a short clarifying question.
+Most maybe-fits stay inline; clarify before a needless run.
 
 ## Default flow
 
 1. **Dispatch.** Call `run_agent` with an `agent_id` from `list_agents`
    and a precise prompt you wrote. The worker sees it verbatim.
 2. **Yield while running.** `run_agent` / `continue_run` return
-   immediately with `run_id`, `status: "running"`, `relay_verbatim`, and
-   `ledger_line`. Print `relay_verbatim` verbatim, apply the current host's
+   immediately with `run_id`, `relay_verbatim`, and `ledger_line`. Print
+   `relay_verbatim` verbatim, apply the current host's
    terminal-notification path, then end the turn. A host without a watcher
    ends immediately.
 3. **Read terminal state later.** Use the host's terminal notification when
@@ -113,10 +112,13 @@ worse than a short clarifying question.
 
 ## Merge boundary
 
-`merge_run` mutates the user's branch. Always ask before calling it:
-"Ready to merge `r-9f3a` (3 files changed, summary: ...) into `main`?"
-Do the same before `discard_run`, because discarding can throw away a
-worktree the user still wants.
+`merge_run` mutates the user's branch, so the captain always asks —
+`confirmBeforeMerge` controls the *server's* gate, not this one. With the
+server gate off you still propose strategy and wait for an explicit yes; you
+simply will not receive a typed refusal if you skip it. Ask concretely:
+"Ready to merge `r-9f3a` (3 files changed, summary: ...) into `main`?" Do the
+same before `discard_run`, because discarding can throw away a worktree the
+user still wants.
 
 If `merge_run` reports conflicts, surface the paths and stop. Do not
 reset, abort, or discard without asking; those operations destroy state.
@@ -154,10 +156,10 @@ the run worktree.
 - **`preserve`**: a deliberate stack of standalone commits with good
   subjects.
 
-With `confirmBeforeMerge` on, propose the strategy and show the commit
-count/list in the merge prompt ("3 commits: squash to one or keep all
-three?"). With it off, apply the same heuristic yourself; the user opted
-into landing without confirmation.
+Propose the strategy and show the commit count/list in the merge prompt
+("3 commits: squash to one or keep all three?"). The server's
+`confirmBeforeMerge` setting changes only whether the server enforces its
+own confirmation gate; the captain always waits for explicit approval.
 
 **Ask gate:** when the strategy is presented to the user, confirm via the
 Ask protocol. **Silence is not consent.**
@@ -189,9 +191,14 @@ normally be one dispatch confirmation, one terminal synthesis, and one
 merge/iterate/discard prompt. The user has the tail link for live
 progress.
 
-**Don't block the turn with `get_run_status`.** Use the watcher; the server
-rejects `wait_for_terminal_only: true` unless an explicit user request is
-journaled as `user_requested_wait:true`.
+The server detects orphaned watchers, unsurfaced terminals, long-poll loops,
+GC-at-risk unmerged runs, and impossible confirmation latency, and returns
+them in `warnings`. Act on returned warnings; they are recovery, not a
+substitute for following `required_next_action` the first time.
+
+**Don't block the turn with `get_run_status`.** Follow
+`required_next_action`; blocking waits require an explicit user request and
+the server's typed `wait_for_terminal_only` remedy.
 <!-- host:claude-code -->
 Claude Code's explicit foreground `{{CREW_WAIT_COMMAND}}` opt-in is the one
 Crew watcher exception.
@@ -327,10 +334,9 @@ Parse `run_id`, call `get_run_status({ run_id })`, and synthesize from
 `summary`, `filesChanged`, `warnings`, `commits`, and `events_tail`.
 Never dump the tail verbatim.
 
-If the watcher exits with diagnostic code 3, the run id is unknown or
-`$CREW_HOME` is wrong/stale. Do not respawn in a loop. Use `list_runs`
-for the current repo, identify the run by visible conversation context,
-and continue from the recovered `run_id`.
+`crew-wait` exit code 3 means an unknown run id or wrong/stale `CREW_HOME`;
+it is a watcher stderr signal, not a server `warnings` entry. Do not respawn
+in a loop; recover via repo-scoped `list_runs` and visible conversation context.
 <!-- /host -->
 
 <!-- host:codex -->
@@ -391,7 +397,7 @@ Treat terminal `required_next_action` as the server's single follow-up slot.
 `merge_or_discard` appears only for successful write runs and wins when unread
 inbox messages also exist; ask the user before either lifecycle mutation.
 `check_inbox` means this run has unread worker findings and carries the scoped
-count. `confirm_with_user` is reserved for server-selected confirmation flows.
+count.
 
 ### Multiple independent terminations don't batch
 
@@ -413,7 +419,7 @@ progress channel. Do not duplicate progress into chat unless the user asks.
 ### Worked shape
 
 ```
-run_agent(...) -> { run_id: R, status: "running", relay_verbatim: "...", ledger_line: "..." }
+run_agent(...) -> { run_id: R, relay_verbatim: "...", ledger_line: "..." }
 <print relay_verbatim verbatim>
 <apply the current host's terminal-notification path>
 end turn
@@ -426,6 +432,25 @@ later watcher/user turn:
   "Run `R` finished with status `success`. <tight synthesis>. Merge / iterate / discard?"
 ```
 
+### Envelope field spellings
+
+| Context | Exact field |
+|---|---|
+| `run_agent` / `continue_run` dispatch | `run_id`, `summary` |
+| `run_agent` / `continue_run` changed files | `files_changed` |
+| `run_panel` reviewer dispatch | `run_id`, `agent_id`, `worktree_path` |
+| `get_panel_status` reviewer files | `files_changed` |
+| `get_run_status` changed files | `filesChanged` |
+| `list_runs` worktree | `worktreePath` |
+| `peer_messages[]` files | `files` |
+
+Field names differ by tool. `run_agent` / `continue_run` dispatch envelopes
+use `files_changed`; `run_panel` reviewer dispatch envelopes use `agent_id`
+and `worktree_path`, never `files_changed`. `get_panel_status` reviewer
+entries use `files_changed`. `get_run_status` uses `filesChanged` and returns
+no worktree path; `list_runs` uses `worktreePath`. Retain the worktree path
+from the dispatch envelope, or recover it from `list_runs`.
+
 ### Cancellation
 
 `cancel_run({ run_id })` works while a dispatch is in flight. The run
@@ -434,10 +459,11 @@ terminal state.
 
 ## The tools
 
-Use these `mcp__crew__*` tools. If a tool seems missing or changed, ask
-the user to run `crew-mcp verify`; do not shell out yourself.
-
-{{TOOL_LIST}}
+Use the `mcp__crew__*` tools; their descriptions are in your tool schema.
+Names:
+`mcp__crew__list_agents mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria`.
+If a tool seems missing or changed, ask the user to run `crew-mcp verify`;
+do not shell out yourself.
 
 ## Operating guardrails
 
@@ -468,9 +494,8 @@ Caveats:
 - If the agent writes anyway, edits land in `working_directory`; the probe
   can warn even for files dirty before review.
 - `merge_run` refuses read-only runs; `discard_run` works.
-- Prompt discard remains the habit after findings are consumed. Periodic
-  run GC is the backstop: terminal worktrees are eligible after 7 days and
-  run directories after 30 days, repo-scoped.
+- Prompt discard remains the habit after findings are consumed; runtime GC
+  warnings are only the backstop.
 - `continue_run` stays read-only; dispatch a fresh run to change mode.
 - Follow typed `continue_run` policy/cap refusals; ask before any override.
 
@@ -529,9 +554,10 @@ context.
 
 1. `run_agent(implementer, "implement X")` -> run A.
 2. When A is terminal, call `get_run_status` and read `summary`,
-   `filesChanged`, and `worktree_path`.
+   and `filesChanged`. Retain A's worktree path from dispatch or recover
+   `list_runs.worktreePath`; `get_run_status` has no worktree field.
 3. Dispatch reviewer B with `read_only: true`,
-   `working_directory: <A.worktree_path>`, and
+   `working_directory: <A worktree path>`, and
    `peer_messages: [{body: A.summary, kind: "review", from_label:
    "A (implementer)", files: A.filesChanged}]`.
 4. If revisions are needed, `continue_run` A with B's review in
@@ -543,7 +569,8 @@ adapters, through the captain inbox (see "Worker messages" below).
 Use `peer_messages` for structured forwarding. For a single small context
 string, put it in the prompt. Common fatal error families are:
 `peer_messages.composed_prompt_too_large`, `peer_messages.item_too_large`,
-`peer_messages.too_many_items`, `peer_messages.run_unknown`,
+`peer_messages.too_many`, `peer_messages.too_many_excerpts`,
+`peer_messages.run_unknown`,
 `peer_messages.run_in_flight`, and `peer_messages.run_terminal`. Reduce
 messages/excerpts or pick a stdin-backed adapter when size limits hit.
 
@@ -770,8 +797,12 @@ message. Decide whether to proceed based on coverage and user urgency.
 
 ### Do not use `run_panel` when
 
-- There is only one crew reviewer. Use `run_agent` and fold in the host
-  vote manually.
+- There is only one crew reviewer **and that reviewer can review in place**.
+  Use `run_agent` and fold in the host vote manually. An
+  ephemeral-worktree reviewer (agy) is the exception: a solo `run_agent`
+  ephemeral review snapshots the host repo, not the implementer worktree,
+  so it reviews the wrong diff. Route a single agy reviewer through a bound
+  `run_panel` with one reviewer.
 - You need auto-cancel-on-blocker; cancel per reviewer.
 - You are splitting a review by concern instead of asking each model for a
   full review.
