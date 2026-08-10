@@ -8,6 +8,7 @@ import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 import type {
   AgentAdapter,
   AgentStrength,
+  EffortLevel,
   HealthCheckOptions,
   HealthCheckResult,
   Task,
@@ -568,6 +569,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly filesModifiedReliable = false;
   readonly streamsIncrementally = true;
   readonly supportsResume = true;
+  // `claude -p` accepts the full canonical scale via --effort. No
+  // defaultEffort: when neither the captain nor agents.json asks, the flag
+  // is omitted so the CLI's own session default wins. Keep in lockstep with
+  // BUILTIN_ADAPTER_METADATA in registry.ts (proxy/instance parity).
+  readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
   readonly captainCapabilities = {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,
@@ -612,6 +618,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
     if (task.constraints?.maxTurns) {
       args.push('--max-turns', String(task.constraints.maxTurns));
+    }
+
+    if (task.constraints?.effort) {
+      args.push('--effort', task.constraints.effort);
     }
 
     if (task.constraints?.resumeSessionId) {

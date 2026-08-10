@@ -99,10 +99,10 @@ export const runAgentInputSchema = z.object({
   model: z.string().optional(),
   /**
    * Per-call reasoning effort override. Wins over the user's
-   * agents.json default + adapter default. Adapters with no native
-   * reasoning-effort knob (generic) ignore the value and
-   * log a debug breadcrumb. Vocabulary mirrors codex's
-   * `model_reasoning_effort` set.
+   * agents.json default + adapter default. codex, claude-code, and agy
+   * translate to their native CLI effort flags (clamped to each CLI's
+   * supported subset); adapters with no native knob (generic,
+   * openai-compatible) ignore the value and log a debug breadcrumb.
    */
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   /**

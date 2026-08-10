@@ -94,8 +94,10 @@ export interface ListAgentsAgentEntry {
   readonly strengths: readonly string[];
   /**
    * Default effort level applied to dispatches that don't pass an
-   * explicit `effort`. Omitted when the adapter has no native
-   * reasoning-effort knob (currently openai-compatible, generic).
+   * explicit `effort`. Omitted when the adapter declares no default
+   * (claude-code and agy have native --effort flags but no crew-side
+   * default — the CLI's own default wins — and openai-compatible/generic
+   * have no knob at all).
    * Captain may override per-call via `run_agent`.
    */
   readonly effort?: EffortLevel;

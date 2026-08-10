@@ -158,12 +158,11 @@ describe('ClaudeCodeAdapter', () => {
       );
     });
 
-    it('omits defaultEffort (no native reasoning-effort knob today)', () => {
-      // Wiring is staged: the per-machine agents.json still accepts
-      // an effort value for claude-code, but the adapter currently
-      // ignores it. When/if the CLI gains a thinking-budget flag,
-      // declare defaultEffort here and translate in execute().
+    it('supports the full effort scale but declares no crew-side default', () => {
+      // No defaultEffort: when neither the captain nor agents.json asks,
+      // the --effort flag is omitted so the CLI's own session default wins.
       expect(adapter.defaultEffort).toBeUndefined();
+      expect(adapter.supportedEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     });
   });
 
@@ -302,6 +301,42 @@ describe('ClaudeCodeAdapter', () => {
       ]);
       expect(result.status).toBe('success');
       expect(result.sessionId).toBe('rotated-session');
+    });
+
+    it('translates effort constraint to --effort', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'think hard',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: { effort: 'xhigh' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual([
+        '--effort',
+        'xhigh',
+      ]);
+    });
+
+    it('omits --effort when effort is undefined so the CLI default wins', async () => {
+      mockExeca.mockResolvedValueOnce({
+        stdout: successFixture,
+        stderr: '',
+        exitCode: 0,
+      } as any);
+
+      await adapter.execute({
+        prompt: 'default depth',
+        context: { workingDirectory: '/tmp/project' },
+      });
+
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args).not.toContain('--effort');
     });
 
     it('handles a large prompt over stdin without argv byte-guard failure', async () => {

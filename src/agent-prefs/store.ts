@@ -46,8 +46,8 @@ export const AGENT_PREFS_FILENAME = 'agents.json';
 /**
  * Runtime list mirror of the EffortLevel literal union. Used for
  * validation in `isEffortLevel` and as a docstring anchor for the help
- * text written into the seeded `agents.json` _readme. Mirrors codex's
- * `model_reasoning_effort` set verbatim.
+ * text written into the seeded `agents.json` _readme. The canonical
+ * five-level scale; each adapter clamps to its CLI's supported subset.
  */
 export const EFFORT_LEVELS: readonly EffortLevel[] = [
   'low',
@@ -271,8 +271,9 @@ export function seedAgentPrefsFile(
       'an entry to override for this machine. Four tunable fields:',
       '  - useWhen: primary routing prose surfaced via list_agents.',
       '  - strengths: free-form secondary routing tags surfaced via list_agents.',
-      '  - effort: "low"|"medium"|"high"|"xhigh"|"max" — codex translates',
-      '    to its model_reasoning_effort flag; other adapters log+ignore',
+      '  - effort: "low"|"medium"|"high"|"xhigh"|"max" — codex, claude-code,',
+      '    and agy translate to their native CLI effort flags (clamped to',
+      '    each CLI\'s supported subset); generic/openai-compatible log+ignore',
       '    and the captain restates the level in the prompt instead.',
       '  - model: free-form string passed to the adapter\'s --model flag.',
       '    Empty/missing = the adapter\'s CLI picks (we don\'t override',

@@ -18,6 +18,7 @@ import { AGY_MODEL_LABELS, AGY_MODEL_LABEL_SET } from './agy-models.js';
 import type {
   AgentAdapter,
   AgentStrength,
+  EffortLevel,
   HealthCheckOptions,
   HealthCheckResult,
   Task,
@@ -331,6 +332,11 @@ export class AgyAdapter implements AgentAdapter {
   // git-status fallback is the source of truth for filesModified.
   readonly filesModifiedReliable = false;
   readonly supportsResume = true;
+  // agy --effort accepts low|medium|high only; the dispatch layer clamps
+  // xhigh/max down to high. No defaultEffort: omit the flag when nobody
+  // asks so agy's own session default wins. Keep in lockstep with
+  // BUILTIN_ADAPTER_METADATA in registry.ts (proxy/instance parity).
+  readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high'];
   private readonly healthCheckCache = new HealthCheckCache();
 
   recognizesModel(modelId: string): boolean {
@@ -392,6 +398,9 @@ export class AgyAdapter implements AgentAdapter {
     const args = ['--output-format', 'json'];
     if (model !== undefined) {
       args.push('--model', model);
+    }
+    if (task.constraints?.effort) {
+      args.push('--effort', task.constraints.effort);
     }
     // The working directory is a crew-allocated worktree (the planner refuses a
     // working_directory override for agy). --add-dir + --dangerously-skip-

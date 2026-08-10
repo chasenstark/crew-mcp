@@ -58,6 +58,31 @@ describe('AdapterRegistry lazy loading', () => {
     expect(loadedValues).toEqual(proxyValues);
   });
 
+  it('keeps effort fields identical for lazy proxies and loaded instances', async () => {
+    vi.resetModules();
+    const { createBuiltinRegistry } = await import('../../src/adapters/registry.js');
+    const registry = createBuiltinRegistry();
+    const snapshot = (adapters: { name: string; defaultEffort?: string; supportedEfforts?: readonly string[] }[]) =>
+      new Map(adapters.map((a) => [a.name, { defaultEffort: a.defaultEffort, supportedEfforts: a.supportedEfforts }]));
+    const proxyValues = snapshot(registry.listAvailable());
+
+    const loadedValues = snapshot(await registry.loadAll());
+
+    expect(proxyValues.get('claude-code')).toEqual({
+      defaultEffort: undefined,
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    });
+    expect(proxyValues.get('codex')).toEqual({
+      defaultEffort: 'medium',
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+    });
+    expect(proxyValues.get('agy')).toEqual({
+      defaultEffort: undefined,
+      supportedEfforts: ['low', 'medium', 'high'],
+    });
+    expect(loadedValues).toEqual(proxyValues);
+  });
+
   it('does not construct built-in adapter classes until they are loaded', async () => {
     vi.resetModules();
     const constructed = {

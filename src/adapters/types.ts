@@ -192,17 +192,19 @@ export type AgentStrength = string;
 
 /**
  * Adapter-agnostic reasoning-depth knob threaded through `Task.constraints`
- * and surfaced as `defaultEffort` on adapters that have a native concept
- * (codex `model_reasoning_effort`). Adapters with no native knob ignore
- * the value (and log a debug breadcrumb so the captain's pick isn't
+ * and translated by adapters with a native concept: codex
+ * (`-c model_reasoning_effort=…`), claude-code (`--effort`), and agy
+ * (`--effort`). Adapters with no native knob (generic, openai-compatible)
+ * ignore the value (and log a debug breadcrumb so the captain's pick isn't
  * silently swallowed).
  *
  * Canonical five-level scale used everywhere captain-facing. Adapters
  * whose CLI accepts only a subset declare `supportedEfforts` and the
  * dispatch layer clamps automatically — captain never has to think about
  * which CLI accepts which slice. Today codex (0.130) accepts
- * `low|medium|high|xhigh` only; `max` is clamped to `xhigh` on the way
- * in.
+ * `low|medium|high|xhigh` (`max` clamps to `xhigh`), agy accepts
+ * `low|medium|high` (`xhigh`/`max` clamp to `high`), and claude-code
+ * accepts the full scale.
  */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -282,9 +284,9 @@ export interface Task {
     model?: string;
     /**
      * Reasoning effort for this dispatch. Adapters with native support
-     * (codex) translate to their CLI flag; others log + ignore. Resolved
-     * upstream by `planRunAgent`: per-call value > per-machine prefs file
-     * > adapter default > undefined.
+     * (codex, claude-code, agy) translate to their CLI flag; others log +
+     * ignore. Resolved upstream by `planRunAgent`: per-call value >
+     * per-machine prefs file > adapter default > undefined.
      */
     effort?: EffortLevel;
     /**

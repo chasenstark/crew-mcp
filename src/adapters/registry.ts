@@ -33,6 +33,7 @@ interface LazyAdapterMetadata {
   readonly strengths: readonly AgentStrength[];
   readonly useWhen?: string;
   readonly defaultEffort?: EffortLevel;
+  readonly supportedEfforts?: readonly EffortLevel[];
   readonly supportsJsonSchema: boolean;
   readonly enforcesReadOnly: boolean;
   readonly rejectsReadOnly?: boolean;
@@ -68,6 +69,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     aliases: ['claude'],
     strengths: BUILTIN_AGENT_ROUTING[AdapterId.CLAUDE_CODE].strengths,
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.CLAUDE_CODE].useWhen,
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
     supportsJsonSchema: true,
     enforcesReadOnly: false,
     reviewDispatchMode: 'read-only-dispatch',
@@ -85,6 +87,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     strengths: BUILTIN_AGENT_ROUTING[AdapterId.CODEX].strengths,
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.CODEX].useWhen,
     defaultEffort: 'medium',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     supportsJsonSchema: true,
     enforcesReadOnly: true,
     reviewDispatchMode: 'read-only-dispatch',
@@ -100,6 +103,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     name: AdapterId.AGY,
     strengths: BUILTIN_AGENT_ROUTING[AdapterId.AGY].strengths,
     useWhen: BUILTIN_AGENT_ROUTING[AdapterId.AGY].useWhen,
+    supportedEfforts: ['low', 'medium', 'high'],
     supportsJsonSchema: false,
     // agy has no enforceable read-only sandbox; an in-place read_only dispatch
     // is REFUSED rather than weakly enforced. enforcesReadOnly stays false;
@@ -289,6 +293,7 @@ function createLazyAdapterProxy(
     strengths: [...metadata.strengths],
     useWhen: metadata.useWhen,
     defaultEffort: metadata.defaultEffort,
+    supportedEfforts: metadata.supportedEfforts,
     supportsJsonSchema: metadata.supportsJsonSchema,
     enforcesReadOnly: metadata.enforcesReadOnly,
     rejectsReadOnly: metadata.rejectsReadOnly,

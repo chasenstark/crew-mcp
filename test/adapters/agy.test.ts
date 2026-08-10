@@ -60,6 +60,13 @@ describe('AgyAdapter', () => {
       expect(adapter.filesModifiedReliable).toBe(false);
     });
 
+    it('supports low|medium|high effort but declares no crew-side default', () => {
+      // xhigh/max are clamped to high upstream (clampEffortToSupported);
+      // no defaultEffort so an unrequested dispatch omits --effort entirely.
+      expect(adapter.defaultEffort).toBeUndefined();
+      expect(adapter.supportedEfforts).toEqual(['low', 'medium', 'high']);
+    });
+
     it('routes reviews through the ephemeral-worktree dispatch mode', () => {
       expect(adapter.reviewDispatchMode).toBe('ephemeral-worktree');
     });
@@ -262,6 +269,30 @@ describe('AgyAdapter', () => {
       });
       const args = mockExeca.mock.calls[0]?.[1] as string[];
       expect(args.slice(0, 4)).toEqual(['--output-format', 'json', '--model', VALID_MODEL]);
+    });
+
+    it('translates effort constraint to --effort', async () => {
+      mockOnce(successEnvelope());
+      await adapter.execute({
+        prompt: 'go',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { effort: 'high' },
+      });
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual([
+        '--effort',
+        'high',
+      ]);
+    });
+
+    it('omits --effort when effort is undefined so the CLI default wins', async () => {
+      mockOnce(successEnvelope());
+      await adapter.execute({
+        prompt: 'go',
+        context: { workingDirectory: '/crew/wt' },
+      });
+      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(args).not.toContain('--effort');
     });
 
     it('passes --print-timeout when a budget is set, with execa timeout above it', async () => {
