@@ -626,9 +626,19 @@ get_criteria({criteria_set_id}).rendered_block because native subagents
 cannot receive MCP params. The implementer's own summary is included in
 peer_messages or inline host-review context.
 
-Your job has TWO parts:
+Your job has THREE parts, in this order. Do PART 1 before touching
+the criteria checklist: reading the diff through the checklist first
+narrows what you notice, and the defects that matter most are usually
+ones no criterion anticipated.
 
-PART 1 — Score every acceptance criterion. For each numbered criterion
+PART 1 — Open review. Set the criteria contract aside and read the
+full diff (and surrounding code where the change's correctness depends
+on it) as if no criteria existed. Note findings with severities as you
+go: correctness bugs, concurrency hazards, security exposure, data
+loss, design choices that will compound. Do not skip this or fold it
+into criteria scoring.
+
+PART 2 — Score every acceptance criterion. For each numbered criterion
 in the criteria contract, decide (a criterion may carry `-`
 sub-bullets — they are facets of that one criterion; score the numbered
 parent as a whole, PASS only if every sub-bullet holds):
@@ -651,7 +661,7 @@ two are consistent, FAIL only if the diff contradicts the claim (cite
 file:line). NEVER FAIL an `[M]` criterion because you could not run the
 command — that is an environment limit, not a defect.
 
-PART 2 — Produce an overall verdict:
+PART 3 — Produce an overall verdict:
 
   APPROVE        — every criterion is PASS (or N-A) and you have no
                    CRITICAL/MAJOR out-of-scope concerns.
@@ -667,7 +677,14 @@ Out-of-scope rule (single source of truth, do not improvise):
   entirely unless the captain asked for them explicitly. Do NOT let
   MINOR out-of-scope concerns affect Verdict.
 
-Output format (mandatory, strict):
+Output format (mandatory, strict — Findings first, matching the
+order you worked in):
+
+  ## Findings
+  - [SEVERITY] <one-line finding>: <2-3 sentence justification>
+    Criterion: <criterion number if tied to one, else "out-of-scope">
+    File: <path>:<line-range or "N/A">
+    Recommendation: <concrete action>
 
   ## Criteria scoring
   - [1] <verbatim criterion label>: PASS|FAIL|N-A — <one-line reason;
@@ -676,12 +693,6 @@ Output format (mandatory, strict):
   - ... one line per criterion, in the captain's order.
 
   ## Verdict: <APPROVE | CHANGES_NEEDED | BLOCKING>
-
-  ## Findings
-  - [SEVERITY] <one-line finding>: <2-3 sentence justification>
-    Criterion: <criterion number if tied to one, else "out-of-scope">
-    File: <path>:<line-range or "N/A">
-    Recommendation: <concrete action>
 
   ## Recommended action
   <one paragraph: what should the implementer do next? Anchor
@@ -703,10 +714,13 @@ Do not edit files. If you find yourself wanting to write, describe
 the edit instead — you are read-only by design.
 ```
 
-Specialty-specific concerns belong INSIDE the acceptance criteria
-themselves (Step 0). If the user wants a security-lens reviewer,
-they should have a "no new security exposure on auth handlers"
-criterion.
+A specialty lens (security, performance, concurrency) can enter two
+ways: as reviewer framing appended to this template — an angle to
+explore from during PART 1 — or as an acceptance criterion (Step 0)
+when the user wants it gating convergence. Prefer framing for
+exploration; reserve a criterion for a property with a concrete
+checkable signal. A lens reduced to a checklist row invites checkbox
+treatment instead of genuine exploration.
 
 ### Step 3 — Iterate or converge
 
