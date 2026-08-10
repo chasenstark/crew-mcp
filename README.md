@@ -1,26 +1,18 @@
 # 🚢 crew-mcp
 
-An MCP server that turns your AI coding CLI into the **orchestrator of a
-multi-agent crew**. Dispatch work to Claude Code, Codex, Antigravity
-(`agy`, Gemini models), or local models — each run gets its own git
-worktree, so your working directory stays clean and merges happen only
-when you say so.
+Run Claude Code, Codex, Gemini, and local
+models as one coding crew — from one conversation.
 
-## 💡 The vision — no API keys, just the CLIs you already have
+Crew is an MCP server built around the CLI logins and subscriptions you
+already have: 🔑 no new API keys, 💸 no separate per-token bill.
 
-Crew drives the AI coding CLIs you've **already installed and logged in**.
-Every dispatched run goes through Claude Code, Codex, or Antigravity on
-**your existing subscription** — 🔑 no API keys to wrangle, 💸 no per-token
-billing, no second bill for the same models. Want it fully private? 🏠 Add
-local models (Ollama, LM Studio) and those runs never leave your machine.
-
-That's the whole idea: a multi-agent crew built on the plans you're
-already paying for. 🤝
+Every job runs in an isolated git worktree. Your working tree stays
+clean, and nothing merges until you approve it.
 
 ```
-you ── Claude Code (captain) ──┬── run_agent → Codex (worktree A)
-                                ├── run_agent → agy (worktree B)
-                                └── run_panel → Claude + Codex (parallel review)
+                          ┌→ Claude Code    [worktree A] ─┐
+you ⇄ your CLI (captain) ─┼→ Codex          [worktree B] ─┼→ review → your approval → merge
+                          └→ Gemini / local [worktree C] ─┘
 ```
 
 ## ⚡ Quickstart
@@ -67,6 +59,7 @@ isolated worktree and reports back.
   **🔁 The crew-iterate skill** below.
 - **Use local models** — add Ollama, LM Studio, or any
   OpenAI-compatible endpoint as a crew agent alongside the cloud CLIs.
+  Want it fully private? 🏠 Those runs never leave your machine.
 - **Get structured results back** — Claude Code and Codex workers
   deliver finalized findings through a worker-only `send_message` tool
   into a durable captain inbox, alongside the run's terminal summary.
@@ -192,7 +185,7 @@ git add .agents .crew/install.project.json package.json package-lock.json
 agy has no config-level tool-approval flag; launch it with
 `--dangerously-skip-permissions` so crew tool calls don't prompt.
 
-As a crew *worker*, agy is write-mode only — it can't be trusted to
+As a crew _worker_, agy is write-mode only — it can't be trusted to
 keep a read-only promise, so when agy is asked to review, crew hands it
 a disposable snapshot worktree of the diff and discards it afterward
 (review panels do this automatically).
@@ -261,26 +254,26 @@ crew-mcp uninstall --target all
 
 ## 🧰 MCP tools
 
-| Tool | Purpose |
-|------|---------|
-| `run_agent` | Dispatch work to a specific agent in an isolated worktree |
-| `run_panel` | Dispatch parallel reviewers (full-review-per-model) |
-| `aggregate_panel` | Collect panel reviewer findings |
-| `get_panel_status` | Check panel progress |
-| `get_run_status` | Check a single run's status |
-| `list_runs` | List all runs, optionally filtered by status |
-| `list_agents` | List available agents with `useWhen`, strengths, defaults, health, and quota — the captain routes away from rate-limited agents (after a Codex run, real `used_percent` headroom is read from its session rollout file) |
-| `merge_run` | Apply a completed run's changes to your branch |
-| `continue_run` | Send follow-up instructions to a running agent |
-| `discard_run` | Discard a run's worktree and changes |
-| `cancel_run` | Cancel a running agent |
-| `get_crew_preferences` | Read crew configuration |
-| `check_captain_inbox` | Read structured results workers delivered via `send_message` |
-| `acknowledge_messages` | Mark inbox messages read/dismissed |
-| `create_criteria` | Draft an acceptance-criteria set for a piece of work |
-| `confirm_criteria` | Lock a criteria set after you approve it |
-| `get_criteria` | Read a criteria set (drives reviewer scoring) |
-| `revise_criteria` | Amend a criteria set mid-loop |
+| Tool                   | Purpose                                                                                                                                                                                                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_agent`            | Dispatch work to a specific agent in an isolated worktree                                                                                                                                                               |
+| `run_panel`            | Dispatch parallel reviewers (full-review-per-model)                                                                                                                                                                     |
+| `aggregate_panel`      | Collect panel reviewer findings                                                                                                                                                                                         |
+| `get_panel_status`     | Check panel progress                                                                                                                                                                                                    |
+| `get_run_status`       | Check a single run's status                                                                                                                                                                                             |
+| `list_runs`            | List all runs, optionally filtered by status                                                                                                                                                                            |
+| `list_agents`          | List available agents with `useWhen`, strengths, defaults, health, and quota — the captain routes away from rate-limited agents (after a Codex run, real `used_percent` headroom is read from its session rollout file) |
+| `merge_run`            | Apply a completed run's changes to your branch                                                                                                                                                                          |
+| `continue_run`         | Send follow-up instructions to a running agent                                                                                                                                                                          |
+| `discard_run`          | Discard a run's worktree and changes                                                                                                                                                                                    |
+| `cancel_run`           | Cancel a running agent                                                                                                                                                                                                  |
+| `get_crew_preferences` | Read crew configuration                                                                                                                                                                                                 |
+| `check_captain_inbox`  | Read structured results workers delivered via `send_message`                                                                                                                                                            |
+| `acknowledge_messages` | Mark inbox messages read/dismissed                                                                                                                                                                                      |
+| `create_criteria`      | Draft an acceptance-criteria set for a piece of work                                                                                                                                                                    |
+| `confirm_criteria`     | Lock a criteria set after you approve it                                                                                                                                                                                |
+| `get_criteria`         | Read a criteria set (drives reviewer scoring)                                                                                                                                                                           |
+| `revise_criteria`      | Amend a criteria set mid-loop                                                                                                                                                                                           |
 
 The criteria tools back the `crew-iterate` loop: criteria are stored
 server-side, embedded into implementer prompts, and scored PASS/FAIL by
@@ -326,26 +319,26 @@ config for a given process.
 All tunables have sane defaults; these exist for diagnostics and unusual
 setups. Milliseconds unless noted.
 
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `CREW_LOG_LEVEL` / `CREW_FILE_LOG_LEVEL` | `info` / `debug` | Console / file log thresholds |
-| `CREW_LOG_FILE` | unset | Append server logs to a file (also `serve --log-file`) |
-| `CREW_OS_NOTIFICATIONS` | on | `off` disables terminal-run OS notifications |
-| `CREW_CONFIRM_BEFORE_MERGE` | on | `off` skips the `merge_run` confirmation gate |
-| `CREW_WORKTREE_TTL_DAYS` / `CREW_RUNDIR_TTL_DAYS` / `CREW_CRITERIA_SET_TTL_DAYS` | 7 / 30 / 30 (days) | GC retention windows (`off` or `-1` disables) |
-| `CREW_RUN_GC_INTERVAL_MS` | 24h | Periodic run-GC cadence on a live server |
-| `CREW_STALE_RUN_GRACE_MS` | 30s | Age before a stale `running` run from a dead server is swept to `error` |
-| `CREW_SHUTDOWN_GRACE_MS` | 10s | Drain window for in-flight dispatches at shutdown |
-| `CREW_DISPATCH_STALL_TIMEOUT_MS` | 12m | Streaming-adapter idle watchdog (0 disables) |
-| `CREW_DISPATCH_ABSOLUTE_TIMEOUT_MS` | 60m | Buffered-adapter absolute watchdog (0 disables) |
-| `CREW_CANCEL_ESCALATION_TIMEOUT_MS` | 30s | Force-release window after an abort if the child won't die |
-| `CREW_PROCESS_GROUP_FORCE_KILL_AFTER_MS` | 5s | SIGTERM→SIGKILL escalation for dispatched process groups |
-| `CREW_OPENAI_COMPATIBLE_TIMEOUT_MS` | 10m | HTTP timeout for openai-compatible adapters |
-| `CREW_HEALTHCHECK_TTL_MS` | 5m | `list_agents` health-probe success cache TTL |
-| `CREW_CRITERIA_LOCK_TIMEOUT_MS` / `CREW_CRITERIA_LOCK_STALE_MS` | 30s / 60s | Criteria-store lock acquisition / stale-reclaim windows |
-| `CREW_OPENAI_BASE_URL` | unset | Default API base for openai-compatible agents without an explicit `apiBase` |
-| `CODEX_HOME` | `~/.codex` | Where Codex quota headroom is read from post-run (Codex's own variable, honored by crew) |
-| `CREW_TAIL_INSTALL_DIR` | `~/Applications` | Handler-app location for direct `scripts/tail-handler/install.sh` runs (`crew-mcp install-tail-handler` always uses `~/Applications`) |
+| Variable                                                                         | Default            | Effect                                                                                                                                |
+| -------------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `CREW_LOG_LEVEL` / `CREW_FILE_LOG_LEVEL`                                         | `info` / `debug`   | Console / file log thresholds                                                                                                         |
+| `CREW_LOG_FILE`                                                                  | unset              | Append server logs to a file (also `serve --log-file`)                                                                                |
+| `CREW_OS_NOTIFICATIONS`                                                          | on                 | `off` disables terminal-run OS notifications                                                                                          |
+| `CREW_CONFIRM_BEFORE_MERGE`                                                      | on                 | `off` skips the `merge_run` confirmation gate                                                                                         |
+| `CREW_WORKTREE_TTL_DAYS` / `CREW_RUNDIR_TTL_DAYS` / `CREW_CRITERIA_SET_TTL_DAYS` | 7 / 30 / 30 (days) | GC retention windows (`off` or `-1` disables)                                                                                         |
+| `CREW_RUN_GC_INTERVAL_MS`                                                        | 24h                | Periodic run-GC cadence on a live server                                                                                              |
+| `CREW_STALE_RUN_GRACE_MS`                                                        | 30s                | Age before a stale `running` run from a dead server is swept to `error`                                                               |
+| `CREW_SHUTDOWN_GRACE_MS`                                                         | 10s                | Drain window for in-flight dispatches at shutdown                                                                                     |
+| `CREW_DISPATCH_STALL_TIMEOUT_MS`                                                 | 12m                | Streaming-adapter idle watchdog (0 disables)                                                                                          |
+| `CREW_DISPATCH_ABSOLUTE_TIMEOUT_MS`                                              | 60m                | Buffered-adapter absolute watchdog (0 disables)                                                                                       |
+| `CREW_CANCEL_ESCALATION_TIMEOUT_MS`                                              | 30s                | Force-release window after an abort if the child won't die                                                                            |
+| `CREW_PROCESS_GROUP_FORCE_KILL_AFTER_MS`                                         | 5s                 | SIGTERM→SIGKILL escalation for dispatched process groups                                                                              |
+| `CREW_OPENAI_COMPATIBLE_TIMEOUT_MS`                                              | 10m                | HTTP timeout for openai-compatible adapters                                                                                           |
+| `CREW_HEALTHCHECK_TTL_MS`                                                        | 5m                 | `list_agents` health-probe success cache TTL                                                                                          |
+| `CREW_CRITERIA_LOCK_TIMEOUT_MS` / `CREW_CRITERIA_LOCK_STALE_MS`                  | 30s / 60s          | Criteria-store lock acquisition / stale-reclaim windows                                                                               |
+| `CREW_OPENAI_BASE_URL`                                                           | unset              | Default API base for openai-compatible agents without an explicit `apiBase`                                                           |
+| `CODEX_HOME`                                                                     | `~/.codex`         | Where Codex quota headroom is read from post-run (Codex's own variable, honored by crew)                                              |
+| `CREW_TAIL_INSTALL_DIR`                                                          | `~/Applications`   | Handler-app location for direct `scripts/tail-handler/install.sh` runs (`crew-mcp install-tail-handler` always uses `~/Applications`) |
 
 ## 👥 Managing agents
 
@@ -373,13 +366,13 @@ valid; the curated list is only the default picker and seed set.
 
 ## 🔌 Supported hosts
 
-| Host | Adapter | Install target |
-|------|---------|----------------|
-| Claude Code | `claude-code` | `--target claude-code` |
-| Codex CLI | `codex` | `--target codex` |
-| Antigravity CLI (`agy`) | `agy` | `--scope project --target agy` |
-| Ollama / LM Studio / vLLM | `openai-compatible` | `crew-mcp agents add` |
-| Any CLI with a command interface | `generic` | `crew-mcp agents add` |
+| Host                             | Adapter             | Install target                 |
+| -------------------------------- | ------------------- | ------------------------------ |
+| Claude Code                      | `claude-code`       | `--target claude-code`         |
+| Codex CLI                        | `codex`             | `--target codex`               |
+| Antigravity CLI (`agy`)          | `agy`               | `--scope project --target agy` |
+| Ollama / LM Studio / vLLM        | `openai-compatible` | `crew-mcp agents add`          |
+| Any CLI with a command interface | `generic`           | `crew-mcp agents add`          |
 
 ## 🩺 Troubleshooting
 
