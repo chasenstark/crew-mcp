@@ -784,12 +784,46 @@ export class WorktreeManager {
         ?? await this.resolveMergeTargetBranch(undefined));
 
     const wGit = simpleGit(record.worktreePath);
-    const [worktreeStatus, mainStatus] = await Promise.all([
+    const [worktreeStatus, mainStatus, hasWorktreeMergeHead] = await Promise.all([
       wGit.status(),
       this.git.status(),
+      this.hasGitOperationMarker(wGit, record.worktreePath, 'MERGE_HEAD'),
     ]);
+    const conflictedPaths = worktreeStatus.conflicted ?? [];
+    if (conflictedPaths.length > 0 || hasWorktreeMergeHead) {
+      const details = [
+        ...(conflictedPaths.length > 0
+          ? [`unmerged paths: ${conflictedPaths.join(', ')}`]
+          : []),
+        ...(hasWorktreeMergeHead ? ['MERGE_HEAD present'] : []),
+      ];
+      throw new Error(
+        `merge_run.run_worktree_unresolved_conflict: cannot merge run "${runId}" while its `
+        + `worktree has an unresolved merge (${details.join('; ')}). Inspect the preserved `
+        + `worktree at ${record.worktreePath}, then resolve or abort its merge before retrying. `
+        + 'merge_run did not stage or commit any files.',
+      );
+    }
+
     const hostChangedFilesAtMergeStart = this.statusChangedFiles(mainStatus);
     const hostDirtyAtMergeStart = hostChangedFilesAtMergeStart.length > 0;
+    if (
+      !options.force
+      && hostDirtyAtMergeStart
+    ) {
+      throw new Error(
+        `Cannot merge run ${runId}: working directory has uncommitted changes. `
+        + 'Commit those changes first, or pass force=true after explicit approval.',
+      );
+    }
+    if (hostDirtyAtMergeStart && originalCheckout.branchName === target) {
+      throw new Error(
+        `Cannot merge run ${runId}: target branch ${target} is checked out with uncommitted changes. `
+        + 'Plumbing squash landing would move the branch ref without updating the dirty index/worktree; '
+        + 'commit those changes first.',
+      );
+    }
+
     if (this.statusChangedFiles(worktreeStatus).length > 0) {
       await wGit.add('.');
       // Reuse the commit_title for the pre-merge auto-commit so the
@@ -798,16 +832,6 @@ export class WorktreeManager {
       // captain provided a meaningful title for the merge.
       const autoCommitMsg = options.commitTitle ?? 'crew: auto-commit before merge';
       await wGit.commit(autoCommitMsg);
-    }
-
-    if (
-      !options.force
-      && hostDirtyAtMergeStart
-    ) {
-      throw new Error(
-        `Cannot merge run ${runId}: working directory has uncommitted changes. `
-        + 'Please commit or stash your changes first, or pass force=true.',
-      );
     }
 
     // If the worktree has the same HEAD as the target, there's nothing to
@@ -822,14 +846,6 @@ export class WorktreeManager {
     if (worktreeHead === targetHead) {
       return this.withMergeCheckoutInfo({ status: 'no-changes' }, target, originalCheckout);
     }
-    if (hostDirtyAtMergeStart && originalCheckout.branchName === target) {
-      throw new Error(
-        `Cannot merge run ${runId}: target branch ${target} is checked out with uncommitted changes. `
-        + 'Plumbing squash landing would move the branch ref without updating the dirty index/worktree; '
-        + 'commit or stash those changes first.',
-      );
-    }
-
     await this.warnIfRunHeadMoved({
       runId,
       record,
@@ -1678,8 +1694,22 @@ export class WorktreeManager {
     return resolve(worktreeGitDir, commonDir);
   }
 
+  private async hasGitOperationMarker(
+    git: SimpleGit,
+    workingDirectory: string,
+    marker: string,
+  ): Promise<boolean> {
+    const markerPathRaw = await git.raw(['rev-parse', '--git-path', marker]);
+    const markerPath = markerPathRaw.trim();
+    if (!markerPath) return false;
+    return existsSync(
+      isAbsolute(markerPath) ? markerPath : resolve(workingDirectory, markerPath),
+    );
+  }
+
   private statusChangedFiles(status: StatusResult): string[] {
     return [
+      ...(status.conflicted ?? []),
       ...status.modified,
       ...status.created,
       ...status.not_added,

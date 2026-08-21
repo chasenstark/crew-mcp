@@ -135,6 +135,11 @@ describe('M3.5 host-repo cleanliness', () => {
     writeFileSync(join(worktreePath, 'RUN.md'), 'run change\n', 'utf-8');
     execSync('git add RUN.md', { cwd: worktreePath });
     execSync('git commit -q -m "run change"', { cwd: worktreePath });
+    writeFileSync(join(worktreePath, 'TAIL.md'), 'uncommitted run tail\n', 'utf-8');
+    const runHead = execSync('git rev-parse HEAD', {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+    }).trim();
 
     writeFileSync(join(repoRoot, 'README.md'), 'init\nhost staged change\n', 'utf-8');
     execSync('git add README.md', { cwd: repoRoot });
@@ -147,5 +152,7 @@ describe('M3.5 host-repo cleanliness', () => {
     expect(readFileSync(join(repoRoot, 'README.md'), 'utf-8')).toBe('init\nhost staged change\n');
     expect(execSync('git diff --cached --name-only', { cwd: repoRoot, encoding: 'utf-8' }).split('\n')).toContain('README.md');
     expect(execSync(`git rev-parse ${targetBranch}`, { cwd: repoRoot, encoding: 'utf-8' }).trim()).toBe(targetHead);
+    expect(execSync('git rev-parse HEAD', { cwd: worktreePath, encoding: 'utf-8' }).trim()).toBe(runHead);
+    expect(execSync('git status --porcelain', { cwd: worktreePath, encoding: 'utf-8' })).toContain('?? TAIL.md');
   }, 15_000);
 });

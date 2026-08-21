@@ -1032,6 +1032,68 @@ describe('WorktreeManager', () => {
       expect(wGit.commit).toHaveBeenCalledWith('feat(api): add /v2/health endpoint');
     });
 
+    it('mergeRunWorktree refuses conflicted run paths before staging anything', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.status.mockResolvedValueOnce({
+        conflicted: ['shared.ts'],
+        modified: ['clean.ts'],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      wGit.add.mockClear();
+      wGit.commit.mockClear();
+
+      await expect(manager.mergeRunWorktree('run-1', {
+        targetBranch: 'main',
+        force: true,
+        commitTitle: 'fix: land run',
+      })).rejects.toThrow(
+        /merge_run\.run_worktree_unresolved_conflict:.*unmerged paths: shared\.ts/,
+      );
+
+      expect(wGit.add).not.toHaveBeenCalled();
+      expect(wGit.commit).not.toHaveBeenCalled();
+    });
+
+    it('mergeRunWorktree refuses a run MERGE_HEAD even after paths are resolved', async () => {
+      mockRandomUUID
+        .mockReturnValueOnce('owner-1')
+        .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+      const { manager } = createManager();
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      mkdirSync(join(wPath, '.git'), { recursive: true });
+      writeFileSync(join(wPath, '.git', 'MERGE_HEAD'), 'merge-head\n', 'utf-8');
+      wGit.status.mockResolvedValueOnce({
+        conflicted: [],
+        modified: ['resolved.ts'],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      wGit.add.mockClear();
+      wGit.commit.mockClear();
+
+      await expect(manager.mergeRunWorktree('run-1', {
+        targetBranch: 'main',
+        force: true,
+        commitTitle: 'fix: land run',
+      })).rejects.toThrow(
+        /merge_run\.run_worktree_unresolved_conflict:.*MERGE_HEAD present/,
+      );
+
+      expect(wGit.add).not.toHaveBeenCalled();
+      expect(wGit.commit).not.toHaveBeenCalled();
+    });
+
     it('mergeRunWorktree treats an empty target_branch as "use the default"', async () => {
       // Regression: `options.targetBranch ?? checkout` would accept "" as an
       // explicit target and feed `git rev-parse ''`; truthiness must keep ""
@@ -1222,8 +1284,20 @@ describe('WorktreeManager', () => {
         .mockReturnValueOnce('owner-1')
         .mockReturnValueOnce('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
       const { manager, rootGit } = createManager();
-      await manager.createRunWorktree('run-1');
+      const wPath = await manager.createRunWorktree('run-1');
+      const wGit = getGitClient(wPath);
+      wGit.status.mockResolvedValueOnce({
+        conflicted: [],
+        modified: ['run-tail.ts'],
+        created: [],
+        not_added: [],
+        deleted: [],
+        renamed: [],
+      });
+      wGit.add.mockClear();
+      wGit.commit.mockClear();
       rootGit.status.mockResolvedValueOnce({
+        conflicted: [],
         modified: ['somefile.ts'],
         created: [],
         not_added: [],
@@ -1231,6 +1305,8 @@ describe('WorktreeManager', () => {
         renamed: [],
       });
       await expect(manager.mergeRunWorktree('run-1', { commitTitle: 'test merge' })).rejects.toThrow(/uncommitted changes/);
+      expect(wGit.add).not.toHaveBeenCalled();
+      expect(wGit.commit).not.toHaveBeenCalled();
     });
 
     it('mergeRunWorktree reports merged when preserve fast-forward post-landing HEAD revparse fails', async () => {

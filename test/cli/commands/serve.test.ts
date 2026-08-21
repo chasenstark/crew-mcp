@@ -4605,9 +4605,54 @@ describe('crew serve — merge_run tool', () => {
       const continueText = (continueRes.content as Array<{ text: string }>)[0].text;
       expect(continueText).toMatch(/merge_conflict/);
 
-      // Squash conflicts are materialized in the run worktree, not the
-      // host checkout. Reset the run branch so a retry can materialize the
-      // same conflict again.
+      // A direct retry must refuse before staging or committing the
+      // materialized conflict. The run worktree and target stay unchanged.
+      const runHeadBeforeRefusal = execSync('git rev-parse HEAD', {
+        cwd: runEnv.worktree_path,
+        encoding: 'utf-8',
+      }).trim();
+      const targetHeadBeforeRefusal = execSync('git rev-parse HEAD', {
+        cwd: h.root,
+        encoding: 'utf-8',
+      }).trim();
+      const runStatusBeforeRefusal = execSync('git status --porcelain', {
+        cwd: runEnv.worktree_path,
+        encoding: 'utf-8',
+      });
+
+      const guardedRetry = await h.client.callTool({
+        name: 'merge_run',
+        arguments: {
+          run_id: runEnv.run_id,
+          confirmed: true,
+          commit_title: 'fix: resolve shared file',
+        },
+      });
+      expect(guardedRetry.isError).toBe(true);
+      expect(toolText(guardedRetry)).toMatch(
+        /^merge_run\.run_worktree_unresolved_conflict:/,
+      );
+      expect(toolText(guardedRetry)).toContain('unmerged paths: shared.txt');
+      expect(toolText(guardedRetry)).toContain('MERGE_HEAD present');
+      expect(readPersistedState(h, runEnv.run_id).status).toBe('merge_conflict');
+      expect(existsSync(runEnv.worktree_path)).toBe(true);
+      expect(execSync('git rev-parse HEAD', {
+        cwd: runEnv.worktree_path,
+        encoding: 'utf-8',
+      }).trim()).toBe(runHeadBeforeRefusal);
+      expect(execSync('git rev-parse HEAD', {
+        cwd: h.root,
+        encoding: 'utf-8',
+      }).trim()).toBe(targetHeadBeforeRefusal);
+      expect(execSync('git status --porcelain', {
+        cwd: runEnv.worktree_path,
+        encoding: 'utf-8',
+      })).toBe(runStatusBeforeRefusal);
+      expect(readFileSync(join(runEnv.worktree_path, 'shared.txt'), 'utf-8'))
+        .toContain('<<<<<<<');
+
+      // Reset only after proving the guard. A clean retry can then
+      // materialize the same target/run conflict again.
       execSync('git reset --hard HEAD', { cwd: runEnv.worktree_path });
 
       const retry = await h.client.callTool({

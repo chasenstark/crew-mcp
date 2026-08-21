@@ -7,11 +7,14 @@
  * ask the user for approval before invoking this tool.
  *
  * Behavior:
+ *   - Refuses before staging when the run worktree still has unmerged
+ *     paths or MERGE_HEAD, preserving conflict evidence for explicit
+ *     resolution or abort.
  *   - Auto-commits any uncommitted changes in the worktree first
  *     (using `commit_title` when supplied, else "crew: auto-commit
  *     before merge" on preserve-only calls).
- *   - Refuses if the host's working directory has uncommitted changes,
- *     unless force=true.
+ *   - Refuses a dirty host before mutating the run worktree unless
+ *     force=true; even force cannot move a dirty checked-out target.
  *   - Lands the run linearly — never an empty `--no-ff` wrapper commit.
  *     Two strategies (see `merge_strategy`):
  *       - `squash` (default): collapse the whole run into one ordinary
@@ -98,7 +101,7 @@ export const mergeRunInputSchema = z.object({
 export type MergeRunInput = z.infer<typeof mergeRunInputSchema>;
 
 export const MERGE_RUN_DESCRIPTION =
-  "Merge a completed run after approval. force:true always requires confirmed:true. Squash (default) requires commit_title; titles over 72 chars warn, schema max 200. confirmBeforeMerge still gates non-force calls when enabled. Preserve keeps individual commits. Returns merged, conflict, or no-changes with checkout fields and warnings.";
+  "Merge a completed run after approval. Refuses unresolved run-worktree merges before staging. force:true always requires confirmed:true. Squash (default) requires commit_title; titles over 72 chars warn, schema max 200. confirmBeforeMerge still gates non-force calls when enabled. Preserve keeps individual commits. Returns merged, conflict, or no-changes with checkout fields and warnings.";
 
 const MERGE_CONFIRMATION_REQUIRED_MESSAGE =
   'merge_run: requires explicit user confirmation (config: confirmBeforeMerge=true). ' +
