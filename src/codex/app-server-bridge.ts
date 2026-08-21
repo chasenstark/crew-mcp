@@ -110,7 +110,7 @@ export function codexWakePrompt(runIds: readonly string[]): string {
 export async function wakeCodexThread(
   options: WakeCodexThreadOptions,
 ): Promise<WakeCodexThreadResult> {
-  validateThreadId(options.threadId);
+  validateCodexThreadId(options.threadId);
   validateRunIds(options.runIds);
   const descriptor = await readCodexBridgeDescriptor(options.bridgeFile);
   const token = await readBridgeToken(descriptor, options.bridgeFile);
@@ -253,7 +253,7 @@ function validateLoopbackWebSocketUrl(raw: string): void {
   }
 }
 
-function validateThreadId(threadId: string): void {
+export function validateCodexThreadId(threadId: string): void {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)) {
     throw new CodexWakeBridgeError('CODEX_THREAD_ID is missing or invalid');
   }

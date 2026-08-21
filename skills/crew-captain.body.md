@@ -232,7 +232,7 @@ If the user says the tail link does nothing, suggest
 the dispatch envelope.
 
 <!-- host:claude-code,codex -->
-### Step 2 - background watcher overlay (Claude Code and hosted Codex, mandatory)
+### Step 2 - background watcher overlay (Claude Code and Codex, mandatory)
 <!-- /host -->
 
 <!-- host:claude-code -->
@@ -284,19 +284,27 @@ text(JSON.stringify({
 
 The nested command returns a background session after one second; do not poll
 it with `write_stdin`, `wait`, or another tool call. End the model turn. The
-user can keep chatting while `crew-wait` waits, and completion calls Codex App
-Server `turn/start` to create a real follow-up turn on this same thread. For
-panels, launch one process with the panel-level multi-id command. If
-`required_next_action` is absent, this is a standalone Codex session rather
-than `crew-mcp codex`; report that auto-wake is unavailable and use turn-start
-recovery. Do not substitute `notify`, `yield_control`, a blocking `Stop` hook,
-foreground shell, goal, or polling loop.
+user can keep chatting while `crew-wait` waits. The returned
+`required_next_action.mechanism` names the wake transport:
+
+- `codex_queue` uses Codex's durable thread queue and works in ordinary Codex
+  0.149+ sessions with a valid `CODEX_THREAD_ID`.
+- `codex_app_server` uses Crew's authenticated direct App Server bridge when
+  the session was launched through `crew-mcp codex`.
+
+Both create a real follow-up turn on this same thread after it becomes idle.
+For panels, launch one process with the panel-level multi-id command. If
+`required_next_action` is absent, report that no supported wake transport or
+watcher command is available and use turn-start recovery. Do not substitute
+`notify`, `yield_control`, a blocking `Stop` hook, foreground shell, goal, or
+polling loop.
 
 If the launch returns a non-zero exit, report watcher degradation and keep
 next-user-turn recovery active until every listed run is terminal. The command
-carries the server's Crew home and private App Server bridge reference, so do
-not remove or rewrite any arguments. Its generation token and durable wake
-claim suppress stale and duplicate completion turns.
+carries the server's Crew home plus either the private App Server bridge
+reference or the originating queue thread id, so do not remove or rewrite any
+arguments. Its generation token and durable wake claim suppress stale and
+duplicate completion turns.
 <!-- /host -->
 
 <!-- host:claude-code,codex -->
@@ -340,7 +348,7 @@ in a loop; recover via repo-scoped `list_runs` and visible conversation context.
 <!-- /host -->
 
 <!-- host:codex -->
-**Completion-event handling.** The hosted watcher starts a new user turn whose
+**Completion-event handling.** The Codex watcher starts a new user turn whose
 message lists the terminal run ids. For each id, call `get_run_status` and
 synthesize from `summary`, `filesChanged`, `warnings`, `commits`, and
 `events_tail`; never dump the tail verbatim. For a panel, call
@@ -365,7 +373,7 @@ This blocks chat but uses one inference instead of an MCP long-poll loop.
 <!-- /host -->
 <!-- host:codex -->
 Do not use a foreground watcher on Codex. The supported Codex
-path is the hosted Step 2 launch recipe. If `required_next_action` is absent,
+path is the Step 2 launch recipe. If `required_next_action` is absent,
 end the turn and recover by snapshot at the next user turn.
 <!-- /host -->
 
@@ -744,7 +752,7 @@ Spawn one watcher for the panel, not one per reviewer, because
 consolidation waits for all reviewers. Use the background `Bash` form above.
 <!-- /host -->
 <!-- host:codex -->
-Start one hosted background watcher with the panel command, not one per
+Start one auto-wake background watcher with the panel command, not one per
 reviewer, because consolidation waits for all reviewers.
 <!-- /host -->
 <!-- host:claude-code,codex -->

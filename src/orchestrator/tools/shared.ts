@@ -33,8 +33,10 @@ export const MAX_LONG_POLL_MS = 60_000;
  * background crew-wait process that wakes the idle thread through App Server.
  */
 export type ClientKind = 'claude-code' | 'codex' | 'codex-legacy' | 'unknown';
+export type CodexWakeMechanism = 'codex_app_server' | 'codex_queue';
 
 export const MIN_CODEX_APP_SERVER_WATCHER_VERSION = '0.144.3';
+export const MIN_CODEX_QUEUE_WATCHER_VERSION = '0.149.0';
 
 /**
  * Map an MCP `clientInfo.name` string to a `ClientKind`. Substring match
@@ -58,8 +60,16 @@ export function classifyClient(
 }
 
 export function supportsCodexAppServerWatcher(version: string | undefined): boolean {
+  return versionAtLeast(version, MIN_CODEX_APP_SERVER_WATCHER_VERSION);
+}
+
+export function supportsCodexQueueWatcher(version: string | undefined): boolean {
+  return versionAtLeast(version, MIN_CODEX_QUEUE_WATCHER_VERSION);
+}
+
+function versionAtLeast(version: string | undefined, minimumVersion: string): boolean {
   const actual = parseNumericVersion(version);
-  const minimum = parseNumericVersion(MIN_CODEX_APP_SERVER_WATCHER_VERSION)!;
+  const minimum = parseNumericVersion(minimumVersion)!;
   if (actual === undefined) return false;
   for (let index = 0; index < minimum.length; index += 1) {
     const delta = (actual[index] ?? 0) - minimum[index];
@@ -87,8 +97,8 @@ export function nextStepSentence(kind: ClientKind, watcherAvailable = true): str
         : 'The crew-wait watcher is unavailable; end your turn and recover terminal state on the next user turn.';
     case 'codex':
       return watcherAvailable
-        ? 'One required action: start the hosted crew-wait bridge before ending your turn; user is free to chat and completion will start a new turn.'
-        : 'This Codex session is not using the Crew App Server bridge, or its watcher command is unavailable; end your turn and recover terminal state on the next user turn.';
+        ? 'One required action: start the Crew auto-wake watcher before ending your turn; user is free to chat and completion will start a new turn.'
+        : 'The watcher command is unavailable because this Codex session has no available Crew wake transport; end your turn and recover terminal state on the next user turn.';
     case 'codex-legacy':
       return `This Codex version lacks the hosted watcher bridge (requires ${MIN_CODEX_APP_SERVER_WATCHER_VERSION}+); end your turn and recover terminal state on the next user turn.`;
     case 'unknown':
@@ -138,7 +148,7 @@ export interface FullRunEnvelope extends RunEnvelope {
 
 export interface SpawnWatcherRequiredNextAction {
   readonly type: 'spawn_watcher';
-  readonly mechanism: 'background_shell' | 'codex_app_server';
+  readonly mechanism: 'background_shell' | CodexWakeMechanism;
   readonly command: string;
   /** JSON string literal safe to paste directly into the Codex launcher JavaScript. */
   readonly command_json?: string;
@@ -367,7 +377,7 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
       );
     } else if (clientKind === 'codex') {
       lines.push(
-        `**REQUIRED before you end this turn:** start the Crew skill's hosted background watcher using \`required_next_action.command_json\`, then end the turn. Command: ${mdInlineCode(env.required_next_action.command)}. Skip it and completion cannot wake this thread.`,
+        `**REQUIRED before you end this turn:** start the Crew skill's ${env.required_next_action.mechanism === 'codex_queue' ? 'queue-backed' : 'hosted'} background watcher using \`required_next_action.command_json\`, then end the turn. Command: ${mdInlineCode(env.required_next_action.command)}. Skip it and completion cannot wake this thread.`,
       );
     }
   } else {
@@ -451,9 +461,10 @@ export function requiredNextActionForRun(
     runGenerations,
     crewHome,
   );
+  const codexWakeMechanism = codexWakeMechanismForCommand(crewWaitCommand);
   return {
     type: 'spawn_watcher',
-    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'codex_app_server',
+    mechanism: clientKind === 'claude-code' ? 'background_shell' : codexWakeMechanism,
     command,
     ...(clientKind === 'codex'
       ? {
@@ -473,7 +484,9 @@ export function requiredNextActionForRun(
     per_run: true,
     consequence_if_skipped: clientKind === 'claude-code'
       ? 'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.'
-      : 'Skip it and completion cannot start a new turn on the hosted Codex thread.',
+      : codexWakeMechanism === 'codex_queue'
+        ? 'Skip it and completion cannot enqueue a new turn on this Codex thread.'
+        : 'Skip it and completion cannot start a new turn on the hosted Codex thread.',
   };
 }
 
@@ -515,9 +528,10 @@ export function requiredNextActionForRuns(
     runGenerations,
     crewHome,
   );
+  const codexWakeMechanism = codexWakeMechanismForCommand(crewWaitCommand);
   return {
     type: 'spawn_watcher',
-    mechanism: clientKind === 'claude-code' ? 'background_shell' : 'codex_app_server',
+    mechanism: clientKind === 'claude-code' ? 'background_shell' : codexWakeMechanism,
     command,
     ...(clientKind === 'codex'
       ? {
@@ -537,8 +551,16 @@ export function requiredNextActionForRuns(
     per_run: false,
     consequence_if_skipped: clientKind === 'claude-code'
       ? 'Skip it and the panel is orphaned; no watcher-triggered terminal turn will surface panel completion.'
-      : 'Skip it and panel completion cannot start a new turn on the hosted Codex thread.',
+      : codexWakeMechanism === 'codex_queue'
+        ? 'Skip it and panel completion cannot enqueue a new turn on this Codex thread.'
+        : 'Skip it and panel completion cannot start a new turn on the hosted Codex thread.',
   };
+}
+
+function codexWakeMechanismForCommand(command: string): CodexWakeMechanism {
+  return command.includes('--codex-queue-thread ')
+    ? 'codex_queue'
+    : 'codex_app_server';
 }
 
 function watcherCommand(

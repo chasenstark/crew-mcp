@@ -29,6 +29,18 @@ describe('dispatch envelope JIT fields', () => {
       per_run: true,
       consequence_if_skipped: expect.any(String),
     });
+    expect(requiredNextActionForRun(
+      'codex',
+      'crew-wait --codex-queue-thread thread-id',
+      'run-1',
+      '/crew',
+      '/repo',
+      1,
+    )).toMatchObject({
+      type: 'spawn_watcher',
+      mechanism: 'codex_queue',
+      consequence_if_skipped: expect.stringContaining('cannot enqueue'),
+    });
 
     const variants: RequiredNextAction[] = [
       {

@@ -330,13 +330,14 @@ describe('crew-wait', () => {
       process.stderr.write = originalWrite;
     }
     expect(writes.join('')).toContain(
-      'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>] <run_id...>',
+      'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>] [--run-generations-base64 <base64url>] <run_id...>',
     );
   });
 
   it('rejects either orphaned Codex wake flag before waiting for run state', async () => {
     const encodedBridge = Buffer.from('/tmp/crew-bridge.json').toString('base64url');
     const encodedGenerations = Buffer.from(JSON.stringify([1])).toString('base64url');
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
     const writes: string[] = [];
     const originalWrite = process.stderr.write;
     process.stderr.write = ((chunk: string | Uint8Array) => {
@@ -349,6 +350,20 @@ describe('crew-wait', () => {
       ])).resolves.toBe(2);
       await expect(main([
         '--run-generations-base64', encodedGenerations, 'run-never-created',
+      ])).resolves.toBe(2);
+      await expect(main([
+        '--codex-queue-thread', threadId, 'run-never-created',
+      ])).resolves.toBe(2);
+      await expect(main([
+        '--codex-queue-thread', 'not-a-thread-id',
+        '--run-generations-base64', encodedGenerations,
+        'run-never-created',
+      ])).resolves.toBe(2);
+      await expect(main([
+        '--codex-bridge-base64', encodedBridge,
+        '--codex-queue-thread', threadId,
+        '--run-generations-base64', encodedGenerations,
+        'run-never-created',
       ])).resolves.toBe(2);
       await expect(main([
         '--codex-bridge-base64', encodedBridge,
@@ -410,6 +425,50 @@ describe('crew-wait', () => {
       process.stdout.write = originalWrite;
     }
     expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_SENT thread_id=${threadId} turn_id=turn-sent`);
+  });
+
+  it('queues a standalone Codex wake through the durable claim guard', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-codex-queue-main-'));
+    cleanup.push(crewHome);
+    const runId = 'run-codex-queue-main';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/worktree',
+      prompts: [{ turn: 1 }],
+    });
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-queue-thread', threadId,
+        '--run-generations-base64', Buffer.from('[1]').toString('base64url'),
+        runId,
+      ], {
+        runClaimedCodexWake: async (options) => {
+          expect(options.threadId).toBe(threadId);
+          expect(options.runIds).toEqual([runId]);
+          expect(options.runGenerations).toEqual([1]);
+          return { started: true, result: await options.startTurn() };
+        },
+        queueCodexThread: async (options) => {
+          expect(options).toMatchObject({ threadId, runIds: [runId] });
+          return { queued: true };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_QUEUED thread_id=${threadId}`);
   });
 
   it('wakes hosted Codex for every run in an all-terminal batch', async () => {
@@ -1060,7 +1119,7 @@ describe('crew-wait', () => {
       process.stdout.write = originalWrite;
     }
     expect(writes.join('')).toMatch(
-      /Usage: crew-wait \[--crew-home-base64 <base64url>\] \[--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>\] <run_id\.\.\.>/,
+      /Usage: crew-wait \[--crew-home-base64 <base64url>\] \[--codex-bridge-base64 <base64url> \| --codex-queue-thread <uuid>\] \[--run-generations-base64 <base64url>\] <run_id\.\.\.>/,
     );
   });
 });

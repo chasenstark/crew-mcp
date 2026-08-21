@@ -207,12 +207,12 @@ describe('host-conditional real skill bodies', () => {
   const SENTINELS: Record<string, Record<HostId, string>> = {
     crew: {
       'claude-code': 'Complete this checklist before ending the turn:',
-      codex: 'Server `turn/start` to create a real follow-up turn',
+      codex: '`codex_queue` uses Codex\'s durable thread queue',
       agy: 'On hosts without the watcher capability, use next-turn snapshots.',
     },
     'crew:iterate': {
       'claude-code': 'Claude Code, panels (`run_panel`): spawn ONE watcher',
-      codex: 'follow-up turn through Codex App Server',
+      codex: '`required_next_action.mechanism: "codex_queue"`',
       agy: 'Hosts without either watcher mechanism: discover terminal runs',
     },
   };
@@ -222,7 +222,7 @@ describe('host-conditional real skill bodies', () => {
       'crew_wait_terminal',
       'yield_control',
       'crew_wait_started',
-      'Server `turn/start` to create a real follow-up turn',
+      '`codex_queue` uses Codex\'s durable thread queue',
       'On hosts without the watcher capability, use next-turn snapshots.',
       'Hosts without either watcher mechanism: discover terminal runs',
     ],
@@ -406,7 +406,7 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('## Dispatch or inline');
     expect(out).toContain('## Merge boundary');
     expect(out).toContain('## Dispatch lifecycle');
-    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and hosted Codex, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
     expect(out).toContain('Checking pending runs at turn start');
     expect(out).not.toContain('## Polling lifecycle — every dispatch');
     expect(out).not.toContain('Hard rule: stay in the same turn');
@@ -495,7 +495,7 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).not.toMatch(/Always pass\s+`wait_for_change_ms:\s*30000`/);
 
     // ADDED — Phase 2 + post-review revisions:
-    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and hosted Codex, mandatory)');
+    expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
     expect(out).toContain('Completion-event handling');
     expect(out).toContain('tools.exec_command({');
@@ -509,13 +509,14 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain("type: 'crew_wait_started'");
     expect(out).toContain('result.exit_code !== undefined && result.exit_code !== 0');
     expect(out).toContain('do not poll');
-    expect(out).toContain('completion calls Codex App');
+    expect(out).toContain('Both create a real follow-up turn');
+    expect(out).toContain('`codex_queue` uses Codex\'s durable thread queue');
     expect(out).toContain('crew-mcp codex');
     expect(out).toContain('list_runs');
-    // Foreground waiting remains forbidden on Codex; only the hosted
+    // Foreground waiting remains forbidden on Codex; only the background
     // background-launch recipe is allowed.
     expect(out).toContain('Do not use a foreground watcher on Codex');
-    expect(out).toContain('hosted Step 2 launch recipe');
+    expect(out).toContain('path is the Step 2 launch recipe');
     expect(out).not.toContain('docs/status/captain-flow-review-2026-04-29.md');
     expect(out).toContain('panel-level');
     expect(out).toContain('commits');

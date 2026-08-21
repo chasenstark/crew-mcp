@@ -500,8 +500,9 @@ export async function installSingleTarget(args: {
   }
   if (adapter.id === 'codex') {
     logger.info(
-      'crew install: launch Codex with `crew-mcp codex -- <codex arguments>` '
-      + 'to enable non-blocking App Server watcher wake.',
+      'crew install: ordinary Codex 0.149+ sessions support non-blocking queue wake. '
+      + 'Use `crew-mcp codex -- <codex arguments>` only when you want Crew\'s '
+      + 'authenticated direct App Server wake transport.',
     );
   }
 
@@ -610,8 +611,9 @@ export async function installSingleProjectTarget(args: {
   }
   if (adapter.id === 'codex') {
     logger.info(
-      'crew install: launch project Codex through `npx crew-mcp codex -- <codex arguments>` '
-      + 'to enable non-blocking App Server watcher wake.',
+      'crew install: ordinary Codex 0.149+ project sessions support non-blocking queue wake. '
+      + 'Use `npx crew-mcp codex -- <codex arguments>` only when you want Crew\'s '
+      + 'authenticated direct App Server wake transport.',
     );
   }
 

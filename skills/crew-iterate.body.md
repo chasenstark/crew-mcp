@@ -68,7 +68,7 @@ launch it after the Crew dispatch. Only then end the turn:
   JSON-safe `required_next_action.command_json` and
   `required_next_action.run_ids_json`, with
   `required_next_action.working_directory_json` as the nested command's
-  `workdir`. Codex panels use ONE hosted background watcher with the
+  `workdir`. Codex panels use ONE auto-wake background watcher with the
   panel-level multi-id command. Use this launch-only recipe:
 
   ```js
@@ -94,13 +94,16 @@ launch it after the Crew dispatch. Only then end the turn:
   The nested command returns a background session after one second. Do not
   poll it with `write_stdin`, `wait`, or another tool call; end the model
   turn. The user remains free to chat, and terminal completion starts a real
-  follow-up turn through Codex App Server. If `required_next_action` is
-  absent, the session was not launched with `crew-mcp codex`; report degraded
-  auto-wake and use next-user-turn recovery. Never substitute `notify`,
+  follow-up turn. `required_next_action.mechanism: "codex_queue"` uses the
+  durable queue available to ordinary Codex 0.149+ sessions;
+  `"codex_app_server"` uses Crew's authenticated direct Codex App Server
+  bridge from `crew-mcp codex`. If
+  `required_next_action` is absent, report degraded auto-wake and use
+  next-user-turn recovery. Never substitute `notify`,
   `yield_control`, a blocking `Stop` hook, foreground shell, goal, or polling
-  loop. Never remove the server-supplied Crew-home, bridge, or generation
-  argument: the generation token and durable wake claim suppress stale and
-  duplicate completion turns.
+  loop. Never remove the server-supplied Crew-home, bridge-or-queue-thread, or
+  generation argument: the generation token and durable wake claim suppress
+  stale and duplicate completion turns.
 <!-- /host -->
 <!-- host:claude-code -->
 - On any watcher shape, a harness-tracked native `Agent` / `Task` subagent
@@ -115,7 +118,7 @@ launch it after the Crew dispatch. Only then end the turn:
 <!-- /host -->
 <!-- host:codex -->
   A native `Agent` / `Task` completion is host harness-tracked and says
-  nothing about Crew runs. On hosted Codex, the watcher starts a synthetic
+  nothing about Crew runs. On Codex, the watcher starts a synthetic
   user turn listing the
   terminal run ids. Call `get_run_status({run_id})` for each, or
   `get_panel_status({panel_id})` for a panel before aggregation.

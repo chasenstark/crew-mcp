@@ -127,6 +127,7 @@ interface Harness {
   crewHome: string;
   home: string;
   codexBridgeFile?: string;
+  codexThreadId?: string;
   close: () => Promise<void>;
 }
 
@@ -178,6 +179,19 @@ function hostedCodexWatcherPrefix(
   const encodedGenerations = Buffer.from(JSON.stringify(generations)).toString('base64url');
   return `${watcherPrefix(
     `${command} --codex-bridge-base64 ${encodedBridge}`,
+    h.crewHome,
+  )} --run-generations-base64 ${encodedGenerations}`;
+}
+
+function queuedCodexWatcherPrefix(
+  command: string,
+  h: Harness,
+  generations: readonly number[] = [1],
+): string {
+  if (!h.codexThreadId) throw new Error('Expected standalone Codex thread test fixture.');
+  const encodedGenerations = Buffer.from(JSON.stringify(generations)).toString('base64url');
+  return `${watcherPrefix(
+    `${command} --codex-queue-thread ${h.codexThreadId}`,
     h.crewHome,
   )} --run-generations-base64 ${encodedGenerations}`;
 }
@@ -345,6 +359,7 @@ async function startHarness(
     clientVersion?: string;
     installCodexWatcher?: boolean;
     hostCodexBridge?: boolean;
+    hostCodexThread?: boolean;
     projectInstallActive?: boolean;
     beforeBuild?: (paths: { root: string; crewHome: string; home: string }) => void;
     skillStalenessCheck?: (
@@ -393,12 +408,19 @@ async function startHarness(
   }
   options.beforeBuild?.({ root, crewHome, home });
   let codexBridgeFile: string | undefined;
+  let codexThreadId: string | undefined;
   if (
     options.hostCodexBridge !== false
     && options.clientName?.toLowerCase().includes('codex')
   ) {
     codexBridgeFile = join(home, 'codex-test-bridge.json');
     writeFileSync(codexBridgeFile, '{}', { encoding: 'utf-8', mode: 0o600 });
+  }
+  if (
+    options.hostCodexThread === true
+    && options.clientName?.toLowerCase().includes('codex')
+  ) {
+    codexThreadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
   }
 
   const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
@@ -409,7 +431,10 @@ async function startHarness(
     registry: makeRegistry(adapters),
     worktreeManager,
     serverScriptPath,
-    env: codexBridgeFile ? { CREW_CODEX_BRIDGE_FILE: codexBridgeFile } : {},
+    env: {
+      ...(codexBridgeFile ? { CREW_CODEX_BRIDGE_FILE: codexBridgeFile } : {}),
+      ...(codexThreadId ? { CODEX_THREAD_ID: codexThreadId } : {}),
+    },
     skillStalenessCheck: options.skillStalenessCheck,
   });
 
@@ -434,6 +459,7 @@ async function startHarness(
     crewHome,
     home,
     codexBridgeFile,
+    codexThreadId,
     close: async () => {
       await client.close();
       await server.close();
@@ -5769,7 +5795,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
 
   // The dispatch envelope's "next step" sentence is keyed off the MCP
   // `clientInfo.name` carried in the initialize handshake. These cases
-  // guard the non-Claude-Code branches (codex → hosted watcher,
+  // guard the non-Claude-Code branches (codex → auto-wake watcher,
   // unknown → neutral) so a future copy edit can't silently drift.
   it('hosted codex client gets the App Server watcher action', async () => {
     const adapter = makeMockAdapter({
@@ -5791,7 +5817,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         arguments: { agent_id: 'mock-fast', prompt: 'go' },
       });
       const env = run.structuredContent as FullRunEnvelope;
-      expect(env.summary).toContain('hosted crew-wait bridge');
+      expect(env.summary).toContain('Crew auto-wake watcher');
       expect(env.summary).toContain('completion will start a new turn');
       expect(env.required_next_action).toMatchObject({
         type: 'spawn_watcher',
@@ -5817,7 +5843,38 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     }
   });
 
-  it('supported standalone Codex falls back to next-turn recovery', async () => {
+  it('Codex 0.149+ gets a queue-backed watcher without the hosted bridge', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-fast' });
+    const h = await startHarness([adapter], {
+      clientName: 'codex-cli',
+      clientVersion: '0.149.0',
+      hostCodexBridge: false,
+      hostCodexThread: true,
+    });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.summary).toContain('Crew auto-wake watcher');
+      expect(env.required_next_action).toMatchObject({
+        type: 'spawn_watcher',
+        mechanism: 'codex_queue',
+        run_id: env.run_id,
+        run_in_background: true,
+        consequence_if_skipped: expect.stringContaining('cannot enqueue'),
+      });
+      expect(env.required_next_action?.command).toBe(
+        `${queuedCodexWatcherPrefix('crew-wait', h)} ${env.run_id}`,
+      );
+      expect(toolText(run)).toContain('queue-backed background watcher');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('pre-queue standalone Codex falls back to next-turn recovery', async () => {
     const adapter = makeMockAdapter({ name: 'mock-fast' });
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     const h = await startHarness([adapter], {
@@ -5832,9 +5889,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       });
       const env = run.structuredContent as FullRunEnvelope;
       expect(env.required_next_action).toBeUndefined();
-      expect(env.summary).toContain('not using the Crew App Server bridge');
+      expect(env.summary).toContain('no available Crew wake transport');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(
-        'Launch future sessions with `crew-mcp codex`',
+        'update Codex for queue-backed wake',
       ));
     } finally {
       await h.close();
@@ -7298,7 +7355,7 @@ describe('nextStepSentence', () => {
   });
   it('returns the hosted-watcher phrasing for codex', () => {
     expect(nextStepSentence('codex')).toBe(
-      'One required action: start the hosted crew-wait bridge before ending your turn; user is free to chat and completion will start a new turn.',
+      'One required action: start the Crew auto-wake watcher before ending your turn; user is free to chat and completion will start a new turn.',
     );
   });
   it('returns next-turn recovery guidance for legacy codex', () => {

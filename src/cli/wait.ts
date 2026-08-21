@@ -7,10 +7,16 @@ import { fileURLToPath } from 'node:url';
 import {
   CODEX_THREAD_ID_ENV,
   decodeCodexBridgeFile,
+  validateCodexThreadId,
   wakeCodexThread,
   type WakeCodexThreadOptions,
   type WakeCodexThreadResult,
 } from '../codex/app-server-bridge.js';
+import {
+  queueCodexThread,
+  type QueueCodexThreadOptions,
+  type QueueCodexThreadResult,
+} from '../codex/queue-wake.js';
 import {
   decodeRunGenerations,
   runClaimedCodexWake,
@@ -698,10 +704,10 @@ async function readStateSnapshotIfPresent(
 
 export function usage(): string {
   return [
-    'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> --run-generations-base64 <base64url>] <run_id...>',
+    'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>] [--run-generations-base64 <base64url>] <run_id...>',
     '',
     'Wait for one or more crew runs to reach terminal or post-terminal state and print one metadata line per run.',
-    'When --codex-bridge-base64 is present, start a completion turn for the dispatch-terminal runs on the hosted Codex thread.',
+    'With a Codex wake option, start or enqueue a completion turn for the dispatch-terminal runs.',
   ].join('\n');
 }
 
@@ -710,6 +716,9 @@ export interface CrewWaitMainDependencies {
   readonly wakeCodexThread?: (
     options: WakeCodexThreadOptions,
   ) => Promise<WakeCodexThreadResult>;
+  readonly queueCodexThread?: (
+    options: QueueCodexThreadOptions,
+  ) => Promise<QueueCodexThreadResult>;
   readonly runClaimedCodexWake?: (
     options: ClaimedCodexWakeOptions<unknown>,
   ) => Promise<ClaimedCodexWakeResult<unknown>>;
@@ -735,9 +744,9 @@ export async function main(
     runIds: parsed.runIds,
     crewHome,
   });
-  if (parsed.codexBridgeFile) {
+  if (parsed.codexBridgeFile || parsed.codexQueueThreadId) {
     if (!parsed.runGenerations || parsed.runGenerations.length !== parsed.runIds.length) {
-      throw new Error('Codex bridge wake requires one run generation per run id');
+      throw new Error('Codex wake requires one run generation per run id');
     }
     const postTerminalRunIds = new Set(waitResult.postTerminalRunIds);
     const wakeTargets = parsed.runIds.flatMap((runId, index) => (
@@ -749,12 +758,36 @@ export async function main(
       return 0;
     }
 
-    const threadId = (dependencies.env ?? process.env)[CODEX_THREAD_ID_ENV];
     const wakeRunIds = wakeTargets.map(({ runId }) => runId);
     const wakeRunGenerations = wakeTargets.map(({ generation }) => generation);
+    if (parsed.codexQueueThreadId) {
+      const threadId = parsed.codexQueueThreadId;
+      const claimResult = await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
+        crewHome,
+        threadId,
+        runIds: wakeRunIds,
+        runGenerations: wakeRunGenerations,
+        startTurn: () => (dependencies.queueCodexThread ?? queueCodexThread)({
+          threadId,
+          runIds: wakeRunIds,
+        }),
+      });
+      if (!claimResult.started) {
+        process.stdout.write(
+          `CREW_WAIT_CODEX_WAKE_SKIPPED thread_id=${threadId} reason=${claimResult.reason}\n`,
+        );
+      } else {
+        process.stdout.write(
+          `CREW_WAIT_CODEX_WAKE_QUEUED thread_id=${threadId}\n`,
+        );
+      }
+      return 0;
+    }
+
+    const threadId = (dependencies.env ?? process.env)[CODEX_THREAD_ID_ENV];
     let claimResult: ClaimedCodexWakeResult<unknown> | undefined;
     const wake = await (dependencies.wakeCodexThread ?? wakeCodexThread)({
-      bridgeFile: parsed.codexBridgeFile,
+      bridgeFile: parsed.codexBridgeFile!,
       threadId: threadId ?? '',
       runIds: wakeRunIds,
       guardTurnStart: async (startTurn) => {
@@ -789,6 +822,7 @@ function parseCliArgs(argv: readonly string[]): {
   readonly runIds: readonly string[];
   readonly crewHome?: string;
   readonly codexBridgeFile?: string;
+  readonly codexQueueThreadId?: string;
   readonly runGenerations?: readonly number[];
 } | undefined {
   const remaining = [...argv];
@@ -819,6 +853,19 @@ function parseCliArgs(argv: readonly string[]): {
     }
     remaining.splice(bridgeFlagIndex, 2);
   }
+  let codexQueueThreadId: string | undefined;
+  const queueFlagIndex = remaining.indexOf('--codex-queue-thread');
+  if (queueFlagIndex >= 0) {
+    const threadId = remaining[queueFlagIndex + 1];
+    if (!threadId) return undefined;
+    try {
+      validateCodexThreadId(threadId);
+    } catch {
+      return undefined;
+    }
+    codexQueueThreadId = threadId;
+    remaining.splice(queueFlagIndex, 2);
+  }
   let runGenerations: readonly number[] | undefined;
   const generationsFlagIndex = remaining.indexOf('--run-generations-base64');
   if (generationsFlagIndex >= 0) {
@@ -831,7 +878,11 @@ function parseCliArgs(argv: readonly string[]): {
     }
     remaining.splice(generationsFlagIndex, 2);
   }
-  if ((codexBridgeFile === undefined) !== (runGenerations === undefined)) {
+  if (codexBridgeFile !== undefined && codexQueueThreadId !== undefined) {
+    return undefined;
+  }
+  const hasCodexWake = codexBridgeFile !== undefined || codexQueueThreadId !== undefined;
+  if (hasCodexWake !== (runGenerations !== undefined)) {
     return undefined;
   }
   if (remaining.length < 1 || remaining.some((arg) => arg.startsWith('-'))) {
@@ -844,6 +895,7 @@ function parseCliArgs(argv: readonly string[]): {
     runIds: remaining,
     ...(crewHome ? { crewHome } : {}),
     ...(codexBridgeFile ? { codexBridgeFile } : {}),
+    ...(codexQueueThreadId ? { codexQueueThreadId } : {}),
     ...(runGenerations ? { runGenerations } : {}),
   };
 }
