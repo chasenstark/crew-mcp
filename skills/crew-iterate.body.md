@@ -201,11 +201,15 @@ For every discrete-choice confirmation or decision gate in this loop:
 <!-- host:claude-code -->
 use `AskUserQuestion` to present the options and capture the choice.
 <!-- /host -->
-<!-- host:codex,agy -->
-Use the host's structured-question tool when one is available.
+<!-- host:codex -->
+use `request_user_input` when it is available. Codex exposes this structured
+question tool only in Plan mode. In Default mode, use the prose fallback below.
 <!-- /host -->
-If the host exposes no structured-question tool, surface the options as
-prose and wait for a free-text reply. Either way, **Silence is not consent.**
+<!-- host:agy -->
+use the host's structured-question tool when one is available.
+<!-- /host -->
+If the host exposes no structured-question tool, surface the options as prose
+and wait for a free-text reply. Either way, **Silence is not consent.**
 
 Genuinely open-ended asks are different. If the captain needs the user
 to define scope, "done", or another free-form requirement, either keep

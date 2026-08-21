@@ -329,6 +329,28 @@ describe('host-conditional real skill bodies', () => {
     });
   }
 
+  it.each(SKILL_MANIFEST)(
+    '$id renders the native structured-question contract for each host',
+    async (skill) => {
+      const claude = await renderForHost(skill, 'claude-code');
+      const codex = await renderForHost(skill, 'codex');
+      const agy = await renderForHost(skill, 'agy');
+
+      expect(claude).toContain('`AskUserQuestion`');
+      expect(claude).not.toContain('`request_user_input`');
+
+      expect(codex).toContain('`request_user_input`');
+      expect(codex).toContain('only in Plan mode');
+      expect(codex).toContain('In Default mode, use the prose fallback below');
+      expect(codex).not.toContain('`AskUserQuestion`');
+
+      expect(agy).toContain("host's structured-question tool");
+      expect(agy).not.toContain('Codex exposes this structured question tool');
+      expect(agy).not.toContain('`request_user_input`');
+      expect(agy).not.toContain('`AskUserQuestion`');
+    },
+  );
+
   it('uses only registered HOST_ADAPTERS keys in real body markers', async () => {
     const registeredHosts = new Set(Object.keys(HOST_ADAPTERS));
     for (const skill of SKILL_MANIFEST) {

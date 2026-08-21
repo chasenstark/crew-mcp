@@ -52,7 +52,10 @@ describe('crew-captain body — named protocols', () => {
 
     const protocols = sliceBetween(body, '## Named protocols', '## Dispatch or inline');
     const flat = flattenWhitespace(protocols);
-    expectContainsCI(flat, 'AskUserQuestion on Claude Code');
+    expectContainsCI(flat, 'AskUserQuestion');
+    expectContainsCI(flat, 'request_user_input');
+    expectContainsCI(flat, 'only in Plan mode');
+    expectContainsCI(flat, 'In Default mode, use the prose fallback below');
     expectContainsCI(flat, 'If the host has no structured question tool');
     expectContainsCI(flat, 'free-text reply');
     expectContainsCI(flat, 'Other/free-text path');

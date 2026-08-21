@@ -70,6 +70,9 @@ function expectStructuredQuestionGuidance(section: string): void {
 function expectFullStructuredQuestionGuidance(section: string): void {
   const flat = flattenWhitespace(section);
   expectContainsCI(flat, 'AskUserQuestion');
+  expectContainsCI(flat, 'request_user_input');
+  expectContainsCI(flat, 'only in Plan mode');
+  expectContainsCI(flat, 'In Default mode, use the prose fallback below');
   expectContainsCI(flat, 'if the host exposes no structured-question tool');
   expectContainsCI(flat, 'surface the options as prose');
   expectContainsCI(flat, 'free-text reply');
@@ -193,6 +196,8 @@ describe('crew-iterate body — structured-question gates', () => {
     const raw = await loadRawBody();
     expect(raw).toContain('<!-- host:claude-code -->');
     expect(raw).toContain('use `AskUserQuestion`');
+    expect(raw).toContain('<!-- host:codex -->');
+    expect(raw).toContain('use `request_user_input`');
   });
 
   it('routes the escape hatch discard/keep gate through structured questions', async () => {

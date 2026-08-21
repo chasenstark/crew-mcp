@@ -37,12 +37,21 @@ asking the user to confirm criteria. `get_criteria` is different: use its
 
 ### Ask protocol
 
-For a discrete choice, use the host's structured question surface when it
-exists (AskUserQuestion on Claude Code). If the host has no structured
-question tool, ask in prose and wait for a free-text reply. Include an
-Other/free-text path when the listed options may not cover the user's
-intent. Genuinely open-ended questions can stay prose. **Silence is not
-consent.**
+For a discrete choice:
+<!-- host:claude-code -->
+use `AskUserQuestion` to present the options and capture the choice.
+<!-- /host -->
+<!-- host:codex -->
+use `request_user_input` when it is available. Codex exposes this structured
+question tool only in Plan mode. In Default mode, use the prose fallback below.
+<!-- /host -->
+<!-- host:agy -->
+use the host's structured-question tool when one is available.
+<!-- /host -->
+If the host has no structured question tool, ask in prose and wait for a
+free-text reply. Include an Other/free-text path when the listed options may
+not cover the user's intent. Genuinely open-ended questions can stay prose.
+**Silence is not consent.**
 
 ### Own-host rule
 
