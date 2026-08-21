@@ -14,8 +14,11 @@ import {
 } from './process-group.js';
 import { classifyTextFailure } from './failure-classifier.js';
 import { boundFailureText } from './failure-output.js';
-import { AGY_MODEL_LABELS, AGY_MODEL_LABEL_SET } from './agy-models.js';
+import { discoverAgyModels } from './agy-models.js';
+import { findCatalogModel, ModelCatalogCache } from './model-selection.js';
 import type {
+  AdapterModelCatalog,
+  AdapterModelResolution,
   AgentAdapter,
   AgentStrength,
   EffortLevel,
@@ -51,10 +54,9 @@ export const AGY_MIN_VERSION = { major: 1, minor: 0, patch: 14 } as const;
  * agy keys models by exact human LABEL (not id) and SILENTLY falls back to its
  * default model on an unknown label (verified: a bogus `--model` returns
  * status:SUCCESS answered by the default). So the adapter validates the label
- * at dispatch and `recognizesModel` matches the pinned set EXACTLY — never a
- * substring, because the labels contain "Claude…"/"GPT-OSS…" which a loose
- * test would mis-claim. The list lives in ./agy-models.js so the lazy registry
- * can share it without importing this adapter's heavy deps.
+ * before dispatch against the live `agy models` catalog. Matching is exact —
+ * never a substring — because the labels contain "Claude…"/"GPT-OSS…" and a
+ * loose test would mis-claim support.
  */
 
 /**
@@ -308,6 +310,7 @@ export class AgyAdapter implements AgentAdapter {
   readonly useWhen = BUILTIN_AGENT_ROUTING[AgentId.AGY].useWhen;
   // No native JSON-schema support.
   readonly supportsJsonSchema = false;
+  readonly modelSelectionSupport = 'catalog-and-provider-id' as const;
   // agy CANNOT enforce a read-only filesystem sandbox: absolute paths in a
   // prompt escape any --add-dir/--sandbox, and there is no --policy/tool-deny
   // equivalent to gemini's. So read-only is not "weakly enforced" — it is
@@ -338,9 +341,54 @@ export class AgyAdapter implements AgentAdapter {
   // BUILTIN_ADAPTER_METADATA in registry.ts (proxy/instance parity).
   readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high'];
   private readonly healthCheckCache = new HealthCheckCache();
+  private readonly modelCatalogCache = new ModelCatalogCache();
 
-  recognizesModel(modelId: string): boolean {
-    return typeof modelId === 'string' && AGY_MODEL_LABEL_SET.has(modelId);
+  async listModels(options?: { refresh?: boolean }): Promise<AdapterModelCatalog> {
+    return this.modelCatalogCache.get(options, async () => {
+      const discovered = await discoverAgyModels();
+      return {
+        support: this.modelSelectionSupport,
+        source: 'provider-cli',
+        authoritative: discovered.ok,
+        models: discovered.models,
+        checkedAt: new Date().toISOString(),
+        ...(!discovered.ok
+          ? { warnings: [`agy model discovery failed: ${discovered.reason ?? 'unknown error'}`] }
+          : {}),
+      };
+    });
+  }
+
+  async resolveModel(
+    requested: string,
+    options?: { refreshOnMiss?: boolean },
+  ): Promise<AdapterModelResolution> {
+    let catalog = await this.listModels();
+    let descriptor = findCatalogModel(catalog, requested);
+    if (!descriptor && options?.refreshOnMiss === true) {
+      catalog = await this.listModels({ refresh: true });
+      descriptor = findCatalogModel(catalog, requested);
+    }
+    if (descriptor) {
+      return {
+        ok: true,
+        argument: descriptor.model,
+        displayName: descriptor.displayName,
+        validation: 'catalog',
+      };
+    }
+    if (!catalog.authoritative) {
+      return {
+        ok: false,
+        code: 'model_selection.discovery_unavailable',
+        message: `model_selection.discovery_unavailable: could not verify agy model label "${requested}". ${catalog.warnings?.join(' ') ?? ''}`.trim(),
+      };
+    }
+    return {
+      ok: false,
+      code: 'model_selection.unknown',
+      message: `model_selection.unknown: agy does not advertise exact model label "${requested}". Call list_models for current labels.`,
+    };
   }
 
   async getCliVersionTag(): Promise<string | undefined> {
@@ -376,23 +424,25 @@ export class AgyAdapter implements AgentAdapter {
       };
     }
 
-    const model = task.constraints?.model;
+    let model = task.constraints?.model;
     // Validate the exact label AT DISPATCH. agy silently answers with its
     // default model on an unknown label, so an unvalidated typo would silently
     // run the wrong model. Validate only when a label is supplied; omit --model
     // entirely otherwise so agy uses its own default.
-    if (model !== undefined && !AGY_MODEL_LABEL_SET.has(model)) {
-      const message =
-        `Unknown agy model label "${model}". agy keys models by exact label; known labels: `
-        + `${AGY_MODEL_LABELS.join(', ')}.`;
-      logger.error('[adapter:agy] unknown model label', { model });
-      return {
-        output: message,
-        filesModified: [],
-        status: 'error',
-        failure: { kind: 'unknown', confidence: 'high', recommendation: 'ask_user' },
-        metadata: { rawEvents: [{ unknownModel: model }] },
-      };
+    if (model !== undefined) {
+      const resolution = await this.resolveModel(model, { refreshOnMiss: true });
+      if (!resolution.ok) {
+        const message = resolution.message;
+        logger.error('[adapter:agy] model resolution refused', { model });
+        return {
+          output: message,
+          filesModified: [],
+          status: 'error',
+          failure: { kind: 'unknown', confidence: 'high', recommendation: 'ask_user' },
+          metadata: { rawEvents: [{ unknownModel: model, code: resolution.code }] },
+        };
+      }
+      model = resolution.argument;
     }
 
     const args = ['--output-format', 'json'];

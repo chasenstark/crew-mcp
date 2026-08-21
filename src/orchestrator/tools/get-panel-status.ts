@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 import type { TaskFailure } from '../../adapters/types.js';
+import {
+  latestModelSelection,
+  modelSelectionToWire,
+  type WireModelSelection,
+} from '../../adapters/model-selection.js';
 import type { DispatchContext } from '../dispatch-run-agent-internal.js';
 import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
@@ -34,6 +39,7 @@ export type PanelReviewerStatus =
       readonly completedAt?: string;
       readonly failure?: TaskFailure;
       readonly dispatch_warnings: readonly string[];
+      readonly model_selection?: WireModelSelection;
     }
   | {
       readonly run_id: string;
@@ -41,6 +47,7 @@ export type PanelReviewerStatus =
       readonly state_unavailable: true;
       readonly state_unavailable_reason: string;
       readonly dispatch_warnings: readonly string[];
+      readonly model_selection?: WireModelSelection;
     };
 
 export interface GetPanelStatusOutput {
@@ -55,6 +62,7 @@ export interface GetPanelStatusOutput {
     readonly agent_id: string;
     readonly error: string;
     readonly dispatch_warnings: readonly string[];
+    readonly requested_model?: string;
   }>;
 }
 
@@ -84,8 +92,11 @@ function renderPanelStatusMarkdown(out: GetPanelStatusOutput): string {
   ];
   for (const reviewer of out.reviewers) {
     if (reviewer.state_unavailable) {
+      const model = reviewer.model_selection
+        ? ` model=${panelModelLabel(reviewer.model_selection)}`
+        : '';
       lines.push(
-        `- ${mdInlineCode(reviewer.agent_id)}: status=\`state_unavailable\` files_changed=0 summary=${truncatePanelStatusText(reviewer.state_unavailable_reason)}`,
+        `- ${mdInlineCode(reviewer.agent_id)}:${model} status=\`state_unavailable\` files_changed=0 summary=${truncatePanelStatusText(reviewer.state_unavailable_reason)}`,
       );
       continue;
     }
@@ -93,16 +104,27 @@ function renderPanelStatusMarkdown(out: GetPanelStatusOutput): string {
     const summary = reviewer.summary === undefined
       ? ''
       : ` summary=${truncatePanelStatusText(reviewer.summary)}`;
+    const model = reviewer.model_selection
+      ? ` model=${panelModelLabel(reviewer.model_selection)}`
+      : '';
     lines.push(
-      `- ${mdInlineCode(reviewer.agent_id)}: status=\`${reviewer.status}\` files_changed=${filesChanged}${summary}`,
+      `- ${mdInlineCode(reviewer.agent_id)}:${model} status=\`${reviewer.status}\` files_changed=${filesChanged}${summary}`,
     );
   }
   for (const reviewer of out.failed_reviewers) {
+    const model = reviewer.requested_model ? ` model=${reviewer.requested_model}` : '';
     lines.push(
-      `- ${mdInlineCode(reviewer.agent_id)}: status=\`dispatch_failed\` files_changed=0 summary=${truncatePanelStatusText(reviewer.error)}`,
+      `- ${mdInlineCode(reviewer.agent_id)}:${model} status=\`dispatch_failed\` files_changed=0 summary=${truncatePanelStatusText(reviewer.error)}`,
     );
   }
   return lines.join('\n');
+}
+
+function panelModelLabel(selection: WireModelSelection): string {
+  return selection.observed_model
+    ?? selection.display_name
+    ?? selection.model_argument
+    ?? 'CLI default';
 }
 
 function truncatePanelStatusText(value: string): string {
@@ -141,15 +163,20 @@ export function getPanelStatusHandler(
         return snapshotStatus(reviewer, `missing state for run ${reviewer.runId}`);
       }
       if (!isTerminalRunStatus(state.status)) {
+        const modelSelection = latestModelSelection(state.prompts) ?? reviewer.modelSelection;
         return {
           run_id: reviewer.runId,
           agent_id: reviewer.agentId,
           state_unavailable: false,
           status: state.status,
           dispatch_warnings: reviewer.dispatchWarnings,
+          ...(modelSelection !== undefined
+            ? { model_selection: modelSelectionToWire(modelSelection) }
+            : {}),
         };
       }
       const summary = state.prompts.at(-1)?.summary;
+      const modelSelection = latestModelSelection(state.prompts) ?? reviewer.modelSelection;
       return {
         run_id: reviewer.runId,
         agent_id: reviewer.agentId,
@@ -160,6 +187,9 @@ export function getPanelStatusHandler(
         ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
         ...(state.failure !== undefined ? { failure: state.failure } : {}),
         dispatch_warnings: reviewer.dispatchWarnings,
+        ...(modelSelection !== undefined
+          ? { model_selection: modelSelectionToWire(modelSelection) }
+          : {}),
       };
     });
 
@@ -181,6 +211,9 @@ export function getPanelStatusHandler(
         agent_id: reviewer.agentId,
         error: reviewer.error,
         dispatch_warnings: reviewer.dispatchWarnings,
+        ...(reviewer.requestedModel !== undefined
+          ? { requested_model: reviewer.requestedModel }
+          : {}),
       })),
   };
 }
@@ -195,6 +228,9 @@ function unavailableStatus(
     state_unavailable: true,
     state_unavailable_reason: reason,
     dispatch_warnings: reviewer.dispatchWarnings,
+    ...(reviewer.modelSelection !== undefined
+      ? { model_selection: modelSelectionToWire(reviewer.modelSelection) }
+      : {}),
   };
 }
 
@@ -222,6 +258,13 @@ function statusFromSnapshot(
     ...(snapshot.completedAt !== undefined ? { completedAt: snapshot.completedAt } : {}),
     ...(snapshot.failure !== undefined ? { failure: snapshot.failure } : {}),
     dispatch_warnings: reviewer.dispatchWarnings,
+    ...(snapshot.modelSelection ?? reviewer.modelSelection
+      ? {
+          model_selection: modelSelectionToWire(
+            (snapshot.modelSelection ?? reviewer.modelSelection)!,
+          ),
+        }
+      : {}),
   };
 }
 

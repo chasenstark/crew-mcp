@@ -1,21 +1,61 @@
-/**
- * The exact model LABELS the Antigravity CLI (`agy`) accepts, from `agy
- * models`. agy keys models by human label, not id. Kept in a standalone,
- * dependency-free module so BOTH the lazy registry metadata (registry.ts) and
- * the loaded AgyAdapter (agy.ts) can share ONE source of truth for
- * `recognizesModel` without the registry eagerly importing the adapter's heavy
- * deps (execa, health-check cache). Duplicating the list would risk the lazy
- * proxy and the loaded instance disagreeing on which labels are recognized.
- */
-export const AGY_MODEL_LABELS = [
-  'Gemini 3.1 Pro (High)',
-  'Gemini 3.1 Pro (Low)',
-  'Gemini 3.5 Flash (Low)',
-  'Gemini 3.5 Flash (Medium)',
-  'Gemini 3.5 Flash (High)',
-  'Claude Sonnet 4.6 (Thinking)',
-  'Claude Opus 4.6 (Thinking)',
-  'GPT-OSS 120B (Medium)',
-] as const;
+import { execa } from 'execa';
 
-export const AGY_MODEL_LABEL_SET: ReadonlySet<string> = new Set(AGY_MODEL_LABELS);
+import { codexSafeSpawnEnvironment } from '../codex/environment.js';
+import type { ModelDescriptor } from './types.js';
+
+export interface AgyModelDiscoveryResult {
+  readonly ok: boolean;
+  readonly models: readonly ModelDescriptor[];
+  readonly reason?: string;
+}
+
+/** Parse `agy models`: `<provider-id>\t<exact --model label>`. */
+export function parseAgyModels(output: string): ModelDescriptor[] {
+  const seenLabels = new Set<string>();
+  const models: ModelDescriptor[] = [];
+  for (const rawLine of output.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const tab = line.indexOf('\t');
+    if (tab <= 0) continue;
+    const providerId = line.slice(0, tab).trim();
+    const label = line.slice(tab + 1).trim();
+    if (!providerId || !label || seenLabels.has(label)) continue;
+    seenLabels.add(label);
+    models.push({ model: label, displayName: label, providerId });
+  }
+  return models;
+}
+
+export async function discoverAgyModels(): Promise<AgyModelDiscoveryResult> {
+  try {
+    const result = await execa('agy', ['models'], {
+      ...codexSafeSpawnEnvironment(),
+      timeout: 15_000,
+      reject: false,
+      stdin: 'ignore',
+    });
+    if (result.exitCode !== 0) {
+      return {
+        ok: false,
+        models: [],
+        reason: `${result.stderr || result.stdout || `agy models exited ${result.exitCode}`}`.trim(),
+      };
+    }
+    const models = parseAgyModels(result.stdout ?? '');
+    if (models.length === 0) {
+      return {
+        ok: false,
+        models: [],
+        reason: 'agy models returned no tab-separated model rows',
+      };
+    }
+    return { ok: true, models };
+  } catch (err) {
+    return {
+      ok: false,
+      models: [],
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}

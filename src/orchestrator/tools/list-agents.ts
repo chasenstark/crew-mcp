@@ -19,7 +19,8 @@
 
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
-import type { AgentAdapter, EffortLevel } from '../../adapters/types.js';
+import type { AgentAdapter, EffortLevel, ModelSelectionSupport } from '../../adapters/types.js';
+import { modelSelectionSupport } from '../../adapters/model-selection.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
 import { logBestEffortFailure } from '../../utils/best-effort.js';
@@ -42,7 +43,7 @@ export const listAgentsInputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, useWhen routing guidance, strengths, default effort/model, adapter, availability, health details, and optional quota snapshots with state, confidence, and source when a quotaProbe is wired. Quota is omitted entirely when no probe is wired or no snapshot is available. Unavailable agents are included with available:false and an error instead of throwing.';
+  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, useWhen routing guidance, strengths, default effort/model, model_selection_support, adapter, availability, health details, and optional quota snapshots with state, confidence, and source when a quotaProbe is wired. Call list_models for provider choices; this inventory does not trigger model discovery. Quota is omitted entirely when no probe is wired or no snapshot is available. Unavailable agents are included with available:false and an error instead of throwing.';
 
 export type QuotaState =
   | 'ok'
@@ -108,6 +109,7 @@ export interface ListAgentsAgentEntry {
    * default. Captain may override per-call via `run_agent`.
    */
   readonly model?: string;
+  readonly model_selection_support: ModelSelectionSupport;
   readonly adapter: string;
   readonly available: boolean;
   readonly version?: string;
@@ -204,6 +206,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
         // `model` only present when the user has set a per-machine
         // override. Absence = "the adapter's CLI picks."
         ...(merged.model ? { model: merged.model } : {}),
+        model_selection_support: modelSelectionSupport(adapter),
         adapter: adapter.name,
       } as const;
       let health: Awaited<ReturnType<typeof adapter.healthCheck>>;

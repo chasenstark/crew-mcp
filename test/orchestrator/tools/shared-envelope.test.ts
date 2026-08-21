@@ -76,6 +76,12 @@ describe('dispatch envelope JIT fields', () => {
         runId: `run-${'é'.repeat(120)}`,
         runMode,
         tailUrl: `crew-tail://open?path=${'界'.repeat(120)}`,
+        modelSelection: {
+          source: 'per_call',
+          requestedModel: 'gpt-5.6-sol',
+          modelArgument: 'gpt-5.6-sol',
+          validation: 'catalog',
+        },
       });
       for (const value of [fields.relay_verbatim, fields.ledger_line]) {
         expect(value).not.toMatch(/[\r\n]/u);
@@ -100,4 +106,27 @@ describe('dispatch envelope JIT fields', () => {
       expect(structuredRunEnvelope(full)).toMatchObject(fields);
     },
   );
+
+  it('prefers the exact compact model argument so the relay retains its tail URL', () => {
+    const runId = 'claude-code-review-provider-model-12345678';
+    const tailUrl = `crew-tail:///Users/chasen/.crew/runs/${runId}/events.log`;
+    const fields = dispatchRelayFields({
+      agentId: 'claude-code',
+      runId,
+      runMode: 'read_only',
+      tailUrl,
+      modelSelection: {
+        source: 'per_call',
+        requestedModel: 'opus',
+        modelArgument: 'opus',
+        displayName: 'Claude Opus (latest alias with a deliberately long friendly label)',
+        validation: 'catalog',
+      },
+    });
+
+    expect(fields.relay_verbatim).toContain('claude-code / opus');
+    expect(fields.relay_verbatim).toContain(`tail: ${tailUrl}`);
+    expect(Buffer.byteLength(fields.relay_verbatim ?? '', 'utf8'))
+      .toBeLessThanOrEqual(DISPATCH_RELAY_FIELD_MAX_BYTES);
+  });
 });

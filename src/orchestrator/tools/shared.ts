@@ -1,6 +1,11 @@
 import { pathToFileURL } from 'node:url';
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
+import type { ModelSelectionRecord } from '../../adapters/types.js';
+import {
+  modelSelectionToWire,
+  type WireModelSelection,
+} from '../../adapters/model-selection.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import type { WorktreeManager } from '../../git/worktree.js';
 import { crewTailUrl } from '../../cli/commands/tail-url.js';
@@ -129,6 +134,7 @@ export interface RunEnvelope {
   readonly ledger_line?: string;
   readonly required_next_action?: RequiredNextAction;
   readonly warnings?: readonly string[];
+  readonly model_selection?: WireModelSelection;
   readonly status?: RunStatus;
   readonly agent_id?: string;
   readonly worktree_path?: string;
@@ -271,6 +277,7 @@ interface DispatchAndRespondArgs {
   crewHome: string;
   projectRoot: string;
   runMode: RunMode;
+  modelSelection: ModelSelectionRecord;
 }
 
 export async function runDispatchAndRespond(
@@ -320,11 +327,13 @@ export async function runDispatchAndRespond(
     status: 'running',
     summary,
     files_changed: [],
+    model_selection: modelSelectionToWire(args.modelSelection),
     ...dispatchRelayFields({
       agentId: args.agentName,
       runId: args.runId,
       runMode: args.runMode,
       tailUrl: crewTailUrl(eventsLogPath),
+      modelSelection: args.modelSelection,
     }),
     ...(requiredNextAction !== undefined ? { required_next_action: requiredNextAction } : {}),
     ...mergeEnvelopeWarnings(
@@ -353,6 +362,7 @@ export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
       ? { required_next_action: env.required_next_action }
       : {}),
     ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
+    ...(env.model_selection !== undefined ? { model_selection: env.model_selection } : {}),
   };
 }
 
@@ -362,6 +372,9 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
     ...(env.relay_verbatim !== undefined ? [env.relay_verbatim] : []),
     '',
     `- Status: \`${env.status}\``,
+    ...(env.model_selection !== undefined
+      ? [`- Model: ${mdInlineCode(modelSelectionLabelFromWire(env.model_selection))}`]
+      : []),
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
   ];
   if (process.platform === 'darwin') {
@@ -400,17 +413,43 @@ export function dispatchRelayFields(args: {
   readonly runId: string;
   readonly runMode: RunMode;
   readonly tailUrl: string;
+  readonly modelSelection: ModelSelectionRecord;
 }): Pick<RunEnvelope, 'relay_verbatim' | 'ledger_line'> {
+  // The relay is an executable recovery breadcrumb under a hard byte cap.
+  // Prefer the exact compact provider argument over a longer friendly display
+  // name so the tail URL survives for ordinary run ids and paths.
+  const modelLabel = dispatchModelSelectionLabel(args.modelSelection);
   return {
     relay_verbatim: singleLineUtf8Cap(
-      `Dispatched ${args.agentId} → run ${args.runId} · tail: ${args.tailUrl}`,
+      `Dispatched ${args.agentId} / ${modelLabel} → run ${args.runId} · tail: ${args.tailUrl}`,
       DISPATCH_RELAY_FIELD_MAX_BYTES,
     ),
     ledger_line: singleLineUtf8Cap(
-      `run ${args.runId} · ${args.agentId} · ${args.runMode} · dispatched`,
+      `run ${args.runId} · ${args.agentId} / ${modelLabel} · ${args.runMode} · dispatched`,
       DISPATCH_RELAY_FIELD_MAX_BYTES,
     ),
   };
+}
+
+function dispatchModelSelectionLabel(record: ModelSelectionRecord): string {
+  return record.modelArgument
+    ?? record.displayName
+    ?? record.observedModel
+    ?? 'CLI default';
+}
+
+export function modelSelectionLabel(record: ModelSelectionRecord): string {
+  return record.observedModel
+    ?? record.displayName
+    ?? record.modelArgument
+    ?? 'CLI default';
+}
+
+function modelSelectionLabelFromWire(record: WireModelSelection): string {
+  return record.observed_model
+    ?? record.display_name
+    ?? record.model_argument
+    ?? 'CLI default';
 }
 
 export function singleLineUtf8Cap(

@@ -2,7 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { z } from 'zod';
 
-import { resolveReviewDispatchMode, type ReviewDispatchMode } from '../../adapters/types.js';
+import {
+  resolveReviewDispatchMode,
+  type ModelSelectionRecord,
+  type ReviewDispatchMode,
+} from '../../adapters/types.js';
+import {
+  latestModelSelection,
+  modelSelectionToWire,
+  type WireModelSelection,
+} from '../../adapters/model-selection.js';
 import type { EphemeralSnapshotSource } from '../../git/worktree.js';
 import {
   DispatchError,
@@ -64,7 +73,7 @@ import { preflightAgentDispatch } from './dispatch-preflight.js';
 const runPanelReviewerInputSchema = z.object({
   agent_id: z.string().min(1),
   prompt: z.string().min(1),
-  model: z.string().optional(),
+  model: z.string().trim().min(1).max(300).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   working_directory: z.string().optional(),
   read_only: z.boolean().optional(),
@@ -92,12 +101,14 @@ export interface ReviewerDispatchEnvelope {
   readonly tail_url: string;
   readonly worktree_path: string;
   readonly warnings: readonly string[];
+  readonly model_selection: WireModelSelection;
   readonly required_next_action?: SpawnWatcherRequiredNextAction;
 }
 
 export interface FailedReviewerEnvelope {
   readonly agent_id: string;
   readonly error: string;
+  readonly requested_model?: string;
 }
 
 export interface RunPanelOutput {
@@ -120,7 +131,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers as one panel. Reviewers are canonicalized; ban_override and health/quota dispatch_anyway require user approval, while current-host reviewers stay refused. dispatch_anyway may be top-level or per reviewer. agy auto-routes to ephemeral_review. Returns panel_id, reviewer runs/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available for recovery.';
+  'Dispatch parallel reviewers as one panel. Reviewers are canonicalized, and each explicit model is resolved exactly or that reviewer fails without fallback. Same-provider reviewers with different models remain independently labeled. ban_override and health/quota dispatch_anyway require user approval, while current-host reviewers stay refused. dispatch_anyway may be top-level or per reviewer. agy auto-routes to ephemeral_review. Returns panel_id, reviewer model_selection records/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available for recovery.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -185,7 +196,7 @@ export async function runPanelHandler(
 
   let panelState: PanelStateV1 = {
     ...buildStubPanelState(panelId, ctx.runStateStore.repoRoot, implementerState),
-    reviewers: reviewers.map((reviewer) => pendingReviewerRecord(reviewer.agent_id)),
+    reviewers: reviewers.map((reviewer) => pendingReviewerRecord(reviewer.agent_id, reviewer.model)),
   };
   await writeAndNotify(targetPanelDir, panelState, ctx);
 
@@ -233,6 +244,7 @@ export async function runPanelHandler(
           reviewer.agent_id,
           dispatchPreflight.refuse.message,
           reviewerPolicyWarnings,
+          reviewer.model,
         ),
       );
       return;
@@ -260,7 +272,12 @@ export async function runPanelHandler(
     try {
       validatePeerMessagesPreflight(composed, ctx.runStateStore.caps);
     } catch (err) {
-      await replaceReviewer(index, failedReviewerRecord(reviewer.agent_id, errorMessage(err), []));
+      await replaceReviewer(index, failedReviewerRecord(
+        reviewer.agent_id,
+        errorMessage(err),
+        [],
+        reviewer.model,
+      ));
       return;
     }
 
@@ -273,6 +290,7 @@ export async function runPanelHandler(
           + "reviewDispatchMode:'unsupported' — it cannot be dispatched as a panel reviewer. "
           + 'Route this review to another agent.',
           [],
+          reviewer.model,
         ),
       );
       return;
@@ -285,7 +303,12 @@ export async function runPanelHandler(
       // with the fix instead of guessing which input wins.
       const rejection = ephemeralPanelReviewerRejection(reviewer, implementerState);
       if (rejection !== undefined) {
-        await replaceReviewer(index, failedReviewerRecord(reviewer.agent_id, rejection, []));
+        await replaceReviewer(index, failedReviewerRecord(
+          reviewer.agent_id,
+          rejection,
+          [],
+          reviewer.model,
+        ));
         return;
       }
     } else if (effectiveWorkingDirectory && !existsSync(effectiveWorkingDirectory)) {
@@ -295,6 +318,7 @@ export async function runPanelHandler(
           reviewer.agent_id,
           `working_directory does not exist: ${effectiveWorkingDirectory} (implementer worktree may have been removed)`,
           [],
+          reviewer.model,
         ),
       );
       return;
@@ -368,13 +392,19 @@ export async function runPanelHandler(
         tail_url: result.tailUrl,
         worktree_path: result.worktreePath,
         warnings: [...result.warnings, ...reviewerPolicyWarnings],
+        model_selection: modelSelectionToWire(dispatchResultModelSelection(result)),
         ...(requiredNextAction !== undefined
           ? { required_next_action: requiredNextAction }
           : {}),
       };
     } catch (err) {
       const warnings = err instanceof DispatchError ? err.warnings : [];
-      record = failedReviewerRecord(reviewer.agent_id, errorMessage(err), warnings);
+      record = failedReviewerRecord(
+        reviewer.agent_id,
+        errorMessage(err),
+        warnings,
+        reviewer.model,
+      );
     }
 
     try {
@@ -412,6 +442,9 @@ export async function runPanelHandler(
       .map((reviewer) => ({
         agent_id: reviewer.agentId,
         error: reviewer.error,
+        ...(reviewer.requestedModel !== undefined
+          ? { requested_model: reviewer.requestedModel }
+          : {}),
       })),
   };
 }
@@ -422,13 +455,17 @@ function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): st
     `- Reviewer runs: ${out.reviewers.length}`,
   ];
   for (const reviewer of out.reviewers) {
-    lines.push(`- ${reviewer.agent_id}: run \`${reviewer.run_id}\``);
+    const model = reviewer.model_selection.observed_model
+      ?? reviewer.model_selection.display_name
+      ?? reviewer.model_selection.model_argument
+      ?? 'CLI default';
+    lines.push(`- ${reviewer.agent_id} / ${model}: run \`${reviewer.run_id}\``);
   }
   if (out.failed_reviewers.length > 0) {
     lines.push(
       `- Failed reviewers: ${out.failed_reviewers.length}`,
       ...out.failed_reviewers.map((reviewer) =>
-        `  - ${reviewer.agent_id}: ${reviewer.error}`),
+        `  - ${reviewer.agent_id}${reviewer.requested_model ? ` / ${reviewer.requested_model}` : ''}: ${reviewer.error}`),
     );
   }
   if (out.required_next_action !== undefined) {
@@ -499,12 +536,14 @@ async function mapWithConcurrency<T>(
 
 function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalSnapshot {
   const summary = state.prompts.at(-1)?.summary;
+  const modelSelection = latestModelSelection(state.prompts);
   return {
     status: state.status as PanelReviewerTerminalSnapshot['status'],
     ...(summary !== undefined ? { summary } : {}),
     filesChanged: state.filesChanged,
     ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
+    ...(modelSelection !== undefined ? { modelSelection } : {}),
   };
 }
 
@@ -726,6 +765,16 @@ function dispatchedReviewerRecord(
     dispatched: true,
     dispatchedAt: new Date().toISOString(),
     dispatchWarnings: [...result.warnings, ...policyWarnings],
+    modelSelection: dispatchResultModelSelection(result),
+  };
+}
+
+function dispatchResultModelSelection(
+  result: DispatchRunAgentInternalResult,
+): ModelSelectionRecord {
+  return result.modelSelection ?? {
+    source: 'cli_default',
+    validation: 'cli_default',
   };
 }
 
@@ -733,6 +782,7 @@ function failedReviewerRecord(
   agentId: string,
   error: string,
   dispatchWarnings: readonly string[],
+  requestedModel?: string,
 ): PanelReviewerRecord {
   return {
     runId: null,
@@ -740,16 +790,18 @@ function failedReviewerRecord(
     dispatched: false,
     error,
     dispatchWarnings,
+    ...(requestedModel !== undefined ? { requestedModel } : {}),
   };
 }
 
-function pendingReviewerRecord(agentId: string): PanelReviewerRecord {
+function pendingReviewerRecord(agentId: string, requestedModel?: string): PanelReviewerRecord {
   return {
     runId: null,
     agentId,
     dispatched: false,
     pending: true,
     dispatchWarnings: [],
+    ...(requestedModel !== undefined ? { requestedModel } : {}),
   };
 }
 

@@ -83,6 +83,13 @@ function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
     strengths: overrides?.strengths ?? [],
     supportsJsonSchema: false,
     enforcesReadOnly: overrides?.enforcesReadOnly ?? true,
+    modelSelectionSupport: 'provider-validated',
+    resolveModel: async (requested) => ({
+      ok: true,
+      argument: requested,
+      displayName: requested,
+      validation: 'configured',
+    }),
     filesModifiedReliable: overrides?.filesModifiedReliable ?? true,
     execute:
       overrides?.execute ??
@@ -596,7 +603,7 @@ describe('crew serve — listTools surface', () => {
   it('exposes the captain tool surface without worker-only tools', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toHaveLength(18);
+    expect(names).toHaveLength(19);
     expect(names).toEqual([
       'acknowledge_messages',
       'aggregate_panel',
@@ -611,6 +618,7 @@ describe('crew serve — listTools surface', () => {
       'get_panel_status',
       'get_run_status',
       'list_agents',
+      'list_models',
       'list_runs',
       'merge_run',
       'revise_criteria',
@@ -2308,6 +2316,7 @@ describe('crew serve — run_agent tool', () => {
       expect(Object.keys(env).sort()).toEqual([
         'files_changed',
         'ledger_line',
+        'model_selection',
         'relay_verbatim',
         'run_id',
         'summary',
@@ -2317,8 +2326,13 @@ describe('crew serve — run_agent tool', () => {
       expect(env.tail_url).toBe(crewTailUrl(join(h.crewHome, 'runs', env.run_id, 'events.log')));
       expect(env.summary).toContain(`Dispatched as "${env.run_id}"`);
       expect(env.files_changed).toEqual([]);
-      expect(env.relay_verbatim).toContain(`Dispatched mock-coder → run ${env.run_id} · tail: `);
-      expect(env.ledger_line).toBe(`run ${env.run_id} · mock-coder · write · dispatched`);
+      expect(env.model_selection).toEqual({ source: 'cli_default', validation: 'cli_default' });
+      expect(env.relay_verbatim).toContain(
+        `Dispatched mock-coder / CLI default → run ${env.run_id} · tail: `,
+      );
+      expect(env.ledger_line).toBe(
+        `run ${env.run_id} · mock-coder / CLI default · write · dispatched`,
+      );
       expect(Buffer.byteLength(env.relay_verbatim ?? '', 'utf8')).toBeLessThanOrEqual(200);
       expect(Buffer.byteLength(env.ledger_line ?? '', 'utf8')).toBeLessThanOrEqual(200);
       expect(env.relay_verbatim).not.toMatch(/[\r\n]/u);
@@ -2356,6 +2370,7 @@ describe('crew serve — run_agent tool', () => {
       expect(Object.keys(env).sort()).toEqual([
         'files_changed',
         'ledger_line',
+        'model_selection',
         'relay_verbatim',
         'required_next_action',
         'run_id',
@@ -2876,11 +2891,17 @@ describe('crew serve — continue_run tool', () => {
     }
   });
 
-  it('continue_run preflights a pinned model and surfaces the warning', async () => {
+  it('continue_run refuses an invalid model without mutating the run', async () => {
     let observedModel: string | undefined | null = null;
     const adapter = makeMockAdapter({
       name: 'mock-coder',
-      recognizesModel: (m) => m === 'Known Label',
+      resolveModel: async (requested) => requested === 'Known Label'
+        ? { ok: true, argument: requested, validation: 'catalog' }
+        : {
+            ok: false,
+            code: 'model_selection.unknown',
+            message: `agent "mock-coder" does not advertise model "${requested}"`,
+          },
       execute: async (task) => {
         const t = task as { constraints?: { model?: string } };
         observedModel = t.constraints?.model;
@@ -2904,11 +2925,12 @@ describe('crew serve — continue_run tool', () => {
         name: 'continue_run',
         arguments: { run_id: firstEnv.run_id, prompt: 'turn-two', model: 'Bad Label' },
       });
-      const secondEnv = second.structuredContent as FullRunEnvelope;
-      expect(secondEnv.warnings).toEqual([
-        expect.stringContaining('model preflight: agent "mock-coder" does not recognize model "Bad Label"'),
-      ]);
-      await pollUntilTerminal(h.client, firstEnv.run_id);
+      expect(second.isError).toBe(true);
+      expect((second.content as Array<{ text: string }>)[0].text)
+        .toContain('model_selection.unknown');
+      const persisted = h.runStateStore.read(firstEnv.run_id);
+      expect(persisted?.prompts).toHaveLength(1);
+      expect(persisted?.status).toBe('success');
       expect(observedModel).toBeUndefined();
     } finally {
       await h.close();
@@ -5221,6 +5243,7 @@ describe('crew serve — get_run_status tool', () => {
         next_event_line: s.next_event_line,
         filesChanged: [],
         prompts: s.prompts,
+        model_selection: { source: 'cli_default', validation: 'cli_default' },
         commits: [],
         commit_count: 0,
         summary: 'all done',
@@ -5956,10 +5979,10 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         run_in_background: true,
       });
       expect(secondEnv.relay_verbatim).toContain(
-        `Dispatched mock-fast → run ${firstEnv.run_id} · tail: `,
+        `Dispatched mock-fast / CLI default → run ${firstEnv.run_id} · tail: `,
       );
       expect(secondEnv.ledger_line).toBe(
-        `run ${firstEnv.run_id} · mock-fast · write · dispatched`,
+        `run ${firstEnv.run_id} · mock-fast / CLI default · write · dispatched`,
       );
       expect(toolText(second)).toContain(
         `Bash(${watcherPrefix('crew-wait', h.crewHome)} ${firstEnv.run_id}, run_in_background: true)`,
@@ -6492,11 +6515,13 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(res.structuredContent).toEqual({
         status: 'running',
         timed_out: true,
+        model_selection: { source: 'cli_default', validation: 'cli_default' },
       });
       expect(toolText(res)).toBe(`\`${env.run_id}\` status: \`running\` (timed out)`);
       expectStructuredJsonBytes(res, {
         status: 'running',
         timed_out: true,
+        model_selection: { source: 'cli_default', validation: 'cli_default' },
       });
       const s = res.structuredContent as {
         next_event_line?: number;
@@ -6748,6 +6773,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         events_tail: [],
         next_event_line: 1,
         ...(s.worker_ready !== undefined ? { worker_ready: s.worker_ready } : {}),
+        model_selection: { source: 'cli_default', validation: 'cli_default' },
       });
 
       // Cleanup: complete the dispatch and verify the terminal

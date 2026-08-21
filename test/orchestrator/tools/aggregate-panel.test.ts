@@ -192,6 +192,57 @@ describe('aggregatePanelHandler', () => {
     expect(out.peer_messages[1].from_label).toBe('bad_agent (dispatch failed)');
   });
 
+  it('labels same-provider reviewers and failed preflight by their requested models', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'claude-code' })]);
+    cleanupHarness(h);
+    await createRunState(h, {
+      runId: 'r-opus',
+      agentId: 'claude-code',
+      status: 'success',
+      summary: 'opus review',
+    });
+    await createRunState(h, {
+      runId: 'r-fable',
+      agentId: 'claude-code',
+      status: 'success',
+      summary: 'fable review',
+    });
+    const state = panel(h, [
+      {
+        ...dispatched('r-opus', 'claude-code'),
+        modelSelection: {
+          source: 'per_call',
+          requestedModel: 'opus',
+          modelArgument: 'opus',
+          displayName: 'Opus',
+          validation: 'catalog',
+        },
+      },
+      {
+        ...dispatched('r-fable', 'claude-code'),
+        modelSelection: {
+          source: 'per_call',
+          requestedModel: 'fable',
+          modelArgument: 'fable',
+          displayName: 'Fable',
+          validation: 'catalog',
+        },
+      },
+      {
+        ...failed('claude-code', 'model_selection.unknown: sonnnet'),
+        requestedModel: 'sonnnet',
+      },
+    ]);
+    writePanel(h, state);
+
+    const out = aggregatePanelHandler({ panel_id: state.panelId }, h.ctx);
+    expect(out.peer_messages.map((message) => message.from_label)).toEqual([
+      'claude-code / Opus (review)',
+      'claude-code / Fable (review)',
+      'claude-code / sonnnet (dispatch failed)',
+    ]);
+  });
+
   it('handles state_unavailable reviewers with synthetic messages', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);

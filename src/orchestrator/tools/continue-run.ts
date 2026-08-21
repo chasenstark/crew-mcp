@@ -15,6 +15,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import type { AgentAdapter, ModelSelectionRecord } from '../../adapters/types.js';
 
 import {
   criteriaPeerMessageBypassWarnings,
@@ -44,9 +45,8 @@ import {
   buildAdapterDispatchTask,
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
-  applyModelPreflight,
   resolveEffectiveEffort,
-  resolveEffectiveModel,
+  resolveRequestedModelSelection,
 } from './run-agent.js';
 import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra } from './shared.js';
 import {
@@ -72,7 +72,7 @@ export const continueRunInputSchema = z.object({
   prompt: z.string().default(''),
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
   criteria_set_id: z.string().min(1).optional(),
-  model: z.string().optional(),
+  model: z.string().trim().min(1).max(300).optional(),
   /**
    * Per-call reasoning effort override. Same precedence as run_agent:
    * wins over the user's agents.json default + adapter default.
@@ -88,7 +88,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with prompt and/or peer_messages. Linked criteria re-check policy and the continuation cap; ban_override, same_host_ok, cap_override, and health/quota dispatch_anyway require user approval. model/effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with bounded relay_verbatim/ledger_line, warnings, and required_next_action crew-wait watcher when available.';
+  'Resume an existing run with prompt and/or peer_messages. An explicit model is resolved exactly before continuation state changes; when omitted, the prior explicit selection or CLI-default decision stays sticky. Linked criteria re-check policy and the continuation cap; ban_override, same_host_ok, cap_override, and health/quota dispatch_anyway require user approval. effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with model_selection, bounded relay_verbatim/ledger_line, warnings, and required_next_action crew-wait watcher when available.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -219,18 +219,25 @@ export async function continueRunToolHandler(
     return errorContent(err instanceof Error ? err.message : String(err));
   }
 
-  const toolCallId = randomUUID();
   const continueAgentPrefs = deps.readAgentPrefs();
+  const modelSelection = await resolveContinuationModelSelection({
+    adapter,
+    explicitModel: args.model,
+    priorPrompts: preState.prompts,
+    agentPrefs: continueAgentPrefs,
+  });
+  if (!modelSelection.ok) {
+    return errorContent(modelSelection.message);
+  }
+
+  // Exact model refusal happens before counters, sidecars, run state, or the
+  // worktree can be mutated by this continuation.
+  const toolCallId = randomUUID();
   const effectiveEffort = resolveEffectiveEffort(
     adapter,
     args.effort,
     continueAgentPrefs,
   );
-  const modelPreflight = applyModelPreflight(
-    adapter,
-    resolveEffectiveModel(adapter, args.model, continueAgentPrefs),
-  );
-  const effectiveModel = modelPreflight.model;
   const appendPrompt = () => deps.runStateStore.appendPrompt(args.run_id, {
     userPrompt,
     peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
@@ -242,14 +249,12 @@ export async function continueRunToolHandler(
         }
       : {}),
     workerReady: { status: 'pending' },
+    modelSelection: modelSelection.record,
   });
   const dispatchWarnings: string[] = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   dispatchWarnings.push(...policyWarnings);
-  if (modelPreflight.warning !== undefined) {
-    dispatchWarnings.push(modelPreflight.warning);
-  }
   const criteriaWarnings = criteriaPeerMessageBypassWarnings(
     args.criteria_set_id,
     validatedInput,
@@ -333,7 +338,7 @@ export async function continueRunToolHandler(
     worktreePath: state.worktreePath,
     runMode,
     dispatchWarnings,
-    effectiveModel,
+    modelSelection: modelSelection.record,
     effectiveEffort,
     // Resume the prior turn's provider conversation so a stateful adapter (agy)
     // continues server-side context instead of starting fresh. Read from the
@@ -368,11 +373,62 @@ export async function continueRunToolHandler(
       crewHome: deps.crewHome,
       projectRoot: deps.projectRoot,
       runMode,
+      modelSelection: modelSelection.record,
       onStartFailure: rollbackContinuation,
     });
   } catch (err) {
     return errorContent(err instanceof Error ? err.message : String(err));
   }
+}
+
+export async function resolveContinuationModelSelection(args: {
+  readonly adapter: AgentAdapter;
+  readonly explicitModel: string | undefined;
+  readonly priorPrompts: readonly {
+    readonly turn: number;
+    readonly modelSelection?: ModelSelectionRecord;
+  }[];
+  readonly agentPrefs: Readonly<Record<string, { readonly model?: string }>>;
+}): Promise<
+  | { readonly ok: true; readonly record: ModelSelectionRecord }
+  | { readonly ok: false; readonly message: string }
+> {
+  if (args.explicitModel !== undefined) {
+    return resolveRequestedModelSelection(args.adapter, args.explicitModel, 'per_call');
+  }
+
+  const priorPrompt = args.priorPrompts.at(-1);
+  const prior = priorPrompt?.modelSelection;
+  if (prior !== undefined) {
+    if (prior.source === 'cli_default' || prior.modelArgument === undefined) {
+      return {
+        ok: true,
+        record: { source: 'cli_default', validation: 'cli_default' },
+      };
+    }
+    return {
+      ok: true,
+      record: {
+        source: 'inherited',
+        requestedModel: prior.modelArgument,
+        modelArgument: prior.modelArgument,
+        ...(prior.displayName !== undefined ? { displayName: prior.displayName } : {}),
+        validation: prior.validation,
+        ...(priorPrompt !== undefined ? { inheritedFromTurn: priorPrompt.turn } : {}),
+      },
+    };
+  }
+
+  // Only legacy state lacks a prior decision. Modern continuations are sticky
+  // and never pick up a changed per-machine preference mid-run.
+  const legacyDefault = args.agentPrefs[args.adapter.name]?.model;
+  if (legacyDefault !== undefined) {
+    return resolveRequestedModelSelection(args.adapter, legacyDefault, 'agent_default');
+  }
+  return {
+    ok: true,
+    record: { source: 'cli_default', validation: 'cli_default' },
+  };
 }
 
 function resolveContinuationCriteriaContract(args: {

@@ -1,4 +1,5 @@
 import type { AdapterRegistry } from '../adapters/registry.js';
+import type { ModelSelectionRecord } from '../adapters/types.js';
 import type { AgentPrefsMap } from '../agent-prefs/store.js';
 import type { EphemeralSnapshotSource, WorktreeManager } from '../git/worktree.js';
 import { crewTailUrl } from '../cli/commands/tail-url.js';
@@ -71,6 +72,7 @@ export interface DispatchRunAgentInternalResult {
   readonly tailCommandPath: string;
   readonly toolCallId: string;
   readonly warnings: readonly string[];
+  readonly modelSelection: ModelSelectionRecord;
 }
 
 export class DispatchError extends Error {
@@ -143,6 +145,7 @@ export async function dispatchRunAgentInternal(
           }
         : {}),
       runMode: plan.runMode,
+      modelSelection: plan.modelSelection,
       workerReady: { status: 'pending' },
     });
     if (criteriaContract !== undefined && args.linkCriteriaImplementerRun !== false) {
@@ -245,6 +248,7 @@ export async function dispatchRunAgentInternal(
     tailCommandPath,
     toolCallId: plan.toolCallId,
     warnings,
+    modelSelection: plan.modelSelection,
   };
 }
 

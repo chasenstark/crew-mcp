@@ -20,9 +20,15 @@ const {
   withAgyWorkspacePreamble,
   withAgyReviewPreamble,
 } = await import('../../src/adapters/agy.js');
-const { AGY_MODEL_LABELS } = await import('../../src/adapters/agy-models.js');
+const { parseAgyModels } = await import('../../src/adapters/agy-models.js');
 
 const VALID_MODEL = 'Gemini 3.1 Pro (High)';
+const MODEL_OUTPUT = [
+  `gemini-3.1-pro-high\t${VALID_MODEL}`,
+  'gemini-3.6-pro-high\tGemini 3.6 Pro (High)',
+  'gemini-3.7-flash-low\tGemini 3.7 Flash (Low)',
+  'claude-opus-4-6\tClaude Opus 4.6 (Thinking)',
+].join('\n');
 
 /**
  * Build a SUCCESS `--output-format json` envelope stdout line.
@@ -167,23 +173,60 @@ describe('AgyAdapter', () => {
     expect(result.failure?.kind).toBe('process');
   });
 
-  describe('recognizesModel', () => {
-    it('matches the pinned labels EXACTLY', () => {
-      for (const label of AGY_MODEL_LABELS) {
-        expect(adapter.recognizesModel(label)).toBe(true);
-      }
+  describe('provider model catalog', () => {
+    it('parses provider ids and exact labels from live output', () => {
+      expect(parseAgyModels(MODEL_OUTPUT)).toEqual([
+        {
+          model: VALID_MODEL,
+          displayName: VALID_MODEL,
+          providerId: 'gemini-3.1-pro-high',
+        },
+        {
+          model: 'Gemini 3.6 Pro (High)',
+          displayName: 'Gemini 3.6 Pro (High)',
+          providerId: 'gemini-3.6-pro-high',
+        },
+        {
+          model: 'Gemini 3.7 Flash (Low)',
+          displayName: 'Gemini 3.7 Flash (Low)',
+          providerId: 'gemini-3.7-flash-low',
+        },
+        {
+          model: 'Claude Opus 4.6 (Thinking)',
+          displayName: 'Claude Opus 4.6 (Thinking)',
+          providerId: 'claude-opus-4-6',
+        },
+      ]);
     });
 
-    it('never matches on a substring or a non-agy id', () => {
-      // Substrings of real labels must NOT match (the bug a loose regex causes).
-      expect(adapter.recognizesModel('Gemini 3.1 Pro')).toBe(false);
-      expect(adapter.recognizesModel('Claude Opus 4.6')).toBe(false);
-      expect(adapter.recognizesModel('GPT-OSS 120B')).toBe(false);
-      // Foreign ids that other adapters own must not be claimed.
-      expect(adapter.recognizesModel('claude-opus-4-6')).toBe(false);
-      expect(adapter.recognizesModel('gpt-5')).toBe(false);
-      expect(adapter.recognizesModel('gemini-3.1-pro')).toBe(false);
-      expect(adapter.recognizesModel('')).toBe(false);
+    it('resolves only exact live labels', async () => {
+      mockExeca.mockResolvedValue({ stdout: MODEL_OUTPUT, stderr: '', exitCode: 0 } as never);
+      await expect(adapter.resolveModel(VALID_MODEL, { refreshOnMiss: true })).resolves.toMatchObject({
+        ok: true,
+        argument: VALID_MODEL,
+        validation: 'catalog',
+      });
+      await expect(adapter.resolveModel('Gemini 3.1 Pro', { refreshOnMiss: true })).resolves.toMatchObject({
+        ok: false,
+        code: 'model_selection.unknown',
+      });
+      expect(mockExeca).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses when live discovery cannot verify an exact label', async () => {
+      mockExeca.mockResolvedValue({
+        stdout: '',
+        stderr: 'authentication unavailable',
+        exitCode: 1,
+      } as never);
+
+      await expect(adapter.resolveModel('Gemini 3.7 Flash (Low)', {
+        refreshOnMiss: true,
+      })).resolves.toMatchObject({
+        ok: false,
+        code: 'model_selection.discovery_unavailable',
+      });
+      expect(mockExeca).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -261,13 +304,14 @@ describe('AgyAdapter', () => {
     });
 
     it('passes a valid --model label', async () => {
+      mockExeca.mockResolvedValueOnce({ stdout: MODEL_OUTPUT, stderr: '', exitCode: 0 } as never);
       mockOnce(successEnvelope());
       await adapter.execute({
         prompt: 'go',
         context: { workingDirectory: '/crew/wt' },
         constraints: { model: VALID_MODEL },
       });
-      const args = mockExeca.mock.calls[0]?.[1] as string[];
+      const args = mockExeca.mock.calls[1]?.[1] as string[];
       expect(args.slice(0, 4)).toEqual(['--output-format', 'json', '--model', VALID_MODEL]);
     });
 
@@ -411,16 +455,16 @@ describe('AgyAdapter', () => {
   });
 
   describe('model validation at dispatch', () => {
-    it('rejects an unknown model label WITHOUT spawning agy', async () => {
+    it('rejects an unknown model label after discovery without running inference', async () => {
+      mockExeca.mockResolvedValue({ stdout: MODEL_OUTPUT, stderr: '', exitCode: 0 } as never);
       const result = await adapter.execute({
         prompt: 'go',
         context: { workingDirectory: '/crew/wt' },
         constraints: { model: 'Totally Fake Model 9000' },
       });
       expect(result.status).toBe('error');
-      expect(result.output).toContain('Unknown agy model label');
-      expect(result.output).toContain(VALID_MODEL); // enumerates known set
-      expect(mockExeca).not.toHaveBeenCalled();
+      expect(result.output).toContain('model_selection.unknown');
+      expect(mockExeca.mock.calls.every((call) => call[1]?.[0] === 'models')).toBe(true);
     });
   });
 

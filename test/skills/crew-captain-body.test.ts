@@ -124,6 +124,9 @@ describe('crew-captain body — dispatch lifecycle', () => {
     expectContainsCI(flat, 'crew-mcp install-tail-handler');
     expectContainsCI(flat, '`relay_verbatim` verbatim');
     expectContainsCI(flat, '`ledger_line`');
+    expectContainsCI(flat, 'requested_model');
+    expectContainsCI(flat, 'model_argument');
+    expectContainsCI(flat, 'observed_model');
     expectContainsCI(flat, 'Complete this checklist before ending the turn');
     expectContainsCI(flat, 'Bash(<required_next_action.command>, run_in_background: true)');
     expectContainsCI(flat, 'required_next_action.working_directory_json');
@@ -270,6 +273,22 @@ describe('crew-captain body — review panels', () => {
     expectContainsCI(flat, 'Own-host gate');
     expectContainsCI(flat, 'native subagent');
     expectContainsCI(flat, 'inline fallback');
+    expectContainsCI(flat, 'model: "opus"');
+    expectContainsCI(flat, 'model: "fable"');
+    expectContainsCI(flat, 'model: "sonnet"');
+  });
+
+  it('requires provider-native discovery and exact-or-refuse model pins', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '## Operating guardrails', '## Quota-aware routing');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'model_selection_support');
+    expectContainsCI(flat, 'call `list_models`');
+    expectContainsCI(flat, 'Never invent or normalize model names');
+    expectContainsCI(flat, 'exact-or-refuse');
+    expectContainsCI(flat, 'never retry without the pin');
+    expectContainsCI(flat, 'CLI default');
   });
 
   it('tells the captain to silently no-op a host reviewer completion for an already-consolidated round', async () => {

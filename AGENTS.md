@@ -53,8 +53,8 @@ There are no production users, so we do not have to worry about being backward c
   barrel, run state, event filtering, panels, criteria, and peer messages.
   Production dispatch for `run_agent` uses `adapter.execute()`; the old
   tool-loop / `executeWithTools` layer is deleted.
-- `src/orchestrator/tools/` is the nineteen-tool surface:
-  `list_agents`, `get_crew_preferences`, `list_runs`, `check_captain_inbox`,
+- `src/orchestrator/tools/` is the twenty-tool surface:
+  `list_agents`, `list_models`, `get_crew_preferences`, `list_runs`, `check_captain_inbox`,
   `acknowledge_messages`, `run_agent`, `continue_run`, `merge_run`,
   `discard_run`, `get_run_status`, `cancel_run`, `run_panel`,
   `get_panel_status`, `aggregate_panel`, `create_criteria`,

@@ -130,12 +130,49 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
-    it('recognizes Claude CLI model aliases and full model IDs', () => {
-      expect(adapter.recognizesModel(ModelId.CLAUDE_SONNET)).toBe(true);
-      expect(adapter.recognizesModel(ModelId.CLAUDE_OPUS)).toBe(true);
-      expect(adapter.recognizesModel('haiku')).toBe(true);
-      expect(adapter.recognizesModel('claude-sonnet-4-7')).toBe(true);
-      expect(adapter.recognizesModel(ModelId.GPT)).toBe(false);
+    it('discovers aliases including fable and accepts full Claude ids', async () => {
+      mockExeca.mockResolvedValue({
+        stdout: '--model <model> aliases: fable, opus, sonnet, haiku',
+        stderr: '',
+        exitCode: 0,
+      } as never);
+      const catalog = await adapter.listModels({ refresh: true });
+      expect(catalog.models.map((model) => model.model)).toEqual([
+        'sonnet',
+        'opus',
+        'haiku',
+        'fable',
+      ]);
+      await expect(adapter.resolveModel(ModelId.CLAUDE_SONNET)).resolves.toMatchObject({
+        ok: true,
+        argument: ModelId.CLAUDE_SONNET,
+      });
+      await expect(adapter.resolveModel('claude-sonnet-4-7')).resolves.toMatchObject({
+        ok: true,
+        validation: 'syntax',
+      });
+      await expect(adapter.resolveModel(ModelId.GPT)).resolves.toMatchObject({
+        ok: false,
+        code: 'model_selection.unknown',
+      });
+    });
+
+    it('does not cache a degraded alias catalog after a transient help failure', async () => {
+      mockExeca
+        .mockResolvedValueOnce({ stdout: '', stderr: 'temporary failure', exitCode: 1 } as never)
+        .mockResolvedValueOnce({
+          stdout: '--model <model> aliases: fable, opus, sonnet, haiku',
+          stderr: '',
+          exitCode: 0,
+        } as never);
+
+      const degraded = await adapter.listModels();
+      expect(degraded.models.map((model) => model.model)).not.toContain('fable');
+      expect(degraded.warnings).toBeDefined();
+
+      const recovered = await adapter.listModels();
+      expect(recovered.models.map((model) => model.model)).toContain('fable');
+      expect(mockExeca).toHaveBeenCalledTimes(2);
     });
 
     it('exposes captain capabilities without the retired tool-loop path', () => {
@@ -496,6 +533,44 @@ describe('ClaudeCodeAdapter', () => {
       });
       expect(result.failure?.rawSignal).not.toContain('Final worker summary');
       expect(result.failure?.recommendation).toBeUndefined();
+    });
+
+    it('records the primary model observed in Claude stream events', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'init',
+            model: 'claude-fable-5',
+            session_id: 'model-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              model: 'claude-fable-5',
+              content: [{ type: 'text', text: 'Reviewed' }],
+            },
+            session_id: 'model-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'Reviewed',
+            session_id: 'model-session',
+          })}\n`,
+        ],
+        exitCode: 0,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Review',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.metadata.observedModel).toBe('claude-fable-5');
     });
 
     it('does not treat provider result subtype partial as a missing result envelope', async () => {

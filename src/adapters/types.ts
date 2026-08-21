@@ -5,6 +5,63 @@ export interface CaptainCapabilities {
   supportsPauseForUserInput: boolean;
 }
 
+export type ModelSelectionSupport =
+  | 'catalog'
+  | 'catalog-and-provider-id'
+  | 'provider-validated'
+  | 'unsupported';
+
+export interface ModelDescriptor {
+  /** Exact string a caller passes as `model`. */
+  readonly model: string;
+  readonly displayName: string;
+  /** Provider-native identifier when `model` must instead be a label. */
+  readonly providerId?: string;
+  readonly aliases?: readonly string[];
+  readonly isDefault?: boolean;
+}
+
+export interface AdapterModelCatalog {
+  readonly support: ModelSelectionSupport;
+  readonly source:
+    | 'provider-cli'
+    | 'provider-api'
+    | 'documented-aliases'
+    | 'configured';
+  readonly authoritative: boolean;
+  readonly models: readonly ModelDescriptor[];
+  readonly checkedAt: string;
+  readonly warnings?: readonly string[];
+}
+
+export type AdapterModelResolution =
+  | {
+      readonly ok: true;
+      readonly argument: string;
+      readonly displayName?: string;
+      readonly validation: 'catalog' | 'syntax' | 'configured';
+    }
+  | {
+      readonly ok: false;
+      readonly code:
+        | 'model_selection.unsupported'
+        | 'model_selection.unknown'
+        | 'model_selection.discovery_unavailable';
+      readonly message: string;
+    };
+
+export interface ModelSelectionRecord {
+  readonly source: 'per_call' | 'agent_default' | 'inherited' | 'cli_default';
+  readonly requestedModel?: string;
+  /** Exact value Crew passed to the provider. */
+  readonly modelArgument?: string;
+  readonly displayName?: string;
+  readonly validation: 'catalog' | 'syntax' | 'configured' | 'cli_default';
+  readonly inheritedFromTurn?: number;
+  /** Populated only from provider output, never inferred from the argument. */
+  readonly observedModel?: string;
+}
+
 export interface AgentAdapter {
   readonly name: string;
   /**
@@ -143,18 +200,16 @@ export interface AgentAdapter {
    * expected to return a provider session id for every requested resume turn.
    */
   readonly supportsResume?: boolean;
+  /** Static capability surfaced cheaply through `list_agents`. */
+  readonly modelSelectionSupport?: ModelSelectionSupport;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
   getCliVersionTag?(): Promise<string | undefined>;
-  /**
-   * Returns true when the given model id is known to work with this adapter.
-   * Consumed by the dispatch-time model preflight (`applyModelPreflight`):
-   * an unrecognized per-call pin or agents.json default is dropped with a
-   * warning so the CLI's own default model runs instead of the spawn
-   * failing. Omit entirely for adapters that can drive any model they're
-   * handed (generic, openai-compatible) — absent matcher means no check.
-   */
-  recognizesModel?(modelId: string): boolean;
+  listModels?(options?: { refresh?: boolean }): Promise<AdapterModelCatalog>;
+  resolveModel?(
+    requested: string,
+    options?: { refreshOnMiss?: boolean },
+  ): Promise<AdapterModelResolution>;
   healthCheck(options?: HealthCheckOptions): Promise<HealthCheckResult>;
 }
 
@@ -364,6 +419,8 @@ export interface TaskResult {
     costUsd?: number;
     durationMs?: number;
     numTurns?: number;
+    /** Primary model reported by the provider for this conversation turn. */
+    observedModel?: string;
     rawEvents?: unknown[];
     droppedLines?: number;
   };

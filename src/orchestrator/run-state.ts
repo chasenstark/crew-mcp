@@ -43,7 +43,7 @@ import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
-import type { TaskFailure } from '../adapters/types.js';
+import type { ModelSelectionRecord, TaskFailure } from '../adapters/types.js';
 import { filterEventsTailNoise, isEventsTailNoiseLine } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
 import { writeRunReceipt } from './receipts.js';
@@ -94,6 +94,8 @@ export interface PromptRecord {
   readonly criteriaContract?: string;
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
+  /** Exact model decision for this turn; absent only on legacy state. */
+  readonly modelSelection?: ModelSelectionRecord;
   readonly startedAt: string;
   readonly completedAt?: string;
   /** The adapter's `output` text for this turn. */
@@ -336,6 +338,7 @@ export interface CreateRunStateInit {
   readonly contractPrefix?: string;
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
+  readonly modelSelection?: ModelSelectionRecord;
   /**
    * Lifecycle mode for this run. Persisted so `continue_run` can read
    * it back and stay sticky, and so `merge_run` / `discard_run` can
@@ -380,6 +383,7 @@ export interface AppendPromptOptions {
   readonly contractPrefix?: string;
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
+  readonly modelSelection?: ModelSelectionRecord;
   readonly workerReady?: WorkerReadyStatus;
 }
 
@@ -514,6 +518,9 @@ export class RunStateStore {
             ...(contractPrefix.length > 0 ? { criteriaContract: contractPrefix } : {}),
             ...(init.criteriaSetId !== undefined
               ? { criteriaSetId: init.criteriaSetId, criteriaEpoch: init.criteriaEpoch }
+              : {}),
+            ...(init.modelSelection !== undefined
+              ? { modelSelection: init.modelSelection }
               : {}),
             startedAt: now,
           },
@@ -729,6 +736,9 @@ export class RunStateStore {
             ...(options.criteriaSetId !== undefined
               ? { criteriaSetId: options.criteriaSetId, criteriaEpoch: options.criteriaEpoch }
               : {}),
+            ...(options.modelSelection !== undefined
+              ? { modelSelection: options.modelSelection }
+              : {}),
             startedAt: now,
           },
         ],
@@ -780,6 +790,8 @@ export class RunStateStore {
        * id, or an adapter that doesn't resume, must not erase a good id).
        */
       sessionId?: string;
+      /** Provider-reported model for the just-completed turn. */
+      observedModel?: string;
       /**
        * Advisory messages (e.g., read-only dirty-tree probe). Merged
        * with any pre-existing warnings on the state — warnings
@@ -803,7 +815,19 @@ export class RunStateStore {
       shouldNotify = true;
       const prompts = s.prompts.map((p, i): PromptRecord =>
         i === s.prompts.length - 1
-          ? { ...p, completedAt: now, summary: args.summary }
+          ? {
+              ...p,
+              completedAt: now,
+              summary: args.summary,
+              ...(args.observedModel !== undefined && p.modelSelection !== undefined
+                ? {
+                    modelSelection: {
+                      ...p.modelSelection,
+                      observedModel: args.observedModel,
+                    },
+                  }
+                : {}),
+            }
           : p,
       );
       const mergedWarnings = args.warnings && args.warnings.length > 0

@@ -621,6 +621,7 @@ describe('SKILL_MANIFEST', () => {
     expect(umbrella.slug).toBe('crew');
     expect(umbrella.bodyFile).toBe('crew-captain.body.md');
     expect(umbrella.description).toBe(SKILL_DESCRIPTION);
+    expect(umbrella.description).toContain('fable');
   });
 
   it('has a `crew:iterate` entry with body crew-iterate.body.md', () => {

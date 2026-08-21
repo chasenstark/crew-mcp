@@ -30,18 +30,18 @@ describe('createBuiltinRegistry', () => {
   });
 });
 
-describe('recognizesModel proxy/instance parity', () => {
+describe('modelSelectionSupport proxy/instance parity', () => {
   it.each([
-    ['claude-code', 'haiku', true],
-    ['claude-code', 'gpt-5.5', false],
-    ['codex', 'gpt-5.3-codex', true],
-    ['codex', 'openrouter/deepseek-r1', true],
-    ['codex', 'sonnet', false],
-  ] as const)('%s proxy and instance agree on %s', async (name, model, expected) => {
+    ['claude-code', 'provider-validated'],
+    ['codex', 'provider-validated'],
+    ['agy', 'catalog-and-provider-id'],
+  ] as const)('%s proxy and instance agree on %s', async (name, expected) => {
     const registry = createBuiltinRegistry();
-    expect(registry.get(name)?.recognizesModel?.(model)).toBe(expected);
+    expect(registry.get(name)?.modelSelectionSupport).toBe(expected);
     const loaded = await registry.load(name);
-    expect(loaded?.recognizesModel?.(model)).toBe(expected);
+    expect(loaded?.modelSelectionSupport).toBe(expected);
+    expect(typeof registry.get(name)?.listModels).toBe('function');
+    expect(typeof registry.get(name)?.resolveModel).toBe('function');
   });
 });
 

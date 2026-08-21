@@ -127,6 +127,60 @@ describe('getRunStatusToolHandler', () => {
     expect(wait.structuredContent?.warnings).toBeUndefined();
   });
 
+  it('surfaces the latest model selection in snapshots, timeouts, and terminal turns', async () => {
+    await store.create({
+      runId: 'r-model-status',
+      agentId: 'claude-code',
+      worktreePath: '/wt/r-model-status',
+      initialPrompt: 'go',
+      modelSelection: {
+        source: 'per_call',
+        requestedModel: 'fable',
+        modelArgument: 'fable',
+        displayName: 'Fable',
+        validation: 'catalog',
+      },
+    });
+
+    const snapshot = await getRunStatusToolHandler(
+      { run_id: 'r-model-status' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(snapshot.structuredContent?.model_selection).toMatchObject({
+      source: 'per_call',
+      requested_model: 'fable',
+      model_argument: 'fable',
+      display_name: 'Fable',
+    });
+
+    const timeout = await getRunStatusToolHandler({
+      run_id: 'r-model-status',
+      wait_for_change_ms: 1,
+      wait_for_terminal_only: true,
+      user_requested_wait: true,
+    }, { dispatcher: new ToolDispatcher(), runStateStore: store });
+    expect(timeout.structuredContent).toMatchObject({
+      status: 'running',
+      timed_out: true,
+      model_selection: { requested_model: 'fable', model_argument: 'fable' },
+    });
+
+    await store.markTerminal('r-model-status', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: [],
+      observedModel: 'claude-fable-5',
+    });
+    const terminal = await getRunStatusToolHandler(
+      { run_id: 'r-model-status' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(terminal.structuredContent).toMatchObject({
+      model_selection: { observed_model: 'claude-fable-5' },
+      prompts: [{ model_selection: { observed_model: 'claude-fable-5' } }],
+    });
+  });
+
   it('warns for wait_for_change_ms on a criteria-linked run', async () => {
     await store.create({
       runId: 'r-linked-change-wait',

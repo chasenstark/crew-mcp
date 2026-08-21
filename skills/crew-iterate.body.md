@@ -368,6 +368,17 @@ umbrella `crew` body.
 **Preferences win.** Configured defaults and bans are decisions, not
 hints. Heterogeneity is only a tiebreaker for roles the user left open.
 
+**Provider/model selection.** The agent id selects the provider; `model` is an
+orthogonal exact provider argument. Read `model_selection_support` from
+`list_agents`. When the user names a model, asks for choices, or the roster
+needs distinct models from one provider, call `list_models({agent_id})` and use
+an advertised `model` value exactly. Never normalize, substitute, or retry a
+`model_selection.*` refusal without the pin. Omit `model` only when the user or
+configured roster intentionally wants the provider CLI default. A continuation
+without a new pin inherits its prior turn's selection. In reviewer prompts and
+consolidation, distinguish requested/passed `model_argument` from optional
+provider-reported `observed_model`; do not claim observation from the argument.
+
 1. Call `list_agents` and `get_crew_preferences({scope: "iterate"})`; skip
    preferences only when that tool is absent.
 2. Apply `iterate.banList` absolutely. Leave an emptied role unfilled.
@@ -893,7 +904,7 @@ After merge, retry any reviewer cleanup that earlier hit
 
 Use the `mcp__crew__*` tools; their descriptions are in your tool schema.
 Names:
-`mcp__crew__list_agents mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria`.
+`mcp__crew__list_agents mcp__crew__list_models mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria`.
 If a tool seems missing or changed, ask the user to run `crew-mcp verify`;
 do not shell out yourself.
 

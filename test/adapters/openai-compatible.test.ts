@@ -83,6 +83,80 @@ describe('OpenAiCompatibleAdapter', () => {
     expect(body.messages).toEqual([{ role: 'user', content: composedPrompt }]);
   });
 
+  it('records the provider-reported response model as observed evidence', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        model: 'served-model-v2',
+        choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      }),
+    }));
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'requested-model',
+    });
+
+    const result = await adapter.execute({
+      prompt: 'hello',
+      context: { workingDirectory: '/tmp/project' },
+    });
+    expect(result.metadata.observedModel).toBe('served-model-v2');
+  });
+
+  it('discovers and exactly resolves shared /models ids with caching', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: 'model-a' }, { id: 'model-b' }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'configured-default',
+      apiBase: 'http://127.0.0.1:11434/v1',
+    });
+
+    const first = await adapter.listModels();
+    const second = await adapter.listModels();
+    expect(first.models.map((model) => model.model)).toEqual([
+      'configured-default',
+      'model-a',
+      'model-b',
+    ]);
+    expect(second).toBe(first);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await expect(adapter.resolveModel('model-b', { refreshOnMiss: true })).resolves.toMatchObject({
+      ok: true,
+      argument: 'model-b',
+      validation: 'catalog',
+    });
+  });
+
+  it('keeps its configured default selectable when /models is unavailable', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('endpoint offline'));
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new OpenAiCompatibleAdapter({
+      name: 'openai-test',
+      model: 'configured-default',
+      apiBase: 'http://127.0.0.1:11434/v1',
+    });
+
+    await expect(adapter.listModels()).resolves.toMatchObject({
+      source: 'configured',
+      authoritative: false,
+      models: [{ model: 'configured-default', isDefault: true }],
+      warnings: [expect.stringContaining('endpoint offline')],
+    });
+    await expect(adapter.resolveModel('configured-default')).resolves.toMatchObject({
+      ok: true,
+      validation: 'configured',
+    });
+    await expect(adapter.resolveModel('unknown-model', { refreshOnMiss: true }))
+      .resolves.toMatchObject({
+        ok: false,
+        code: 'model_selection.discovery_unavailable',
+      });
+  });
+
   it('ignores dispatchMcpEnv instead of sending MCP env in the HTTP request', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,

@@ -107,6 +107,85 @@ describe('getPanelStatusHandler', () => {
     });
   });
 
+  it('reports distinct same-provider models and preserves a failed requested model', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'claude-code' })]);
+    cleanupHarness(h);
+    await Promise.all([
+      createRunState(h, { runId: 'r-opus', agentId: 'claude-code', status: 'success' }),
+      createRunState(h, { runId: 'r-fable', agentId: 'claude-code', status: 'running' }),
+      createRunState(h, { runId: 'r-sonnet', agentId: 'claude-code', status: 'success' }),
+    ]);
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: 'r-opus',
+          agentId: 'claude-code',
+          dispatched: true,
+          dispatchedAt: '2026-08-20T00:00:01.000Z',
+          dispatchWarnings: [],
+          modelSelection: {
+            source: 'per_call',
+            requestedModel: 'opus',
+            modelArgument: 'opus',
+            displayName: 'Claude Opus',
+            validation: 'syntax',
+          },
+        },
+        {
+          runId: 'r-fable',
+          agentId: 'claude-code',
+          dispatched: true,
+          dispatchedAt: '2026-08-20T00:00:02.000Z',
+          dispatchWarnings: [],
+          modelSelection: {
+            source: 'per_call',
+            requestedModel: 'fable',
+            modelArgument: 'fable',
+            displayName: 'Claude Fable',
+            validation: 'syntax',
+          },
+        },
+        {
+          runId: 'r-sonnet',
+          agentId: 'claude-code',
+          dispatched: true,
+          dispatchedAt: '2026-08-20T00:00:03.000Z',
+          dispatchWarnings: [],
+          modelSelection: {
+            source: 'per_call',
+            requestedModel: 'sonnet',
+            modelArgument: 'sonnet',
+            displayName: 'Claude Sonnet',
+            validation: 'syntax',
+          },
+        },
+        {
+          runId: null,
+          agentId: 'claude-code',
+          dispatched: false,
+          error: 'model_not_found: unknown model',
+          dispatchWarnings: [],
+          requestedModel: 'not-a-claude-model',
+        },
+      ],
+    }));
+
+    const result = getPanelStatusToolHandler({ panel_id: 'panel-1' }, h.ctx);
+    const structured = result.structuredContent as unknown as GetPanelStatusOutput;
+    expect(structured.reviewers.map((reviewer) => reviewer.model_selection?.model_argument))
+      .toEqual(['opus', 'fable', 'sonnet']);
+    expect(structured.failed_reviewers[0]?.requested_model).toBe('not-a-claude-model');
+
+    const markdown = result.content[0].text;
+    expect(markdown).toContain('`claude-code`: model=Claude Opus status=`success`');
+    expect(markdown).toContain('`claude-code`: model=Claude Fable status=`running`');
+    expect(markdown).toContain('`claude-code`: model=Claude Sonnet status=`success`');
+    expect(markdown).toContain(
+      '`claude-code`: model=not-a-claude-model status=`dispatch_failed`',
+    );
+  });
+
   it('renders compact reviewer summaries while preserving the full structured payload', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
     cleanupHarness(h);

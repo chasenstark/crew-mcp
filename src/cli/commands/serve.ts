@@ -83,6 +83,11 @@ import {
   LIST_AGENTS_DESCRIPTION,
 } from '../../orchestrator/tools/list-agents.js';
 import {
+  listModelsInputSchema,
+  listModelsToolHandler,
+  LIST_MODELS_DESCRIPTION,
+} from '../../orchestrator/tools/list-models.js';
+import {
   getCrewPreferencesInputSchema,
   getCrewPreferencesToolHandler,
   GET_CREW_PREFERENCES_DESCRIPTION,
@@ -1084,6 +1089,16 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: listAgentsInputSchema.shape,
     },
     async (args) => listAgentsToolHandler(args, toolDeps),
+  );
+
+  // ---- list_models -----------------------------------------------------
+  registerJournaledTool(
+    'list_models',
+    {
+      description: LIST_MODELS_DESCRIPTION,
+      inputSchema: listModelsInputSchema.shape,
+    },
+    async (args) => listModelsToolHandler(args, toolDeps),
   );
 
   // ---- get_crew_preferences -------------------------------------------

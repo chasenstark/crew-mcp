@@ -10,8 +10,8 @@ import {
   readOnlyRejectMessage,
   crewWorktreeRejectMessage,
   resolveEffectiveEffort,
-  resolveEffectiveModel,
-  applyModelPreflight,
+  resolveFreshModelSelection,
+  resolveRequestedModelSelection,
   type RunAgentHandlerContext,
 } from '../../../src/orchestrator/tools/run-agent.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
@@ -24,6 +24,13 @@ function makeMockAdapter(overrides?: Partial<AgentAdapter>): AgentAdapter {
     strengths: overrides?.strengths ?? [],
     supportsJsonSchema: false,
     enforcesReadOnly: overrides?.enforcesReadOnly ?? true,
+    modelSelectionSupport: 'provider-validated',
+    resolveModel: async (requested) => ({
+      ok: true,
+      argument: requested,
+      displayName: requested,
+      validation: 'configured',
+    }),
     execute: overrides?.execute ?? (async () => ({
       output: 'ok',
       filesModified: [],
@@ -217,7 +224,7 @@ describe('planRunAgent', () => {
       effectiveWorkingDirectory: root,
       worktreePath: root,
       runMode: 'read_only',
-      effectiveModel: undefined,
+      modelSelection: { source: 'cli_default', validation: 'cli_default' },
       effectiveEffort: undefined,
       resumeSessionId: 'thread-1',
       worktreeManager,
@@ -259,7 +266,7 @@ describe('planRunAgent', () => {
       effectiveWorkingDirectory: root,
       worktreePath: root,
       runMode: 'read_only',
-      effectiveModel: undefined,
+      modelSelection: { source: 'cli_default', validation: 'cli_default' },
       effectiveEffort: undefined,
       resumeSessionId: 'thread-1',
       worktreeManager,
@@ -1117,69 +1124,95 @@ describe('planRunAgent fail-closed capability rejects (agy)', () => {
   });
 });
 
-describe('resolveEffectiveModel', () => {
+describe('resolveFreshModelSelection', () => {
   const adapter = makeMockAdapter({ name: 'codex' });
 
-  it('per-call wins over agents.json', () => {
-    expect(
-      resolveEffectiveModel(adapter, 'opus', { codex: { model: 'sonnet' } }),
-    ).toBe('opus');
+  it('per-call wins over agents.json', async () => {
+    await expect(
+      resolveFreshModelSelection(adapter, 'opus', { codex: { model: 'sonnet' } }),
+    ).resolves.toMatchObject({
+      ok: true,
+      record: { source: 'per_call', modelArgument: 'opus' },
+    });
   });
 
-  it('agents.json wins when no per-call value', () => {
-    expect(
-      resolveEffectiveModel(adapter, undefined, { codex: { model: 'sonnet' } }),
-    ).toBe('sonnet');
+  it('agents.json wins when no per-call value', async () => {
+    await expect(
+      resolveFreshModelSelection(adapter, undefined, { codex: { model: 'sonnet' } }),
+    ).resolves.toMatchObject({
+      ok: true,
+      record: { source: 'agent_default', modelArgument: 'sonnet' },
+    });
   });
 
-  it('returns undefined when nothing is configured (CLI default wins)', () => {
-    expect(resolveEffectiveModel(adapter, undefined, {})).toBeUndefined();
-    expect(resolveEffectiveModel(adapter, undefined, undefined)).toBeUndefined();
+  it('records CLI default when nothing is configured', async () => {
+    const resolveModel = vi.fn();
+    const noPinAdapter = makeMockAdapter({ name: 'codex', resolveModel });
+    await expect(resolveFreshModelSelection(noPinAdapter, undefined, {})).resolves.toEqual({
+      ok: true,
+      record: { source: 'cli_default', validation: 'cli_default' },
+    });
+    expect(resolveModel).not.toHaveBeenCalled();
   });
 });
 
-describe('applyModelPreflight', () => {
-  it('passes recognized models through untouched', () => {
+describe('resolveRequestedModelSelection', () => {
+  it('records a validated model argument', async () => {
     const adapter = makeMockAdapter({
       name: 'codex',
-      recognizesModel: (m) => m.startsWith('gpt-'),
+      resolveModel: async (requested) => requested.startsWith('gpt-')
+        ? { ok: true, argument: requested, validation: 'syntax' }
+        : { ok: false, code: 'model_selection.unknown', message: 'unknown' },
     });
-    expect(applyModelPreflight(adapter, 'gpt-5.3-codex')).toEqual({ model: 'gpt-5.3-codex' });
+    await expect(resolveRequestedModelSelection(
+      adapter,
+      'gpt-5.3-codex',
+      'per_call',
+    )).resolves.toMatchObject({
+      ok: true,
+      record: {
+        source: 'per_call',
+        requestedModel: 'gpt-5.3-codex',
+        modelArgument: 'gpt-5.3-codex',
+        validation: 'syntax',
+      },
+    });
   });
 
-  it('drops unrecognized models and warns', () => {
+  it('refuses an unrecognized model without fallback', async () => {
     const adapter = makeMockAdapter({
       name: 'codex',
-      recognizesModel: (m) => m.startsWith('gpt-'),
+      resolveModel: async () => ({
+        ok: false,
+        code: 'model_selection.unknown',
+        message: 'agent "codex" does not advertise model "sonnnet"',
+      }),
     });
-    const result = applyModelPreflight(adapter, 'sonnnet');
-    expect(result.model).toBeUndefined();
-    expect(result.warning).toContain('model preflight');
-    expect(result.warning).toContain('agent "codex"');
-    expect(result.warning).toContain('"sonnnet"');
-    expect(result.warning).toContain("CLI's default model");
+    await expect(resolveRequestedModelSelection(adapter, 'sonnnet', 'per_call'))
+      .resolves.toEqual({
+        ok: false,
+        message: 'model_selection.unknown: agent "codex" does not advertise model "sonnnet"',
+      });
   });
 
-  it('adds the exact-label hint for agy', () => {
+  it('does not duplicate a typed prefix already supplied by the adapter', async () => {
     const adapter = makeMockAdapter({
-      name: 'agy',
-      recognizesModel: () => false,
+      name: 'codex',
+      resolveModel: async () => ({
+        ok: false,
+        code: 'model_selection.unknown',
+        message: 'model_selection.unknown: exact provider model was not found',
+      }),
     });
-    const result = applyModelPreflight(adapter, 'Gemini 3.1 Pro');
-    expect(result.model).toBeUndefined();
-    expect(result.warning).toContain('exact labels');
-  });
-
-  it('skips the check when the adapter has no matcher or no model resolved', () => {
-    const noMatcher = makeMockAdapter({ name: 'generic-x' });
-    expect(applyModelPreflight(noMatcher, 'anything-goes')).toEqual({ model: 'anything-goes' });
-
-    const withMatcher = makeMockAdapter({ name: 'codex', recognizesModel: () => false });
-    expect(applyModelPreflight(withMatcher, undefined)).toEqual({ model: undefined });
+    await expect(resolveRequestedModelSelection(adapter, 'bad', 'per_call'))
+      .resolves.toEqual({
+        ok: false,
+        message: 'model_selection.unknown: exact provider model was not found',
+      });
   });
 });
 
-describe('planRunAgent — model preflight', () => {
+describe('planRunAgent — exact model selection', () => {
   let worktreeManager: WorktreeManager;
   let tmpRepo: string;
   let crewHome: string;
@@ -1201,11 +1234,17 @@ describe('planRunAgent — model preflight', () => {
     rmSync(crewHome, { recursive: true, force: true });
   });
 
-  it('unrecognized pinned model → dispatch proceeds modelless with the preflight warning', async () => {
+  it('refuses an unknown pin before allocating a run', async () => {
     let observedConstraints: Record<string, unknown> | undefined;
     const adapter = makeMockAdapter({
       name: 'strict-labels',
-      recognizesModel: (m) => m === 'Known Label',
+      resolveModel: async (requested) => requested === 'Known Label'
+        ? { ok: true, argument: requested, validation: 'catalog' }
+        : {
+            ok: false,
+            code: 'model_selection.unknown',
+            message: `agent "strict-labels" does not advertise model "${requested}"`,
+          },
       execute: async (task) => {
         observedConstraints = task.constraints as Record<string, unknown>;
         return { output: 'done', filesModified: [], status: 'success', metadata: {} };
@@ -1219,20 +1258,22 @@ describe('planRunAgent — model preflight', () => {
       { agent_id: 'strict-labels', prompt: 'go', model: 'Unknown Label' },
       ctx,
     );
-    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    expect(plan.dispatchWarnings).toEqual([
-      expect.stringContaining('model preflight: agent "strict-labels" does not recognize model "Unknown Label"'),
-    ]);
-
-    await plan.buildTask('go').run({ signal: makeAbortSignal(), onStream: () => undefined });
-    expect(observedConstraints?.model).toBeUndefined();
+    expect(plan).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('model_selection.unknown'),
+    });
+    expect(observedConstraints).toBeUndefined();
+    expect(readdirSync(join(crewHome, 'runs')).filter((entry) => !entry.startsWith('.')))
+      .toEqual([]);
   });
 
   it('recognized pinned model reaches the adapter with no warning', async () => {
     let observedConstraints: Record<string, unknown> | undefined;
     const adapter = makeMockAdapter({
       name: 'strict-labels',
-      recognizesModel: (m) => m === 'Known Label',
+      resolveModel: async (requested) => requested === 'Known Label'
+        ? { ok: true, argument: requested, displayName: requested, validation: 'catalog' }
+        : { ok: false, code: 'model_selection.unknown', message: 'unknown' },
       execute: async (task) => {
         observedConstraints = task.constraints as Record<string, unknown>;
         return { output: 'done', filesModified: [], status: 'success', metadata: {} };
@@ -1248,15 +1289,26 @@ describe('planRunAgent — model preflight', () => {
     );
     if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
     expect(plan.dispatchWarnings).toEqual([]);
+    expect(plan.modelSelection).toMatchObject({
+      source: 'per_call',
+      modelArgument: 'Known Label',
+      validation: 'catalog',
+    });
 
     await plan.buildTask('go').run({ signal: makeAbortSignal(), onStream: () => undefined });
     expect(observedConstraints?.model).toBe('Known Label');
   });
 
-  it('preflights the agents.json model too, not just per-call pins', async () => {
+  it('refuses a stale agents.json model too', async () => {
     const adapter = makeMockAdapter({
       name: 'strict-labels',
-      recognizesModel: (m) => m === 'Known Label',
+      resolveModel: async (requested) => requested === 'Known Label'
+        ? { ok: true, argument: requested, validation: 'catalog' }
+        : {
+            ok: false,
+            code: 'model_selection.unknown',
+            message: `unknown ${requested}`,
+          },
     });
     const ctx: RunAgentHandlerContext = {
       registry: makeRegistry([adapter]),
@@ -1267,9 +1319,9 @@ describe('planRunAgent — model preflight', () => {
       { agent_id: 'strict-labels', prompt: 'go' },
       ctx,
     );
-    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
-    expect(plan.dispatchWarnings).toEqual([
-      expect.stringContaining('"Stale Label"'),
-    ]);
+    expect(plan).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('Stale Label'),
+    });
   });
 });

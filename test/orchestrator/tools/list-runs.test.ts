@@ -14,6 +14,7 @@ import {
   setListRunsFsForTest,
 } from '../../../src/orchestrator/tools/list-runs.js';
 import type { RunStateV1, RunStatus } from '../../../src/orchestrator/run-state.js';
+import type { ModelSelectionRecord } from '../../../src/adapters/types.js';
 import {
   appendMessage,
   clearCaptainInboxCachesForTest,
@@ -161,6 +162,31 @@ describe('listRuns', () => {
       { run_id: 'sweeper-marked-error', summary: 'abandoned (server restart)' },
       { run_id: 'adapter-error', summary: 'adapter summary wins' },
     ]);
+  });
+
+  it('projects and labels the latest model selection', () => {
+    writeState({
+      runId: 'model-run',
+      status: 'running',
+      repoRoot,
+      modelSelection: {
+        source: 'per_call',
+        requestedModel: 'gpt-5.6-sol',
+        modelArgument: 'gpt-5.6-sol',
+        displayName: 'GPT-5.6 Sol',
+        validation: 'catalog',
+        observedModel: 'gpt-5.6-sol-2026-08-01',
+      },
+    });
+
+    const out = listRuns({}, { crewHome, repoRoot });
+    expect(out.runs[0]?.model_selection).toMatchObject({
+      requested_model: 'gpt-5.6-sol',
+      model_argument: 'gpt-5.6-sol',
+      observed_model: 'gpt-5.6-sol-2026-08-01',
+    });
+    expect(listRunsToolHandler({}, { crewHome, projectRoot: repoRoot }).content[0]?.text)
+      .toContain('model=gpt-5.6-sol-2026-08-01');
   });
 
   it('labels relayed summaries once and omits the label when no summaries exist', () => {
@@ -489,6 +515,7 @@ describe('listRuns', () => {
     lastError?: string;
     promptSummary?: string;
     failure?: RunStateV1['failure'];
+    modelSelection?: ModelSelectionRecord;
   }): void {
     const startedAt = args.startedAt ?? iso(0);
     const state: RunStateV1 = {
@@ -507,6 +534,7 @@ describe('listRuns', () => {
           startedAt,
           ...(args.completedAt ? { completedAt: args.completedAt } : {}),
           ...(args.promptSummary ? { summary: args.promptSummary } : {}),
+          ...(args.modelSelection ? { modelSelection: args.modelSelection } : {}),
         },
       ],
       filesChanged: [],

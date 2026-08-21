@@ -820,6 +820,56 @@ describe('RunStateStore', () => {
     expect(next.prompts[0].summary).toBe('all done');
   });
 
+  it('persists per-turn model decisions and enriches only the terminal turn with observation', async () => {
+    await createRun({
+      runId: 'r-model',
+      agentId: 'claude-code',
+      worktreePath: '/x',
+      initialPrompt: 'first',
+      modelSelection: {
+        source: 'per_call',
+        requestedModel: 'opus',
+        modelArgument: 'opus',
+        displayName: 'Opus',
+        validation: 'catalog',
+      },
+    });
+    const first = await store.markTerminal('r-model', {
+      status: 'success',
+      summary: 'first done',
+      filesChanged: [],
+      observedModel: 'claude-opus-4-7',
+    });
+    expect(first.prompts[0].modelSelection).toMatchObject({
+      requestedModel: 'opus',
+      observedModel: 'claude-opus-4-7',
+    });
+
+    await store.appendPrompt('r-model', {
+      userPrompt: 'second',
+      modelSelection: {
+        source: 'inherited',
+        requestedModel: 'opus',
+        modelArgument: 'opus',
+        displayName: 'Opus',
+        validation: 'catalog',
+        inheritedFromTurn: 1,
+      },
+    });
+    const second = await store.markTerminal('r-model', {
+      status: 'success',
+      summary: 'second done',
+      filesChanged: [],
+      observedModel: 'claude-opus-4-8',
+    });
+    expect(second.prompts[0].modelSelection?.observedModel).toBe('claude-opus-4-7');
+    expect(second.prompts[1].modelSelection).toMatchObject({
+      source: 'inherited',
+      inheritedFromTurn: 1,
+      observedModel: 'claude-opus-4-8',
+    });
+  });
+
   it('markTerminal() fires a terminal OS notification hook after state write', async () => {
     await createRun({ runId: 'r-1', agentId: 'a', worktreePath: '/x', initialPrompt: 'p' });
     const next = await store.markTerminal('r-1', {

@@ -35,7 +35,13 @@ import { stat } from 'fs/promises';
 import { resolve, sep } from 'path';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
-import type { AgentAdapter, EffortLevel, TaskResult } from '../../adapters/types.js';
+import { modelSelectionToWire } from '../../adapters/model-selection.js';
+import type {
+  AgentAdapter,
+  EffortLevel,
+  ModelSelectionRecord,
+  TaskResult,
+} from '../../adapters/types.js';
 import { clampEffortToSupported, resolveReviewDispatchMode } from '../../adapters/types.js';
 import {
   ownsWorktree,
@@ -96,7 +102,7 @@ export const runAgentInputSchema = z.object({
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
   criteria_set_id: z.string().min(1).optional(),
   working_directory: z.string().optional(),
-  model: z.string().optional(),
+  model: z.string().trim().min(1).max(300).optional(),
   /**
    * Per-call reasoning effort override. Wins over the user's
    * agents.json default + adapter default. codex, claude-code, and agy
@@ -145,7 +151,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override, same_host_ok, and dispatch_anyway require user approval; dispatch_anyway overrides health/quota refusal. run_mode is write, read_only, or ephemeral_review. Returns async with bounded relay_verbatim/ledger_line, warnings for overrides, and required_next_action crew-wait watcher when available.';
+  'Start a bounded subagent run. An explicit model is resolved exactly before run allocation and is never replaced by a provider default; omit model only to choose the CLI default. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override, same_host_ok, and dispatch_anyway require user approval; dispatch_anyway overrides health/quota refusal. run_mode is write, read_only, or ephemeral_review. Returns async with model_selection, bounded relay_verbatim/ledger_line, warnings for overrides, and required_next_action crew-wait watcher when available.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -267,11 +273,13 @@ export async function runAgentToolHandler(
     status: 'running',
     summary,
     files_changed: [],
+    model_selection: modelSelectionToWire(dispatchResult.modelSelection),
     ...dispatchRelayFields({
       agentId: canonicalId,
       runId: dispatchResult.runId,
       runMode: dispatchResult.runMode,
       tailUrl: dispatchResult.tailUrl,
+      modelSelection: dispatchResult.modelSelection,
     }),
     ...(requiredNextAction !== undefined ? { required_next_action: requiredNextAction } : {}),
     ...mergeEnvelopeWarnings(
@@ -352,6 +360,7 @@ export interface RunAgentDispatchPlan {
    */
   readonly readOnly: boolean;
   readonly dispatchWarnings: readonly string[];
+  readonly modelSelection: ModelSelectionRecord;
   readonly adapter: AgentAdapter;
   readonly toolCallId: string;
   readonly buildTask: (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv) => DispatchTask;
@@ -397,7 +406,6 @@ export async function planRunAgent(
     };
   }
 
-  const runId = makeRunId(input.agent_id, input.prompt);
   const modeResolution = runModeFromInput(input);
   if (!modeResolution.ok) {
     return { kind: 'error', message: modeResolution.message };
@@ -451,6 +459,20 @@ export async function planRunAgent(
     return { kind: 'error', message: crewWorktreeRejectMessage(adapter.name, input.working_directory) };
   }
 
+  const modelSelection = await resolveFreshModelSelection(
+    adapter,
+    input.model,
+    ctx.agentPrefs,
+  );
+  if (!modelSelection.ok) {
+    return { kind: 'error', message: modelSelection.message };
+  }
+
+  // Model resolution is deliberately complete before a run id is minted or
+  // any worktree/state is allocated. An invalid pin is an exact-or-refuse
+  // preflight failure, never a partially-created run that silently falls back.
+  const runId = makeRunId(input.agent_id, input.prompt);
+
   const dispatchWarnings: string[] = readOnly && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
@@ -500,14 +522,6 @@ export async function planRunAgent(
 
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
 
-  const modelPreflight = applyModelPreflight(
-    adapter,
-    resolveEffectiveModel(adapter, input.model, ctx.agentPrefs),
-  );
-  if (modelPreflight.warning !== undefined) {
-    dispatchWarnings.push(modelPreflight.warning);
-  }
-  const effectiveModel = modelPreflight.model;
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
   const toolCallId = randomUUID();
   await ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
@@ -523,7 +537,7 @@ export async function planRunAgent(
       worktreePath,
       runMode,
       dispatchWarnings,
-      effectiveModel,
+      modelSelection: modelSelection.record,
       effectiveEffort,
       worktreeManager: ctx.worktreeManager,
       branchPointSeedPaths,
@@ -538,6 +552,7 @@ export async function planRunAgent(
     runMode,
     readOnly,
     dispatchWarnings,
+    modelSelection: modelSelection.record,
     adapter,
     toolCallId,
     buildTask,
@@ -600,52 +615,58 @@ export function resolveEffectiveEffort(
   return clamped;
 }
 
-/**
- * Resolve the model that actually goes to the adapter:
- *   1. per-call override (input.model)
- *   2. user's agents.json override for this agent
- *   3. undefined → adapter doesn't pass --model and the CLI's own
- *      default (claude-code's ~/.claude.json, codex's config.toml,
- *      etc.) wins
- *
- * Exported for tests + symmetry with resolveEffectiveEffort.
- */
-export function resolveEffectiveModel(
+export type ModelSelectionResolution =
+  | { readonly ok: true; readonly record: ModelSelectionRecord }
+  | { readonly ok: false; readonly message: string };
+
+export async function resolveRequestedModelSelection(
+  adapter: AgentAdapter,
+  requestedModel: string,
+  source: 'per_call' | 'agent_default',
+): Promise<ModelSelectionResolution> {
+  const requested = requestedModel.trim();
+  if (!adapter.resolveModel) {
+    return {
+      ok: false,
+      message: `model_selection.unsupported: agent "${adapter.name}" does not support explicit model selection`,
+    };
+  }
+  const resolved = await adapter.resolveModel(requested, { refreshOnMiss: true });
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      message: resolved.message.startsWith(`${resolved.code}:`)
+        ? resolved.message
+        : `${resolved.code}: ${resolved.message}`,
+    };
+  }
+  return {
+    ok: true,
+    record: {
+      source,
+      requestedModel: requested,
+      modelArgument: resolved.argument,
+      ...(resolved.displayName !== undefined ? { displayName: resolved.displayName } : {}),
+      validation: resolved.validation,
+    },
+  };
+}
+
+export async function resolveFreshModelSelection(
   adapter: AgentAdapter,
   perCall: string | undefined,
   prefs: AgentPrefsMap | undefined,
-): string | undefined {
-  if (perCall) return perCall;
-  return prefs?.[adapter.name]?.model;
-}
-
-export interface ModelPreflightResult {
-  readonly model: string | undefined;
-  readonly warning?: string;
-}
-
-/**
- * Dispatch-time model preflight. When the adapter declares
- * `recognizesModel` and the resolved model fails it, drop the override
- * (the CLI's own default model wins) and surface a warning instead of
- * letting the spawn fail with the CLI's raw error. agy is the
- * motivating case — it accepts only EXACT labels from its pinned model
- * list and hard-errors on anything else. Adapters without a matcher
- * (generic, openai-compatible) pass any model through untouched.
- */
-export function applyModelPreflight(
-  adapter: AgentAdapter,
-  model: string | undefined,
-): ModelPreflightResult {
-  if (model === undefined || adapter.recognizesModel === undefined) return { model };
-  if (adapter.recognizesModel(model)) return { model };
-  const hint = adapter.name === AgentId.AGY
-    ? ' agy accepts only the exact labels from its pinned model list (e.g. "Gemini 3.1 Pro (High)").'
-    : '';
+): Promise<ModelSelectionResolution> {
+  if (perCall !== undefined) {
+    return resolveRequestedModelSelection(adapter, perCall, 'per_call');
+  }
+  const configured = prefs?.[adapter.name]?.model;
+  if (configured !== undefined) {
+    return resolveRequestedModelSelection(adapter, configured, 'agent_default');
+  }
   return {
-    model: undefined,
-    warning: `model preflight: agent "${adapter.name}" does not recognize model "${model}"; `
-      + `the model override was dropped and the CLI's default model will be used.${hint}`,
+    ok: true,
+    record: { source: 'cli_default', validation: 'cli_default' },
   };
 }
 
@@ -679,7 +700,7 @@ export function buildAdapterDispatchTask(args: {
    */
   readonly runMode: RunMode;
   readonly dispatchWarnings?: readonly string[];
-  readonly effectiveModel: string | undefined;
+  readonly modelSelection: ModelSelectionRecord;
   /**
    * Effort already resolved upstream via `resolveEffectiveEffort`.
    * Threading it as a separate field (vs. picking it back out of
@@ -757,7 +778,7 @@ export function buildAdapterDispatchTask(args: {
         },
         constraints: {
           signal: taskCtx.signal,
-          model: args.effectiveModel,
+          model: args.modelSelection.modelArgument,
           effort: args.effectiveEffort,
           resumeSessionId: args.resumeSessionId,
           // ephemeral_review deliberately dispatches workspace-write: the

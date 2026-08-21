@@ -12,6 +12,8 @@ import {
   unregisterTempDirForCleanup,
 } from '../utils/best-effort.js';
 import type {
+  AdapterModelCatalog,
+  AdapterModelResolution,
   AgentAdapter,
   AgentStrength,
   EffortLevel,
@@ -20,6 +22,8 @@ import type {
   Task,
   TaskResult,
 } from './types.js';
+import { discoverCodexModels } from './codex-models.js';
+import { findCatalogModel, ModelCatalogCache } from './model-selection.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
@@ -31,6 +35,10 @@ import { classifyTextFailure } from './failure-classifier.js';
 import type { TaskFailure } from './types.js';
 import { redactRunToken } from '../utils/redaction.js';
 import { codexSafeSpawnEnvironment } from '../codex/environment.js';
+
+export interface CodexAdapterOptions {
+  readonly discoverModels?: typeof discoverCodexModels;
+}
 
 /**
  * Represents a single event line in the Codex JSONL output.
@@ -428,6 +436,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly supportedEfforts: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh'];
   readonly supportsJsonSchema = true;
   readonly enforcesReadOnly = true;
+  readonly modelSelectionSupport = 'provider-validated' as const;
   // Reviews run in place via the read_only dispatch path. Keep in lockstep
   // with BUILTIN_ADAPTER_METADATA in registry.ts (proxy/instance parity).
   readonly reviewDispatchMode = 'read-only-dispatch' as const;
@@ -442,14 +451,69 @@ export class CodexAdapter implements AgentAdapter {
     supportsPauseForUserInput: false,
   };
   private readonly healthCheckCache = new HealthCheckCache();
+  private readonly modelCatalogCache = new ModelCatalogCache();
+  private readonly discoverModels: typeof discoverCodexModels;
 
-  recognizesModel(modelId: string): boolean {
-    // OpenAI-family ids, plus any provider-qualified slug ("openrouter/…")
-    // — codex config.toml model_providers can route arbitrary models we
-    // can't enumerate here, and the '/' marks that intent. Keep in
-    // lockstep with the registry proxy metadata (proxy/instance parity).
-    return typeof modelId === 'string'
-      && (/^(gpt-|o\d)/.test(modelId) || modelId.includes('/'));
+  constructor(options: CodexAdapterOptions = {}) {
+    this.discoverModels = options.discoverModels ?? discoverCodexModels;
+  }
+
+  async listModels(options?: { refresh?: boolean }): Promise<AdapterModelCatalog> {
+    return this.modelCatalogCache.get(options, async () => {
+      try {
+        return {
+          support: this.modelSelectionSupport,
+          source: 'provider-cli',
+          authoritative: true,
+          models: await this.discoverModels(),
+          checkedAt: new Date().toISOString(),
+        };
+      } catch (err) {
+        return {
+          support: this.modelSelectionSupport,
+          source: 'provider-cli',
+          authoritative: false,
+          models: [],
+          checkedAt: new Date().toISOString(),
+          warnings: [`Codex model discovery failed: ${err instanceof Error ? err.message : String(err)}`],
+        };
+      }
+    });
+  }
+
+  async resolveModel(
+    requested: string,
+    options?: { refreshOnMiss?: boolean },
+  ): Promise<AdapterModelResolution> {
+    let catalog = await this.listModels();
+    let descriptor = findCatalogModel(catalog, requested);
+    if (!descriptor && options?.refreshOnMiss === true && catalog.authoritative) {
+      catalog = await this.listModels({ refresh: true });
+      descriptor = findCatalogModel(catalog, requested);
+    }
+    if (descriptor) {
+      return {
+        ok: true,
+        argument: descriptor.model,
+        displayName: descriptor.displayName,
+        validation: 'catalog',
+      };
+    }
+    if (/^(?:gpt-[A-Za-z0-9][A-Za-z0-9._-]*|o\d[A-Za-z0-9._-]*|[^/\s]+\/[^/\s]+)$/u.test(requested)) {
+      return { ok: true, argument: requested, displayName: requested, validation: 'syntax' };
+    }
+    if (!catalog.authoritative) {
+      return {
+        ok: false,
+        code: 'model_selection.discovery_unavailable',
+        message: `model_selection.discovery_unavailable: could not verify Codex model "${requested}". ${catalog.warnings?.join(' ') ?? ''}`.trim(),
+      };
+    }
+    return {
+      ok: false,
+      code: 'model_selection.unknown',
+      message: `model_selection.unknown: Codex does not recognize model "${requested}". Call list_models or use an exact OpenAI/provider-qualified id.`,
+    };
   }
 
   async getCliVersionTag(): Promise<string | undefined> {

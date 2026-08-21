@@ -223,9 +223,14 @@ supports it.
 ### Step 1 dispatch confirmation
 
 Print `relay_verbatim` verbatim; it is the server-bounded confirmation with
-agent, `run_id`, and tail reference. For compaction or multiple live runs,
+agent/model, `run_id`, and tail reference. For compaction or multiple live runs,
 reuse each returned `ledger_line` instead of rebuilding a run record. Every
 terminal synthesis must also name `run_id` and status in visible text.
+
+Treat `requested_model` as intent, `model_argument` as the exact provider
+argument Crew passed, and `observed_model` as provider-reported evidence.
+Never describe an argument as the observed model unless `observed_model` is
+actually present in terminal status.
 
 If the user says the tail link does nothing, suggest
 `crew-mcp install-tail-handler` or give `tail -F <events_log_path>` from
@@ -469,7 +474,7 @@ terminal state.
 
 Use the `mcp__crew__*` tools; their descriptions are in your tool schema.
 Names:
-`mcp__crew__list_agents mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria`.
+`mcp__crew__list_agents mcp__crew__list_models mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria`.
 If a tool seems missing or changed, ask the user to run `crew-mcp verify`;
 do not shell out yourself.
 
@@ -480,9 +485,15 @@ do not shell out yourself.
   immediate prior turn when the server gate applies.
 - `agent_id` for `run_agent` comes from `list_agents`. Do not invent
   agent names. `continue_run` takes `run_id`, not `agent_id`.
-- Use `useWhen`, `strengths`, default `model`, and default `effort` from
-  `list_agents` as routing guidance. Do not invent model names; relay any
-  model-preflight warning and re-dispatch only if the pin mattered.
+- Use `useWhen`, `strengths`, default `model`, default `effort`, and
+  `model_selection_support` from `list_agents` as routing guidance. When the
+  user names a model or asks for choices, call `list_models` and pass its exact
+  `model` value. Never invent or normalize model names. A supplied pin is
+  exact-or-refuse: surface `model_selection.*` errors and ask for a valid
+  choice; never retry without the pin. Omit `model` entirely only when no pin
+  was requested or configured, which deliberately uses the provider CLI
+  default. On `continue_run`, omit `model` to inherit the preceding turn's
+  selection; pass it explicitly only to change models.
 - Uncommitted host state is mirrored into write run worktrees. Do not
   manually copy files. `continue_run` re-syncs user edits between turns.
 - Prefer inline reasoning for work you can answer yourself.
@@ -729,6 +740,18 @@ Bound reviewers get `read_only: true`, `working_directory: <A.worktree>`,
 and a peer message with A's summary/files.
 agy reviewers are auto-routed
 to `run_mode: "ephemeral_review"` and snapshot A's worktree.
+
+Same-provider models stay separate when each reviewer carries an exact pin:
+
+```
+run_panel({
+  reviewers: [
+    { agent_id: "claude-code", model: "opus", prompt: "<full review prompt>" },
+    { agent_id: "claude-code", model: "fable", prompt: "<full review prompt>" },
+    { agent_id: "claude-code", model: "sonnet", prompt: "<full review prompt>" }
+  ]
+})
+```
 
 Standalone panels run like plain `run_agent` calls. `read_only: true`
 defaults to the host repo; write reviewers allocate worktrees unless you

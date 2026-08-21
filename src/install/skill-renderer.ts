@@ -31,7 +31,7 @@ import { CREW_MCP_VERSION } from '../cli/version.js';
  * Phrase tuned for Claude Code's skill auto-matcher. Uses the
  * TRIGGER/SKIP format (cf. the built-in `claude-api` skill) to widen
  * the net: enumerates supported model aliases the user is likely to
- * name (Claude/sonnet/opus, Codex, Gemini, local), task types beyond
+ * name (Claude/sonnet/opus/fable, Codex, Gemini, local), task types beyond
  * coding (review, investigation, spec-writing, audits, spikes, triage),
  * project-specific vocabulary the user actually reaches for (crew,
  * panel, subagent, peer), dispatch verbs (have/ask/send to, kick off,
@@ -46,7 +46,7 @@ import { CREW_MCP_VERSION } from '../cli/version.js';
  * host templates requires a single line — both enforced by tests.
  */
 export const SKILL_DESCRIPTION =
-  'Dispatch work to another AI agent (Claude, Codex, Gemini, agy/Antigravity, GPT, sonnet, opus, local models) — coding, code review, investigations, spec-writing, refactors, audits, drafts, prototypes, spikes, triage. Isolated git worktree by default; read-only for review/triage. TRIGGER when the user: asks another model or agent (by name or generically) to do, review, critique, investigate, audit, draft, prototype, sanity-check, or double-check work; wants a second opinion, second pair of eyes, cross-model comparison, panel of agents, or crew run; says "have/ask/send to/run it by/use <model>", "what does <model> think", "get <model>\'s take", "another Claude/Codex/Gemini", "subagent", "peer", "crew", "panel", "in parallel", "in the background", "while I…", "offload", "hand off", "delegate", "fan out", "kick off", "spawn", "fire off", or "race"; or wants long-running work that doesn\'t block the chat. SKIP when the user wants an inline subagent (TaskCreate) or a local shell command.';
+  'Dispatch work to another AI agent (Claude, Codex, Gemini, agy/Antigravity, GPT, sonnet, opus, fable, local models) — coding, code review, investigations, spec-writing, refactors, audits, drafts, prototypes, spikes, triage. Isolated git worktree by default; read-only for review/triage. TRIGGER when the user: asks another model or agent (by name or generically) to do, review, critique, investigate, audit, draft, prototype, sanity-check, or double-check work; wants a second opinion, second pair of eyes, cross-model comparison, panel of agents, or crew run; says "have/ask/send to/run it by/use <model>", "what does <model> think", "get <model>\'s take", "another Claude/Codex/Gemini", "subagent", "peer", "crew", "panel", "in parallel", "in the background", "while I…", "offload", "hand off", "delegate", "fan out", "kick off", "spawn", "fire off", or "race"; or wants long-running work that doesn\'t block the chat. SKIP when the user wants an inline subagent (TaskCreate) or a local shell command.';
 
 /**
  * Auto-match phrase for the `crew-iterate` skill. Distinct from

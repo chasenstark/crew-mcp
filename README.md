@@ -50,6 +50,10 @@ isolated worktree and reports back.
 - **Dispatch work** — "have Codex implement this feature", "send this
   to Claude for review". The captain picks the right agent, allocates a
   worktree, and dispatches.
+- **Choose provider models exactly** — ask which models are available or pin
+  one by name. Crew discovers choices through each provider, validates every
+  supplied pin, and refuses unknown names instead of silently using a default.
+  Model identity stays visible in run and panel status.
 - **Run review panels** — multiple models review the same diff in
   parallel. Each model does a full independent review; the captain
   cross-checks agreement and disagreement across models.

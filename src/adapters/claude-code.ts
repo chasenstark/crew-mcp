@@ -6,6 +6,8 @@ import {
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
 
 import type {
+  AdapterModelCatalog,
+  AdapterModelResolution,
   AgentAdapter,
   AgentStrength,
   EffortLevel,
@@ -15,6 +17,7 @@ import type {
   TaskFailure,
   TaskResult,
 } from './types.js';
+import { findCatalogModel, ModelCatalogCache } from './model-selection.js';
 import { logger } from '../utils/logger.js';
 import { buildCliVersionTag } from '../provider-session.js';
 import { AgentId } from '../workflow/agents.js';
@@ -49,6 +52,7 @@ const ClaudeResponseSchema = z.object({
   api_error_status: z.union([z.number(), z.string()]).optional(),
   api_error_message: z.string().optional(),
   rate_limit_info: z.unknown().optional(),
+  model: z.string().optional(),
 });
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
@@ -202,11 +206,13 @@ function createClaudeStreamCapture(): {
   readonly feedText: (text: string) => void;
   readonly envelope: () => ClaudeResponse | undefined;
   readonly capturedText: () => string;
+  readonly observedModel: () => string | undefined;
 } {
   let lastResultLine = '';
   let assistantText = '';
   let captured = '';
   let sessionId: string | undefined;
+  let observedModel: string | undefined;
 
   const feedParsedLine = (line: string, event: Record<string, unknown> | undefined): void => {
     const trimmed = line.trim();
@@ -215,6 +221,14 @@ function createClaudeStreamCapture(): {
     if (event === undefined) return;
     if (typeof event.session_id === 'string' && !sessionId) {
       sessionId = event.session_id;
+    }
+    const eventModel = event.type === 'system' && event.subtype === 'init'
+      ? event.model
+      : event.type === 'assistant'
+        ? asObject(event.message).model
+        : undefined;
+    if (typeof eventModel === 'string' && eventModel.trim().length > 0 && !observedModel) {
+      observedModel = eventModel.trim();
     }
     if (event.type === 'result') {
       lastResultLine = trimmed;
@@ -251,6 +265,7 @@ function createClaudeStreamCapture(): {
       });
     },
     capturedText: () => captured,
+    observedModel: () => observedModel,
   };
 }
 
@@ -559,6 +574,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly useWhen = BUILTIN_AGENT_ROUTING['claude-code'].useWhen;
   readonly supportsJsonSchema = true;
   readonly enforcesReadOnly = false;
+  readonly modelSelectionSupport = 'provider-validated' as const;
   // Reviews run in place via the read_only dispatch path (advisory contract,
   // not FS-sandboxed — enforcesReadOnly above stays the enforcement truth).
   // Keep in lockstep with BUILTIN_ADAPTER_METADATA in registry.ts
@@ -580,11 +596,78 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   };
   private readonly healthCheckCache = new HealthCheckCache();
   private readonly versionHealthCheckCache = new HealthCheckCache();
+  private readonly modelCatalogCache = new ModelCatalogCache();
 
-  recognizesModel(modelId: string): boolean {
-    return typeof modelId === 'string'
-      && (/^claude-/.test(modelId)
-        || modelId === 'sonnet' || modelId === 'opus' || modelId === 'haiku');
+  async listModels(options?: { refresh?: boolean }): Promise<AdapterModelCatalog> {
+    return this.modelCatalogCache.get(options, async () => {
+      const aliases = [
+        { model: 'sonnet', displayName: 'Claude Sonnet (latest alias)' },
+        { model: 'opus', displayName: 'Claude Opus (latest alias)' },
+        { model: 'haiku', displayName: 'Claude Haiku (latest alias)' },
+      ];
+      let warning: string | undefined;
+      try {
+        const result = await execa('claude', ['--help'], {
+          ...codexSafeSpawnEnvironment(),
+          timeout: 10_000,
+          reject: false,
+          stdin: 'ignore',
+        });
+        const help = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+        if (result.exitCode === 0 && /(?:^|[\s'"(])fable(?:$|[\s'"),])/imu.test(help)) {
+          aliases.push({ model: 'fable', displayName: 'Claude Fable (latest alias)' });
+        } else {
+          warning = result.exitCode === 0
+            ? 'Installed Claude CLI help does not advertise the fable alias; Crew omitted it.'
+            : `Could not verify Claude aliases from --help (exit ${result.exitCode}); Crew omitted fable.`;
+        }
+      } catch (err) {
+        warning = `Could not verify Claude aliases from --help; Crew omitted fable: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      return {
+        support: this.modelSelectionSupport,
+        source: 'documented-aliases',
+        authoritative: false,
+        models: aliases,
+        checkedAt: new Date().toISOString(),
+        ...(warning ? { warnings: [warning] } : {}),
+      };
+    });
+  }
+
+  async resolveModel(
+    requested: string,
+    options?: { refreshOnMiss?: boolean },
+  ): Promise<AdapterModelResolution> {
+    if (/^claude-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(requested)) {
+      return { ok: true, argument: requested, displayName: requested, validation: 'syntax' };
+    }
+    let catalog = await this.listModels();
+    let descriptor = findCatalogModel(catalog, requested);
+    if (!descriptor && options?.refreshOnMiss === true) {
+      catalog = await this.listModels({ refresh: true });
+      descriptor = findCatalogModel(catalog, requested);
+    }
+    if (descriptor) {
+      return {
+        ok: true,
+        argument: descriptor.model,
+        displayName: descriptor.displayName,
+        validation: 'catalog',
+      };
+    }
+    if (requested === 'fable' && (catalog.warnings?.length ?? 0) > 0) {
+      return {
+        ok: false,
+        code: 'model_selection.discovery_unavailable',
+        message: `model_selection.discovery_unavailable: the installed Claude CLI did not confirm the fable alias. ${catalog.warnings?.join(' ') ?? ''}`.trim(),
+      };
+    }
+    return {
+      ok: false,
+      code: 'model_selection.unknown',
+      message: `model_selection.unknown: Claude does not recognize bare alias "${requested}". Call list_models and use an advertised alias or an exact claude-* model id.`,
+    };
   }
 
   async getCliVersionTag(): Promise<string | undefined> {
@@ -780,6 +863,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           { defaultKind: 'process' },
         ),
         metadata: {
+          ...(streamCapture.observedModel() !== undefined
+            ? { observedModel: streamCapture.observedModel() }
+            : {}),
           rawEvents: [{
             error: message,
             rawStdout: partialStdout,
@@ -884,6 +970,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           ? { failure: classifyClaudeFailure(parsed, stdoutText, stderrText) }
         : {}),
       metadata: {
+        ...(streaming && streamCapture.observedModel() !== undefined
+          ? { observedModel: streamCapture.observedModel() }
+          : parsed.model !== undefined && parsed.model.trim().length > 0
+            ? { observedModel: parsed.model.trim() }
+            : {}),
         costUsd: parsed.total_cost_usd ?? parsed.cost_usd,
         durationMs: parsed.duration_ms,
         numTurns: parsed.num_turns,

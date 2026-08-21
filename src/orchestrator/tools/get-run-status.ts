@@ -34,6 +34,11 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { z } from 'zod';
+import {
+  latestModelSelection,
+  modelSelectionToWire,
+  type WireModelSelection,
+} from '../../adapters/model-selection.js';
 
 import { filterEventsTailNoise } from '../events-filter.js';
 import { listMessages } from '../captain-inbox/store.js';
@@ -137,7 +142,7 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read run status by run_id. Omit wait inputs for an immediate turn-start/post-watcher snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit user request; otherwise use the crew-wait watcher. Criteria-linked waits warn against long-polling. since_event_line pages events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Terminal results include summary/filesChanged/prompts/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
+  `Read run status by run_id. Omit wait inputs for an immediate turn-start/post-watcher snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit user request; otherwise use the crew-wait watcher. Criteria-linked waits warn against long-polling. since_event_line pages events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include the latest model_selection when recorded; terminal prompts retain per-turn selections. Terminal results also include summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
 
 type GetRunStatusDeps = Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>
   & Partial<Pick<ToolHandlerDeps, 'crewHome'>>;
@@ -214,9 +219,13 @@ export async function getRunStatusToolHandler(
 
   const fresh = deps.runStateStore.read(args.run_id) ?? state;
   if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
+    const latestSelection = latestModelSelection(fresh.prompts);
     return getRunStatusContent(args.run_id, {
       status: 'running',
       timed_out: true,
+      ...(latestSelection !== undefined
+        ? { model_selection: modelSelectionToWire(latestSelection) }
+        : {}),
       ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
     });
   }
@@ -261,6 +270,7 @@ type TerminalPromptRecord = {
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly peer_messages_count: number;
+  readonly model_selection?: WireModelSelection;
 };
 
 function buildGetRunStatusResponse(
@@ -303,11 +313,15 @@ function buildGetRunStatusResponse(
     : {};
 
   if (!terminal) {
+    const latestSelection = latestModelSelection(state.prompts);
     const payload: GetRunStatusResponse = {
       status,
       events_tail: cappedLines,
       next_event_line: cursorAfterDelta,
       ...(state.workerReady !== undefined ? { worker_ready: state.workerReady } : {}),
+      ...(latestSelection !== undefined
+        ? { model_selection: modelSelectionToWire(latestSelection) }
+        : {}),
       ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
       ...legacyLogTail,
     };
@@ -319,7 +333,11 @@ function buildGetRunStatusResponse(
     startedAt: p.startedAt,
     ...(p.completedAt !== undefined ? { completedAt: p.completedAt } : {}),
     peer_messages_count: p.peer_messages_input?.length ?? 0,
+    ...(p.modelSelection !== undefined
+      ? { model_selection: modelSelectionToWire(p.modelSelection) }
+      : {}),
   }));
+  const latestSelection = latestModelSelection(state.prompts);
   const lastSummary = state.prompts.length > 0
     ? state.prompts[state.prompts.length - 1]?.summary
     : undefined;
@@ -333,6 +351,9 @@ function buildGetRunStatusResponse(
     next_event_line: cursorAfterDelta,
     filesChanged: state.filesChanged,
     prompts: projectedPrompts,
+    ...(latestSelection !== undefined
+      ? { model_selection: modelSelectionToWire(latestSelection) }
+      : {}),
     commits: commitSummary.commits,
     commit_count: commitSummary.commit_count,
     ...(lastSummary !== undefined ? { summary: lastSummary } : {}),

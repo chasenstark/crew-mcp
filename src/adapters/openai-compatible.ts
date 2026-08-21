@@ -2,6 +2,8 @@ import { ModelId } from '../workflow/models.js';
 import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
 import { classifyHttpFailure, classifyTextFailure } from './failure-classifier.js';
 import type {
+  AdapterModelCatalog,
+  AdapterModelResolution,
   AgentAdapter,
   AgentStrength,
   HealthCheckOptions,
@@ -10,6 +12,8 @@ import type {
   TaskResult,
 } from './types.js';
 import { HealthCheckCache } from '../utils/health-check-cache.js';
+import { findCatalogModel, ModelCatalogCache } from './model-selection.js';
+import { listOpenAiCompatibleModels } from './openai-models.js';
 
 class OpenAiCompatibleHttpError extends Error {
   constructor(
@@ -44,6 +48,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly useWhen?: string;
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
+  readonly modelSelectionSupport = 'catalog' as const;
   readonly unmetered: boolean;
   // Chat completions do not provide an adapter-level filesystem change list.
   readonly filesModifiedReliable = false;
@@ -56,6 +61,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   private readonly apiBase: string;
   private readonly apiKey?: string;
   private readonly healthCheckCache = new HealthCheckCache();
+  private readonly modelCatalogCache = new ModelCatalogCache();
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.name = options.name;
@@ -116,8 +122,73 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
       filesModified: [],
       status: content ? 'success' : 'partial',
       metadata: {
+        ...(typeof response?.model === 'string' && response.model.trim().length > 0
+          ? { observedModel: response.model.trim() }
+          : {}),
         rawEvents: [response],
       },
+    };
+  }
+
+  async listModels(options?: { refresh?: boolean }): Promise<AdapterModelCatalog> {
+    return this.modelCatalogCache.get(options, async () => {
+      const discovered = await listOpenAiCompatibleModels(this.apiBase, this.apiKey);
+      const ids = discovered.ok ? [...discovered.models] : [];
+      if (!ids.includes(this.defaultModel)) ids.unshift(this.defaultModel);
+      return {
+        support: this.modelSelectionSupport,
+        source: discovered.ok ? 'provider-api' : 'configured',
+        authoritative: discovered.ok,
+        models: ids.map((model) => ({
+          model,
+          displayName: model,
+          ...(model === this.defaultModel ? { isDefault: true } : {}),
+        })),
+        checkedAt: new Date().toISOString(),
+        ...(!discovered.ok
+          ? { warnings: [`OpenAI-compatible model discovery failed: ${discovered.reason}`] }
+          : {}),
+      };
+    });
+  }
+
+  async resolveModel(
+    requested: string,
+    options?: { refreshOnMiss?: boolean },
+  ): Promise<AdapterModelResolution> {
+    if (requested === this.defaultModel) {
+      return {
+        ok: true,
+        argument: requested,
+        displayName: requested,
+        validation: 'configured',
+      };
+    }
+    let catalog = await this.listModels();
+    let descriptor = findCatalogModel(catalog, requested);
+    if (!descriptor && options?.refreshOnMiss === true) {
+      catalog = await this.listModels({ refresh: true });
+      descriptor = findCatalogModel(catalog, requested);
+    }
+    if (descriptor) {
+      return {
+        ok: true,
+        argument: descriptor.model,
+        displayName: descriptor.displayName,
+        validation: descriptor.model === this.defaultModel ? 'configured' : 'catalog',
+      };
+    }
+    if (!catalog.authoritative) {
+      return {
+        ok: false,
+        code: 'model_selection.discovery_unavailable',
+        message: `model_selection.discovery_unavailable: could not verify model "${requested}" for agent "${this.name}". ${catalog.warnings?.join(' ') ?? ''}`.trim(),
+      };
+    }
+    return {
+      ok: false,
+      code: 'model_selection.unknown',
+      message: `model_selection.unknown: agent "${this.name}" does not advertise model "${requested}". Call list_models for current choices.`,
     };
   }
 

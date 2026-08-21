@@ -22,6 +22,26 @@ describe('GenericAdapter', () => {
     vi.clearAllMocks();
   });
 
+  it('advertises unsupported model selection and refuses an explicit pin', async () => {
+    const adapter = new GenericAdapter({
+      name: 'generic-test',
+      command: 'generic-tool',
+      argsTemplate: ['--prompt', '{{prompt}}'],
+      strengths: [],
+    });
+
+    await expect(adapter.listModels()).resolves.toMatchObject({
+      support: 'unsupported',
+      authoritative: true,
+      models: [],
+    });
+    await expect(adapter.resolveModel('some-model')).resolves.toMatchObject({
+      ok: false,
+      code: 'model_selection.unsupported',
+    });
+    expect(mockExeca).not.toHaveBeenCalled();
+  });
+
   it('does not spawn for a cached-only health check', async () => {
     const adapter = new GenericAdapter({
       name: 'generic-test',

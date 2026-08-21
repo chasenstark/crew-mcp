@@ -26,6 +26,7 @@ import {
   GET_PANEL_STATUS_DESCRIPTION,
   GET_RUN_STATUS_DESCRIPTION,
   LIST_AGENTS_DESCRIPTION,
+  LIST_MODELS_DESCRIPTION,
   LIST_RUNS_DESCRIPTION,
   MERGE_RUN_DESCRIPTION,
   REVISE_CRITERIA_DESCRIPTION,
@@ -37,6 +38,7 @@ import type { SkillTool } from './skill-renderer.js';
 
 export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'list_agents', description: LIST_AGENTS_DESCRIPTION },
+  { name: 'list_models', description: LIST_MODELS_DESCRIPTION },
   { name: 'get_crew_preferences', description: GET_CREW_PREFERENCES_DESCRIPTION },
   { name: 'list_runs', description: LIST_RUNS_DESCRIPTION },
   { name: 'check_captain_inbox', description: CHECK_CAPTAIN_INBOX_DESCRIPTION, mode: 'captain' },

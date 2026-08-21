@@ -118,6 +118,39 @@ describe('CodexAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
+    it('caches account model discovery and bypasses it on refresh', async () => {
+      const discoverModels = vi.fn(async () => [
+        { model: 'gpt-5.6-sol', displayName: 'GPT 5.6 Sol', isDefault: true },
+      ]);
+      const modelAdapter = new CodexAdapter({ discoverModels });
+
+      const first = await modelAdapter.listModels();
+      const second = await modelAdapter.listModels();
+      expect(second).toBe(first);
+      expect(discoverModels).toHaveBeenCalledOnce();
+      await expect(modelAdapter.resolveModel('gpt-5.6-sol', { refreshOnMiss: true }))
+        .resolves.toMatchObject({ ok: true, validation: 'catalog' });
+      expect(discoverModels).toHaveBeenCalledOnce();
+
+      await modelAdapter.listModels({ refresh: true });
+      expect(discoverModels).toHaveBeenCalledTimes(2);
+    });
+
+    it('reports discovery_unavailable instead of asserting an unknown bare model', async () => {
+      const modelAdapter = new CodexAdapter({
+        discoverModels: vi.fn(async () => {
+          throw new Error('app server offline');
+        }),
+      });
+
+      await expect(modelAdapter.resolveModel('bare-alias', { refreshOnMiss: true }))
+        .resolves.toMatchObject({
+          ok: false,
+          code: 'model_selection.discovery_unavailable',
+          message: expect.stringContaining('app server offline'),
+        });
+    });
+
     it('exposes captain capabilities without the retired tool-loop path', () => {
       expect(adapter.captainCapabilities?.supportsStructuredDecisions).toBe(true);
       expect(adapter.captainCapabilities?.supportsPauseForUserInput).toBe(false);

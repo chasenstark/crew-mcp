@@ -1,5 +1,7 @@
 import { execa } from 'execa';
 import type {
+  AdapterModelCatalog,
+  AdapterModelResolution,
   AgentAdapter,
   AgentStrength,
   HealthCheckOptions,
@@ -75,6 +77,7 @@ export class GenericAdapter implements AgentAdapter {
   readonly useWhen?: string;
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
+  readonly modelSelectionSupport = 'unsupported' as const;
   readonly unmetered = true;
   // Arbitrary CLI commands have no uniform terminal file-change reporting.
   readonly filesModifiedReliable = false;
@@ -93,6 +96,27 @@ export class GenericAdapter implements AgentAdapter {
     this.argsTemplate = options.argsTemplate;
     this.strengths = options.strengths;
     this.useWhen = options.useWhen;
+  }
+
+  async listModels(): Promise<AdapterModelCatalog> {
+    return {
+      support: this.modelSelectionSupport,
+      source: 'configured',
+      authoritative: true,
+      models: [],
+      checkedAt: new Date().toISOString(),
+      warnings: [
+        `Agent "${this.name}" uses a generic command template with no {{model}} contract; Crew model selection is unsupported.`,
+      ],
+    };
+  }
+
+  async resolveModel(requested: string): Promise<AdapterModelResolution> {
+    return {
+      ok: false,
+      code: 'model_selection.unsupported',
+      message: `model_selection.unsupported: agent "${this.name}" cannot accept Crew model pin "${requested}" because its generic command template has no model placeholder.`,
+    };
   }
 
   /**

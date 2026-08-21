@@ -111,19 +111,71 @@ async function createConfirmedCriteria(h: PanelHarness, id = 'criteria-1'): Prom
   await confirmCriteriaHandler({ criteria_set_id: id }, { crewHome: h.crewHome });
 }
 
-function fakeDispatchResult(agentId: string, index: number): DispatchRunAgentInternalResult {
+function fakeDispatchResult(
+  agentId: string,
+  index: number,
+  model?: string,
+): DispatchRunAgentInternalResult {
   return {
     runId: `${agentId}-run-${index}`,
     worktreePath: `/tmp/${agentId}-${index}`,
+    runMode: 'read_only',
     readOnly: true,
     tailUrl: `crew-tail:///${agentId}-${index}`,
     tailCommandPath: `/tmp/${agentId}-${index}/tail.command`,
     toolCallId: `tool-${agentId}-${index}`,
     warnings: [],
+    modelSelection: model === undefined
+      ? { source: 'cli_default', validation: 'cli_default' }
+      : {
+          source: 'per_call',
+          requestedModel: model,
+          modelArgument: model,
+          displayName: model[0].toUpperCase() + model.slice(1),
+          validation: 'catalog',
+        },
   };
 }
 
 describe('runPanelHandler', () => {
+  it('keeps same-provider reviewers with distinct models independently labeled', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'claude-code' })]);
+    cleanupHarness(h);
+    const dispatchedModels: Array<string | undefined> = [];
+
+    const out = await runPanelHandler({
+      reviewers: ['opus', 'fable', 'sonnet'].map((model) => ({
+        agent_id: 'claude-code',
+        model,
+        prompt: `review with ${model}`,
+      })),
+    }, {
+      ...h.ctx,
+      dispatchRunAgentInternalImpl: async (args) => {
+        dispatchedModels.push(args.input.model);
+        return fakeDispatchResult(
+          args.input.agent_id,
+          dispatchedModels.length,
+          args.input.model,
+        );
+      },
+    });
+
+    expect(dispatchedModels).toEqual(['opus', 'fable', 'sonnet']);
+    expect(out.reviewers.map((reviewer) => reviewer.model_selection)).toEqual([
+      expect.objectContaining({ requested_model: 'opus', model_argument: 'opus' }),
+      expect.objectContaining({ requested_model: 'fable', model_argument: 'fable' }),
+      expect.objectContaining({ requested_model: 'sonnet', model_argument: 'sonnet' }),
+    ]);
+    expect(readPanelState(panelDir(h.crewHome, out.panel_id))?.reviewers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ modelSelection: expect.objectContaining({ modelArgument: 'opus' }) }),
+        expect.objectContaining({ modelSelection: expect.objectContaining({ modelArgument: 'fable' }) }),
+        expect.objectContaining({ modelSelection: expect.objectContaining({ modelArgument: 'sonnet' }) }),
+      ]),
+    );
+  });
+
   it('fills empty reviewers from panel agent defaults', async () => {
     const h = makeHarness([
       makeMockAdapter({ name: 'codex' }),

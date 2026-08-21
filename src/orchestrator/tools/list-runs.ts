@@ -13,6 +13,11 @@ import * as fs from 'node:fs';
 import { join } from 'node:path';
 
 import { z } from 'zod';
+import {
+  latestModelSelection,
+  modelSelectionToWire,
+  type WireModelSelection,
+} from '../../adapters/model-selection.js';
 
 import { runModeFromState } from '../run-mode.js';
 import { summarizeInbox, type InboxSummary } from '../captain-inbox/store.js';
@@ -60,7 +65,7 @@ export const listRunsInputSchema = z.object({
 export type ListRunsInput = z.infer<typeof listRunsInputSchema>;
 
 export const LIST_RUNS_DESCRIPTION =
-  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, status, startedAt, completedAt, worktreePath, latest truncated summary/error plus summary_truncated marker, and typed failure when present. Use get_run_status for the rich per-run payload.';
+  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, latest model_selection, status, startedAt, completedAt, worktreePath, latest truncated summary/error plus summary_truncated marker, and typed failure when present. Use get_run_status for the rich per-run payload.';
 
 export interface ListRunsEntry {
   readonly run_id: string;
@@ -74,6 +79,7 @@ export interface ListRunsEntry {
   readonly summary?: string;
   readonly summary_truncated: boolean;
   readonly failure?: RunStateV1['failure'];
+  readonly model_selection?: WireModelSelection;
 }
 
 export interface ListRunsOutput {
@@ -174,6 +180,9 @@ export function listRuns(
       ...(runModeFromState(state) !== 'write'
         ? { run_mode: runModeFromState(state) }
         : {}),
+      ...(latestModelSelection(state.prompts) !== undefined
+        ? { model_selection: modelSelectionToWire(latestModelSelection(state.prompts)!) }
+        : {}),
       ...summaryField(state),
       ...(state.failure !== undefined ? { failure: listRunsFailure(state.failure) } : {}),
     })),
@@ -253,10 +262,13 @@ function renderListRunsMarkdown(out: ListRunsOutput): string {
   for (const run of out.runs) {
     const completed = run.completedAt ? ` completed=${run.completedAt}` : '';
     const mode = run.run_mode ? ` mode=${run.run_mode}` : '';
+    const model = run.model_selection
+      ? ` model=${run.model_selection.observed_model ?? run.model_selection.display_name ?? run.model_selection.model_argument ?? 'CLI default'}`
+      : '';
     const summary = run.summary ? ` - ${compactLine(run.summary)}` : '';
     const truncation = run.summary_truncated ? ' (summary truncated; use get_run_status)' : '';
     lines.push(
-      `- ${run.run_id} [${run.status}] agent=${run.agent_id}${mode} started=${run.startedAt}${completed}${truncation}${summary}`,
+      `- ${run.run_id} [${run.status}] agent=${run.agent_id}${model}${mode} started=${run.startedAt}${completed}${truncation}${summary}`,
     );
   }
   return lines.join('\n');

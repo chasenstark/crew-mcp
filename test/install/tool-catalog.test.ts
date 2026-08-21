@@ -44,6 +44,9 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       const names = result.tools.map((t) => t.name).sort();
       const expected = captainSkillTools(CATALOG_TOOLS).map((t) => t.name).sort();
       expect(names).toEqual(expected);
+      expect(CATALOG_TOOLS).toHaveLength(20);
+      expect(names).toHaveLength(19);
+      expect(names).toContain('list_models');
       expect(names).not.toContain('send_message');
 
       const propertiesFor = (name: string): Record<string, unknown> => {
@@ -156,6 +159,13 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
     expect(toolsIndex.checkCaptainInboxToolHandler).toBeDefined();
     expect(toolsIndex.acknowledgeMessagesInputSchema).toBeDefined();
     expect(toolsIndex.acknowledgeMessagesToolHandler).toBeDefined();
+  });
+
+  it('declares model discovery in both the catalog and tools/index barrel', () => {
+    const entry = CATALOG_TOOLS.find((tool) => tool.name === 'list_models');
+    expect(entry?.mode).not.toBe('worker');
+    expect(toolsIndex.listModelsInputSchema).toBeDefined();
+    expect(toolsIndex.listModelsToolHandler).toBeDefined();
   });
 
   it('uses the on-demand get_run_status description from the tool source', () => {

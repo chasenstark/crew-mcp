@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { TaskFailure } from '../../adapters/types.js';
+import type { ModelSelectionRecord, TaskFailure } from '../../adapters/types.js';
 
 export const PANEL_SCHEMA_VERSION = 1 as const;
 
@@ -10,6 +10,7 @@ export interface PanelReviewerTerminalSnapshot {
   readonly filesChanged: readonly string[];
   readonly completedAt?: string;
   readonly failure?: TaskFailure;
+  readonly modelSelection?: ModelSelectionRecord;
 }
 
 export interface PanelReviewerDispatchedRecord {
@@ -18,6 +19,7 @@ export interface PanelReviewerDispatchedRecord {
   readonly dispatched: true;
   readonly dispatchedAt: string;
   readonly dispatchWarnings: readonly string[];
+  readonly modelSelection?: ModelSelectionRecord;
   readonly terminalSnapshot?: PanelReviewerTerminalSnapshot;
 }
 
@@ -27,6 +29,7 @@ export interface PanelReviewerFailedRecord {
   readonly dispatched: false;
   readonly error: string;
   readonly dispatchWarnings: readonly string[];
+  readonly requestedModel?: string;
 }
 
 export interface PanelReviewerPendingRecord {
@@ -35,6 +38,7 @@ export interface PanelReviewerPendingRecord {
   readonly dispatched: false;
   readonly pending: true;
   readonly dispatchWarnings: readonly string[];
+  readonly requestedModel?: string;
 }
 
 export type PanelReviewerRecord =
@@ -64,18 +68,30 @@ const taskFailureSchema = z.object({
   recommendation: z.enum(['reroute', 'backoff', 'downgrade', 'ask_user']).optional(),
 }).strict() satisfies z.ZodType<TaskFailure>;
 
+const modelSelectionRecordSchema = z.object({
+  source: z.enum(['per_call', 'agent_default', 'inherited', 'cli_default']),
+  requestedModel: z.string().optional(),
+  modelArgument: z.string().optional(),
+  displayName: z.string().optional(),
+  validation: z.enum(['catalog', 'syntax', 'configured', 'cli_default']),
+  inheritedFromTurn: z.number().int().positive().optional(),
+  observedModel: z.string().optional(),
+}).strict() satisfies z.ZodType<ModelSelectionRecord>;
+
 const dispatchedReviewerSchema = z.object({
   runId: z.string().min(1),
   agentId: z.string().min(1),
   dispatched: z.literal(true),
   dispatchedAt: z.string().min(1),
   dispatchWarnings: z.array(z.string()),
+  modelSelection: modelSelectionRecordSchema.optional(),
   terminalSnapshot: z.object({
     status: z.enum(['success', 'partial', 'error', 'cancelled', 'merged', 'merge_conflict', 'discarded']),
     summary: z.string().optional(),
     filesChanged: z.array(z.string()),
     completedAt: z.string().min(1).optional(),
     failure: taskFailureSchema.optional(),
+    modelSelection: modelSelectionRecordSchema.optional(),
   }).strict().optional(),
 }).strict();
 
@@ -86,6 +102,7 @@ const failedReviewerSchema = z.object({
   pending: z.literal(false).optional(),
   error: z.string(),
   dispatchWarnings: z.array(z.string()),
+  requestedModel: z.string().optional(),
 }).strict();
 
 const pendingReviewerSchema = z.object({
@@ -94,6 +111,7 @@ const pendingReviewerSchema = z.object({
   dispatched: z.literal(false),
   pending: z.literal(true),
   dispatchWarnings: z.array(z.string()),
+  requestedModel: z.string().optional(),
 }).strict();
 
 export const panelReviewerRecordSchema = z.union([

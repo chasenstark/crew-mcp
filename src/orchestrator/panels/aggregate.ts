@@ -1,4 +1,6 @@
 import type { RunStateV1 } from '../run-state.js';
+import { latestModelSelection } from '../../adapters/model-selection.js';
+import type { ModelSelectionRecord } from '../../adapters/types.js';
 import {
   peerMessageInputSchema,
   type PeerMessageInput,
@@ -37,7 +39,10 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
         return peerMessageInputSchema.parse({
           body: `(reviewer state unavailable: ${reason})`,
           kind: 'review',
-          from_label: sanitizeFromLabel(reviewer.agentId, 'state lost'),
+          from_label: sanitizeFromLabel(
+            reviewerLabel(reviewer.agentId, reviewer.modelSelection),
+            'state lost',
+          ),
         });
       }
       const summary = isPanelReviewerTerminalSnapshot(state)
@@ -50,6 +55,9 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
       });
       const status = state.status;
       const agentId = isPanelReviewerTerminalSnapshot(state) ? reviewer.agentId : state.agentId;
+      const modelSelection = isPanelReviewerTerminalSnapshot(state)
+        ? state.modelSelection ?? reviewer.modelSelection
+        : latestModelSelection(state.prompts) ?? reviewer.modelSelection;
       const baseBody = summary && summary.length > 0
         ? summary
         : `(no summary; status=${status})`;
@@ -58,7 +66,7 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
         body: failureLine ? `${baseBody}\n\n${failureLine}` : baseBody,
         kind: 'review',
         from_label: sanitizeFromLabel(
-          agentId,
+          reviewerLabel(agentId, modelSelection),
           status === 'success' ? 'review' : `review, status=${status}`,
         ),
         ...(safeFiles.length > 0 ? { files: safeFiles } : {}),
@@ -67,9 +75,26 @@ export function aggregatePanel(args: AggregatePanelArgs): PeerMessageInput[] {
     ...failed.map((reviewer) => peerMessageInputSchema.parse({
       body: `(reviewer dispatch failed: ${reviewer.error})`,
       kind: 'review',
-      from_label: sanitizeFromLabel(reviewer.agentId, 'dispatch failed'),
+      from_label: sanitizeFromLabel(
+        reviewer.requestedModel
+          ? `${reviewer.agentId} / ${reviewer.requestedModel}`
+          : reviewer.agentId,
+        'dispatch failed',
+      ),
     })),
   ];
+}
+
+function reviewerLabel(
+  agentId: string,
+  selection: ModelSelectionRecord | undefined,
+): string {
+  if (selection === undefined) return agentId;
+  const label = selection.observedModel
+    ?? selection.displayName
+    ?? selection.modelArgument
+    ?? 'CLI default';
+  return `${agentId} / ${label}`;
 }
 
 function isPanelReviewerTerminalSnapshot(

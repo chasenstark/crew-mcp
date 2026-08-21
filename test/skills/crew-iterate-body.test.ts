@@ -417,6 +417,27 @@ describe('crew-iterate body — Step 0.5 agent picks', () => {
     expect(step).toContain('3 distinct-model reviewers');
   });
 
+  it('uses provider-native model discovery and exact-or-refuse pins', async () => {
+    const body = await loadBody();
+    const step = sliceBetween(
+      body,
+      '### Step 0.5 — Confirm agent picks',
+      '### Step 1 — Dispatch implementer',
+    );
+
+    for (const anchor of [
+      'model_selection_support',
+      'list_models({agent_id})',
+      'Never normalize, substitute, or retry',
+      'provider CLI default',
+      'inherits its prior turn',
+      'model_argument',
+      'observed_model',
+    ]) {
+      expectContainsCI(step, anchor);
+    }
+  });
+
   it('decides docs-only coverage before confirmation and reconfirms later roster changes', async () => {
     const body = await loadBody();
     const step05 = sliceBetween(body, '### Step 0.5 — Confirm agent picks', '### Step 1 — Dispatch implementer');

@@ -4,12 +4,12 @@ import type {
   CaptainCapabilities,
   EffortLevel,
   HealthCheckResult,
+  ModelSelectionSupport,
   ReviewDispatchMode,
 } from './types.js';
 import type { AgentConfig } from '../workflow/types.js';
 import { AdapterId } from '../workflow/agents.js';
 import { BUILTIN_AGENT_ROUTING } from './strengths.js';
-import { AGY_MODEL_LABEL_SET } from './agy-models.js';
 import { isLoopbackApiBase, resolveOpenAiApiBase } from './unmetered.js';
 
 export interface RegistryHealthReport {
@@ -43,7 +43,7 @@ interface LazyAdapterMetadata {
   readonly captainCapabilities?: CaptainCapabilities;
   readonly streamsIncrementally?: boolean;
   readonly supportsResume?: boolean;
-  readonly recognizesModel?: (modelId: string) => boolean;
+  readonly modelSelectionSupport: ModelSelectionSupport;
   readonly hasGetCliVersionTag?: boolean;
 }
 
@@ -76,10 +76,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     captainCapabilities: GENERIC_CAPABILITIES,
     streamsIncrementally: true,
     supportsResume: true,
-    recognizesModel: (modelId) =>
-      typeof modelId === 'string'
-      && (/^claude-/.test(modelId)
-        || modelId === 'sonnet' || modelId === 'opus' || modelId === 'haiku'),
+    modelSelectionSupport: 'provider-validated',
     hasGetCliVersionTag: true,
   },
   [AdapterId.CODEX]: {
@@ -94,9 +91,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     captainCapabilities: GENERIC_CAPABILITIES,
     streamsIncrementally: true,
     supportsResume: true,
-    recognizesModel: (modelId) =>
-      typeof modelId === 'string'
-      && (/^(gpt-|o\d)/.test(modelId) || modelId.includes('/')),
+    modelSelectionSupport: 'provider-validated',
     hasGetCliVersionTag: true,
   },
   [AdapterId.AGY]: {
@@ -121,10 +116,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     // capabilities.
     captainCapabilities: GENERIC_CAPABILITIES,
     supportsResume: true,
-    // EXACT-label match against the pinned agy label set, never a substring —
-    // agy labels contain "Claude…"/"GPT-OSS…" which a loose test would claim.
-    recognizesModel: (modelId) =>
-      typeof modelId === 'string' && AGY_MODEL_LABEL_SET.has(modelId),
+    modelSelectionSupport: 'catalog-and-provider-id',
     hasGetCliVersionTag: true,
   },
 };
@@ -303,13 +295,32 @@ function createLazyAdapterProxy(
     captainCapabilities: metadata.captainCapabilities,
     streamsIncrementally: metadata.streamsIncrementally,
     supportsResume: metadata.supportsResume,
+    modelSelectionSupport: metadata.modelSelectionSupport,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),
+    listModels: async (options) => {
+      const adapter = await load();
+      return adapter.listModels?.(options) ?? {
+        support: 'unsupported',
+        models: [],
+        source: 'configured',
+        authoritative: true,
+        checkedAt: new Date().toISOString(),
+        warnings: [`Agent "${metadata.name}" does not support explicit model selection.`],
+      };
+    },
+    resolveModel: async (requested, options) => {
+      const adapter = await load();
+      if (!adapter.resolveModel) {
+        return {
+          ok: false,
+          code: 'model_selection.unsupported',
+          message: `Agent "${metadata.name}" does not support explicit model selection.`,
+        };
+      }
+      return adapter.resolveModel(requested, options);
+    },
   };
-
-  if (metadata.recognizesModel) {
-    proxy.recognizesModel = metadata.recognizesModel;
-  }
   if (metadata.hasGetCliVersionTag) {
     proxy.getCliVersionTag = async () => {
       const adapter = await load();
@@ -362,6 +373,7 @@ function registerGenericAdapter(
       useWhen,
       supportsJsonSchema: false,
       enforcesReadOnly: false,
+      modelSelectionSupport: 'unsupported',
       unmetered: true,
       captainCapabilities: GENERIC_CAPABILITIES,
     },
@@ -394,6 +406,7 @@ function registerOpenAiCompatibleAdapter(
       useWhen,
       supportsJsonSchema: false,
       enforcesReadOnly: false,
+      modelSelectionSupport: 'catalog',
       unmetered,
       captainCapabilities: GENERIC_CAPABILITIES,
     },
