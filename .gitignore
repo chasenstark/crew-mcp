@@ -2,8 +2,21 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Internal planning/architecture artifacts (keep local, not published)
-docs/
+# Public documentation is tracked; planning and status records stay local.
+docs/*
+!docs/README.md
+!docs/guides/
+!docs/guides/**
+!docs/assets/
+!docs/assets/**
+!docs/architecture/
+docs/architecture/*
+!docs/architecture/README.md
+!docs/architecture/tools.md
+!docs/architecture/adapters.md
+!docs/architecture/captain-portability.md
+!docs/architecture/config-registry.md
+!docs/architecture/run-state-contract.md
 
 # scripts
 scripts/*
@@ -13,6 +26,8 @@ scripts/*
 !scripts/tail-handler/**
 !scripts/empirical-gates/
 !scripts/empirical-gates/**
+!scripts/diagrams/
+!scripts/diagrams/**
 scripts/tail-handler/build/
 scripts/tail-handler/*.app/
 

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="228" viewBox="0 0 980 228" role="img">
+  <defs>
+  <style>
+    svg { --ink:#1f2328; --muted:#59636e; --line:#c9d1d9; --surface:#f6f8fa;
+          --card:#ffffff; --cardline:#d1d9e0;
+          --accent:#0969da; --accentink:#ffffff;
+          --ok:#1a7f37; --okbg:#dafbe1; --warn:#9a6700; }
+    @media (prefers-color-scheme: dark) {
+      svg { --ink:#e6edf3; --muted:#9198a1; --line:#444c56; --surface:#151b23;
+            --card:#0d1117; --cardline:#3d444d;
+            --accent:#4493f8; --accentink:#0d1117;
+            --ok:#3fb950; --okbg:#12261e; --warn:#d29922; }
+    }
+    text { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+    .m { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; }
+    .hd  { font-size:10px; letter-spacing:1.3px; fill:var(--muted); font-weight:600; }
+    .lbl { font-size:13.5px; fill:var(--ink); }
+    .lblb{ font-size:13.5px; fill:var(--ink); font-weight:600; }
+    .sub { font-size:11px; fill:var(--muted); }
+    .cap { font-size:11.5px; fill:var(--muted); }
+    .edge{ fill:none; stroke:var(--line); stroke-width:1.5; stroke-linecap:round; }
+    .box { fill:var(--surface); stroke:var(--line); stroke-width:1; }
+    .dash{ fill:none; stroke:var(--line); stroke-width:1; stroke-dasharray:4 4; }
+  </style>
+  <marker id="ar" viewBox="0 0 10 8" refX="10" refY="4" markerWidth="9" markerHeight="7.2"
+          markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+    <path d="M0 0 L10 4 L0 8 Z" fill="var(--line)"/>
+  </marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="979" height="227" rx="14" fill="var(--card)" stroke="var(--cardline)"/>
+  <title>crew-iterate: request to criteria you confirm, then implement and review until every criterion passes.</title>
+  <rect class="box" x="31" y="44" width="110" height="56" rx="10"/>
+  <text class="lbl" x="86" y="77" text-anchor="middle">your request</text>
+  <rect class="box" x="165" y="44" width="130" height="56" rx="10"/>
+  <text class="lbl" x="230" y="77" text-anchor="middle">acceptance criteria</text>
+  <rect x="319" y="44" width="110" height="56" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="374" y="77" text-anchor="middle" font-size="13.5" font-weight="600" fill="var(--accent)">you confirm</text>
+  <rect class="box" x="453" y="44" width="120" height="56" rx="10"/>
+  <text class="lbl" x="513" y="77" text-anchor="middle">implement</text>
+  <rect class="box" x="597" y="44" width="130" height="56" rx="10"/>
+  <text class="lbl" x="662" y="77" text-anchor="middle">independent review</text>
+  <rect x="799" y="44" width="150" height="56" rx="10" fill="var(--okbg)" stroke="var(--ok)" stroke-width="1.5"/>
+  <text x="874" y="71" text-anchor="middle" font-size="13" font-weight="600" fill="var(--ok)">merge decision</text>
+  <text class="sub" x="874" y="87" text-anchor="middle">squash by default</text>
+  <path class="edge" d="M141 72 H165" marker-end="url(#ar)"/>
+  <path class="edge" d="M295 72 H319" marker-end="url(#ar)"/>
+  <path class="edge" d="M429 72 H453" marker-end="url(#ar)"/>
+  <path class="edge" d="M573 72 H597" marker-end="url(#ar)"/>
+  <path class="edge" d="M727 72 H799" marker-end="url(#ar)"/>
+  <rect x="732" y="62" width="62" height="20" rx="10" fill="var(--card)" stroke="var(--ok)"/>
+  <text x="763" y="76" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--ok)" letter-spacing="0.5">all PASS</text>
+  <path class="edge" d="M662 100 V156 Q662 168 650 168 H525 Q513 168 513 156 V104" marker-end="url(#ar)"/>
+  <rect x="561" y="158" width="52" height="20" rx="10" fill="var(--card)" stroke="var(--warn)"/>
+  <text x="587" y="172" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--warn)" letter-spacing="0.6">FAIL</text>
+  <text class="cap" x="587" y="200" text-anchor="middle">every criterion scored PASS / FAIL — findings fold back through <tspan class="m">continue_run</tspan></text>
+  <text class="hd" x="31" y="28">SET THE CONTRACT</text>
+  <text class="hd" x="453" y="28">RUN THE LOOP</text>
+  <text class="hd" x="874" y="28" text-anchor="middle">YOUR CALL</text>
+</svg>

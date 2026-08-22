@@ -1,11 +1,66 @@
-> **Current as of 2026-07-05.**
+> **Current as of 2026-08-22.**
 
 # Repository Guidelines
 
 ## General Practices
 There are no production users, so we do not have to worry about being backward compatible.
 
+## Documentation Layout
+`docs/` is split between published documentation (tracked in git, rendered on
+GitHub) and local working records (present on disk, gitignored). `.gitignore`
+uses `docs/*` plus an explicit allowlist, so **a new public doc stays invisible
+to git until you add its allowlist entry.**
+
+Tracked and published:
+- `docs/README.md` — documentation home
+- `docs/guides/**` — installation, agents-and-models, configuration,
+  operations-and-troubleshooting
+- `docs/architecture/` — `README.md`, `tools.md`, `adapters.md`,
+  `captain-portability.md`, `config-registry.md`, `run-state-contract.md`
+  (allowlisted file by file, not as a directory)
+- `docs/assets/**` — README diagrams
+
+Local only, never committed:
+- `docs/plans/**`, `docs/status/**`, `docs/proposals/**`, `docs/release/**`,
+  `docs/architecture/v0.1-archive/**`, and loose notes at the `docs/` root
+
+When you add a public doc, add the matching `!docs/...` line to `.gitignore` in
+the same change and confirm with `git status --short docs`. Adding a working
+record needs no `.gitignore` change.
+
+Two consequences worth internalizing:
+- A crew run's git worktree contains only the tracked paths, so plans and status
+  files are absent there. Stage them into the worktree or pass their content
+  inline, and tell reviewers to read them on disk rather than from `git diff`.
+- Deliverables written to the ignored paths never show in a diff and never land
+  via `merge_run`. Apply those in the main tree yourself after the merge.
+
+### README diagrams
+`README.md` embeds three diagrams. The SVGs under `docs/assets/` are the
+editable source; the committed PNGs beside them are what the README actually
+references, through a `<picture>` block that swaps a `-dark.png` variant under
+`prefers-color-scheme: dark`.
+
+Do not point the README at an SVG, and do not convert the diagrams to mermaid
+code fences. Both are broken by how READMEs are rendered:
+- **SVG cannot be hotlinked.** `raw.githubusercontent.com` serves SVG with
+  `content-security-policy: default-src 'none'; sandbox`, so the browser refuses
+  to paint it in an `<img>`. Hosting it elsewhere does not help — GitHub's page
+  CSP only allows `*.githubusercontent.com`, so any other origin is camo-proxied,
+  and camo rejects `image/svg+xml`. PNG from `raw.*` is unaffected.
+- **Mermaid breaks the npm page.** npmjs.com renders package READMEs through
+  GitHub's Markdown *API*, which returns a mermaid fence as highlighted source
+  rather than a diagram. `<picture>` survives that same API intact, so npm shows
+  the light PNG and GitHub does the dark swap.
+
+To change a diagram: edit the SVG, run `node scripts/diagrams/render.mjs` (needs
+Chrome; regenerates every diagram's light and dark PNG at 2x), and commit the
+SVG and both PNG variants together. Because the README URLs are absolute and
+pinned to `main`, new or renamed assets 404 until they are pushed.
+
 ## Status Baseline Maintenance
+- `docs/status/` is local only (see **Documentation Layout**); this baseline
+  lives on your machine, not in git.
 - Keep `docs/status/captain-flow-review-2026-04-29.md` current as the durable
   baseline for captain-flow state, responsiveness work, smoke evidence, and
   next priorities.
@@ -33,7 +88,8 @@ There are no production users, so we do not have to worry about being backward c
   remain greppable.
 - Do not delete plans that are completed, parked, or superseded — the
   trail is part of the project's institutional memory. Move and
-  annotate; never remove.
+  annotate; never remove. `docs/plans/` is gitignored (see **Documentation
+  Layout**), so that trail is local only and git will not restore it.
 - If a plan is partially executed and the rest is deferred, leave it in
   `active/` (or move to `parked/` with a trigger note) and document
   what shipped + what remains in a dated update at the top.
@@ -170,6 +226,8 @@ explicitly when the envelope or workflow shifts.
 ## Configuration & Safety Notes
 - Config/state lives under `.crew/` (project-local) and `~/.crew/` (global).
 - Do not commit local runtime artifacts or machine-specific state.
+- `docs/` is partly tracked and partly local; see **Documentation Layout**
+  before adding or moving anything under it.
 - This project uses CLI-based auth for providers; avoid introducing API-key-only workflows unless discussed first.
 
 ## Architecture References
@@ -183,5 +241,5 @@ explicitly when the envelope or workflow shifts.
   `docs/architecture/captain-portability.md`
 - Workflow config path registry contract:
   `docs/architecture/config-registry.md`
-- Historical v0.1 runner/session context:
+- Historical v0.1 runner/session context (local only, not tracked):
   `docs/architecture/v0.1-archive/`
