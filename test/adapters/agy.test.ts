@@ -51,11 +51,44 @@ function mockOnce(stdout: string, exitCode = 0, stderr = ''): void {
 
 describe('AgyAdapter', () => {
   let adapter: InstanceType<typeof AgyAdapter>;
+  let homeDir: string;
+  let priorHome: string | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     adapter = new AgyAdapter();
     vi.clearAllMocks();
+    homeDir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'agy-home-'));
+    priorHome = process.env.HOME;
+    process.env.HOME = homeDir;
   });
+
+  afterEach(async () => {
+    if (priorHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = priorHome;
+    }
+    await fsp.rm(homeDir, { recursive: true, force: true });
+  });
+
+  async function writeTranscript(conversationId: string, lines: unknown[]): Promise<void> {
+    const transcriptPath = nodePath.join(
+      homeDir,
+      '.gemini',
+      'antigravity-cli',
+      'brain',
+      conversationId,
+      '.system_generated',
+      'logs',
+      'transcript_full.jsonl',
+    );
+    await fsp.mkdir(nodePath.dirname(transcriptPath), { recursive: true });
+    await fsp.writeFile(
+      transcriptPath,
+      `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`,
+      'utf-8',
+    );
+  }
 
   describe('capability flags', () => {
     it('refuses in-place read-only, requires a crew worktree, no OS sandbox', () => {
@@ -581,6 +614,260 @@ describe('AgyAdapter', () => {
   });
 
   describe('process failures', () => {
+    it('recovers a final review from transcript after a malformed tool call poisons the envelope', async () => {
+      const conversationId = 'f8b38690-fef7-4447-87e1-1bdd516891e1';
+      await writeTranscript(conversationId, [
+        {
+          step_index: 11,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          tool_calls: [{
+            name: 'find_by_name',
+            args: {
+              Extensions: ['md'],
+              SearchDirectory: '/crew/wt',
+              toolAction: 'Finding markdown files',
+              toolSummary: 'Find md files',
+            },
+          }],
+        },
+        {
+          step_index: 13,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          tool_calls: [{
+            name: 'find_by_name',
+            args: {
+              Pattern: '*.md',
+              SearchDirectory: '/crew/wt',
+              toolAction: 'Finding markdown files',
+              toolSummary: 'Find md files',
+            },
+          }],
+        },
+        {
+          step_index: 15,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: 'Recovered final review',
+        },
+      ]);
+      mockOnce(JSON.stringify({
+        conversation_id: conversationId,
+        status: 'ERROR',
+        response: '',
+        error: "invalid arguments:\n- missing property 'Pattern'",
+      }), 1);
+
+      const result = await adapter.execute({
+        prompt: 'review',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { reviewIntent: true, sandbox: 'workspace-write' },
+      });
+
+      expect(result.status).toBe('partial');
+      expect(result.output).toContain('Recovered final review');
+      expect(result.output).toContain('step 11 called find_by_name without required Pattern');
+      expect(result.output).toContain('step 13 retried with Pattern');
+      expect(result.sessionId).toBe(conversationId);
+      expect(result.failure).toMatchObject({
+        kind: 'unknown',
+        providerCode: 'tool_schema_error',
+      });
+    });
+
+    it('recovers a final review from transcript after a non-schema tool error poisons the envelope', async () => {
+      const conversationId = '8d902ef9-734b-47c2-bb17-64c868a52aa6';
+      await writeTranscript(conversationId, [
+        {
+          step_index: 5,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          tool_calls: [{
+            name: 'list_dir',
+            args: {
+              DirectoryPath: '/crew/wt/docs',
+              toolAction: 'Listing docs directory',
+              toolSummary: 'List docs dir',
+            },
+          }],
+        },
+        {
+          step_index: 16,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: 'Recovered final review after directory error',
+        },
+      ]);
+      mockOnce(JSON.stringify({
+        conversation_id: conversationId,
+        status: 'ERROR',
+        response: '',
+        error: 'directory /crew/wt/docs does not exist',
+      }), 1);
+
+      const result = await adapter.execute({
+        prompt: 'review',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { reviewIntent: true, sandbox: 'workspace-write' },
+      });
+
+      expect(result.status).toBe('partial');
+      expect(result.output).toContain('Recovered final review after directory error');
+      expect(result.output).toContain('step 5 (list_dir) ran before a later final response');
+      expect(result.output).toContain('directory /crew/wt/docs does not exist');
+      expect(result.sessionId).toBe(conversationId);
+      expect(result.failure).toMatchObject({
+        kind: 'unknown',
+        providerCode: 'provider_tool_error_recovered',
+      });
+    });
+
+    it('does not recover a stale final response from an earlier user turn on resume', async () => {
+      const conversationId = 'resume-boundary-check';
+      await writeTranscript(conversationId, [
+        {
+          step_index: 0,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          content: 'first turn',
+        },
+        {
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: 'Old final review from previous turn',
+        },
+        {
+          step_index: 2,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          content: 'resumed turn',
+        },
+        {
+          step_index: 3,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          tool_calls: [{
+            name: 'list_dir',
+            args: {
+              DirectoryPath: '/crew/wt/docs',
+              toolAction: 'Listing docs directory',
+              toolSummary: 'List docs dir',
+            },
+          }],
+        },
+      ]);
+      mockOnce(JSON.stringify({
+        conversation_id: conversationId,
+        status: 'ERROR',
+        response: '',
+        error: 'directory /crew/wt/docs does not exist',
+      }), 1);
+
+      const result = await adapter.execute({
+        prompt: 'review',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { reviewIntent: true, sandbox: 'workspace-write' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('directory /crew/wt/docs does not exist');
+      expect(result.output).not.toContain('Old final review from previous turn');
+      expect(result.failure?.providerCode).not.toBe('provider_tool_error_recovered');
+    });
+
+    it('does not recover tool-result content when there is no final planner response', async () => {
+      const conversationId = 'generic-tool-output-only';
+      await writeTranscript(conversationId, [
+        {
+          step_index: 0,
+          source: 'USER_EXPLICIT',
+          type: 'USER_INPUT',
+          status: 'DONE',
+          content: 'turn',
+        },
+        {
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          tool_calls: [{
+            name: 'find_by_name',
+            args: {
+              Pattern: '*.md',
+              SearchDirectory: '/crew/wt',
+              toolAction: 'Finding markdown files',
+              toolSummary: 'Find md files',
+            },
+          }],
+        },
+        {
+          step_index: 2,
+          source: 'MODEL',
+          type: 'GENERIC',
+          status: 'DONE',
+          content: 'Found 9 results',
+        },
+      ]);
+      mockOnce(JSON.stringify({
+        conversation_id: conversationId,
+        status: 'ERROR',
+        response: '',
+        error: 'directory /crew/wt/docs does not exist',
+      }), 1);
+
+      const result = await adapter.execute({
+        prompt: 'review',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { reviewIntent: true, sandbox: 'workspace-write' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('directory /crew/wt/docs does not exist');
+      expect(result.output).not.toContain('Found 9 results');
+      expect(result.failure?.providerCode).not.toBe('provider_tool_error_recovered');
+    });
+
+    it('does not use an unsafe conversation id as a transcript path segment', async () => {
+      const conversationId = '../outside-brain';
+      await writeTranscript(conversationId, [
+        {
+          step_index: 1,
+          source: 'MODEL',
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          content: 'Response from an unsafe transcript path',
+        },
+      ]);
+      mockOnce(JSON.stringify({
+        conversation_id: conversationId,
+        status: 'ERROR',
+        response: '',
+        error: 'directory /crew/wt/docs does not exist',
+      }), 1);
+
+      const result = await adapter.execute({
+        prompt: 'review',
+        context: { workingDirectory: '/crew/wt' },
+        constraints: { reviewIntent: true, sandbox: 'workspace-write' },
+      });
+
+      expect(result.status).toBe('error');
+      expect(result.output).toContain('directory /crew/wt/docs does not exist');
+      expect(result.output).not.toContain('Response from an unsafe transcript path');
+      expect(result.failure?.providerCode).not.toBe('provider_tool_error_recovered');
+    });
+
     it('returns a structured error when the process throws', async () => {
       mockExeca.mockRejectedValueOnce(new Error('spawn agy ENOENT'));
       const result = await adapter.execute({

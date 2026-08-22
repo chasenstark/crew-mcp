@@ -12,7 +12,7 @@ import {
   processGroupSpawnOptions,
   terminateProcessGroupOnAbort,
 } from './process-group.js';
-import { classifyTextFailure } from './failure-classifier.js';
+import { buildTaskFailure, classifyTextFailure } from './failure-classifier.js';
 import { boundFailureText } from './failure-output.js';
 import { discoverAgyModels } from './agy-models.js';
 import { findCatalogModel, ModelCatalogCache } from './model-selection.js';
@@ -152,6 +152,180 @@ function renderProcessFailureOutput(stdout: string, stderr: string, message: str
 function isMaxBufferError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.name === 'MaxBufferError' || /maxBuffer|buffer/i.test(error.message);
+}
+
+function extractMissingPropertyName(signal: string): string | undefined {
+  const match = signal.match(/missing property ['"]?([A-Za-z0-9_]+)['"]?/i);
+  return match?.[1];
+}
+
+function looksLikeRecoverableAgyToolError(signal: string): boolean {
+  return /\binvalid arguments\b/i.test(signal)
+    || /\bmissing property\b/i.test(signal)
+    || /\bdoes not exist\b/i.test(signal)
+    || /\bno such file\b/i.test(signal)
+    || /\bnot found\b/i.test(signal);
+}
+
+interface AgyTranscriptRecovery {
+  readonly recoveredOutput?: string;
+  readonly diagnosticNote?: string;
+  readonly transcriptPath?: string;
+  readonly providerCode: 'tool_schema_error' | 'provider_tool_error_recovered';
+}
+
+function isTranscriptFinalAssistantResponse(
+  parsed: Record<string, unknown>,
+): parsed is Record<string, unknown> & { content: string; step_index: number } {
+  if (parsed.source !== 'MODEL') return false;
+  if (parsed.type !== 'PLANNER_RESPONSE') return false;
+  if (typeof parsed.content !== 'string' || parsed.content.trim().length === 0) return false;
+  if ('tool_calls' in parsed && Array.isArray(parsed.tool_calls) && parsed.tool_calls.length > 0) {
+    return false;
+  }
+  return typeof parsed.step_index === 'number';
+}
+
+async function recoverAgyTranscriptOutcome(
+  conversationId: string,
+  failureText: string,
+): Promise<AgyTranscriptRecovery | null> {
+  if (!looksLikeRecoverableAgyToolError(failureText)) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(conversationId)) return null;
+
+  const missingProperty = extractMissingPropertyName(failureText);
+  const homeDir = process.env.HOME;
+  if (!homeDir) return null;
+
+  const transcriptPath = path.join(
+    homeDir,
+    '.gemini',
+    'antigravity-cli',
+    'brain',
+    conversationId,
+    '.system_generated',
+    'logs',
+    'transcript_full.jsonl',
+  );
+
+  let rawTranscript: string;
+  try {
+    rawTranscript = await fs.readFile(transcriptPath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  let malformedCall:
+    | { stepIndex: number; name: string; argKeys: readonly string[] }
+    | undefined;
+  let lastToolCallBeforeFinal:
+    | { stepIndex: number; name: string }
+    | undefined;
+  let correctedStep:
+    | { stepIndex: number; name: string }
+    | undefined;
+  let finalResponse:
+    | { stepIndex: number; content: string }
+    | undefined;
+
+  for (const line of rawTranscript.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let parsed: Record<string, unknown>;
+    try {
+      const candidate = JSON.parse(trimmed) as unknown;
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+      parsed = candidate as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (parsed.source === 'USER_EXPLICIT' && parsed.type === 'USER_INPUT') {
+      malformedCall = undefined;
+      lastToolCallBeforeFinal = undefined;
+      correctedStep = undefined;
+      finalResponse = undefined;
+      continue;
+    }
+
+    if (isTranscriptFinalAssistantResponse(parsed)) {
+      finalResponse = {
+        stepIndex: parsed.step_index,
+        content: parsed.content.trim(),
+      };
+      continue;
+    }
+
+    const source = parsed.source;
+    if (source !== 'MODEL') continue;
+    const stepIndex = typeof parsed.step_index === 'number' ? parsed.step_index : -1;
+
+    if (!Array.isArray(parsed.tool_calls)) continue;
+    for (const call of parsed.tool_calls) {
+      if (!call || typeof call !== 'object' || Array.isArray(call)) continue;
+      const toolCall = call as Record<string, unknown>;
+      const name = typeof toolCall.name === 'string' ? toolCall.name : undefined;
+      const args = toolCall.args;
+      if (!name || !args || typeof args !== 'object' || Array.isArray(args)) continue;
+      const argKeys = Object.keys(args as Record<string, unknown>);
+      lastToolCallBeforeFinal = { stepIndex, name };
+      if (missingProperty && !argKeys.includes(missingProperty)) {
+        malformedCall = { stepIndex, name, argKeys };
+        correctedStep = undefined;
+        continue;
+      }
+      if (
+        malformedCall
+        && correctedStep === undefined
+        && malformedCall.name === name
+        && stepIndex > malformedCall.stepIndex
+      ) {
+        correctedStep = { stepIndex, name };
+      }
+    }
+  }
+
+  if (!finalResponse) {
+    return null;
+  }
+
+  if (malformedCall && finalResponse.stepIndex <= malformedCall.stepIndex) {
+    return null;
+  }
+  if (lastToolCallBeforeFinal && finalResponse.stepIndex <= lastToolCallBeforeFinal.stepIndex) {
+    return null;
+  }
+
+  let diagnosticNote: string;
+  if (malformedCall && missingProperty) {
+    const argKeys = malformedCall.argKeys.join(', ');
+    const retryNote = correctedStep && correctedStep.stepIndex < finalResponse.stepIndex
+      ? ` step ${correctedStep.stepIndex} retried with ${missingProperty} and later produced a final response.`
+      : ' the transcript later produced a final response.';
+    diagnosticNote =
+      `agy transcript recovery: step ${malformedCall.stepIndex} called ${malformedCall.name} `
+      + `without required ${missingProperty}`
+      + `${argKeys.length > 0 ? ` (args: ${argKeys})` : ''};${retryNote}`;
+  } else if (lastToolCallBeforeFinal) {
+    diagnosticNote =
+      `agy transcript recovery: step ${lastToolCallBeforeFinal.stepIndex} `
+      + `(${lastToolCallBeforeFinal.name}) ran before a later final response, but the `
+      + `CLI still ended with: ${boundFailureText(failureText)}`;
+  } else {
+    diagnosticNote =
+      `agy transcript recovery: transcript produced a final response, but the CLI ended `
+      + `with: ${boundFailureText(failureText)}`;
+  }
+
+  return {
+    recoveredOutput: finalResponse.content,
+    diagnosticNote,
+    transcriptPath,
+    providerCode: malformedCall && missingProperty
+      ? 'tool_schema_error'
+      : 'provider_tool_error_recovered',
+  };
 }
 
 /**
@@ -576,6 +750,9 @@ export class AgyAdapter implements AgentAdapter {
     const stdoutText = result.stdout ?? '';
     const stderrText = result.stderr ?? '';
     const envelope = parseAgyEnvelope(stdoutText);
+    const conversationId = typeof envelope?.conversation_id === 'string'
+      ? envelope.conversation_id
+      : undefined;
 
     // Strict gate: success ONLY when the process exited 0 AND the envelope
     // parsed AND status==="SUCCESS" AND response is non-empty. Anything else is
@@ -594,18 +771,57 @@ export class AgyAdapter implements AgentAdapter {
         || [stdoutText, stderrText].filter(Boolean).join('\n')
         || `agy exited with code ${result.exitCode}`,
       );
+      const recovered = conversationId
+        ? await recoverAgyTranscriptOutcome(conversationId, failureText)
+        : null;
+      if (recovered?.recoveredOutput) {
+        const diagnosticSummary = recovered.diagnosticNote
+          ? `\n\nAdapter note: agy reported a stale tool-error envelope after emitting this final response. ${recovered.diagnosticNote}`
+          : '';
+        return {
+          output: `${recovered.recoveredOutput}${diagnosticSummary}`,
+          filesModified: [],
+          status: 'partial',
+          ...(conversationId ? { sessionId: conversationId } : {}),
+          failure: buildTaskFailure({
+            kind: 'unknown',
+            confidence: 'high',
+            providerCode: recovered.providerCode,
+            rawSignal: failureText,
+          }),
+          metadata: {
+            durationMs: typeof envelope?.duration_seconds === 'number'
+              ? Math.round(envelope.duration_seconds * 1000)
+              : undefined,
+            numTurns: typeof envelope?.num_turns === 'number' ? envelope.num_turns : undefined,
+            rawEvents: [
+              {
+                stdout: stdoutText,
+                stderr: stderrText,
+                recoveredFromTranscript: true,
+                transcriptPath: recovered.transcriptPath,
+                diagnostic: recovered.diagnosticNote,
+              },
+            ],
+          },
+        };
+      }
       return {
         output: failureText,
         filesModified: [],
         status: 'error',
+        ...(conversationId ? { sessionId: conversationId } : {}),
         failure: classifyTextFailure(failureText, { defaultKind: 'process' }),
-        metadata: { rawEvents: [{ stdout: stdoutText, stderr: stderrText }] },
+        metadata: {
+          rawEvents: [{
+            stdout: stdoutText,
+            stderr: stderrText,
+            ...(recovered?.transcriptPath ? { transcriptPath: recovered.transcriptPath } : {}),
+            ...(recovered?.diagnosticNote ? { diagnostic: recovered.diagnosticNote } : {}),
+          }],
+        },
       };
     }
-
-    const conversationId = typeof envelope.conversation_id === 'string'
-      ? envelope.conversation_id
-      : undefined;
 
     // Silent-reset guard: agy silently starts a FRESH conversation on an
     // unknown/stale id (exit 0 / SUCCESS, no error) — that would be silent
