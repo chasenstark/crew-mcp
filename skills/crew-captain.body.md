@@ -63,9 +63,14 @@ ban on self-directed work: the work still happens, it just runs in a native
 subagent, which the host tracks and which avoids the nested-session
 resource conflicts a same-product Crew dispatch can cause. Reach for Crew on
 the same product only when the user explicitly asks for same-product
-worktree isolation. For review panels, the host model is still a reviewer,
-but it reviews through a native subagent or inline fallback, not through
-`run_panel`.
+worktree isolation. Concurrent write work is the main carve-out: when two or
+more same-product implementers would otherwise share the host checkout, name
+the proposed scopes and ask once for that exact batch. After explicit approval,
+pass `same_host_ok:true` on every named `run_agent` call. That approval covers
+only those initial dispatches — new runs and later `continue_run` calls need
+their own approval. Never infer approval from the user's desire for parallelism.
+For review panels, the host model is still a reviewer, but it reviews through a
+native subagent or inline fallback, not through `run_panel`.
 
 ### Server override vocabulary
 
@@ -118,6 +123,46 @@ Most maybe-fits stay inline; clarify before a needless run.
    **Ask gate:** confirm via the Ask protocol. **Silence is not consent.**
 6. **Merge or discard only on instruction.** After explicit approval in the
    immediately preceding turn, follow the tool's typed `confirmed` remedy.
+
+## Concurrent implementers
+
+Use this protocol when two or more independent write tasks should progress at
+the same time and Crew worktree isolation is worth the merge cost. Do not fan
+out merely to make a sequential dependency look parallel.
+
+Before dispatch:
+
+1. Give every implementer a disjoint module or path scope with one writable
+   owner. Never assign the same writable file to two runs.
+2. Keep shared config, schemas, generated indexes, and central types read-only
+   for all but one named owner. If two scopes depend on the same shared edit,
+   sequence that prerequisite instead of racing it.
+3. For a same-host batch, apply the Own-host rule's named-batch approval before
+   using `same_host_ok:true`.
+
+Issue all independent `run_agent` calls in one captain turn so execution can
+overlap. Retain one ledger entry per run: scope, `run_id`, `worktree_path`, and
+the returned `ledger_line`. Print each `relay_verbatim` verbatim and apply the
+current host's terminal-notification path after every dispatch. N independent
+runs means N watchers; a panel-level watcher is only for `run_panel` reviewers.
+Do not use standalone `run_panel` as implementation fan-out even though
+write-mode reviewer entries can allocate worktrees: its one wait-for-all
+watcher, aggregation, and own-host refusal are review semantics, not a fleet
+landing workflow.
+
+Surface each terminal run independently. Before landing, compare sibling
+`filesChanged` sets and the live target. Prefer `squash` for fan-out runs; land
+the least-overlapping or dependency-shallow run first, then re-read every
+remaining sibling's status and changed-file set after each merge. Never assume
+a sibling is still conflict-free because it started from the same base.
+`preserve` conflicts can leave the host checkout mid-cherry-pick and freeze the
+whole fleet until the operation is resolved or aborted, so use `preserve` only
+when retaining a deliberate commit stack outweighs that risk.
+
+Commit host changes before merging; never stash them as merge preparation,
+because dispatch-time host changes may already exist in each run worktree.
+Dispatch approval is not merge approval. Ask separately before each run's
+`merge_run` or `discard_run`, and stop on any conflict per the Merge boundary.
 
 ## Merge boundary
 

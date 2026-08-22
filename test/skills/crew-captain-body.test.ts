@@ -160,6 +160,43 @@ describe('crew-captain body — dispatch lifecycle', () => {
   });
 });
 
+describe('crew-captain body — concurrent implementers', () => {
+  it('defines a complete isolated fan-out and landing protocol', async () => {
+    const body = await loadBody();
+    expect(body.match(/^## Concurrent implementers$/gm)).toHaveLength(1);
+    const section = sliceBetween(body, '## Concurrent implementers', '## Merge boundary');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'one writable owner');
+    expectContainsCI(flat, 'Never assign the same writable file to two runs');
+    expectContainsCI(flat, 'sequence that prerequisite instead of racing it');
+    expectContainsCI(flat, 'Issue all independent `run_agent` calls in one captain turn');
+    expectContainsCI(flat, '`ledger_line`');
+    expectContainsCI(flat, 'N independent runs means N watchers');
+    expectContainsCI(flat, 'Do not use standalone `run_panel` as implementation fan-out');
+    expectContainsCI(flat, 'least-overlapping or dependency-shallow run first');
+    expectContainsCI(flat, 're-read every remaining sibling');
+    expectContainsCI(flat, 'Prefer `squash` for fan-out runs');
+    expectContainsCI(flat, '`preserve` conflicts');
+    expectContainsCI(flat, 'freeze the whole fleet');
+    expectContainsCI(flat, 'never stash them as merge preparation');
+    expectContainsCI(flat, 'Dispatch approval is not merge approval');
+  });
+
+  it('scopes own-host approval to the named batch and never infers it', async () => {
+    const body = await loadBody();
+    const ownHost = sliceBetween(body, '### Own-host rule', '### Server override vocabulary');
+    const flat = flattenWhitespace(ownHost);
+
+    expectContainsCI(flat, 'Concurrent write work is the main carve-out');
+    expectContainsCI(flat, 'ask once for that exact batch');
+    expectContainsCI(flat, '`same_host_ok:true`');
+    expectContainsCI(flat, 'only those initial dispatches');
+    expectContainsCI(flat, 'new runs and later `continue_run` calls need their own approval');
+    expectContainsCI(flat, 'Never infer approval');
+  });
+});
+
 describe('crew-captain body — merge and cleanup', () => {
   it('uses commit metadata for merge strategy and keeps git log as old-run fallback', async () => {
     const body = await loadBody();

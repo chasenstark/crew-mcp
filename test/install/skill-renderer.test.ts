@@ -247,6 +247,7 @@ describe('host-conditional real skill bodies', () => {
   const SHARED_SENTINELS: Record<string, readonly string[]> = {
     crew: [
       '## Criteria display',
+      '## Concurrent implementers',
       '## Merge boundary',
       '### Pick the merge strategy',
       '## Review panels',
@@ -259,6 +260,7 @@ describe('host-conditional real skill bodies', () => {
     ],
     'crew:iterate': [
       '### Step 0 — Derive and confirm acceptance criteria',
+      'One iterate loop owns exactly one implementer run',
       '### Step 3 — Iterate or converge',
       '### Step 4 — Merge',
       '## Tools',

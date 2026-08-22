@@ -169,6 +169,13 @@ insists, retry `run_agent` / `continue_run` with `same_host_ok:true`;
 Claude Code and Codex client kinds, so an agy captain enforces the rule until
 agy has a `ClientKind`.
 
+One iterate loop owns exactly one implementer run. Its confirmed criteria set
+binds to that implementer; do not share the set across concurrent write runs or
+turn Step 1 into implementation fan-out. For several implementers, use the
+umbrella Crew skill's `## Concurrent implementers` protocol with separately
+scoped work, criteria, and merge decisions, or start an independent iterate
+loop for each implementer.
+
 **6. Never shell out to `crew-mcp`.** Use the MCP tool surface
 (`mcp__crew__*`). The MCP server is the authoritative interface;
 shelling out bypasses dispatch tracking, watcher registration, and

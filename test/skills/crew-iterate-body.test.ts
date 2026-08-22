@@ -121,6 +121,18 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     }
   });
 
+  it('keeps one criteria set bound to exactly one implementer run', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '**5. Own-host routing.**', '**6. Never shell out');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'One iterate loop owns exactly one implementer run');
+    expectContainsCI(flat, 'confirmed criteria set binds to that implementer');
+    expectContainsCI(flat, 'do not share the set across concurrent write runs');
+    expectContainsCI(flat, 'umbrella Crew skill');
+    expectContainsCI(flat, 'independent iterate loop for each implementer');
+  });
+
   it('does not carry the stale inline-default doctrine', async () => {
     // The host vote is a native subagent by default; inline is fallback
     // only. The old "Inline review is mandatory" guardrail must be gone.
