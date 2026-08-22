@@ -5942,6 +5942,42 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     }
   });
 
+  it('Codex 0.149+ propagates its thread through MCP request metadata', async () => {
+    const adapter = makeMockAdapter({ name: 'mock-fast' });
+    const requestThreadId = '01a02a12-5441-7ca3-b2b3-fa09c9c6b26d';
+    const h = await startHarness([adapter], {
+      clientName: 'codex-cli',
+      clientVersion: '0.149.0',
+      hostCodexBridge: false,
+      hostCodexThread: false,
+    });
+    try {
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-fast', prompt: 'go' },
+        _meta: {
+          threadId: requestThreadId,
+          'x-codex-turn-metadata': { thread_id: requestThreadId },
+        },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      const encodedGenerations = Buffer.from(JSON.stringify([1])).toString('base64url');
+      expect(env.required_next_action).toMatchObject({
+        type: 'spawn_watcher',
+        mechanism: 'codex_queue',
+        run_id: env.run_id,
+      });
+      expect(env.required_next_action?.command).toBe(
+        `${watcherPrefix(
+          `crew-wait --codex-queue-thread ${requestThreadId}`,
+          h.crewHome,
+        )} --run-generations-base64 ${encodedGenerations} ${env.run_id}`,
+      );
+    } finally {
+      await h.close();
+    }
+  });
+
   it('pre-queue standalone Codex falls back to next-turn recovery', async () => {
     const adapter = makeMockAdapter({ name: 'mock-fast' });
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);

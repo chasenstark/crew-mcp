@@ -248,7 +248,7 @@ export async function runAgentToolHandler(
   }
 
   const clientKind = deps.getClientKind();
-  const crewWaitCommand = deps.getCrewWaitCommand();
+  const crewWaitCommand = deps.getCrewWaitCommand(extra);
   const summary = `Dispatched as "${dispatchResult.runId}". ${nextStepSentence(
     clientKind,
     crewWaitCommand !== undefined,

@@ -369,7 +369,7 @@ export async function continueRunToolHandler(
         runStateStore: deps.runStateStore,
       }),
       clientKind: deps.getClientKind(),
-      crewWaitCommand: deps.getCrewWaitCommand(),
+      crewWaitCommand: deps.getCrewWaitCommand(extra),
       crewHome: deps.crewHome,
       projectRoot: deps.projectRoot,
       runMode,

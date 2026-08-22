@@ -234,7 +234,11 @@ export interface ProgressTokenSeen {
 }
 
 export type ToolRequestExtra = {
-  _meta?: { progressToken?: string | number };
+  _meta?: {
+    progressToken?: string | number;
+    threadId?: unknown;
+    'x-codex-turn-metadata'?: unknown;
+  };
   sendNotification: (n: {
     method: 'notifications/progress';
     params: { progressToken: string | number; progress: number; message?: string };
@@ -249,7 +253,7 @@ export interface ToolHandlerDeps {
   readonly crewHome: string;
   readonly projectRoot: string;
   readonly getClientKind: () => ClientKind;
-  readonly getCrewWaitCommand: () => string | undefined;
+  readonly getCrewWaitCommand: (extra?: ToolRequestExtra) => string | undefined;
   readonly progressTokenSeen: ProgressTokenSeen;
   readonly captainServeInstance?: string;
   readonly readAgentPrefs: () => AgentPrefsMap;

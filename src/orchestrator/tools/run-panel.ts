@@ -153,7 +153,7 @@ export async function runPanelToolHandler(
       onTerminalPersisted: deps.onTerminalPersisted,
       sameHostAgentId: agentIdForClientKind(clientKind),
       clientKind,
-      crewWaitCommand: deps.getCrewWaitCommand(),
+      crewWaitCommand: deps.getCrewWaitCommand(extra),
       quotaProbe: deps.quotaProbe,
       progress: progressNotifierFrom(extra, 'run_panel', deps.progressTokenSeen),
     });

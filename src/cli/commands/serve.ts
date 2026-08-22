@@ -195,6 +195,7 @@ import {
   encodeCodexBridgeFile,
   validateCodexThreadId,
 } from '../../codex/app-server-bridge.js';
+import { resolveCodexThreadIdFromRequestMeta } from '../../codex/request-metadata.js';
 import { readAgentPrefsFile } from '../../agent-prefs/store.js';
 import { manifestPath, readInstallManifest } from '../../install/install-manifest.js';
 import {
@@ -977,66 +978,75 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   let cachedCrewWaitCommand: string | undefined;
   let crewWaitCommandResolved = false;
   let loggedCrewWaitResolution = false;
-  const getCrewWaitCommand = (): string | undefined => {
-    if (crewWaitCommandResolved) return cachedCrewWaitCommand;
-    crewWaitCommandResolved = true;
+  let loggedCodexWakeUnavailable = false;
+  const getCrewWaitCommand = (extra?: ToolRequestExtra): string | undefined => {
     const clientKind = getClientKind();
-    const resolution = resolveCrewWaitCommandForClientKind({
-      clientKind,
-      projectRoot,
-      home: installManifestHome,
-      projectInstallActive,
-    });
-    if (!loggedCrewWaitResolution) {
-      loggedCrewWaitResolution = true;
-      if (resolution.source === 'invalid-project-manifest') {
-        logger.warn(
-          `crew-mcp serve: ${resolution.reason}; watcher auto-execution is disabled. `
-          + `Re-run \`crew-mcp install --scope project -t ${hostIdForClientKind(clientKind) ?? 'codex'}\` `
-          + 'to replace the project install manifest.',
-        );
-      } else if (resolution.source === 'legacy-fallback' && clientKind === 'claude-code') {
-        logger.warn(
-          'crew-mcp serve: no stored crewWaitCommand found for Claude Code; '
-          + 'falling back to legacy `crew-wait`. Re-run `crew-mcp install -t claude-code` '
-          + 'to persist the exact allowlisted watcher command.',
-        );
-      } else if (resolution.source === 'legacy-fallback' && clientKind === 'codex') {
-        logger.warn(
-          'crew-mcp serve: no stored crewWaitCommand found for Codex; watcher '
-          + 'auto-execution is disabled. Re-run `crew-mcp install -t codex` and restart Codex.',
-        );
+    if (!crewWaitCommandResolved) {
+      crewWaitCommandResolved = true;
+      const resolution = resolveCrewWaitCommandForClientKind({
+        clientKind,
+        projectRoot,
+        home: installManifestHome,
+        projectInstallActive,
+      });
+      if (!loggedCrewWaitResolution) {
+        loggedCrewWaitResolution = true;
+        if (resolution.source === 'invalid-project-manifest') {
+          logger.warn(
+            `crew-mcp serve: ${resolution.reason}; watcher auto-execution is disabled. `
+            + `Re-run \`crew-mcp install --scope project -t ${hostIdForClientKind(clientKind) ?? 'codex'}\` `
+            + 'to replace the project install manifest.',
+          );
+        } else if (resolution.source === 'legacy-fallback' && clientKind === 'claude-code') {
+          logger.warn(
+            'crew-mcp serve: no stored crewWaitCommand found for Claude Code; '
+            + 'falling back to legacy `crew-wait`. Re-run `crew-mcp install -t claude-code` '
+            + 'to persist the exact allowlisted watcher command.',
+          );
+        } else if (resolution.source === 'legacy-fallback' && clientKind === 'codex') {
+          logger.warn(
+            'crew-mcp serve: no stored crewWaitCommand found for Codex; watcher '
+            + 'auto-execution is disabled. Re-run `crew-mcp install -t codex` and restart Codex.',
+          );
+        }
       }
+      cachedCrewWaitCommand = resolution.command;
     }
-    cachedCrewWaitCommand = resolution.command;
     if (clientKind === 'codex' && cachedCrewWaitCommand !== undefined) {
       const bridgeFile = runtimeEnv[CODEX_BRIDGE_FILE_ENV];
       if (bridgeFile && isAbsolute(bridgeFile) && existsSync(bridgeFile)) {
-        cachedCrewWaitCommand += ` --codex-bridge-base64 ${encodeCodexBridgeFile(bridgeFile)}`;
-      } else {
-        const threadId = runtimeEnv[CODEX_THREAD_ID_ENV];
-        const clientVersion = server.server.getClientVersion()?.version;
-        let validThreadId = false;
+        return `${cachedCrewWaitCommand} --codex-bridge-base64 ${encodeCodexBridgeFile(bridgeFile)}`;
+      }
+
+      const requestThread = resolveCodexThreadIdFromRequestMeta(extra?._meta);
+      let threadId = requestThread.threadId;
+      if (threadId === undefined && requestThread.reason === undefined) {
+        const environmentThreadId = runtimeEnv[CODEX_THREAD_ID_ENV];
         try {
-          validateCodexThreadId(threadId ?? '');
-          validThreadId = true;
+          validateCodexThreadId(environmentThreadId ?? '');
+          threadId = environmentThreadId;
         } catch {
-          // Standalone queue wake requires the originating Codex thread id.
-        }
-        if (validThreadId && supportsCodexQueueWatcher(clientVersion)) {
-          cachedCrewWaitCommand += ` --codex-queue-thread ${threadId}`;
-        } else {
-          const queueRequirement = supportsCodexQueueWatcher(clientVersion)
-            ? 'a valid CODEX_THREAD_ID'
-            : `Codex ${MIN_CODEX_QUEUE_WATCHER_VERSION}+`;
-          logger.warn(
-            'crew-mcp serve: this Codex session is not attached to Crew\'s App Server bridge '
-            + `and standalone queue wake requires ${queueRequirement}; watcher auto-wake is disabled. `
-            + 'Launch through `crew-mcp codex` or update Codex for queue-backed wake.',
-          );
-          cachedCrewWaitCommand = undefined;
+          // CODEX_THREAD_ID is a compatibility fallback. Current Codex hosts
+          // propagate the active thread in per-call MCP request metadata.
         }
       }
+      const clientVersion = server.server.getClientVersion()?.version;
+      if (threadId !== undefined && supportsCodexQueueWatcher(clientVersion)) {
+        return `${cachedCrewWaitCommand} --codex-queue-thread ${threadId}`;
+      }
+
+      if (!loggedCodexWakeUnavailable) {
+        loggedCodexWakeUnavailable = true;
+        const queueRequirement = !supportsCodexQueueWatcher(clientVersion)
+          ? `Codex ${MIN_CODEX_QUEUE_WATCHER_VERSION}+`
+          : requestThread.reason ?? 'a valid Codex thread id in MCP request metadata or CODEX_THREAD_ID';
+        logger.warn(
+          'crew-mcp serve: this Codex session is not attached to Crew\'s App Server bridge '
+          + `and standalone queue wake requires ${queueRequirement}; watcher auto-wake is disabled. `
+          + 'Launch through `crew-mcp codex` or update Codex for queue-backed wake.',
+        );
+      }
+      return undefined;
     }
     return cachedCrewWaitCommand;
   };
