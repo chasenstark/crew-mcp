@@ -78,6 +78,8 @@ launch it after the Crew dispatch. Only then end the turn:
   const result = await tools.exec_command({
     cmd: command,
     workdir,
+    sandbox_permissions: 'require_escalated',
+    justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.',
     yield_time_ms: 1000,
     max_output_tokens: 1000,
   });
@@ -90,6 +92,11 @@ launch it after the Crew dispatch. Only then end the turn:
     session_id: result.session_id,
   }));
   ```
+
+  The escalation applies only to this exact server-returned watcher command.
+  It is required because durable wake delivery locks and writes under the
+  server-pinned Crew home outside the project workspace. Do not apply it to
+  worker commands.
 
   The nested command returns a background session after one second. Do not
   poll it with `write_stdin`, `wait`, or another tool call; end the model

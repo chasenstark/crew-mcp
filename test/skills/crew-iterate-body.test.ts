@@ -80,6 +80,20 @@ function expectFullStructuredQuestionGuidance(section: string): void {
 }
 
 describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', () => {
+  it('escalates only the trusted Codex watcher so durable wake state can be written', async () => {
+    const body = await loadBody();
+    const recipe = sliceBetween(
+      body,
+      'const command = <required_next_action.command_json>;',
+      'if (result.exit_code !== undefined && result.exit_code !== 0)',
+    );
+
+    expect(recipe).toContain("sandbox_permissions: 'require_escalated'");
+    expect(recipe).toContain(
+      "justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.'",
+    );
+  });
+
   it('carries the render-time crew version marker', async () => {
     expect(await loadBody()).toContain('Rendered by crew-mcp {{CREW_VERSION}}.');
   });

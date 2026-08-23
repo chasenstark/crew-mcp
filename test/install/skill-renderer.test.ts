@@ -44,6 +44,18 @@ const TOOLS: SkillTool[] = [
   { name: 'get_run_status', description: 'poll a run.' },
 ];
 
+function sliceBetween(
+  haystack: string,
+  startNeedle: string,
+  endNeedle: string,
+): string {
+  const start = haystack.indexOf(startNeedle);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = haystack.indexOf(endNeedle, start);
+  expect(end).toBeGreaterThan(start);
+  return haystack.slice(start, end);
+}
+
 describe('renderToolList', () => {
   it('renders an empty list with a no-tools marker', () => {
     expect(renderToolList([])).toBe('_(no tools registered)_');
@@ -219,6 +231,7 @@ describe('host-conditional real skill bodies', () => {
   const FOREIGN_MECHANICS: Record<HostId, readonly string[]> = {
     'claude-code': [
       'functions.exec',
+      'sandbox_permissions',
       'crew_wait_terminal',
       'yield_control',
       'crew_wait_started',
@@ -236,6 +249,7 @@ describe('host-conditional real skill bodies', () => {
     ],
     agy: [
       'functions.exec',
+      'sandbox_permissions',
       'crew_wait_terminal',
       'yield_control',
       'run_in_background',
@@ -553,6 +567,42 @@ describe('renderSkill (claude-code template)', () => {
 });
 
 describe('renderSkill (codex template)', () => {
+  it.each([
+    ['crew', undefined],
+    [
+      'crew:iterate',
+      SKILL_MANIFEST.find((skill) => skill.id === 'crew:iterate')!,
+    ],
+  ] as const)(
+    'renders the %s watcher with the escalation required for global wake state',
+    async (_skillId, skill) => {
+      const templatePath = templatePathForHost(REPO_ROOT, 'codex');
+      const out = await renderSkill({
+        templatePath,
+        ...(skill ? {
+          skill,
+          spec: {
+            skillPath: '/tmp/ignored',
+            frontmatterName: 'crew-iterate',
+            legacyPathsToRemove: [],
+          },
+        } : {}),
+        tools: TOOLS,
+        packageRoot: REPO_ROOT,
+      });
+      const recipe = sliceBetween(
+        out,
+        'const command = <required_next_action.command_json>;',
+        'if (result.exit_code !== undefined && result.exit_code !== 0)',
+      );
+
+      expect(recipe).toContain("sandbox_permissions: 'require_escalated'");
+      expect(recipe).toContain(
+        "justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.'",
+      );
+    },
+  );
+
   it('emits SKILL.md frontmatter with name + description (Finding 5 fix)', async () => {
     const templatePath = templatePathForHost(REPO_ROOT, 'codex');
     const out = await renderSkill({

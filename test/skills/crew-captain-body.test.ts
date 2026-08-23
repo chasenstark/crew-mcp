@@ -113,6 +113,20 @@ describe('crew-captain body — structured gates', () => {
 });
 
 describe('crew-captain body — dispatch lifecycle', () => {
+  it('escalates only the trusted Codex watcher so durable wake state can be written', async () => {
+    const body = await loadBody();
+    const recipe = sliceBetween(
+      body,
+      'const command = <required_next_action.command_json>;',
+      'if (result.exit_code !== undefined && result.exit_code !== 0)',
+    );
+
+    expect(recipe).toContain("sandbox_permissions: 'require_escalated'");
+    expect(recipe).toContain(
+      "justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.'",
+    );
+  });
+
   it('states async dispatch, scoped turn-start checks, watcher degradation, and timestamp-free recovery', async () => {
     const body = await loadBody();
     const section = sliceBetween(body, '## Dispatch lifecycle', '## The tools');
