@@ -50,8 +50,12 @@ catalogs are cached in-process; `refresh:true` bypasses the cache.
 `model`. A supplied model is resolved before run allocation or continuation
 mutation. Resolution either produces the exact provider argument (including a
 documented alias mapping) or returns a typed `model_selection.*` error. Crew
-never drops a pin and continues on the provider default. Omitting `model`
-records an intentional `cli_default` decision and performs no catalog lookup.
+never drops a pin and continues on the provider default. For a fresh turn, the
+precedence is per-call `model`, then the canonical provider entry's saved
+`model` in `~/.crew/agents.json`, then the provider CLI default. The config UI
+and `config set providerModels.<provider>` validate saved defaults through the
+same resolver. With no per-call or saved value, Crew records an intentional
+`cli_default` decision and performs no dispatch-time catalog lookup.
 
 Dispatch and status envelopes use this additive wire record:
 
@@ -69,7 +73,9 @@ model_selection: {
 
 `requested_model` is caller intent, `model_argument` is what Crew passed, and
 `observed_model` is present only when provider output reports the primary
-model. Continuations without a new pin inherit the prior explicit argument or
+model. The wire value `agent_default` denotes the saved model on the canonical
+provider-adapter entry, even though the configuration UI calls it a provider
+default. Continuations without a new pin inherit the prior explicit argument or
 the prior CLI-default decision. Panel records preserve the same information so
 same-provider reviewers such as Claude `opus`, `fable`, and `sonnet` remain
 distinguishable through dispatch, status, and aggregation.

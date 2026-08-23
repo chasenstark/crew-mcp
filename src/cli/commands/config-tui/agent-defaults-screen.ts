@@ -4,7 +4,9 @@ import {
   type AgentDefaultSinglePath,
   type AgentDefaultsState,
 } from './agent-defaults-state.js';
+import type { AdapterModelResolution } from '../../../adapters/types.js';
 import { MultiSelectScreen } from './multi-select-screen.js';
+import type { ProviderModelInventoryEntry } from './provider-model-defaults-state.js';
 import { SingleSelectScreen } from './single-select-screen.js';
 import type { AgentStrengthsEntry } from './agent-strengths-state.js';
 import type { KeyResult, Screen, TuiKey } from './screen.js';
@@ -13,6 +15,11 @@ export interface AgentInventory {
   readonly agentIds: readonly string[];
   readonly knownIds: ReadonlySet<string>;
   readonly agents?: readonly AgentStrengthsEntry[];
+  readonly providerModels?: readonly ProviderModelInventoryEntry[];
+  readonly resolveProviderModel?: (
+    providerName: string,
+    requestedModel: string,
+  ) => Promise<AdapterModelResolution>;
 }
 
 interface SingleFieldEntry {

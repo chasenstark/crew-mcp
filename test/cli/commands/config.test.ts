@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -165,6 +165,63 @@ describe('crew-mcp config subcommands', () => {
     expect(JSON.parse(afterUnset.text).confirmBeforeMerge).toBe(true);
   });
 
+  it('sets, shows, and unsets exact provider model defaults', async () => {
+    const resolveProviderModel = vi.fn(async (_providerName: string, requested: string) => ({
+      ok: true as const,
+      argument: requested.trim(),
+      displayName: requested.trim(),
+      validation: 'catalog' as const,
+    }));
+
+    await configSetCommand('providerModels.codex', '  gpt-5.6-sol  ', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+      resolveProviderModel,
+    });
+
+    const shown = new CaptureStdout();
+    await configShowCommand(undefined, { cwd, crewHome, stdout: shown });
+    expect(JSON.parse(shown.text).providerModels).toEqual({
+      'claude-code': null,
+      codex: 'gpt-5.6-sol',
+      agy: null,
+    });
+    expect(resolveProviderModel).toHaveBeenCalledWith('codex', '  gpt-5.6-sol  ');
+
+    await configUnsetCommand('providerModels.codex', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
+    const afterUnset = new CaptureStdout();
+    await configShowCommand('providerModels.codex', { cwd, crewHome, stdout: afterUnset });
+    expect(JSON.parse(afterUnset.text)).toBeNull();
+  });
+
+  it('refuses an invalid provider model without changing agents.json', async () => {
+    writeFileSync(
+      join(crewHome, 'agents.json'),
+      JSON.stringify({ codex: { strengths: ['keep'] } }),
+      'utf-8',
+    );
+
+    await expect(configSetCommand('providerModels.codex', 'bogus', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+      resolveProviderModel: async () => ({
+        ok: false,
+        code: 'model_selection.unknown',
+        message: 'model_selection.unknown: bogus',
+      }),
+    })).rejects.toThrow(/model_selection\.unknown/);
+
+    expect(JSON.parse(
+      readFileSync(join(crewHome, 'agents.json'), 'utf-8'),
+    )).toEqual({ codex: { strengths: ['keep'] } });
+  });
+
   it('prints agent defaults in the non-TTY config summary', async () => {
     await configSetCommand(
       'workflow.agentDefaults.iterate.implementer',
@@ -202,6 +259,9 @@ describe('crew-mcp config subcommands', () => {
     expect(stdout.text).toContain('  workflow.agentDefaults.iterate.banList: gemini-cli\n');
     expect(stdout.text).toContain('  workflow.agentDefaults.panel.reviewers: codex\n');
     expect(stdout.text).toContain('  workflow.agentDefaults.panel.banList: (empty)\n');
+    expect(stdout.text).toContain('  providerModels.claude-code: (provider CLI default)\n');
+    expect(stdout.text).toContain('  providerModels.codex: (provider CLI default)\n');
+    expect(stdout.text).toContain('  providerModels.agy: (provider CLI default)\n');
   });
 
   it('preserves existing three-toggle TUI rendering and save behavior', async () => {
@@ -219,13 +279,14 @@ describe('crew-mcp config subcommands', () => {
     });
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
-    expect(stdout.text.split('\n').slice(0, 8)).toEqual([
+    expect(stdout.text.split('\n').slice(0, 9)).toEqual([
       'crew-mcp config — toggle settings',
       '',
       '> [x] notifications.success   OS toast on successful runs',
       '  [x] notifications.error     OS toast on failed or partial runs',
       '  [x] confirmBeforeMerge      Ask before merging dispatched runs (off = auto-merge)',
       '      Agent defaults...       Configure default agents for iterate and panel workflows',
+      '      Provider models...      Choose the default model for each provider',
       '      Agent strengths...      Tune per-agent routing prose and strength tags',
       '      Cleanup & retention...  Set GC retention windows and reclaim stale worktrees/run-dirs now',
     ]);
@@ -265,6 +326,7 @@ describe('crew-mcp config subcommands', () => {
     stdin.press('down'); // notifications.error
     stdin.press('down'); // confirmBeforeMerge
     stdin.press('down'); // Agent defaults
+    stdin.press('down'); // Provider models
     stdin.press('down'); // Agent strengths
     stdin.press('space'); // open AgentStrengthsListScreen
     stdin.press('space'); // open AgentStrengthEditScreen for codex
@@ -276,6 +338,94 @@ describe('crew-mcp config subcommands', () => {
     expect(stdin.isRaw).toBe(false);
     expect(stdout.text).toContain('could not save agent strengths');
     expect(stdout.text).toContain('must be a JSON object');
+  });
+
+  it('selects and persists a provider model default through the TUI', async () => {
+    const stdin = new TtyStdin();
+    const stdout = new TtyStdout();
+    const resolveProviderModel = vi.fn(async (_providerName: string, requested: string) => ({
+      ok: true as const,
+      argument: requested,
+      displayName: 'GPT-5.6 Sol',
+      validation: 'catalog' as const,
+    }));
+    const run = configCommand({
+      cwd,
+      crewHome,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      listAgentInventory: async () => ({
+        agentIds: ['codex'],
+        knownIds: new Set(['codex']),
+        providerModels: [{
+          name: 'codex',
+          displayName: 'Codex',
+          models: [{ model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol' }],
+        }],
+        resolveProviderModel,
+      }),
+    });
+
+    await waitForOutput(stdout, 'crew-mcp config — toggle settings');
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('down'); // Agent defaults
+    stdin.press('down'); // Provider models
+    stdin.press('space');
+    await waitForOutput(stdout, 'Provider model defaults');
+    stdin.press('space'); // open Codex picker
+    stdin.press('down'); // gpt-5.6-sol
+    stdin.press('space'); // select and return to provider list
+    stdin.press('return'); // save
+
+    await expect(run).resolves.toBe(0);
+    expect(resolveProviderModel).toHaveBeenCalledWith('codex', 'gpt-5.6-sol');
+    expect(JSON.parse(readFileSync(join(crewHome, 'agents.json'), 'utf-8'))).toEqual({
+      codex: { model: 'gpt-5.6-sol' },
+    });
+  });
+
+  it('does not write any TUI settings when provider validation refuses the model', async () => {
+    const stdin = new TtyStdin();
+    const stdout = new TtyStdout();
+    const run = configCommand({
+      cwd,
+      crewHome,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      listAgentInventory: async () => ({
+        agentIds: ['codex'],
+        knownIds: new Set(['codex']),
+        providerModels: [{
+          name: 'codex',
+          displayName: 'Codex',
+          models: [{ model: 'bogus', displayName: 'Bogus' }],
+        }],
+        resolveProviderModel: async () => ({
+          ok: false,
+          code: 'model_selection.unknown',
+          message: 'model_selection.unknown: bogus',
+        }),
+      }),
+    });
+
+    await waitForOutput(stdout, 'crew-mcp config — toggle settings');
+    stdin.press('space'); // also toggle notifications.success off
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('down');
+    stdin.press('down'); // Provider models
+    stdin.press('space');
+    stdin.press('space'); // open Codex picker
+    stdin.press('down');
+    stdin.press('space'); // choose bogus
+    stdin.press('return');
+
+    await expect(run).resolves.toBe(1);
+    expect(stdout.text).toContain('could not save provider model defaults');
+    expect(stdout.text).toContain('model_selection.unknown: bogus');
+    expect(readConfigFile(crewHome).notifications.success).toBe(true);
+    expect(() => readFileSync(join(crewHome, 'agents.json'), 'utf-8')).toThrow();
   });
 
   it('opens the cleanup submenu, persists a TTL change, and runs cleanup on "Run now"', async () => {
@@ -291,7 +441,9 @@ describe('crew-mcp config subcommands', () => {
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
     // Root rows: notifications.success(0), notifications.error(1),
-    // confirmBeforeMerge(2), Agent defaults(3), Agent strengths(4), Cleanup(5).
+    // confirmBeforeMerge(2), Agent defaults(3), Provider models(4),
+    // Agent strengths(5), Cleanup(6).
+    stdin.press('down');
     stdin.press('down');
     stdin.press('down');
     stdin.press('down');

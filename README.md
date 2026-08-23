@@ -87,7 +87,9 @@ get only a scoped `send_message` tool for returning structured findings.
 | OpenAI-compatible / generic | No | Yes | Depends on adapter |
 
 Provider model pins are exact-or-refuse: Crew discovers provider-native model
-choices and rejects unknown names before allocating work. Local
+choices and rejects unknown names before allocating work. `crew-mcp config`
+can save one validated default for each built-in provider; per-call pins still
+win, and clearing a saved value restores the provider CLI default. Local
 OpenAI-compatible agents are useful for brainstorming and prose today, but
 they cannot read the repository until context injection is implemented.
 

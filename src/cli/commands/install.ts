@@ -285,7 +285,7 @@ async function installGlobalCommand(opts: InstallOptions): Promise<InstallResult
     if (seeded) {
       logger.info(
         `crew install: seeded ${crewHome}/agents.json with adapter defaults. `
-        + 'Edit it (or run `crew agents edit`) to tune per-agent useWhen/strengths/effort.',
+        + 'Run `crew-mcp config` to tune provider models and routing preferences.',
       );
     } else {
       logger.info(

@@ -1,8 +1,8 @@
 # Configuration
 
 `crew-mcp config` is the supported per-machine configuration surface. It
-manages notifications, merge confirmation, cleanup retention, agent strengths,
-and default implementer/reviewer choices.
+manages notifications, merge confirmation, cleanup retention, provider model
+defaults, agent strengths, and default implementer/reviewer choices.
 
 ## Interactive configuration
 
@@ -15,6 +15,7 @@ The main screens are:
 - notification success/error toggles
 - `confirmBeforeMerge` server gate
 - `Agent defaults...` for iterate and panel routing
+- `Provider models...` for an exact default model per built-in provider
 - agent strengths and `useWhen` guidance
 - `Cleanup & retention...` for worktree, run-directory, and criteria lifetimes
 
@@ -41,6 +42,17 @@ crew-mcp config set workflow.agentDefaults.panel.reviewers '["codex","claude-cod
 crew-mcp config set workflow.agentDefaults.panel.banList '["agy"]'
 ```
 
+Provider model defaults are exact-or-refuse and use the same native validation
+as dispatch. `unset` hands control back to that provider's CLI configuration:
+
+```sh
+crew-mcp config show providerModels
+crew-mcp config set providerModels.claude-code opus
+crew-mcp config set providerModels.codex gpt-5.6-sol
+crew-mcp config set providerModels.agy '<exact label from list_models>'
+crew-mcp config unset providerModels.codex
+```
+
 `unset` restores or removes the selected value. Run `config show` to inspect
 the effective result.
 
@@ -48,7 +60,7 @@ the effective result.
 
 ```text
 ~/.crew/config.json    notifications, merge gate, cleanup retention
-~/.crew/agents.json    agents, useWhen, strengths, model, effort
+~/.crew/agents.json    agents, useWhen, strengths, provider model defaults, effort
 ~/.crew/workflow.yaml  surviving agent-default compatibility surface
 .crew/workflow.yaml    optional project-level agent defaults
 ```

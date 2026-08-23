@@ -37,17 +37,28 @@ import {
   type AgentStrengthsEntry,
 } from './config-tui/agent-strengths-state.js';
 import { CleanupScreen } from './config-tui/cleanup-screen.js';
+import { ProviderModelDefaultsScreen } from './config-tui/provider-model-defaults-screen.js';
+import {
+  ProviderModelDefaultsState,
+  applyProviderModelDefaultsState,
+  setProviderModelDefault,
+  type ProviderModelInventoryEntry,
+} from './config-tui/provider-model-defaults-state.js';
 import {
   isPushResult,
   type Screen,
 } from './config-tui/screen.js';
 import { cleanupCommand } from './cleanup.js';
-import { readAgentPrefsFile } from '../../agent-prefs/store.js';
+import {
+  readAgentPrefsFile,
+  type AgentPrefsMap,
+} from '../../agent-prefs/store.js';
 import {
   BUILTIN_ADAPTER_NAMES,
   createBuiltinRegistry,
   mergeCustomAgents,
 } from '../../adapters/registry.js';
+import type { AdapterModelResolution, ModelDescriptor } from '../../adapters/types.js';
 import { listAgents } from '../../orchestrator/tools/list-agents.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
@@ -148,6 +159,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     stdout.write(`  cleanup.runDirTtlDays: ${fmtTtlDays(current.cleanup.runDirTtlDays)}\n`);
     stdout.write(`  cleanup.criteriaSetTtlDays: ${fmtTtlDays(current.cleanup.criteriaSetTtlDays)}\n`);
     writeAgentDefaultsSummary(stdout, showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults);
+    writeProviderModelDefaultsSummary(stdout, readAgentPrefsFile(crewHome));
     stdout.write(
       `\nInteractive editing requires a TTY. Edit ${configPath} directly,\n`
       + 'or run `crew-mcp config` in a real terminal.\n',
@@ -175,6 +187,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults,
   );
   const agentDefaultsScreen = new AgentDefaultsScreen(agentDefaultsState, agentInventory);
+  const providerModelDefaultsState = new ProviderModelDefaultsState(
+    agentInventory.providerModels ?? [],
+  );
+  const providerModelDefaultsScreen = new ProviderModelDefaultsScreen(
+    providerModelDefaultsState,
+  );
   const agentStrengthsState = new AgentStrengthsState(
     agentInventory.agents ?? agentInventory.agentIds.map((name) => ({
       name,
@@ -193,6 +211,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
         label: 'Agent defaults...',
         description: 'Configure default agents for iterate and panel workflows',
         onActivate: () => ({ push: agentDefaultsScreen }),
+      },
+      {
+        kind: 'action',
+        label: 'Provider models...',
+        description: 'Choose the default model for each provider',
+        onActivate: () => ({ push: providerModelDefaultsScreen }),
       },
       {
         kind: 'action',
@@ -232,7 +256,18 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays
     || current.cleanup.criteriaSetTtlDays !== state.cleanup.criteriaSetTtlDays;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
+  const providerModelsChanged = providerModelDefaultsState.hasChanges();
   const agentStrengthsChanged = agentStrengthsState.hasChanges();
+  if (providerModelsChanged) {
+    const validationError = await validateProviderModelChanges(
+      providerModelDefaultsState,
+      agentInventory,
+    );
+    if (validationError !== undefined) {
+      stdout.write(`\ncrew-mcp config: could not save provider model defaults: ${validationError}\n`);
+      return 1;
+    }
+  }
   if (agentStrengthsChanged) {
     try {
       applyAgentStrengthsState(crewHome, agentStrengthsState);
@@ -243,15 +278,35 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       return 1;
     }
   }
+  if (providerModelsChanged) {
+    try {
+      applyProviderModelDefaultsState(crewHome, providerModelDefaultsState);
+    } catch (err) {
+      stdout.write(
+        `\ncrew-mcp config: could not save provider model defaults: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      return 1;
+    }
+  }
   if (crewChanged) {
     writeConfigFile(crewHome, state);
   }
   if (agentDefaultsChanged) {
     applyAgentDefaultsState(cwd, agentDefaultsState);
   }
-  if (crewChanged && !agentDefaultsChanged && !agentStrengthsChanged) {
+  if (
+    crewChanged
+    && !agentDefaultsChanged
+    && !providerModelsChanged
+    && !agentStrengthsChanged
+  ) {
     stdout.write(`\ncrew-mcp config: saved to ${configPath}\n`);
-  } else if (crewChanged || agentDefaultsChanged || agentStrengthsChanged) {
+  } else if (
+    crewChanged
+    || agentDefaultsChanged
+    || providerModelsChanged
+    || agentStrengthsChanged
+  ) {
     stdout.write('\ncrew-mcp config: saved.\n');
   } else if (cleanupRequested === undefined) {
     stdout.write('\ncrew-mcp config: no changes.\n');
@@ -277,6 +332,11 @@ export interface ConfigSubcommandOptions {
   readonly stdout?: Pick<NodeJS.WriteStream, 'write'>;
   readonly cwd?: string;
   readonly crewHome?: string;
+  /** Test seam for provider-native exact model validation. */
+  readonly resolveProviderModel?: (
+    providerName: string,
+    requestedModel: string,
+  ) => Promise<AdapterModelResolution>;
 }
 
 export async function configShowCommand(
@@ -296,6 +356,17 @@ export async function configSetCommand(
   opts: ConfigSubcommandOptions = {},
 ): Promise<number> {
   const stdout = opts.stdout ?? process.stdout;
+  const providerName = parseProviderModelPath(path);
+  if (providerName !== undefined) {
+    const crewHome = opts.crewHome ?? resolveCrewHome();
+    const resolution = await (
+      opts.resolveProviderModel ?? resolveBuiltinProviderModel
+    )(providerName, rawValue);
+    if (!resolution.ok) throw new Error(resolution.message);
+    setProviderModelDefault(crewHome, providerName, resolution.argument);
+    stdout.write(`${path}: ${JSON.stringify(resolution.argument)}\n`);
+    return 0;
+  }
   if (isCrewSettingPath(path)) {
     const crewHome = opts.crewHome ?? resolveCrewHome();
     const next = mutableConfig(readConfigFile(crewHome));
@@ -316,6 +387,13 @@ export async function configUnsetCommand(
   opts: ConfigSubcommandOptions = {},
 ): Promise<number> {
   const stdout = opts.stdout ?? process.stdout;
+  const providerName = parseProviderModelPath(path);
+  if (providerName !== undefined) {
+    const crewHome = opts.crewHome ?? resolveCrewHome();
+    setProviderModelDefault(crewHome, providerName, undefined);
+    stdout.write(`${path}: null\n`);
+    return 0;
+  }
   if (isCrewSettingPath(path)) {
     const crewHome = opts.crewHome ?? resolveCrewHome();
     const next = mutableConfig(readConfigFile(crewHome));
@@ -339,6 +417,7 @@ function buildShowPayload(opts: ConfigSubcommandOptions): Record<string, unknown
     notifications: crewConfig.notifications,
     confirmBeforeMerge: crewConfig.confirmBeforeMerge,
     cleanup: crewConfig.cleanup,
+    providerModels: configuredProviderModels(readAgentPrefsFile(crewHome)),
     ...workflow.effectiveConfig,
   };
 }
@@ -351,6 +430,45 @@ function readShowPath(payload: Record<string, unknown>, path: string): unknown {
     if (!current || typeof current !== 'object') return undefined;
     return (current as Record<string, unknown>)[segment];
   }, payload);
+}
+
+function parseProviderModelPath(path: string): string | undefined {
+  if (!path.startsWith('providerModels.')) return undefined;
+  const providerName = path.slice('providerModels.'.length);
+  if (providerName.length === 0 || providerName.includes('.')) {
+    throw new Error(
+      `Invalid provider model path "${path}". Expected providerModels.<provider>.`,
+    );
+  }
+  if (!(BUILTIN_ADAPTER_NAMES as readonly string[]).includes(providerName)) {
+    throw new Error(
+      `Unknown provider "${providerName}". Available providers: ${BUILTIN_ADAPTER_NAMES.join(', ')}.`,
+    );
+  }
+  return providerName;
+}
+
+async function resolveBuiltinProviderModel(
+  providerName: string,
+  requestedModel: string,
+): Promise<AdapterModelResolution> {
+  const requested = requestedModel.trim();
+  if (requested.length === 0) {
+    return {
+      ok: false,
+      code: 'model_selection.unknown',
+      message: 'model_selection.unknown: model must be a non-empty string; use config unset to restore the provider CLI default',
+    };
+  }
+  const adapter = await createBuiltinRegistry().load(providerName);
+  if (!adapter?.resolveModel) {
+    return {
+      ok: false,
+      code: 'model_selection.unsupported',
+      message: `model_selection.unsupported: provider "${providerName}" does not support explicit model selection`,
+    };
+  }
+  return adapter.resolveModel(requested, { refreshOnMiss: true });
 }
 
 function isCrewSettingPath(path: string): path is 'notifications.success' | 'notifications.error' | 'confirmBeforeMerge' {
@@ -442,6 +560,30 @@ function writeAgentDefaultsSummary(
   );
   stdout.write(
     `  ${AGENT_DEFAULT_PATH_LABELS.panelBanList}: ${formatList(defaults?.panel?.banList)}\n`,
+  );
+}
+
+function writeProviderModelDefaultsSummary(
+  stdout: Pick<NodeJS.WriteStream, 'write'>,
+  prefs: AgentPrefsMap,
+): void {
+  stdout.write('\n');
+  const configured = configuredProviderModels(prefs);
+  for (const providerName of BUILTIN_ADAPTER_NAMES) {
+    stdout.write(
+      `  providerModels.${providerName}: ${configured[providerName] ?? '(provider CLI default)'}\n`,
+    );
+  }
+}
+
+function configuredProviderModels(
+  prefs: AgentPrefsMap,
+): Record<string, string | null> {
+  return Object.fromEntries(
+    BUILTIN_ADAPTER_NAMES.map((providerName) => [
+      providerName,
+      prefs[providerName]?.model ?? null,
+    ]),
   );
 }
 
@@ -662,6 +804,41 @@ async function loadAgentInventory(args: {
     logger.warn(warning);
   }
   const out = await listAgents({ registry, agentPrefs });
+  const providerModels = await Promise.all(
+    BUILTIN_ADAPTER_NAMES.map(async (providerName): Promise<ProviderModelInventoryEntry> => {
+      const listed = out.agents.find((agent) => agent.name === providerName);
+      const adapter = await registry.load(providerName);
+      if (!adapter?.listModels) {
+        return {
+          name: providerName,
+          displayName: PROVIDER_DISPLAY_NAMES[providerName],
+          ...(listed?.model ? { configuredModel: listed.model } : {}),
+          models: [],
+          warnings: [`Provider "${providerName}" does not expose a model catalog.`],
+        };
+      }
+      try {
+        const catalog = await adapter.listModels();
+        return {
+          name: providerName,
+          displayName: PROVIDER_DISPLAY_NAMES[providerName],
+          ...(listed?.model ? { configuredModel: listed.model } : {}),
+          models: catalog.models,
+          ...(catalog.warnings !== undefined ? { warnings: catalog.warnings } : {}),
+        };
+      } catch (err) {
+        return {
+          name: providerName,
+          displayName: PROVIDER_DISPLAY_NAMES[providerName],
+          ...(listed?.model ? { configuredModel: listed.model } : {}),
+          models: [],
+          warnings: [
+            `Model discovery failed: ${err instanceof Error ? err.message : String(err)}`,
+          ],
+        };
+      }
+    }),
+  );
   return normalizeInventory({
     agentIds: out.agents.map((agent) => agent.name),
     knownIds: new Set(out.agents.flatMap((agent) => [
@@ -673,6 +850,18 @@ async function loadAgentInventory(args: {
       strengths: agent.strengths,
       ...(agent.useWhen ? { useWhen: agent.useWhen } : {}),
     })),
+    providerModels,
+    resolveProviderModel: async (providerName, requestedModel) => {
+      const adapter = await registry.load(providerName);
+      if (!adapter?.resolveModel) {
+        return {
+          ok: false,
+          code: 'model_selection.unsupported',
+          message: `model_selection.unsupported: provider "${providerName}" does not support explicit model selection`,
+        };
+      }
+      return adapter.resolveModel(requestedModel, { refreshOnMiss: true });
+    },
   });
 }
 
@@ -686,7 +875,43 @@ function normalizeInventory(inventory: AgentInventory): AgentInventory {
     name,
     strengths: [],
   })));
-  return { agentIds, knownIds, agents };
+  const providerModels = normalizeProviderModelEntries(inventory.providerModels ?? []);
+  return {
+    agentIds,
+    knownIds,
+    agents,
+    providerModels,
+    ...(inventory.resolveProviderModel !== undefined
+      ? { resolveProviderModel: inventory.resolveProviderModel }
+      : {}),
+  };
+}
+
+async function validateProviderModelChanges(
+  state: ProviderModelDefaultsState,
+  inventory: AgentInventory,
+): Promise<string | undefined> {
+  for (const change of state.changes()) {
+    if (change.model === undefined) continue;
+    if (inventory.resolveProviderModel) {
+      let resolution: AdapterModelResolution;
+      try {
+        resolution = await inventory.resolveProviderModel(change.providerName, change.model);
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+      if (!resolution.ok) return resolution.message;
+      state.setModel(change.providerName, resolution.argument);
+      continue;
+    }
+    const provider = inventory.providerModels?.find(
+      (entry) => entry.name === change.providerName,
+    );
+    if (!provider?.models.some((model) => model.model === change.model)) {
+      return `model_selection.discovery_unavailable: could not validate "${change.model}" for provider "${change.providerName}"`;
+    }
+  }
+  return undefined;
 }
 
 function isAgentDefaultsPath(path: string): boolean {
@@ -724,3 +949,47 @@ function normalizeAgentStrengthEntries(
   }
   return out;
 }
+
+function normalizeProviderModelEntries(
+  entries: readonly ProviderModelInventoryEntry[],
+): ProviderModelInventoryEntry[] {
+  const seen = new Set<string>();
+  const out: ProviderModelInventoryEntry[] = [];
+  for (const entry of entries) {
+    const name = entry.name.trim();
+    if (name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    out.push({
+      name,
+      displayName: entry.displayName.trim() || name,
+      ...(entry.configuredModel && entry.configuredModel.trim().length > 0
+        ? { configuredModel: entry.configuredModel.trim() }
+        : {}),
+      models: normalizeModelDescriptors(entry.models),
+      ...(entry.warnings !== undefined ? { warnings: [...entry.warnings] } : {}),
+    });
+  }
+  return out;
+}
+
+function normalizeModelDescriptors(models: readonly ModelDescriptor[]): ModelDescriptor[] {
+  const seen = new Set<string>();
+  const out: ModelDescriptor[] = [];
+  for (const model of models) {
+    const name = model.model.trim();
+    if (name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    out.push({
+      ...model,
+      model: name,
+      displayName: model.displayName.trim() || name,
+    });
+  }
+  return out;
+}
+
+const PROVIDER_DISPLAY_NAMES: Record<(typeof BUILTIN_ADAPTER_NAMES)[number], string> = {
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  agy: 'Antigravity',
+};

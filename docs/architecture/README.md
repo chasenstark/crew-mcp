@@ -60,8 +60,9 @@ crosses the mutation/cleanup boundary.
 The adapter ID names the provider integration; model is an orthogonal per-turn
 selection. `list_agents` advertises model-selection support and `list_models`
 performs provider-native discovery. A supplied pin is exact-or-refuse before
-run allocation or continuation mutation. An omitted pin means the provider CLI
-default and does not trigger discovery.
+run allocation or continuation mutation. Fresh-turn precedence is per-call
+pin, saved provider default, then provider CLI default. The last case does not
+trigger discovery.
 
 Every new turn stores requested, passed, and optional provider-observed model
 identity. Panel records retain that identity independently, including when the

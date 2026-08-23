@@ -4,9 +4,9 @@
  * Each adapter ships defaults for `useWhen` (primary routing prose),
  * `strengths` (secondary routing tags), and `effort` (reasoning depth:
  * low|medium|high|xhigh|max where supported). The user overrides those
- * defaults per-machine by editing this file. `crew-mcp install` seeds it on
- * first install with every registered adapter's defaults; `crew agents edit`
- * opens it in `$EDITOR`.
+ * defaults per-machine through `crew-mcp config` or by editing this file.
+ * `crew-mcp install` seeds it on first install with every registered adapter's
+ * defaults; `crew agents edit` opens it in `$EDITOR`.
  *
  * File shape (per agent name):
  *   {
@@ -80,8 +80,8 @@ export interface AgentPreferences {
   /** Default effort level for dispatches to this agent. */
   readonly effort?: EffortLevel;
   /**
-   * Default model for dispatches to this agent. Free-form string
-   * (passed through to the adapter's `--model` flag). Per-call
+   * Default model for dispatches to this canonical provider adapter.
+   * Free-form string (passed through to the adapter's `--model` flag). Per-call
    * `run_agent({model})` wins. Empty/missing = adapter's CLI picks
    * its own default — we deliberately don't second-guess
    * `~/.claude.json` / `~/.codex/config.toml` etc. when the user
@@ -278,6 +278,7 @@ export function seedAgentPrefsFile(
       '  - model: free-form string passed to the adapter\'s --model flag.',
       '    Empty/missing = the adapter\'s CLI picks (we don\'t override',
       '    your ~/.claude.json or ~/.codex/config.toml).',
+      '    Use `crew-mcp config` for provider-native discovery and validation.',
       'Per-call overrides via run_agent({model, effort}) always win.',
       'Existing files are preserved on install; older strength defaults stay',
       'as they were until you edit this file.',

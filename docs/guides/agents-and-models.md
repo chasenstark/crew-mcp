@@ -37,9 +37,9 @@ requested model -> provider catalog -> exact match -> dispatch
                                   `-> no match ---> refuse before allocation
 ```
 
-A per-call model overrides the agent default. Omitting the model deliberately
-uses the provider CLI default. Continuations inherit the previous turn's
-selection unless explicitly changed.
+A per-call model overrides the saved default for that provider. With neither
+value, Crew deliberately uses the provider CLI default. Continuations inherit
+the previous turn's selection unless explicitly changed.
 
 ## Configure agent preferences
 
@@ -54,9 +54,17 @@ crew-mcp config
 ```
 
 `crew-mcp agents add` registers local, OpenAI-compatible, or generic agents.
-`crew-mcp agents edit` sets `useWhen`, strengths, default model, and effort.
-The `Agent defaults...` screen in `crew-mcp config` chooses implementers,
-panel reviewers, and per-scope ban lists.
+The `Provider models...` screen in `crew-mcp config` discovers exact choices
+and sets one default for each built-in provider. Clearing a selection restores
+that provider's own CLI default. `Agent defaults...` separately chooses
+implementers, panel reviewers, and per-scope ban lists. `crew-mcp agents edit`
+remains the raw editor for `useWhen`, strengths, model, and effort.
+
+The model precedence for a fresh turn is:
+
+```text
+per-call model -> saved provider default -> provider CLI default
+```
 
 Per-machine agent records live in `~/.crew/agents.json`. Workflow compatibility
 files may still exist, but the CLI is the supported editing surface.
