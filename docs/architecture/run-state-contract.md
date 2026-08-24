@@ -1,4 +1,4 @@
-> **Current as of 2026-05-10.**
+> **Current as of 2026-08-23.**
 
 # Run State Contract
 
@@ -78,6 +78,27 @@ Additional fields may be added in later schemas, but changes must preserve:
 
 `list_runs` relies on that stable subset when recovering runs after context
 loss.
+
+## Goal audit records
+
+Modern writers add a `goal` object to every prompt turn. Unrequested turns are
+explicitly `not_requested`; unsupported requests retain the requested
+configuration and terminal `unsupported` outcome. A supported in-flight turn
+has no outcome until terminal persistence updates it from provider or Crew
+watchdog output. Dispatcher cancellation events retain a typed origin so both
+streaming-idle and buffered-absolute watchdog aborts persist as
+`watchdog_timeout`; user cancellation remains `cancelled`. The terminal set is:
+
+```text
+not_requested | unsupported | achieved | impossible | turn_capped |
+watchdog_timeout | cancelled | provider_error | evaluator_error
+```
+
+`goalBudget` is run-level state containing the original maximum native turns
+and wall-clock milliseconds plus cumulative use. `continue_run` computes
+remaining allowances from this record before provider resume; it never trusts
+provider-local counters to reset or expand the aggregate bound. The fields are
+additive to schema version 1, so legacy records without goal data remain valid.
 
 ## Server-Owner PID
 

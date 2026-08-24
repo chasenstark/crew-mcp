@@ -11,6 +11,8 @@ import type {
   AgentAdapter,
   AgentStrength,
   EffortLevel,
+  GoalExecutionResult,
+  GoalTaskConstraint,
   HealthCheckOptions,
   HealthCheckResult,
   Task,
@@ -56,6 +58,20 @@ const ClaudeResponseSchema = z.object({
 });
 
 type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
+
+interface ClaudeGoalStatus {
+  readonly met?: boolean;
+  readonly failed?: boolean;
+  readonly providerOutcome?: GoalExecutionResult['outcome'];
+  readonly reason?: string;
+  readonly iterations?: number;
+  readonly durationMs?: number;
+}
+
+interface ClaudeGoalControlEvidence {
+  readonly cleared: boolean;
+  readonly setCondition?: string;
+}
 
 const PROGRESS_LINE_MAX_LEN = 240;
 // Non-streaming captures stay bounded for CLI health/manual callers. Production
@@ -120,6 +136,65 @@ function claudeEventFallback(type: unknown, innerType?: unknown): string {
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object') return {};
   return value as Record<string, unknown>;
+}
+
+function parseClaudeGoalStatus(object: Record<string, unknown>): ClaudeGoalStatus | undefined {
+  const rawOutcome = typeof object.outcome === 'string'
+    ? object.outcome
+    : typeof object.status === 'string'
+      ? object.status
+      : undefined;
+  const providerOutcome = rawOutcome !== undefined && [
+    'achieved',
+    'impossible',
+    'turn_capped',
+    'provider_error',
+    'evaluator_error',
+  ].includes(rawOutcome)
+    ? rawOutcome as GoalExecutionResult['outcome']
+    : undefined;
+  if (
+    object.type !== 'goal_status'
+    || (typeof object.met !== 'boolean' && providerOutcome === undefined)
+  ) return undefined;
+  return {
+    ...(typeof object.met === 'boolean' ? { met: object.met } : {}),
+    ...(typeof object.failed === 'boolean' ? { failed: object.failed } : {}),
+    ...(providerOutcome !== undefined ? { providerOutcome } : {}),
+    ...(typeof object.reason === 'string' ? { reason: object.reason } : {}),
+    ...(typeof object.iterations === 'number' ? { iterations: object.iterations } : {}),
+    ...(typeof object.durationMs === 'number' ? { durationMs: object.durationMs } : {}),
+  };
+}
+
+/**
+ * Goal status is authoritative only in provider-owned stream envelopes. Never
+ * recurse through assistant content: a worker can emit arbitrary text and
+ * tool inputs containing goal_status-shaped objects.
+ */
+function extractProviderClaudeGoalStatus(
+  event: Record<string, unknown>,
+): ClaudeGoalStatus | undefined {
+  if (event.type === 'goal_status') return parseClaudeGoalStatus(event);
+  if (event.type === 'system' && event.subtype === 'hook_response') {
+    return parseClaudeGoalStatus(asObject(event.attachment));
+  }
+  return undefined;
+}
+
+/** Provider control acknowledgements are synthetic assistant envelopes. */
+function extractProviderClaudeGoalControlText(
+  event: Record<string, unknown>,
+): string | undefined {
+  if (event.type !== 'assistant') return undefined;
+  const message = asObject(event.message);
+  if (message.model !== '<synthetic>') return undefined;
+  const content = message.content;
+  if (!Array.isArray(content) || content.length !== 1) return undefined;
+  const block = asObject(content[0]);
+  return block.type === 'text' && typeof block.text === 'string'
+    ? block.text
+    : undefined;
 }
 
 function getNumericField(
@@ -200,6 +275,14 @@ function createBoundedStderrCapture(): {
   };
 }
 
+function normalizeClaudeObservedModel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized !== '<synthetic>'
+    ? normalized
+    : undefined;
+}
+
 function createClaudeStreamCapture(): {
   readonly feedLine: (line: string) => void;
   readonly feedParsedLine: (line: string, event: Record<string, unknown> | undefined) => void;
@@ -207,18 +290,24 @@ function createClaudeStreamCapture(): {
   readonly envelope: () => ClaudeResponse | undefined;
   readonly capturedText: () => string;
   readonly observedModel: () => string | undefined;
+  readonly goalStatus: () => ClaudeGoalStatus | undefined;
+  readonly goalControl: () => ClaudeGoalControlEvidence;
 } {
   let lastResultLine = '';
   let assistantText = '';
   let captured = '';
   let sessionId: string | undefined;
   let observedModel: string | undefined;
+  let goalStatus: ClaudeGoalStatus | undefined;
+  let goalCleared = false;
+  let goalSetCondition: string | undefined;
 
   const feedParsedLine = (line: string, event: Record<string, unknown> | undefined): void => {
     const trimmed = line.trim();
     if (!trimmed) return;
     captured = appendBounded(captured, `${trimmed}\n`);
     if (event === undefined) return;
+    goalStatus = extractProviderClaudeGoalStatus(event) ?? goalStatus;
     if (typeof event.session_id === 'string' && !sessionId) {
       sessionId = event.session_id;
     }
@@ -227,14 +316,23 @@ function createClaudeStreamCapture(): {
       : event.type === 'assistant'
         ? asObject(event.message).model
         : undefined;
-    if (typeof eventModel === 'string' && eventModel.trim().length > 0 && !observedModel) {
-      observedModel = eventModel.trim();
+    const normalizedEventModel = normalizeClaudeObservedModel(eventModel);
+    if (normalizedEventModel !== undefined && !observedModel) {
+      observedModel = normalizedEventModel;
     }
     if (event.type === 'result') {
       lastResultLine = trimmed;
     }
     const chunk = extractAssistantTextFromStreamLine(event);
-    if (chunk) assistantText = appendBounded('', chunk);
+    if (chunk) {
+      assistantText = appendBounded('', chunk);
+    }
+    const controlText = extractProviderClaudeGoalControlText(event);
+    if (controlText !== undefined) {
+      const setMatch = controlText.match(/^Goal set:\s*([\s\S]+)$/u);
+      if (setMatch) goalSetCondition = setMatch[1].trim();
+      if (/^(?:Goal cleared:|No goal set\.)/u.test(controlText.trim())) goalCleared = true;
+    }
   };
 
   const feedLine = (line: string): void => {
@@ -266,6 +364,196 @@ function createClaudeStreamCapture(): {
     },
     capturedText: () => captured,
     observedModel: () => observedModel,
+    goalStatus: () => goalStatus,
+    goalControl: () => ({
+      cleared: goalCleared,
+      ...(goalSetCondition !== undefined ? { setCondition: goalSetCondition } : {}),
+    }),
+  };
+}
+
+function claudeGoalCondition(constraint: GoalTaskConstraint): string | undefined {
+  if (constraint.request === undefined) return undefined;
+  return [
+    'A fresh execution of this explicitly repeat-safe validation command exits 0:',
+    JSON.stringify(constraint.request.validationCommand),
+    'Stop immediately and report blocked if infrastructure, permissions, or dependencies prevent validation.',
+  ].join(' ');
+}
+
+function claudeStreamUserMessage(text: string): string {
+  return JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+}
+
+function claudeTaskInput(task: Task): { readonly input: string; readonly structured: boolean } {
+  const goal = task.constraints?.goal;
+  if (goal === undefined) return { input: task.prompt, structured: false };
+  const messages: string[] = [];
+  if (goal.action === 'clear' || goal.action === 'replace') {
+    messages.push(claudeStreamUserMessage('/goal clear'));
+  }
+  const condition = claudeGoalCondition(goal);
+  if ((goal.action === 'start' || goal.action === 'replace') && condition !== undefined) {
+    messages.push(claudeStreamUserMessage(`/goal ${condition}`));
+  }
+  messages.push(claudeStreamUserMessage(task.prompt));
+  return { input: `${messages.join('\n')}\n`, structured: true };
+}
+
+function resolveClaudeGoalResult(args: {
+  readonly constraint: GoalTaskConstraint;
+  readonly parsed?: ClaudeResponse;
+  readonly capture: ReturnType<typeof createClaudeStreamCapture>;
+  readonly status: TaskResult['status'];
+}): GoalExecutionResult {
+  const { constraint, parsed, capture } = args;
+  const control = capture.goalControl();
+  const status = capture.goalStatus();
+  const turnsUsed = Math.max(0, status?.iterations ?? parsed?.num_turns ?? 0);
+  const wallClockMsUsed = Math.max(0, status?.durationMs ?? parsed?.duration_ms ?? 0);
+  if (constraint.action === 'clear') {
+    return {
+      outcome: control.cleared ? 'not_requested' : 'evaluator_error',
+      authoritative: control.cleared,
+      reason: control.cleared
+        ? 'Claude confirmed that the native goal was cleared.'
+        : 'Claude did not emit an authoritative goal-clear confirmation.',
+      turnsUsed: 0,
+      wallClockMsUsed: 0,
+    };
+  }
+  const expectedCondition = claudeGoalCondition(constraint);
+  if (
+    (constraint.action === 'start' || constraint.action === 'replace')
+    && control.setCondition !== expectedCondition
+  ) {
+    return {
+      outcome: 'evaluator_error',
+      authoritative: false,
+      reason: 'Claude did not echo the exact requested native goal condition.',
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (constraint.action === 'replace' && !control.cleared) {
+    return {
+      outcome: 'evaluator_error',
+      authoritative: false,
+      reason: 'Claude did not confirm clearing the prior goal before replacement.',
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (status?.providerOutcome !== undefined) {
+    return {
+      outcome: status.providerOutcome,
+      authoritative: true,
+      ...(status.reason !== undefined ? { reason: status.reason } : {}),
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (status?.met === true) {
+    return {
+      outcome: 'achieved',
+      authoritative: true,
+      ...(status.reason !== undefined ? { reason: status.reason } : {}),
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (
+    status?.failed === true
+    && /(?:evaluator|evaluation).*(?:error|timeout|timed out)/iu.test(status.reason ?? '')
+  ) {
+    return {
+      outcome: 'evaluator_error',
+      authoritative: true,
+      ...(status.reason !== undefined ? { reason: status.reason } : {}),
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (status?.failed === true) {
+    return {
+      outcome: 'impossible',
+      authoritative: true,
+      ...(status.reason !== undefined ? { reason: status.reason } : {}),
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  const terminalReason = parsed?.terminal_reason?.toLowerCase();
+  if (terminalReason?.includes('max_turn')) {
+    return {
+      outcome: 'turn_capped',
+      authoritative: true,
+      reason: parsed?.terminal_reason,
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (args.status === 'error' || parsed?.is_error === true) {
+    return {
+      outcome: terminalReason?.includes('evaluator') ? 'evaluator_error' : 'provider_error',
+      authoritative: true,
+      reason: parsed?.terminal_reason ?? parsed?.api_error_message,
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  if (terminalReason === 'completed') {
+    return {
+      outcome: 'evaluator_error',
+      authoritative: false,
+      reason: 'Claude completed the process but did not expose a goal-specific terminal event.',
+      turnsUsed,
+      wallClockMsUsed,
+    };
+  }
+  return {
+    outcome: 'evaluator_error',
+    authoritative: false,
+    reason: 'Claude returned no recognized terminal goal event.',
+    turnsUsed,
+    wallClockMsUsed,
+  };
+}
+
+function thrownClaudeGoalResult(
+  constraint: GoalTaskConstraint | undefined,
+  error: unknown,
+  signal: AbortSignal | undefined,
+): GoalExecutionResult | undefined {
+  if (constraint === undefined) return undefined;
+  const details = error as { timedOut?: boolean; isCanceled?: boolean };
+  if (details.timedOut === true) {
+    return {
+      outcome: 'watchdog_timeout',
+      authoritative: true,
+      reason: 'Crew wall-clock watchdog terminated the Claude process.',
+      turnsUsed: 0,
+      wallClockMsUsed: constraint.maxWallClockMs,
+    };
+  }
+  if (signal?.aborted === true || details.isCanceled === true) {
+    return {
+      outcome: 'cancelled',
+      authoritative: true,
+      reason: 'Crew cancelled the Claude process.',
+      turnsUsed: 0,
+      wallClockMsUsed: 0,
+    };
+  }
+  return {
+    outcome: 'provider_error',
+    authoritative: true,
+    reason: error instanceof Error ? error.message : String(error),
+    turnsUsed: 0,
+    wallClockMsUsed: 0,
   };
 }
 
@@ -585,6 +873,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly filesModifiedReliable = false;
   readonly streamsIncrementally = true;
   readonly supportsResume = true;
+  readonly goalSupport = 'claude-native' as const;
   // `claude -p` accepts the full canonical scale via --effort. No
   // defaultEffort: when neither the captain nor agents.json asks, the flag
   // is omitted so the CLI's own session default wins. Keep in lockstep with
@@ -685,13 +974,18 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   async execute(task: Task): Promise<TaskResult> {
-    const streaming = Boolean(task.onOutput);
+    const goalConstraint = task.constraints?.goal;
+    const taskInput = claudeTaskInput(task);
+    // Goal/control evidence is available only in stream-json output, even for
+    // direct adapter callers that did not request progress callbacks.
+    const streaming = Boolean(task.onOutput) || goalConstraint !== undefined;
     const args = [
       '-p',
-      '-',
+      ...(taskInput.structured ? [] : ['-']),
       '--output-format',
       streaming ? 'stream-json' : 'json',
       ...(streaming ? ['--verbose'] : []),
+      ...(taskInput.structured ? ['--input-format', 'stream-json', '--include-hook-events'] : []),
       '--dangerously-skip-permissions',
     ];
 
@@ -699,8 +993,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--model', task.constraints.model);
     }
 
-    if (task.constraints?.maxTurns) {
-      args.push('--max-turns', String(task.constraints.maxTurns));
+    const maxTurns = goalConstraint?.request !== undefined
+      ? goalConstraint.maxTurns
+      : task.constraints?.maxTurns;
+    if (maxTurns) {
+      args.push('--max-turns', String(maxTurns));
     }
 
     if (task.constraints?.effort) {
@@ -734,7 +1031,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // No wall-clock timeout (was 300_000 pre-2026-05). Cancellation
     // is captain-driven via cancelSignal; the agent's own turn/token
     // budget is the natural cap.
-    const timeout = task.constraints?.timeout;
+    const timeout = goalConstraint?.request !== undefined
+      ? goalConstraint.maxWallClockMs
+      : task.constraints?.timeout;
     logger.debug('[adapter:claude-code] starting execute', {
       cwd: task.context.workingDirectory,
       timeoutMs: timeout,
@@ -757,7 +1056,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         cancelSignal: task.constraints?.signal,
         buffer: false,
         reject: false,
-        input: task.prompt,
+        input: taskInput.input,
       });
       const disposeProcessGroupAbort = terminateProcessGroupOnAbort(
         subprocess,
@@ -772,7 +1071,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           const parsed = streaming ? parseClaudeStreamLine(trimmed) : undefined;
           if (streaming) streamCapture.feedParsedLine(trimmed, parsed);
           else rawStdoutCapture = appendBounded(rawStdoutCapture, `${trimmed}\n`);
-          if (!streaming) return;
+          if (!streaming || task.onOutput === undefined) return;
           for (const chunk of formatClaudeStreamLineForStream(parsed)) {
             try {
               task.onOutput!(chunk);
@@ -853,6 +1152,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         timeoutMs: timeout,
         error: message,
       });
+      const goal = thrownClaudeGoalResult(goalConstraint, error, task.constraints?.signal);
       return {
         output: partialOutput || partialStderr || message,
         filesModified: [],
@@ -862,6 +1162,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           [message, partialStdout, partialStderr].filter(Boolean).join('\n'),
           { defaultKind: 'process' },
         ),
+        ...(goal !== undefined ? { goal } : {}),
         metadata: {
           ...(streamCapture.observedModel() !== undefined
             ? { observedModel: streamCapture.observedModel() }
@@ -901,6 +1202,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           stderrText || `Claude CLI exited with code ${result.exitCode} and no output`,
           { defaultKind: 'process' },
         ),
+        ...(goalConstraint !== undefined
+          ? {
+              goal: {
+                outcome: 'provider_error',
+                authoritative: true,
+                reason: stderrText || `Claude CLI exited with code ${result.exitCode}`,
+                turnsUsed: 0,
+                wallClockMsUsed: 0,
+              } as const,
+            }
+          : {}),
         metadata: {
           rawEvents: [
             {
@@ -941,6 +1253,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           [parseError, stdoutText, stderrText].filter(Boolean).join('\n'),
           { defaultKind: 'unknown' },
         ),
+        ...(goalConstraint !== undefined
+          ? {
+              goal: {
+                outcome: 'evaluator_error',
+                authoritative: false,
+                reason: parseError,
+                turnsUsed: 0,
+                wallClockMsUsed: 0,
+              } as const,
+            }
+          : {}),
         metadata: {
           rawEvents: [
             {
@@ -959,6 +1282,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       ? 'partial'
       : parsed.is_error ? 'error' : 'success';
 
+    const goal = goalConstraint !== undefined
+      ? resolveClaudeGoalResult({ constraint: goalConstraint, parsed, capture: streamCapture, status })
+      : undefined;
+    const parsedObservedModel = normalizeClaudeObservedModel(parsed.model);
+
     return {
       output: parsed.result ?? '',
       filesModified,
@@ -969,11 +1297,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         : status === 'error'
           ? { failure: classifyClaudeFailure(parsed, stdoutText, stderrText) }
         : {}),
+      ...(goal !== undefined ? { goal } : {}),
       metadata: {
         ...(streaming && streamCapture.observedModel() !== undefined
           ? { observedModel: streamCapture.observedModel() }
-          : parsed.model !== undefined && parsed.model.trim().length > 0
-            ? { observedModel: parsed.model.trim() }
+          : parsedObservedModel !== undefined
+            ? { observedModel: parsedObservedModel }
             : {}),
         costUsd: parsed.total_cost_usd ?? parsed.cost_usd,
         durationMs: parsed.duration_ms,

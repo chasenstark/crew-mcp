@@ -192,6 +192,7 @@ describe('installRunLifecycleListeners', () => {
       resolvePersist = resolve;
     });
     const slowStore = {
+      read: vi.fn(() => undefined),
       markTerminal: vi.fn(() => persistPromise),
     } as unknown as RunStateStore;
 
@@ -229,6 +230,309 @@ describe('installRunLifecycleListeners', () => {
       status: 'cancelled',
       summary: 'shutdown',
       filesChanged: [],
+    });
+  });
+
+  it('charges elapsed wall time when the user cancels a pending goal turn', async () => {
+    const elapsedMs = 6_500;
+    await store.create({
+      runId: 'r-user-goal-cancel',
+      agentId: 'claude-code',
+      worktreePath: '/wt',
+      initialPrompt: 'go',
+      goal: {
+        policy: 'start',
+        request: {
+          validationCommand: 'npm test',
+          repeatSafe: true,
+          maxTurns: 4,
+          maxWallClockMs: 30_000,
+        },
+        authoritative: false,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+      goalBudget: {
+        maxTurns: 4,
+        maxWallClockMs: 30_000,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+    });
+
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore: store,
+      runId: 'r-user-goal-cancel',
+      agentName: 'claude-code',
+      toolCallId: 'tc-user-goal-cancel',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+    emitter.emitter.emit('run:cancelled', {
+      toolCallId: 'tc-user-goal-cancel',
+      toolName: 'run_agent',
+      reason: 'cancel_run requested',
+      abortOrigin: 'user',
+      elapsedMs,
+      runId: 'r-user-goal-cancel',
+    });
+
+    await expect(terminal).resolves.toMatchObject({
+      kind: 'cancelled',
+      abortOrigin: 'user',
+      elapsedMs,
+    });
+    await waitFor(() => store.read('r-user-goal-cancel')?.status === 'cancelled');
+    expect(store.read('r-user-goal-cancel')).toMatchObject({
+      status: 'cancelled',
+      goalBudget: {
+        turnsUsed: 0,
+        wallClockMsUsed: elapsedMs,
+      },
+      prompts: [{
+        goal: {
+          outcome: 'cancelled',
+          authoritative: true,
+          reason: 'cancel_run requested',
+          turnsUsed: 0,
+          wallClockMsUsed: elapsedMs,
+        },
+      }],
+    });
+  });
+
+  it.each([
+    ['streaming_watchdog', 'stall watchdog: no output', 4_000],
+    ['buffered_watchdog', 'absolute cap: buffering adapter', 7_500],
+  ] as const)(
+    'persists %s aborts as authoritative watchdog_timeout goal outcomes',
+    async (abortOrigin, reason, elapsedMs) => {
+      const runId = `r-${abortOrigin}`;
+      const toolCallId = `tc-${abortOrigin}`;
+      const request = {
+        validationCommand: 'npm test',
+        repeatSafe: true as const,
+        maxTurns: 4,
+        maxWallClockMs: 30_000,
+      };
+      await store.create({
+        runId,
+        agentId: 'claude-code',
+        worktreePath: '/wt',
+        initialPrompt: 'go',
+        goal: {
+          policy: 'start',
+          request,
+          authoritative: false,
+          turnsUsed: 0,
+          wallClockMsUsed: 0,
+        },
+        goalBudget: {
+          maxTurns: 4,
+          maxWallClockMs: 30_000,
+          turnsUsed: 0,
+          wallClockMsUsed: 0,
+        },
+      });
+
+      const terminal = installRunLifecycleListeners({
+        dispatcher,
+        runStateStore: store,
+        runId,
+        agentName: 'claude-code',
+        toolCallId,
+      });
+      const emitter = dispatcher as unknown as {
+        emitter: {
+          emit(event: string, info: Record<string, unknown>): boolean;
+        };
+      };
+      emitter.emitter.emit('run:cancelled', {
+        toolCallId,
+        toolName: 'run_agent',
+        reason,
+        abortOrigin,
+        elapsedMs,
+        runId,
+      });
+
+      await expect(terminal).resolves.toMatchObject({
+        kind: 'cancelled',
+        abortOrigin,
+        elapsedMs,
+      });
+      await waitFor(() => store.read(runId)?.status === 'cancelled');
+
+      expect(store.read(runId)).toMatchObject({
+        status: 'cancelled',
+        goalBudget: {
+          turnsUsed: 0,
+          wallClockMsUsed: elapsedMs,
+        },
+        prompts: [{
+          goal: {
+            outcome: 'watchdog_timeout',
+            authoritative: true,
+            reason,
+            turnsUsed: 0,
+            wallClockMsUsed: elapsedMs,
+          },
+        }],
+      });
+    },
+  );
+
+  it.each([
+    { outcome: 'unsupported' as const, policy: 'start' as const },
+    { outcome: 'not_requested' as const, policy: 'not_requested' as const },
+  ])(
+    'does not replace settled $outcome with watchdog_timeout',
+    async ({ outcome, policy }) => {
+      const runId = `r-watchdog-settled-${outcome}`;
+      const toolCallId = `tc-watchdog-settled-${outcome}`;
+      await store.create({
+        runId,
+        agentId: outcome === 'unsupported' ? 'codex' : 'claude-code',
+        worktreePath: '/wt',
+        initialPrompt: 'go',
+        goal: {
+          policy,
+          outcome,
+          authoritative: true,
+          reason: `planner settled ${outcome}`,
+          turnsUsed: 0,
+          wallClockMsUsed: 0,
+        },
+        goalBudget: {
+          maxTurns: 4,
+          maxWallClockMs: 30_000,
+          turnsUsed: 1,
+          wallClockMsUsed: 2_000,
+        },
+      });
+      const markTerminal = vi.spyOn(store, 'markTerminal');
+
+      const terminal = installRunLifecycleListeners({
+        dispatcher,
+        runStateStore: store,
+        runId,
+        agentName: 'claude-code',
+        toolCallId,
+      });
+      const emitter = dispatcher as unknown as {
+        emitter: {
+          emit(event: string, info: Record<string, unknown>): boolean;
+        };
+      };
+      emitter.emitter.emit('run:cancelled', {
+        toolCallId,
+        toolName: 'run_agent',
+        reason: 'stall watchdog: no output',
+        abortOrigin: 'streaming_watchdog',
+        elapsedMs: 9_000,
+        runId,
+      });
+
+      await expect(terminal).resolves.toMatchObject({ kind: 'cancelled' });
+      await waitFor(() => store.read(runId)?.status === 'cancelled');
+      expect(markTerminal).toHaveBeenCalledWith(runId, {
+        status: 'cancelled',
+        summary: 'stall watchdog: no output',
+        filesChanged: [],
+      });
+      expect(store.read(runId)).toMatchObject({
+        goalBudget: {
+          turnsUsed: 1,
+          wallClockMsUsed: 2_000,
+        },
+        prompts: [{
+          goal: {
+            policy,
+            outcome,
+            authoritative: true,
+            reason: `planner settled ${outcome}`,
+            turnsUsed: 0,
+            wallClockMsUsed: 0,
+          },
+        }],
+      });
+    },
+  );
+
+  it('does not let an adapter completion overwrite a settled goal', async () => {
+    await store.create({
+      runId: 'r-adapter-settled-goal',
+      agentId: 'codex',
+      worktreePath: '/wt',
+      initialPrompt: 'go',
+      goal: {
+        policy: 'start',
+        outcome: 'unsupported',
+        authoritative: true,
+        reason: 'Codex goals are unsupported',
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+      goalBudget: {
+        maxTurns: 4,
+        maxWallClockMs: 30_000,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+    });
+
+    const terminal = installRunLifecycleListeners({
+      dispatcher,
+      runStateStore: store,
+      runId: 'r-adapter-settled-goal',
+      agentName: 'codex',
+      toolCallId: 'tc-adapter-settled-goal',
+    });
+    const emitter = dispatcher as unknown as {
+      emitter: {
+        emit(event: string, info: Record<string, unknown>): boolean;
+      };
+    };
+    emitter.emitter.emit('run:complete', {
+      toolCallId: 'tc-adapter-settled-goal',
+      toolName: 'run_agent',
+      result: {
+        status: 'success',
+        output: 'adapter completed',
+        filesModified: [],
+        metadata: {},
+        goal: {
+          outcome: 'achieved',
+          authoritative: true,
+          reason: 'late adapter result',
+          turnsUsed: 3,
+          wallClockMsUsed: 12_000,
+        },
+      },
+      runId: 'r-adapter-settled-goal',
+    });
+
+    await expect(terminal).resolves.toMatchObject({ kind: 'complete' });
+    await waitFor(() => store.read('r-adapter-settled-goal')?.status === 'success');
+    expect(store.read('r-adapter-settled-goal')).toMatchObject({
+      goalBudget: {
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+      prompts: [{
+        goal: {
+          policy: 'start',
+          outcome: 'unsupported',
+          authoritative: true,
+          reason: 'Codex goals are unsupported',
+          turnsUsed: 0,
+          wallClockMsUsed: 0,
+        },
+      }],
     });
   });
 

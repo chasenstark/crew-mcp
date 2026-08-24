@@ -306,6 +306,13 @@ describe('getPanelStatusHandler', () => {
             summary: 'durable summary',
             filesChanged: ['review.md'],
             completedAt: '2026-05-14T00:00:02.000Z',
+            goal: {
+              policy: 'not_requested',
+              outcome: 'not_requested',
+              authoritative: true,
+              turnsUsed: 0,
+              wallClockMsUsed: 0,
+            },
           },
         },
       ],
@@ -320,6 +327,13 @@ describe('getPanelStatusHandler', () => {
       summary: 'durable summary',
       files_changed: ['review.md'],
       completedAt: '2026-05-14T00:00:02.000Z',
+      goal: {
+        policy: 'not_requested',
+        outcome: 'not_requested',
+        authoritative: true,
+        turns_used: 0,
+        wall_clock_ms_used: 0,
+      },
     });
   });
 

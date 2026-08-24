@@ -712,6 +712,119 @@ describe('RunStateStore', () => {
     expect(next.prompts[1].prompt).toBe('second');
   });
 
+  it('persists authoritative per-turn goal outcomes and cumulative usage', async () => {
+    const request = {
+      validationCommand: 'npm run test:run -- --run goal',
+      repeatSafe: true as const,
+      maxTurns: 5,
+      maxWallClockMs: 50_000,
+    };
+    await createRun({
+      runId: 'r-goal',
+      agentId: 'claude-code',
+      worktreePath: repoRoot,
+      initialPrompt: 'implement',
+      goal: {
+        policy: 'start',
+        request,
+        authoritative: false,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+      goalBudget: {
+        maxTurns: 5,
+        maxWallClockMs: 50_000,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+    });
+    await store.markTerminal('r-goal', {
+      status: 'partial',
+      summary: 'turn capped',
+      filesChanged: [],
+      goal: {
+        outcome: 'turn_capped',
+        authoritative: true,
+        reason: 'max_turns',
+        turnsUsed: 3,
+        wallClockMsUsed: 12_000,
+      },
+    });
+
+    expect(store.read('r-goal')).toMatchObject({
+      goalBudget: { turnsUsed: 3, wallClockMsUsed: 12_000 },
+      prompts: [{
+        goal: {
+          request,
+          outcome: 'turn_capped',
+          authoritative: true,
+          turnsUsed: 3,
+          wallClockMsUsed: 12_000,
+        },
+      }],
+    });
+  });
+
+  it.each([
+    { outcome: 'unsupported' as const, policy: 'start' as const },
+    { outcome: 'not_requested' as const, policy: 'not_requested' as const },
+  ])(
+    'does not overwrite a settled $outcome goal or charge supplied terminal usage',
+    async ({ outcome, policy }) => {
+      const runId = `r-settled-${outcome}`;
+      await createRun({
+        runId,
+        agentId: outcome === 'unsupported' ? 'codex' : 'claude-code',
+        worktreePath: repoRoot,
+        initialPrompt: 'implement',
+        goal: {
+          policy,
+          outcome,
+          authoritative: true,
+          reason: `planner settled ${outcome}`,
+          turnsUsed: 0,
+          wallClockMsUsed: 0,
+        },
+        goalBudget: {
+          maxTurns: 5,
+          maxWallClockMs: 50_000,
+          turnsUsed: 1,
+          wallClockMsUsed: 2_000,
+        },
+      });
+
+      const next = await store.markTerminal(runId, {
+        status: 'success',
+        summary: 'adapter completed',
+        filesChanged: [],
+        goal: {
+          outcome: 'achieved',
+          authoritative: true,
+          reason: 'late adapter result',
+          turnsUsed: 2,
+          wallClockMsUsed: 6_000,
+        },
+      });
+
+      expect(next).toMatchObject({
+        goalBudget: {
+          turnsUsed: 1,
+          wallClockMsUsed: 2_000,
+        },
+        prompts: [{
+          goal: {
+            policy,
+            outcome,
+            authoritative: true,
+            reason: `planner settled ${outcome}`,
+            turnsUsed: 0,
+            wallClockMsUsed: 0,
+          },
+        }],
+      });
+    },
+  );
+
   it('create() truncates oversized initial prompts with a marker (Tier 3 #14)', async () => {
     // 20 KB prompt — exceeds the 16 KB default cap.
     const oversized = 'x'.repeat(20_480);

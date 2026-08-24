@@ -504,6 +504,14 @@ run_agent({
 - Use the confirmed implementer. For heuristic picks only, match mechanical
   work to fast iteration and behavioral work to deeper reasoning.
 - Set effort one level above raw implementation, **clamped at `max`**.
+- Worker goals are optional, never implicit. Use `goal` only when the user
+  explicitly opted in, the confirmed implementer is Claude Code, and one `[M]`
+  criterion is a single repeat-safe mechanical command. Never use goals for
+  reviewers, read-only/ephemeral runs, Codex, or captain orchestration. Bound
+  `max_turns` to 1..20 and `max_wall_clock_ms` to at most 600000, require
+  `repeat_safe:true`, and tell the worker to stop on infrastructure,
+  permission, or dependency failure. Read the typed `goal.outcome`; never
+  infer it from summary prose.
 - Handle Step 0's typed criteria errors. Print `relay_verbatim` verbatim,
   apply invariant #2, and end the turn.
 
@@ -832,6 +840,13 @@ continue_run({
            report command + exit code, and summarize the fixes."
 })
 ```
+
+The omitted `goal_policy` above deliberately clears any prior native goal.
+Use `goal_policy:"inherit"` only for an explicitly retained, nonterminal
+objective; use `replace` with a newly confirmed goal object. Neither may reset
+or increase the run's aggregate goal budget. A failed or unconfirmed clear is
+retried by the next default-clear continuation. Do not dispatch review or
+another continuation until the provider turn is terminal.
 
 For panels, pass `aggregate_panel({panel_id}).peer_messages`, then append the
 host review. After terminal, increment the round, update loop state, and

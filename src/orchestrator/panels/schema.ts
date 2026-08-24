@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 import type { ModelSelectionRecord, TaskFailure } from '../../adapters/types.js';
+import {
+  goalTurnRecordSchema,
+  type GoalTurnRecord,
+} from '../goals.js';
 
 export const PANEL_SCHEMA_VERSION = 1 as const;
 
@@ -11,6 +15,7 @@ export interface PanelReviewerTerminalSnapshot {
   readonly completedAt?: string;
   readonly failure?: TaskFailure;
   readonly modelSelection?: ModelSelectionRecord;
+  readonly goal?: GoalTurnRecord;
 }
 
 export interface PanelReviewerDispatchedRecord {
@@ -92,6 +97,7 @@ const dispatchedReviewerSchema = z.object({
     completedAt: z.string().min(1).optional(),
     failure: taskFailureSchema.optional(),
     modelSelection: modelSelectionRecordSchema.optional(),
+    goal: goalTurnRecordSchema.optional(),
   }).strict().optional(),
 }).strict();
 

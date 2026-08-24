@@ -1,4 +1,4 @@
-> **Current as of 2026-08-20.**
+> **Current as of 2026-08-23.**
 
 # MCP Tool Surface
 
@@ -18,17 +18,17 @@ The complete catalog contains twenty tools. Nineteen are captain-facing;
 
 | Tool | Role | Contract |
 | --- | --- | --- |
-| `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, and `model_selection_support`. |
+| `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, `model_selection_support`, and `goal_support`. |
 | `list_models` | Captain | Discovers one agent's provider-native model catalog. Accepts `{agent_id, refresh?}` and returns exact arguments, catalog provenance, authority, and warnings. |
 | `get_crew_preferences` | Captain | Reads effective per-machine crew preferences. |
-| `list_runs` | Captain | Lists repo-scoped persisted runs, including each run's latest `model_selection`. |
+| `list_runs` | Captain | Lists repo-scoped persisted runs, including each run's latest model and goal state. |
 | `check_captain_inbox` | Captain | Reads durable worker-to-captain messages. |
 | `acknowledge_messages` | Captain | Acknowledges captain inbox messages. |
 | `run_agent` | Captain | Starts an asynchronous write, read-only, or ephemeral-review run. |
-| `continue_run` | Captain | Adds a turn to an existing run while preserving its lifecycle and model-selection history. |
+| `continue_run` | Captain | Adds a turn while preserving lifecycle/model history and applying explicit goal continuation policy. |
 | `merge_run` | Captain | Merges an authorized write run into a target branch. |
 | `discard_run` | Captain | Discards an authorized run and performs lifecycle cleanup. |
-| `get_run_status` | Captain | Reads immediate or explicitly authorized long-poll run status, with latest and per-turn model identity. |
+| `get_run_status` | Captain | Reads status with latest/per-turn model and goal identity plus cumulative goal budgets. |
 | `cancel_run` | Captain | Cancels in-flight dispatcher work. |
 | `run_panel` | Captain | Dispatches parallel reviewers and persists their independent agent/model identities. |
 | `get_panel_status` | Captain | Reads reviewer lifecycle, files, summaries, failures, and model selections. |
@@ -80,6 +80,35 @@ the prior CLI-default decision. Panel records preserve the same information so
 same-provider reviewers such as Claude `opus`, `fable`, and `sonnet` remain
 distinguishable through dispatch, status, and aggregation.
 
+## Bounded worker goals
+
+`run_agent.goal` is an opt-in object with `validation_command`, the required
+literal `repeat_safe:true`, `max_turns`, and `max_wall_clock_ms`. The command is
+provider prompt data; Crew does not execute it itself. Native execution is
+restricted to Claude Code write implementers. Codex, agy, custom providers,
+read-only runs, and reviewers record `unsupported` and dispatch exactly once.
+
+Every prompt record uses the complete outcome vocabulary:
+`not_requested`, `unsupported`, `achieved`, `impossible`, `turn_capped`,
+`watchdog_timeout`, `cancelled`, `provider_error`, and `evaluator_error`.
+Supported in-flight turns omit the outcome until terminal persistence. Provider
+outcomes must come from structured provider output; Crew's own timeout and
+cancellation signals are authoritative only for their respective outcomes.
+
+`continue_run.goal_policy` is `inherit`, `clear`, or `replace` and defaults to
+`clear`. Inherit requires a nonterminal prior goal. Replace requires a new goal
+and cannot increase the run's original aggregate limits. Crew subtracts prior
+native turns and wall time before dispatching a resumed provider process.
+Clear and replacement require provider control echoes when Claude supports the
+prior goal. A failed or unconfirmed clear remains pending intent, so the next
+default-clear continuation retries `/goal clear` in the retained provider
+session instead of silently resuming a stale objective. Crew remains the only
+owner of outer continuation and review.
+
+Panel terminal snapshots retain the reviewer's latest goal audit record beside
+summary, files, failure, and model selection. `get_panel_status` therefore
+preserves goal data even after the underlying reviewer run state is unavailable.
+
 ## Dispatch and watcher lifecycle
 
 `run_agent`, `continue_run`, and `run_panel` return immediately after dispatch.
@@ -91,7 +120,8 @@ open with `get_run_status` long polling.
 
 `get_run_status` returns a lean running payload and a richer terminal payload.
 Both include the latest recorded `model_selection`; terminal `prompts` include
-the selection for every turn. A terminal-only wait is accepted only with
+the selection and goal outcome for every turn, plus `goal_budget` when used. A
+terminal-only wait is accepted only with
 `user_requested_wait:true`, which represents an explicit user request to
 block.
 

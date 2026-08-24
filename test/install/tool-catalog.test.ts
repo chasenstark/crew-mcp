@@ -59,12 +59,15 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
         'ban_override',
         'same_host_ok',
         'dispatch_anyway',
+        'goal',
       ]));
       expect(Object.keys(propertiesFor('continue_run'))).toEqual(expect.arrayContaining([
         'ban_override',
         'same_host_ok',
         'cap_override',
         'dispatch_anyway',
+        'goal_policy',
+        'goal',
       ]));
       expect(Object.keys(propertiesFor('run_panel'))).toEqual(expect.arrayContaining([
         'ban_override',

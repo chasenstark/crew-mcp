@@ -125,6 +125,79 @@ describe('planRunAgent', () => {
     }
   });
 
+  it('keeps unsupported provider goals single-shot and auditable', async () => {
+    const executeMock = vi.fn<AgentAdapter['execute']>(async () => ({
+      output: 'ordinary result',
+      filesModified: [],
+      status: 'success',
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({
+      name: 'codex',
+      goalSupport: 'unsupported',
+      execute: executeMock,
+    });
+    const plan = await planRunAgent({
+      agent_id: 'codex',
+      prompt: 'implement',
+      goal: {
+        validation_command: 'npm test',
+        repeat_safe: true,
+        max_turns: 3,
+        max_wall_clock_ms: 30_000,
+      },
+    }, { registry: makeRegistry([adapter]), worktreeManager });
+    expect(plan).toMatchObject({
+      kind: 'dispatched',
+      goal: { outcome: 'unsupported', authoritative: true },
+    });
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    await plan.buildTask('implement').run({ signal: makeAbortSignal() });
+    expect(executeMock.mock.calls[0]?.[0].constraints?.goal).toBeUndefined();
+  });
+
+  it('passes bounded native goals only to Claude write implementers', async () => {
+    const executeMock = vi.fn<AgentAdapter['execute']>(async (task) => ({
+      output: 'goal result',
+      filesModified: [],
+      status: 'success',
+      goal: {
+        outcome: 'achieved',
+        authoritative: true,
+        turnsUsed: 2,
+        wallClockMsUsed: 5_000,
+      },
+      metadata: {},
+    }));
+    const adapter = makeMockAdapter({
+      name: 'claude-code',
+      goalSupport: 'claude-native',
+      execute: executeMock,
+    });
+    const plan = await planRunAgent({
+      agent_id: 'claude-code',
+      prompt: 'implement',
+      goal: {
+        validation_command: 'npm test',
+        repeat_safe: true,
+        max_turns: 3,
+        max_wall_clock_ms: 30_000,
+      },
+    }, { registry: makeRegistry([adapter]), worktreeManager });
+    expect(plan).toMatchObject({
+      kind: 'dispatched',
+      goal: { policy: 'start', authoritative: false },
+      goalBudget: { maxTurns: 3, maxWallClockMs: 30_000 },
+    });
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    await plan.buildTask('implement').run({ signal: makeAbortSignal() });
+    expect(executeMock.mock.calls[0]?.[0].constraints?.goal).toMatchObject({
+      action: 'start',
+      maxTurns: 3,
+      maxWallClockMs: 30_000,
+    });
+  });
+
   it('captures branch-point snapshots inside DispatchTask.run, before adapter execution', async () => {
     const getModifiedFilesByRun = vi.spyOn(worktreeManager, 'getModifiedFilesByRun');
     const executeMock = vi.fn<(t: unknown) => Promise<TaskResult>>(async (task) => {

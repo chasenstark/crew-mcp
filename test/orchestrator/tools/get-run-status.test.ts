@@ -181,6 +181,64 @@ describe('getRunStatusToolHandler', () => {
     });
   });
 
+  it('surfaces in-flight, terminal, per-turn, and cumulative goal state', async () => {
+    const request = {
+      validationCommand: 'npm test',
+      repeatSafe: true as const,
+      maxTurns: 4,
+      maxWallClockMs: 40_000,
+    };
+    await store.create({
+      runId: 'r-goal-status',
+      agentId: 'claude-code',
+      worktreePath: '/wt/r-goal-status',
+      initialPrompt: 'go',
+      goal: {
+        policy: 'start',
+        request,
+        authoritative: false,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+      goalBudget: {
+        maxTurns: 4,
+        maxWallClockMs: 40_000,
+        turnsUsed: 0,
+        wallClockMsUsed: 0,
+      },
+    });
+    const running = await getRunStatusToolHandler(
+      { run_id: 'r-goal-status' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(running.structuredContent?.goal).toMatchObject({
+      policy: 'start',
+      requested: { validation_command: 'npm test' },
+      authoritative: false,
+    });
+
+    await store.markTerminal('r-goal-status', {
+      status: 'success',
+      summary: 'done',
+      filesChanged: [],
+      goal: {
+        outcome: 'achieved',
+        authoritative: true,
+        turnsUsed: 2,
+        wallClockMsUsed: 12_000,
+      },
+    });
+    const terminal = await getRunStatusToolHandler(
+      { run_id: 'r-goal-status' },
+      { dispatcher: new ToolDispatcher(), runStateStore: store },
+    );
+    expect(terminal.structuredContent).toMatchObject({
+      goal: { outcome: 'achieved', turns_used: 2 },
+      goal_budget: { max_turns: 4, turns_used: 2, wall_clock_ms_used: 12_000 },
+      prompts: [{ goal: { outcome: 'achieved', authoritative: true } }],
+    });
+  });
+
   it('warns for wait_for_change_ms on a criteria-linked run', async () => {
     await store.create({
       runId: 'r-linked-change-wait',

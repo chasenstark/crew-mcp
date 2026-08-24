@@ -40,6 +40,13 @@ describe('panelStateSchemaV1', () => {
             summary: 'reviewed',
             filesChanged: ['src/a.ts'],
             completedAt: '2026-05-14T00:02:00.000Z',
+            goal: {
+              policy: 'not_requested',
+              outcome: 'not_requested',
+              authoritative: true,
+              turnsUsed: 0,
+              wallClockMsUsed: 0,
+            },
           },
         },
         {

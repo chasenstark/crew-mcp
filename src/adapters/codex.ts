@@ -446,6 +446,9 @@ export class CodexAdapter implements AgentAdapter {
   readonly filesModifiedReliable = true;
   readonly streamsIncrementally = true;
   readonly supportsResume = true;
+  // Phase 0 (2026-08-23): codex exec requires an external resume and exposes
+  // no stable public terminal-goal event, so product goal support stays off.
+  readonly goalSupport = 'unsupported' as const;
   readonly captainCapabilities = {
     supportsStructuredDecisions: true,
     supportsPauseForUserInput: false,

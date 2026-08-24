@@ -32,6 +32,11 @@ export interface DispatchTask {
   run(ctx: DispatchTaskContext): Promise<unknown>;
 }
 
+export type DispatchAbortOrigin =
+  | 'user'
+  | 'streaming_watchdog'
+  | 'buffered_watchdog';
+
 export interface DispatcherEvents {
   'run:start': (info: { toolCallId: string; toolName: string; runId?: string }) => void;
   'run:stream': (info: {
@@ -48,7 +53,14 @@ export interface DispatcherEvents {
     result?: unknown;
     runId?: string;
   }) => void;
-  'run:cancelled': (info: { toolCallId: string; toolName: string; reason: string; runId?: string }) => void;
+  'run:cancelled': (info: {
+    toolCallId: string;
+    toolName: string;
+    reason: string;
+    abortOrigin: DispatchAbortOrigin;
+    elapsedMs: number;
+    runId?: string;
+  }) => void;
 }
 
 export interface Disposable {
@@ -70,6 +82,7 @@ type InFlight = {
   controller: AbortController;
   toolName: string;
   runId?: string;
+  startedAtMs: number;
   cancelEscalationTimer?: ReturnType<typeof setTimeout>;
 };
 
@@ -111,6 +124,7 @@ export class ToolDispatcher {
       controller,
       toolName: task.toolName,
       runId: task.runId,
+      startedAtMs: Date.now(),
     };
     this.inFlight.set(task.toolCallId, entry);
     this.emitter.emit('run:start', {
@@ -240,10 +254,13 @@ export class ToolDispatcher {
     // If the task finished during a cancellation race, honor the cancellation
     // event instead of overwriting it with a completed one.
     if (entry?.controller.signal.aborted) {
+      const abortReason = entry.controller.signal.reason;
       this.emitter.emit('run:cancelled', {
         toolCallId: task.toolCallId,
         toolName: task.toolName,
-        reason: readAbortReason(entry.controller.signal.reason),
+        reason: readAbortReason(abortReason),
+        abortOrigin: readAbortOrigin(abortReason),
+        elapsedMs: elapsedSince(entry.startedAtMs),
         runId: task.runId,
       });
       return;
@@ -281,10 +298,13 @@ export class ToolDispatcher {
     clearCancelEscalation(entry);
     const aborted = entry?.controller.signal.aborted ?? false;
     if (aborted) {
+      const abortReason = entry.controller.signal.reason ?? err;
       this.emitter.emit('run:cancelled', {
         toolCallId: task.toolCallId,
         toolName: task.toolName,
-        reason: readAbortReason(entry?.controller.signal.reason ?? err),
+        reason: readAbortReason(abortReason),
+        abortOrigin: readAbortOrigin(abortReason),
+        elapsedMs: elapsedSince(entry.startedAtMs),
         runId: task.runId,
       });
       return;
@@ -299,10 +319,13 @@ export class ToolDispatcher {
       if (current !== entry) return;
       this.inFlight.delete(toolCallId);
       current.cancelEscalationTimer = undefined;
+      const abortReason = current.controller.signal.reason;
       this.emitter.emit('run:cancelled', {
         toolCallId,
         toolName: current.toolName,
-        reason: `${readAbortReason(current.controller.signal.reason)}; process did not exit after abort; flagged as zombie`,
+        reason: `${readAbortReason(abortReason)}; process did not exit after abort; flagged as zombie`,
+        abortOrigin: readAbortOrigin(abortReason),
+        elapsedMs: elapsedSince(current.startedAtMs),
         runId: current.runId,
       });
     }, this.cancelEscalationTimeoutMs);
@@ -362,6 +385,16 @@ function readAbortReason(reason: unknown): string {
   if (reason instanceof Error) return reason.message;
   if (typeof reason === 'string') return reason;
   return 'cancelled';
+}
+
+function readAbortOrigin(reason: unknown): DispatchAbortOrigin {
+  if (reason instanceof StallTimeoutError) return 'streaming_watchdog';
+  if (reason instanceof BufferedAbsoluteTimeoutError) return 'buffered_watchdog';
+  return 'user';
+}
+
+function elapsedSince(startedAtMs: number): number {
+  return Math.max(0, Date.now() - startedAtMs);
 }
 
 function isErrorTaskResult(result: unknown): result is { status: 'error'; output?: unknown } {

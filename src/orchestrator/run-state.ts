@@ -43,7 +43,11 @@ import { atomicWrite } from '../utils/atomic-write.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import { logger } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
-import type { ModelSelectionRecord, TaskFailure } from '../adapters/types.js';
+import type {
+  GoalExecutionResult,
+  ModelSelectionRecord,
+  TaskFailure,
+} from '../adapters/types.js';
 import { filterEventsTailNoise, isEventsTailNoiseLine } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
 import { writeRunReceipt } from './receipts.js';
@@ -59,6 +63,11 @@ import type {
 import { legacyReadOnlyShim, type RunMode } from './run-mode.js';
 import { withStateLock } from './run-state-lock.js';
 import type { WorkerReadyStatus } from './auth/sidecar-schema.js';
+import {
+  applyGoalResult,
+  type GoalBudgetRecord,
+  type GoalTurnRecord,
+} from './goals.js';
 
 export type RunStatus =
   | 'running'
@@ -96,6 +105,8 @@ export interface PromptRecord {
   readonly criteriaEpoch?: number;
   /** Exact model decision for this turn; absent only on legacy state. */
   readonly modelSelection?: ModelSelectionRecord;
+  /** Goal request/control and authoritative terminal outcome for this turn. */
+  readonly goal?: GoalTurnRecord;
   readonly startedAt: string;
   readonly completedAt?: string;
   /** The adapter's `output` text for this turn. */
@@ -164,6 +175,8 @@ export interface RunStateV1 {
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
   readonly prompts: readonly PromptRecord[];
+  /** Aggregate bound/usage; provider resume must never reset these counters. */
+  readonly goalBudget?: GoalBudgetRecord;
   readonly filesChanged: readonly string[];
   /**
    * Provider conversation/session id from the latest terminal turn's
@@ -230,6 +243,27 @@ export function truncatePromptForStorage(prompt: string): string {
   // fit, return just the marker (user explicitly asked for tiny storage).
   const budget = Math.max(0, cap - marker.length);
   return prompt.slice(0, budget) + marker;
+}
+
+function fallbackGoalResult(
+  status: 'success' | 'partial' | 'error' | 'cancelled',
+): GoalExecutionResult {
+  if (status === 'cancelled') {
+    return {
+      outcome: 'cancelled',
+      authoritative: true,
+      reason: 'Crew cancelled the provider process.',
+      turnsUsed: 0,
+      wallClockMsUsed: 0,
+    };
+  }
+  return {
+    outcome: status === 'error' ? 'provider_error' : 'evaluator_error',
+    authoritative: false,
+    reason: 'The adapter returned without an authoritative goal result.',
+    turnsUsed: 0,
+    wallClockMsUsed: 0,
+  };
 }
 
 function isEnoent(err: unknown): boolean {
@@ -339,6 +373,8 @@ export interface CreateRunStateInit {
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
   readonly modelSelection?: ModelSelectionRecord;
+  readonly goal?: GoalTurnRecord;
+  readonly goalBudget?: GoalBudgetRecord;
   /**
    * Lifecycle mode for this run. Persisted so `continue_run` can read
    * it back and stay sticky, and so `merge_run` / `discard_run` can
@@ -384,6 +420,8 @@ export interface AppendPromptOptions {
   readonly criteriaSetId?: string;
   readonly criteriaEpoch?: number;
   readonly modelSelection?: ModelSelectionRecord;
+  readonly goal?: GoalTurnRecord;
+  readonly goalBudget?: GoalBudgetRecord;
   readonly workerReady?: WorkerReadyStatus;
 }
 
@@ -522,10 +560,12 @@ export class RunStateStore {
             ...(init.modelSelection !== undefined
               ? { modelSelection: init.modelSelection }
               : {}),
+            ...(init.goal !== undefined ? { goal: init.goal } : {}),
             startedAt: now,
           },
         ],
         filesChanged: [],
+        ...(init.goalBudget !== undefined ? { goalBudget: init.goalBudget } : {}),
       };
       this.writeAtomic(init.runId, state);
       // Drop a one-click `tail.command` helper next to events.log. On macOS
@@ -722,6 +762,7 @@ export class RunStateStore {
         lastError: undefined,
         failure: undefined,
         serverPid: process.pid,
+        ...(options.goalBudget !== undefined ? { goalBudget: options.goalBudget } : {}),
         ...(options.workerReady !== undefined ? { workerReady: options.workerReady } : {}),
         ...(options.criteriaSetId !== undefined
           ? { criteriaSetId: options.criteriaSetId, criteriaEpoch: options.criteriaEpoch }
@@ -739,6 +780,7 @@ export class RunStateStore {
             ...(options.modelSelection !== undefined
               ? { modelSelection: options.modelSelection }
               : {}),
+            ...(options.goal !== undefined ? { goal: options.goal } : {}),
             startedAt: now,
           },
         ],
@@ -799,6 +841,7 @@ export class RunStateStore {
        * overwritten, so the captain sees every contract violation.
        */
       warnings?: readonly string[];
+      goal?: GoalExecutionResult;
     },
   ): Promise<RunStateV1> {
     const now = new Date().toISOString();
@@ -813,6 +856,8 @@ export class RunStateStore {
       // terminal write so notification and status-guard decisions observe the
       // same state version.
       shouldNotify = true;
+      const currentGoal = s.prompts.at(-1)?.goal;
+      const pendingGoal = currentGoal !== undefined && currentGoal.outcome === undefined;
       const prompts = s.prompts.map((p, i): PromptRecord =>
         i === s.prompts.length - 1
           ? {
@@ -827,12 +872,25 @@ export class RunStateStore {
                     },
                   }
                 : {}),
+              ...(p.goal !== undefined && p.goal.outcome === undefined
+                ? { goal: applyGoalResult(p.goal, args.goal ?? fallbackGoalResult(args.status)) }
+                : {}),
             }
           : p,
       );
       const mergedWarnings = args.warnings && args.warnings.length > 0
         ? [...(s.warnings ?? []), ...args.warnings]
         : s.warnings;
+      const goalUsage = pendingGoal
+        ? args.goal ?? fallbackGoalResult(args.status)
+        : undefined;
+      const goalBudget = s.goalBudget !== undefined && goalUsage !== undefined
+        ? {
+            ...s.goalBudget,
+            turnsUsed: s.goalBudget.turnsUsed + goalUsage.turnsUsed,
+            wallClockMsUsed: s.goalBudget.wallClockMsUsed + goalUsage.wallClockMsUsed,
+          }
+        : s.goalBudget;
       return {
         ...s,
         status: args.status,
@@ -842,6 +900,7 @@ export class RunStateStore {
         sessionId: args.sessionId ?? s.sessionId,
         lastError: args.lastError ?? s.lastError,
         failure: args.failure,
+        ...(goalBudget !== undefined ? { goalBudget } : {}),
         ...(mergedWarnings && mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
       };
     });

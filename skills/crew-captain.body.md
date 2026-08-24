@@ -602,6 +602,41 @@ Use `run_mode: "ephemeral_review"` or put agy on a `run_panel`.
 task clearly needs a different level. When overriding, pass `effort` and
 state it briefly in the prompt.
 
+### Bounded worker goals
+
+`list_agents.goal_support` is authoritative. Native goals are an explicit
+opt-in for Claude Code **write implementers only**. Never attach `goal` to a
+reviewer, read-only/ephemeral run, captain task, or unsupported provider. Codex
+is deliberately unsupported: its exec lifecycle does not autonomously finish a
+goal or expose a stable public terminal event.
+
+Accept a goal only when the user explicitly wants the worker-side loop and can
+name one mechanical validation command that is safe to repeat. Pass:
+
+```text
+goal: {
+  validation_command: <single repeat-safe command>,
+  repeat_safe: true,
+  max_turns: <1..20>,
+  max_wall_clock_ms: <1000..600000>
+}
+```
+
+Keep both bounds below Crew's watchdog. The worker must stop on infrastructure,
+permission, or dependency failure. Do not treat worker prose as the outcome;
+read `goal.outcome` from dispatch/status. The typed outcomes are
+`not_requested`, `unsupported`, `achieved`, `impossible`, `turn_capped`,
+`watchdog_timeout`, `cancelled`, `provider_error`, and `evaluator_error`.
+
+On `continue_run`, `goal_policy` is `inherit`, `clear`, or `replace` and defaults
+to `clear`. Use the default unless the user explicitly wants the same objective
+or supplies a replacement. Inherit/replace consume the persisted aggregate
+budget; never work around an exhaustion refusal. A failed or unconfirmed clear
+is retried by the next default-clear continuation so a stale provider objective
+cannot resume silently. Crew remains the sole owner of outer continuation: wait
+for the provider process to become terminal before review or another
+continuation.
+
 ## Quota-aware routing
 
 Use `list_agents` quota as routing context. Dispatch tools refuse hard

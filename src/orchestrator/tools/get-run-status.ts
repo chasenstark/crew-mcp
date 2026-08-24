@@ -32,6 +32,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { goalTurnToWire, type WireGoalTurn } from '../goals.js';
 
 import { z } from 'zod';
 import {
@@ -142,7 +143,7 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read run status by run_id. Omit wait inputs for an immediate turn-start/post-watcher snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit user request; otherwise use the crew-wait watcher. Criteria-linked waits warn against long-polling. since_event_line pages events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include the latest model_selection when recorded; terminal prompts retain per-turn selections. Terminal results also include summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
+  `Read run status by run_id. Omit wait inputs for an immediate turn-start/post-watcher snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit user request; otherwise use the crew-wait watcher. Criteria-linked waits warn against long-polling. since_event_line pages events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include latest model_selection and goal; terminal prompts retain per-turn selections/outcomes and aggregate goal_budget. Terminal results also include summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
 
 type GetRunStatusDeps = Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>
   & Partial<Pick<ToolHandlerDeps, 'crewHome'>>;
@@ -220,12 +221,14 @@ export async function getRunStatusToolHandler(
   const fresh = deps.runStateStore.read(args.run_id) ?? state;
   if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
     const latestSelection = latestModelSelection(fresh.prompts);
+    const latestGoal = fresh.prompts.at(-1)?.goal;
     return getRunStatusContent(args.run_id, {
       status: 'running',
       timed_out: true,
       ...(latestSelection !== undefined
         ? { model_selection: modelSelectionToWire(latestSelection) }
         : {}),
+      ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
       ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
     });
   }
@@ -271,6 +274,7 @@ type TerminalPromptRecord = {
   readonly completedAt?: string;
   readonly peer_messages_count: number;
   readonly model_selection?: WireModelSelection;
+  readonly goal?: WireGoalTurn;
 };
 
 function buildGetRunStatusResponse(
@@ -314,6 +318,7 @@ function buildGetRunStatusResponse(
 
   if (!terminal) {
     const latestSelection = latestModelSelection(state.prompts);
+    const latestGoal = state.prompts.at(-1)?.goal;
     const payload: GetRunStatusResponse = {
       status,
       events_tail: cappedLines,
@@ -322,6 +327,7 @@ function buildGetRunStatusResponse(
       ...(latestSelection !== undefined
         ? { model_selection: modelSelectionToWire(latestSelection) }
         : {}),
+      ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
       ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
       ...legacyLogTail,
     };
@@ -336,8 +342,10 @@ function buildGetRunStatusResponse(
     ...(p.modelSelection !== undefined
       ? { model_selection: modelSelectionToWire(p.modelSelection) }
       : {}),
+    ...(p.goal !== undefined ? { goal: goalTurnToWire(p.goal) } : {}),
   }));
   const latestSelection = latestModelSelection(state.prompts);
+  const latestGoal = state.prompts.at(-1)?.goal;
   const lastSummary = state.prompts.length > 0
     ? state.prompts[state.prompts.length - 1]?.summary
     : undefined;
@@ -353,6 +361,17 @@ function buildGetRunStatusResponse(
     prompts: projectedPrompts,
     ...(latestSelection !== undefined
       ? { model_selection: modelSelectionToWire(latestSelection) }
+      : {}),
+    ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
+    ...(state.goalBudget !== undefined
+      ? {
+          goal_budget: {
+            max_turns: state.goalBudget.maxTurns,
+            max_wall_clock_ms: state.goalBudget.maxWallClockMs,
+            turns_used: state.goalBudget.turnsUsed,
+            wall_clock_ms_used: state.goalBudget.wallClockMsUsed,
+          },
+        }
       : {}),
     commits: commitSummary.commits,
     commit_count: commitSummary.commit_count,

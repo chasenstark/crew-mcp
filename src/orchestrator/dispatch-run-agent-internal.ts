@@ -22,6 +22,7 @@ import { type ProgressNotifier } from './progress.js';
 import { installRunLifecycleListeners } from './run-lifecycle-listeners.js';
 import { ownsWorktree, type RunMode } from './run-mode.js';
 import type { RunStateStore, RunStateV1 } from './run-state.js';
+import type { GoalTurnRecord } from './goals.js';
 import type { ToolDispatcher } from './tool-dispatcher.js';
 import {
   planRunAgent,
@@ -73,6 +74,7 @@ export interface DispatchRunAgentInternalResult {
   readonly toolCallId: string;
   readonly warnings: readonly string[];
   readonly modelSelection: ModelSelectionRecord;
+  readonly goal: GoalTurnRecord;
 }
 
 export class DispatchError extends Error {
@@ -146,6 +148,8 @@ export async function dispatchRunAgentInternal(
         : {}),
       runMode: plan.runMode,
       modelSelection: plan.modelSelection,
+      goal: plan.goal,
+      goalBudget: plan.goalBudget,
       workerReady: { status: 'pending' },
     });
     if (criteriaContract !== undefined && args.linkCriteriaImplementerRun !== false) {
@@ -249,6 +253,7 @@ export async function dispatchRunAgentInternal(
     toolCallId: plan.toolCallId,
     warnings,
     modelSelection: plan.modelSelection,
+    goal: plan.goal,
   };
 }
 

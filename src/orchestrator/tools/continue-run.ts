@@ -66,6 +66,11 @@ import {
   sameHostOverrideWarning,
 } from './dispatch-policy.js';
 import { preflightAgentDispatch } from './dispatch-preflight.js';
+import {
+  continuationGoalPlan,
+  GOAL_CONTINUATION_POLICIES,
+  goalRequestSchema,
+} from '../goals.js';
 
 export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
@@ -79,6 +84,10 @@ export const continueRunInputSchema = z.object({
    * Vocabulary mirrors codex's `model_reasoning_effort` set.
    */
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  /** Safe default is clear: stale native objectives never silently survive a
+   * continuation. inherit and replace are explicit and aggregate-budgeted. */
+  goal_policy: z.enum(GOAL_CONTINUATION_POLICIES).default('clear'),
+  goal: goalRequestSchema.optional(),
   ban_override: z.boolean().optional(),
   same_host_ok: z.boolean().optional(),
   cap_override: z.boolean().optional(),
@@ -88,7 +97,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with prompt and/or peer_messages. An explicit model is resolved exactly before continuation state changes; when omitted, the prior explicit selection or CLI-default decision stays sticky. Linked criteria re-check policy and the continuation cap; ban_override, same_host_ok, cap_override, and health/quota dispatch_anyway require user approval. effort may override defaults and run_mode stays sticky; ephemeral_review continues against its frozen snapshot. Returns async with model_selection, bounded relay_verbatim/ledger_line, warnings, and required_next_action crew-wait watcher when available.';
+  'Resume an existing run with prompt and/or peer_messages. goal_policy is inherit, clear, or replace and defaults to clear; replace requires goal, and aggregate goal budgets cannot reset or grow. Explicit model selection is exact-or-refuse; omission inherits the prior decision. Criteria policy and continuation caps are rechecked. ban_override, same_host_ok, cap_override, and health/quota dispatch_anyway require user approval. effort may override defaults; run_mode stays sticky and ephemeral_review stays frozen. Returns async with model_selection, goal, relay fields, warnings, and a crew-wait required_next_action when available.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -238,6 +247,16 @@ export async function continueRunToolHandler(
     args.effort,
     continueAgentPrefs,
   );
+  const priorGoal = preState.prompts.at(-1)?.goal;
+  const goalPlan = continuationGoalPlan({
+    adapter,
+    runMode,
+    policy: args.goal_policy ?? 'clear',
+    request: args.goal,
+    previous: priorGoal,
+    budget: preState.goalBudget,
+  });
+  if (!goalPlan.ok) return errorContent(goalPlan.message);
   const appendPrompt = () => deps.runStateStore.appendPrompt(args.run_id, {
     userPrompt,
     peerMessagesInput: validatedInput.length > 0 ? validatedInput : undefined,
@@ -250,11 +269,14 @@ export async function continueRunToolHandler(
       : {}),
     workerReady: { status: 'pending' },
     modelSelection: modelSelection.record,
+    goal: goalPlan.record,
+    goalBudget: goalPlan.budget,
   });
   const dispatchWarnings: string[] = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   dispatchWarnings.push(...policyWarnings);
+  if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   const criteriaWarnings = criteriaPeerMessageBypassWarnings(
     args.criteria_set_id,
     validatedInput,
@@ -344,6 +366,7 @@ export async function continueRunToolHandler(
     // continues server-side context instead of starting fresh. Read from the
     // persisted run state; undefined for adapters that don't return a sessionId.
     resumeSessionId: preState.sessionId,
+    goalConstraint: goalPlan.constraint,
     worktreeManager: deps.worktreeManager,
     input: { ...args },
   });

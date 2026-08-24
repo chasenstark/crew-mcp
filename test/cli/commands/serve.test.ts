@@ -2315,6 +2315,7 @@ describe('crew serve — run_agent tool', () => {
       const env = res.structuredContent as RunEnvelope;
       expect(Object.keys(env).sort()).toEqual([
         'files_changed',
+        'goal',
         'ledger_line',
         'model_selection',
         'relay_verbatim',
@@ -2327,6 +2328,13 @@ describe('crew serve — run_agent tool', () => {
       expect(env.summary).toContain(`Dispatched as "${env.run_id}"`);
       expect(env.files_changed).toEqual([]);
       expect(env.model_selection).toEqual({ source: 'cli_default', validation: 'cli_default' });
+      expect(env.goal).toEqual({
+        policy: 'not_requested',
+        outcome: 'not_requested',
+        authoritative: true,
+        turns_used: 0,
+        wall_clock_ms_used: 0,
+      });
       expect(env.relay_verbatim).toContain(
         `Dispatched mock-coder / CLI default → run ${env.run_id} · tail: `,
       );
@@ -2369,6 +2377,7 @@ describe('crew serve — run_agent tool', () => {
       const env = res.structuredContent as RunEnvelope;
       expect(Object.keys(env).sort()).toEqual([
         'files_changed',
+        'goal',
         'ledger_line',
         'model_selection',
         'relay_verbatim',
@@ -5289,6 +5298,13 @@ describe('crew serve — get_run_status tool', () => {
         filesChanged: [],
         prompts: s.prompts,
         model_selection: { source: 'cli_default', validation: 'cli_default' },
+        goal: {
+          policy: 'not_requested',
+          outcome: 'not_requested',
+          authoritative: true,
+          turns_used: 0,
+          wall_clock_ms_used: 0,
+        },
         commits: [],
         commit_count: 0,
         summary: 'all done',
@@ -6597,12 +6613,26 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         status: 'running',
         timed_out: true,
         model_selection: { source: 'cli_default', validation: 'cli_default' },
+        goal: {
+          policy: 'not_requested',
+          outcome: 'not_requested',
+          authoritative: true,
+          turns_used: 0,
+          wall_clock_ms_used: 0,
+        },
       });
       expect(toolText(res)).toBe(`\`${env.run_id}\` status: \`running\` (timed out)`);
       expectStructuredJsonBytes(res, {
         status: 'running',
         timed_out: true,
         model_selection: { source: 'cli_default', validation: 'cli_default' },
+        goal: {
+          policy: 'not_requested',
+          outcome: 'not_requested',
+          authoritative: true,
+          turns_used: 0,
+          wall_clock_ms_used: 0,
+        },
       });
       const s = res.structuredContent as {
         next_event_line?: number;
@@ -6855,6 +6885,13 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
         next_event_line: 1,
         ...(s.worker_ready !== undefined ? { worker_ready: s.worker_ready } : {}),
         model_selection: { source: 'cli_default', validation: 'cli_default' },
+        goal: {
+          policy: 'not_requested',
+          outcome: 'not_requested',
+          authoritative: true,
+          turns_used: 0,
+          wall_clock_ms_used: 0,
+        },
       });
 
       // Cleanup: complete the dispatch and verify the terminal

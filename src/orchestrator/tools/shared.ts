@@ -21,6 +21,7 @@ import type { QuotaSnapshot } from './list-agents.js';
 import type { FullConfig } from '../../workflow/types.js';
 import type { RunMode } from '../run-mode.js';
 import { renderUntrustedWorkerContentNotice } from '../untrusted-provenance.js';
+import { goalTurnToWire, type WireGoalTurn } from '../goals.js';
 
 /**
  * Server-side cap on the long-poll wait that `get_run_status` honors
@@ -135,6 +136,7 @@ export interface RunEnvelope {
   readonly required_next_action?: RequiredNextAction;
   readonly warnings?: readonly string[];
   readonly model_selection?: WireModelSelection;
+  readonly goal?: WireGoalTurn;
   readonly status?: RunStatus;
   readonly agent_id?: string;
   readonly worktree_path?: string;
@@ -320,6 +322,7 @@ export async function runDispatchAndRespond(
     args.projectRoot,
     args.runStateStore.read(args.runId)?.prompts.length,
   );
+  const latestGoal = args.runStateStore.read(args.runId)?.prompts.at(-1)?.goal;
   const env: FullRunEnvelope = {
     run_id: args.runId,
     agent_id: args.agentName,
@@ -332,6 +335,7 @@ export async function runDispatchAndRespond(
     summary,
     files_changed: [],
     model_selection: modelSelectionToWire(args.modelSelection),
+    ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
     ...dispatchRelayFields({
       agentId: args.agentName,
       runId: args.runId,
@@ -367,6 +371,7 @@ export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
       : {}),
     ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
     ...(env.model_selection !== undefined ? { model_selection: env.model_selection } : {}),
+    ...(env.goal !== undefined ? { goal: env.goal } : {}),
   };
 }
 
@@ -378,6 +383,9 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
     `- Status: \`${env.status}\``,
     ...(env.model_selection !== undefined
       ? [`- Model: ${mdInlineCode(modelSelectionLabelFromWire(env.model_selection))}`]
+      : []),
+    ...(env.goal !== undefined
+      ? [`- Goal: \`${env.goal.outcome ?? 'running'}\` (${env.goal.policy})`]
       : []),
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
   ];

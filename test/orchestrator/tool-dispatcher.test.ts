@@ -134,9 +134,14 @@ describe('ToolDispatcher', () => {
     const cancelled = d.cancel('a', 'user-requested');
     expect(cancelled).toBe(true);
 
-    const aResult = (await waitForEvent(d, 'run:cancelled')) as { toolCallId: string; reason: string };
+    const aResult = (await waitForEvent(d, 'run:cancelled')) as {
+      toolCallId: string;
+      reason: string;
+      abortOrigin: string;
+    };
     expect(aResult.toolCallId).toBe('a');
     expect(aResult.reason).toBe('user-requested');
+    expect(aResult.abortOrigin).toBe('user');
     expect(aAborted).toBe(true);
 
     // b finishes normally
@@ -277,8 +282,9 @@ describe('ToolDispatcher', () => {
       // The task promise never settles — the escalation timer armed by the
       // watchdog abort must force-release the slot and flag the zombie.
       await vi.advanceTimersByTimeAsync(25);
-      const info = (await cancelledP) as { reason: string; runId?: string };
+      const info = (await cancelledP) as { reason: string; runId?: string; abortOrigin: string };
       expect(info.runId).toBe('run-watchdog-zombie');
+      expect(info.abortOrigin).toBe('streaming_watchdog');
       expect(info.reason).toContain('process did not exit after abort; flagged as zombie');
       expect(d.inFlightCount()).toBe(0);
     } finally {
@@ -306,8 +312,9 @@ describe('ToolDispatcher', () => {
       await vi.advanceTimersByTimeAsync(30);
       expect(d.inFlightCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(25);
-      const info = (await cancelledP) as { reason: string; runId?: string };
+      const info = (await cancelledP) as { reason: string; runId?: string; abortOrigin: string };
       expect(info.runId).toBe('run-buffered-zombie');
+      expect(info.abortOrigin).toBe('buffered_watchdog');
       expect(info.reason).toContain('process did not exit after abort; flagged as zombie');
       expect(d.inFlightCount()).toBe(0);
     } finally {
@@ -457,8 +464,9 @@ describe('ToolDispatcher', () => {
         // No stream activity ever arrives; advance past the threshold.
         await vi.advanceTimersByTimeAsync(5000);
 
-        const info = (await cancelledP) as { reason: string };
+        const info = (await cancelledP) as { reason: string; abortOrigin: string };
         expect(info.reason).toContain('stall watchdog');
+        expect(info.abortOrigin).toBe('streaming_watchdog');
         expect((abortReason as Error).name).toBe('StallTimeoutError');
         expect(d.inFlightCount()).toBe(0);
       } finally {
@@ -543,8 +551,9 @@ describe('ToolDispatcher', () => {
 
         const cancelledP = waitForEvent(d, 'run:cancelled');
         await vi.advanceTimersByTimeAsync(4000);
-        const info = (await cancelledP) as { reason: string };
+        const info = (await cancelledP) as { reason: string; abortOrigin: string };
         expect(info.reason).toContain('absolute cap');
+        expect(info.abortOrigin).toBe('buffered_watchdog');
         expect((abortReason as Error).name).toBe('BufferedAbsoluteTimeoutError');
       } finally {
         vi.useRealTimers();

@@ -37,6 +37,8 @@ import {
 } from '../../../src/orchestrator/criteria/store.js';
 import { setConfigValue } from '../../../src/workflow/config-service.js';
 import { getPanelStatusHandler } from '../../../src/orchestrator/tools/get-panel-status.js';
+import { getRunStatusToolHandler } from '../../../src/orchestrator/tools/get-run-status.js';
+import { listRuns } from '../../../src/orchestrator/tools/list-runs.js';
 import {
   createDeferred,
   createRunState,
@@ -1147,7 +1149,7 @@ describe('runPanelHandler', () => {
         output: 'terminal review',
         filesModified: ['review.md'],
         status: 'partial',
-        metadata: {},
+        metadata: { observedModel: 'claude-sonnet-4-6' },
       }),
     });
     const h = makeHarness([adapter]);
@@ -1161,7 +1163,21 @@ describe('runPanelHandler', () => {
     const state = h.runStateStore.read(out.reviewers[0].run_id);
     expect(state?.prompts.at(-1)?.summary).toBe('terminal review');
     expect(state?.filesChanged).toEqual(['review.md']);
+    expect(state?.prompts.at(-1)?.modelSelection?.observedModel).toBe('claude-sonnet-4-6');
     await drainPendingTerminalPersists();
+    const runStatus = await getRunStatusToolHandler(
+      { run_id: out.reviewers[0].run_id },
+      { dispatcher: h.dispatcher, runStateStore: h.runStateStore },
+    );
+    expect(runStatus.structuredContent?.model_selection).toMatchObject({
+      observed_model: 'claude-sonnet-4-6',
+    });
+    expect(listRuns({}, {
+      crewHome: h.crewHome,
+      repoRoot: h.runStateStore.repoRoot,
+    }).runs[0]?.model_selection).toMatchObject({
+      observed_model: 'claude-sonnet-4-6',
+    });
     const panelState = readPanelState(panelDir(h.crewHome, out.panel_id));
     expect(panelState?.reviewers[0]).toMatchObject({
       dispatched: true,
@@ -1169,8 +1185,37 @@ describe('runPanelHandler', () => {
         status: 'partial',
         summary: 'terminal review',
         filesChanged: ['review.md'],
+        goal: {
+          policy: 'not_requested',
+          outcome: 'not_requested',
+          authoritative: true,
+        },
+        modelSelection: {
+          observedModel: 'claude-sonnet-4-6',
+        },
       },
     });
+
+    const livePanelStatus = getPanelStatusHandler({ panel_id: out.panel_id }, h.ctx);
+    expect(livePanelStatus.reviewers[0].model_selection).toMatchObject({
+      observed_model: 'claude-sonnet-4-6',
+    });
+
+    rmSync(join(h.crewHome, 'runs', out.reviewers[0].run_id, 'state.json'));
+    const durableStatus = getPanelStatusHandler({ panel_id: out.panel_id }, h.ctx);
+    expect(durableStatus.reviewers[0]).toMatchObject({
+      state_unavailable: false,
+      status: 'partial',
+      goal: {
+        policy: 'not_requested',
+        outcome: 'not_requested',
+        authoritative: true,
+      },
+      model_selection: {
+        observed_model: 'claude-sonnet-4-6',
+      },
+    });
+    expect(JSON.stringify({ runStatus, durableStatus })).not.toContain('<synthetic>');
   });
 
   it('copies terminal reviewer failure into panel snapshot and status', async () => {

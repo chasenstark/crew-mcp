@@ -11,6 +11,51 @@ export type ModelSelectionSupport =
   | 'provider-validated'
   | 'unsupported';
 
+/** Provider-native worker-goal capability. Codex stays unsupported until its
+ * exec lifecycle can autonomously continue and emit a stable terminal event. */
+export type GoalSupport = 'claude-native' | 'unsupported';
+
+export type GoalOutcome =
+  | 'not_requested'
+  | 'unsupported'
+  | 'achieved'
+  | 'impossible'
+  | 'turn_capped'
+  | 'watchdog_timeout'
+  | 'cancelled'
+  | 'provider_error'
+  | 'evaluator_error';
+
+/** A deliberately mechanical, explicitly repeat-safe validation request. */
+export interface GoalRequest {
+  readonly validationCommand: string;
+  readonly repeatSafe: true;
+  /** Aggregate native-turn budget for this run, not a per-resume allowance. */
+  readonly maxTurns: number;
+  /** Aggregate wall-clock budget for this run, below Crew's watchdog. */
+  readonly maxWallClockMs: number;
+}
+
+export type GoalContinuationPolicy = 'inherit' | 'clear' | 'replace';
+export type GoalTaskAction = 'start' | GoalContinuationPolicy;
+
+export interface GoalTaskConstraint {
+  readonly request?: GoalRequest;
+  readonly action: GoalTaskAction;
+  /** Remaining aggregate allowance after prior continuation turns. */
+  readonly maxTurns: number;
+  readonly maxWallClockMs: number;
+}
+
+export interface GoalExecutionResult {
+  readonly outcome: GoalOutcome;
+  /** True only when the outcome came from provider output or Crew's watchdog. */
+  readonly authoritative: boolean;
+  readonly reason?: string;
+  readonly turnsUsed: number;
+  readonly wallClockMsUsed: number;
+}
+
 export interface ModelDescriptor {
   /** Exact string a caller passes as `model`. */
   readonly model: string;
@@ -200,6 +245,8 @@ export interface AgentAdapter {
    * expected to return a provider session id for every requested resume turn.
    */
   readonly supportsResume?: boolean;
+  /** Static capability surfaced through list_agents; lazy proxies must match. */
+  readonly goalSupport?: GoalSupport;
   /** Static capability surfaced cheaply through `list_agents`. */
   readonly modelSelectionSupport?: ModelSelectionSupport;
   readonly captainCapabilities?: CaptainCapabilities;
@@ -396,6 +443,8 @@ export interface Task {
      * execute() ignore it. Undefined on a fresh `run_agent` dispatch.
      */
     resumeSessionId?: string;
+    /** Provider-native bounded goal/control action for this worker turn. */
+    goal?: GoalTaskConstraint;
     signal?: AbortSignal;
   };
   onOutput?: (chunk: string) => void;
@@ -407,6 +456,8 @@ export interface TaskResult {
   status: 'success' | 'error' | 'partial';
   sessionId?: string;
   failure?: TaskFailure;
+  /** Authoritative provider/Crew goal result for this turn, when requested. */
+  goal?: GoalExecutionResult;
   /**
    * Advisory messages attached by the dispatch layer (not the
    * adapter itself). Today's only producer is the read-only run

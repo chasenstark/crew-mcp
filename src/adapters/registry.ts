@@ -3,6 +3,7 @@ import type {
   AgentStrength,
   CaptainCapabilities,
   EffortLevel,
+  GoalSupport,
   HealthCheckResult,
   ModelSelectionSupport,
   ReviewDispatchMode,
@@ -43,6 +44,7 @@ interface LazyAdapterMetadata {
   readonly captainCapabilities?: CaptainCapabilities;
   readonly streamsIncrementally?: boolean;
   readonly supportsResume?: boolean;
+  readonly goalSupport?: GoalSupport;
   readonly modelSelectionSupport: ModelSelectionSupport;
   readonly hasGetCliVersionTag?: boolean;
 }
@@ -76,6 +78,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     captainCapabilities: GENERIC_CAPABILITIES,
     streamsIncrementally: true,
     supportsResume: true,
+    goalSupport: 'claude-native',
     modelSelectionSupport: 'provider-validated',
     hasGetCliVersionTag: true,
   },
@@ -91,6 +94,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     captainCapabilities: GENERIC_CAPABILITIES,
     streamsIncrementally: true,
     supportsResume: true,
+    goalSupport: 'unsupported',
     modelSelectionSupport: 'provider-validated',
     hasGetCliVersionTag: true,
   },
@@ -116,6 +120,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     // capabilities.
     captainCapabilities: GENERIC_CAPABILITIES,
     supportsResume: true,
+    goalSupport: 'unsupported',
     modelSelectionSupport: 'catalog-and-provider-id',
     hasGetCliVersionTag: true,
   },
@@ -295,6 +300,7 @@ function createLazyAdapterProxy(
     captainCapabilities: metadata.captainCapabilities,
     streamsIncrementally: metadata.streamsIncrementally,
     supportsResume: metadata.supportsResume,
+    goalSupport: metadata.goalSupport,
     modelSelectionSupport: metadata.modelSelectionSupport,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),

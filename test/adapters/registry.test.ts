@@ -45,6 +45,18 @@ describe('modelSelectionSupport proxy/instance parity', () => {
   });
 });
 
+describe('goalSupport proxy/instance parity', () => {
+  it.each([
+    ['claude-code', 'claude-native'],
+    ['codex', 'unsupported'],
+    ['agy', 'unsupported'],
+  ] as const)('%s proxy and instance agree on %s', async (name, expected) => {
+    const registry = createBuiltinRegistry();
+    expect(registry.get(name)?.goalSupport).toBe(expected);
+    expect((await registry.load(name))?.goalSupport).toBe(expected);
+  });
+});
+
 describe('mergeCustomAgents', () => {
   it('registers an openai-compatible custom agent on top of built-ins', () => {
     const registry = createBuiltinRegistry();

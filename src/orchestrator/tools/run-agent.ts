@@ -39,6 +39,7 @@ import { modelSelectionToWire } from '../../adapters/model-selection.js';
 import type {
   AgentAdapter,
   EffortLevel,
+  GoalTaskConstraint,
   ModelSelectionRecord,
   TaskResult,
 } from '../../adapters/types.js';
@@ -84,6 +85,13 @@ import {
 } from './dispatch-policy.js';
 import { preflightAgentDispatch } from './dispatch-preflight.js';
 import { criteriaDir, readCriteriaState } from '../criteria/store.js';
+import {
+  goalRequestSchema,
+  goalTurnToWire,
+  initialGoalPlan,
+  type GoalBudgetRecord,
+  type GoalTurnRecord,
+} from '../goals.js';
 
 /**
  * Minimal registry surface for run_agent — anything exposing `get` (plus
@@ -111,6 +119,9 @@ export const runAgentInputSchema = z.object({
    * openai-compatible) ignore the value and log a debug breadcrumb.
    */
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  /** Opt-in Claude write-implementer inner loop. The command must be safe to
+   * run repeatedly; every bound is aggregate across continuations. */
+  goal: goalRequestSchema.optional(),
   /**
    * Skip worktree allocation. Use for review/triage/Q&A dispatches
    * where the agent is not expected to write. `working_directory`
@@ -151,7 +162,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. An explicit model is resolved exactly before run allocation and is never replaced by a provider default; omit model only to choose the CLI default. peer_messages prepend untrusted context; confirmed criteria_set_id marks iterate policy. ban_override, same_host_ok, and dispatch_anyway require user approval; dispatch_anyway overrides health/quota refusal. run_mode is write, read_only, or ephemeral_review. Returns async with model_selection, bounded relay_verbatim/ledger_line, warnings for overrides, and required_next_action crew-wait watcher when available.';
+  'Start a bounded subagent run. Explicit model selection is exact-or-refuse. Optional goal accepts a repeat-safe validation command plus aggregate turn/wall bounds; it is native only for Claude write implementers and reports unsupported elsewhere. peer_messages prepend untrusted context; criteria_set_id marks iterate policy. ban_override, same_host_ok, and health/quota dispatch_anyway require user approval. run_mode is write, read_only, or ephemeral_review. Returns async with model_selection, goal, relay fields, warnings, and a crew-wait required_next_action when available.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -274,6 +285,7 @@ export async function runAgentToolHandler(
     summary,
     files_changed: [],
     model_selection: modelSelectionToWire(dispatchResult.modelSelection),
+    goal: goalTurnToWire(dispatchResult.goal),
     ...dispatchRelayFields({
       agentId: canonicalId,
       runId: dispatchResult.runId,
@@ -361,6 +373,9 @@ export interface RunAgentDispatchPlan {
   readonly readOnly: boolean;
   readonly dispatchWarnings: readonly string[];
   readonly modelSelection: ModelSelectionRecord;
+  readonly goal: GoalTurnRecord;
+  readonly goalBudget?: GoalBudgetRecord;
+  readonly goalConstraint?: GoalTaskConstraint;
   readonly adapter: AgentAdapter;
   readonly toolCallId: string;
   readonly buildTask: (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv) => DispatchTask;
@@ -412,6 +427,11 @@ export async function planRunAgent(
   }
   const runMode = modeResolution.mode;
   const readOnly = runMode === 'read_only';
+  const goalPlan = initialGoalPlan({
+    adapter,
+    runMode,
+    request: input.goal,
+  });
 
   // Fail-closed read-only reject. Adapters that cannot enforce read-only by any
   // means (rejectsReadOnly) are refused the IN-PLACE read-only path at the plan
@@ -476,6 +496,7 @@ export async function planRunAgent(
   const dispatchWarnings: string[] = readOnly && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
+  if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   let worktreePath: string;
   let branchPointSeedPaths: readonly string[] | undefined;
   if (!ownsWorktree(runMode)) {
@@ -539,6 +560,7 @@ export async function planRunAgent(
       dispatchWarnings,
       modelSelection: modelSelection.record,
       effectiveEffort,
+      goalConstraint: goalPlan.constraint,
       worktreeManager: ctx.worktreeManager,
       branchPointSeedPaths,
       input: { ...input },
@@ -553,6 +575,9 @@ export async function planRunAgent(
     readOnly,
     dispatchWarnings,
     modelSelection: modelSelection.record,
+    goal: goalPlan.record,
+    ...(goalPlan.budget !== undefined ? { goalBudget: goalPlan.budget } : {}),
+    ...(goalPlan.constraint !== undefined ? { goalConstraint: goalPlan.constraint } : {}),
     adapter,
     toolCallId,
     buildTask,
@@ -715,6 +740,7 @@ export function buildAdapterDispatchTask(args: {
    * dispatch (no prior session) and for adapters that don't resume.
    */
   readonly resumeSessionId?: string;
+  readonly goalConstraint?: GoalTaskConstraint;
   readonly worktreeManager: WorktreeManager;
   readonly branchPointSeedPaths?: readonly string[];
   readonly input: Record<string, unknown>;
@@ -781,6 +807,7 @@ export function buildAdapterDispatchTask(args: {
           model: args.modelSelection.modelArgument,
           effort: args.effectiveEffort,
           resumeSessionId: args.resumeSessionId,
+          goal: args.goalConstraint,
           // ephemeral_review deliberately dispatches workspace-write: the
           // reviewer runs write-capable in its disposable worktree (agy would
           // hard-error on sandbox:'read-only'); containment is disposal.

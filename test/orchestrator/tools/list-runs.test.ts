@@ -15,6 +15,7 @@ import {
 } from '../../../src/orchestrator/tools/list-runs.js';
 import type { RunStateV1, RunStatus } from '../../../src/orchestrator/run-state.js';
 import type { ModelSelectionRecord } from '../../../src/adapters/types.js';
+import type { GoalTurnRecord } from '../../../src/orchestrator/goals.js';
 import {
   appendMessage,
   clearCaptainInboxCachesForTest,
@@ -187,6 +188,26 @@ describe('listRuns', () => {
     });
     expect(listRunsToolHandler({}, { crewHome, projectRoot: repoRoot }).content[0]?.text)
       .toContain('model=gpt-5.6-sol-2026-08-01');
+  });
+
+  it('projects and labels the latest goal outcome', () => {
+    writeState({
+      runId: 'goal-run',
+      status: 'success',
+      repoRoot,
+      completedAt: iso(1),
+      goal: {
+        policy: 'start',
+        outcome: 'achieved',
+        authoritative: true,
+        turnsUsed: 2,
+        wallClockMsUsed: 1_000,
+      },
+    });
+    const out = listRuns({}, { crewHome, repoRoot });
+    expect(out.runs[0]?.goal).toMatchObject({ outcome: 'achieved', turns_used: 2 });
+    expect(listRunsToolHandler({}, { crewHome, projectRoot: repoRoot }).content[0]?.text)
+      .toContain('goal=achieved');
   });
 
   it('labels relayed summaries once and omits the label when no summaries exist', () => {
@@ -516,6 +537,7 @@ describe('listRuns', () => {
     promptSummary?: string;
     failure?: RunStateV1['failure'];
     modelSelection?: ModelSelectionRecord;
+    goal?: GoalTurnRecord;
   }): void {
     const startedAt = args.startedAt ?? iso(0);
     const state: RunStateV1 = {
@@ -535,6 +557,7 @@ describe('listRuns', () => {
           ...(args.completedAt ? { completedAt: args.completedAt } : {}),
           ...(args.promptSummary ? { summary: args.promptSummary } : {}),
           ...(args.modelSelection ? { modelSelection: args.modelSelection } : {}),
+          ...(args.goal ? { goal: args.goal } : {}),
         },
       ],
       filesChanged: [],

@@ -1,4 +1,4 @@
-> **Current as of 2026-08-22.**
+> **Current as of 2026-08-23.**
 
 # Adapter Architecture
 
@@ -46,6 +46,23 @@ Execution passes the resolved value through `--model` unchanged. Claude stream
 `system/init` or assistant events populate `TaskResult.metadata.observedModel`
 when available.
 
+Claude also advertises `goalSupport: 'claude-native'`. Crew sends `/goal` and
+the work prompt as separate stream-JSON user messages, requires an explicitly
+repeat-safe validation command, and applies both `--max-turns` and a wall-clock
+timeout below Crew's dispatcher watchdog. Only write implementers receive this
+constraint. Reviews and read-only runs record the request as `unsupported` and
+remain ordinary single-shot dispatches.
+
+Goal outcomes come from provider events, never final prose. Crew recognizes a
+top-level `goal_status` event or the exact `system/hook_response` attachment
+shape when Claude exposes one, and separately verifies `Goal set:` / `Goal
+cleared:` only from assistant envelopes whose provider-set model is
+`<synthetic>`. Goal-shaped objects in worker tool input and goal-like text from
+the real worker model are ignored. Claude 2.1.241 currently filters
+`goal_status` from its public stream even with hook events enabled; a generic
+`terminal_reason=completed` cannot distinguish achievement from impossibility,
+so Crew reports `evaluator_error` rather than claiming success in that case.
+
 ### Codex
 
 `CodexAdapter` advertises `provider-validated`. Discovery uses a bounded
@@ -54,6 +71,14 @@ when available.
 stdout/stderr capture, and closes the child process on success or failure.
 Account-catalog IDs resolve exactly. Provider-shaped Codex/OpenAI model IDs can
 be passed through for provider validation when discovery is unavailable.
+
+Codex advertises `goalSupport: 'unsupported'`. The 2026-08-23 isolated 0.149.0
+spike showed that an active native goal schedules another private task but
+`codex exec --json` immediately interrupts it and exits after the first public
+turn. Explicit resume preserves native accounting, but the public JSONL has no
+goal terminal event. Until both autonomous execution and a stable public event
+are proven together, Crew records requests as unsupported and allocates no
+Codex inner loop.
 
 ### agy / Antigravity
 
@@ -106,6 +131,10 @@ The record is additive to schema-version-1 state. Existing run and panel files
 remain readable without a migration. The run lifecycle enriches only the
 terminal turn with an observed model; it never rewrites prior turns or claims
 an observation that the provider did not report.
+
+Goal capability follows the same lazy-proxy/loaded-instance parity rule. Goal
+requests and outcomes live on each prompt record; aggregate turn and wall-clock
+usage lives at run level so a provider resume cannot reset Crew's bound.
 
 ## Adding or changing an adapter
 

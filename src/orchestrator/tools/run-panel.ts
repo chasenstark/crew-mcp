@@ -537,6 +537,7 @@ async function mapWithConcurrency<T>(
 function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalSnapshot {
   const summary = state.prompts.at(-1)?.summary;
   const modelSelection = latestModelSelection(state.prompts);
+  const goal = state.prompts.at(-1)?.goal;
   return {
     status: state.status as PanelReviewerTerminalSnapshot['status'],
     ...(summary !== undefined ? { summary } : {}),
@@ -544,6 +545,7 @@ function terminalSnapshotFromRunState(state: RunStateV1): PanelReviewerTerminalS
     ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
     ...(state.failure !== undefined ? { failure: state.failure } : {}),
     ...(modelSelection !== undefined ? { modelSelection } : {}),
+    ...(goal !== undefined ? { goal } : {}),
   };
 }
 

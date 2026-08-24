@@ -4,12 +4,17 @@ import { logger } from '../utils/logger.js';
 import { filterEventsTailNoise } from './events-filter.js';
 import { formatProgressLines, type ProgressNotifier } from './progress.js';
 import type { RunStateStore } from './run-state.js';
-import type { ToolDispatcher } from './tool-dispatcher.js';
+import type { DispatchAbortOrigin, ToolDispatcher } from './tool-dispatcher.js';
 
 export type DispatchTerminal =
   | { kind: 'complete'; result: TaskResult }
   | { kind: 'failed'; error: string; result?: TaskResult }
-  | { kind: 'cancelled'; reason: string };
+  | {
+      kind: 'cancelled';
+      reason: string;
+      abortOrigin: DispatchAbortOrigin;
+      elapsedMs: number;
+    };
 
 const pendingTerminalPersists = new Set<Promise<void>>();
 const terminalPersistPendingRunIds = new Set<string>();
@@ -93,7 +98,12 @@ export function installRunLifecycleListeners(args: {
       }),
       args.dispatcher.onEvent('run:cancelled', (info) => {
         if (info.toolCallId !== args.toolCallId) return;
-        onTerminal({ kind: 'cancelled', reason: info.reason });
+        onTerminal({
+          kind: 'cancelled',
+          reason: info.reason,
+          abortOrigin: info.abortOrigin ?? 'user',
+          elapsedMs: info.elapsedMs ?? 0,
+        });
       }),
       args.dispatcher.onEvent('run:stream', (info) => {
         if (settled || info.toolCallId !== args.toolCallId) return;
@@ -176,6 +186,7 @@ async function persistTerminal(
       sessionId: terminal.result.sessionId,
       observedModel: terminal.result.metadata.observedModel,
       failure: terminal.result.failure,
+      goal: terminal.result.goal,
     });
   } else if (terminal.kind === 'failed') {
     state = await args.runStateStore.markTerminal(args.runId, {
@@ -187,12 +198,35 @@ async function persistTerminal(
       observedModel: terminal.result?.metadata.observedModel,
       lastError: terminal.error,
       failure: terminal.result?.failure,
+      goal: terminal.result?.goal,
     });
   } else {
+    const currentGoal = typeof args.runStateStore.read === 'function'
+      ? args.runStateStore.read(args.runId)?.prompts.at(-1)?.goal
+      : undefined;
+    const pendingGoal = currentGoal !== undefined && currentGoal.outcome === undefined;
+    const cancellationGoal = pendingGoal
+      ? terminal.abortOrigin === 'user'
+        ? {
+            outcome: 'cancelled' as const,
+            authoritative: true,
+            reason: terminal.reason,
+            turnsUsed: 0,
+            wallClockMsUsed: terminal.elapsedMs,
+          }
+        : {
+            outcome: 'watchdog_timeout' as const,
+            authoritative: true,
+            reason: terminal.reason,
+            turnsUsed: 0,
+            wallClockMsUsed: terminal.elapsedMs,
+          }
+      : undefined;
     state = await args.runStateStore.markTerminal(args.runId, {
       status: 'cancelled',
       summary: terminal.reason,
       filesChanged: [],
+      ...(cancellationGoal !== undefined ? { goal: cancellationGoal } : {}),
     });
   }
   await args.onTerminalPersisted?.(state);

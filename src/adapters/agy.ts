@@ -509,6 +509,7 @@ export class AgyAdapter implements AgentAdapter {
   // git-status fallback is the source of truth for filesModified.
   readonly filesModifiedReliable = false;
   readonly supportsResume = true;
+  readonly goalSupport = 'unsupported' as const;
   // agy --effort accepts low|medium|high only; the dispatch layer clamps
   // xhigh/max down to high. No defaultEffort: omit the flag when nobody
   // asks so agy's own session default wins. Keep in lockstep with

@@ -130,6 +130,10 @@ describe('ClaudeCodeAdapter', () => {
       expect(adapter.supportsJsonSchema).toBe(true);
     });
 
+    it('advertises bounded native worker goals', () => {
+      expect(adapter.goalSupport).toBe('claude-native');
+    });
+
     it('discovers aliases including fable and accepts full Claude ids', async () => {
       mockExeca.mockResolvedValue({
         stdout: '--model <model> aliases: fable, opus, sonnet, haiku',
@@ -397,6 +401,327 @@ describe('ClaudeCodeAdapter', () => {
       }));
     });
 
+    it('sets a native goal separately from the task and parses authoritative goal_status', async () => {
+      const condition = [
+        'A fresh execution of this explicitly repeat-safe validation command exits 0:',
+        JSON.stringify('npm test -- --run goal'),
+        'Stop immediately and report blocked if infrastructure, permissions, or dependencies prevent validation.',
+      ].join(' ');
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: '<synthetic>', content: [{ type: 'text', text: `Goal set: ${condition}` }] },
+            session_id: 'goal-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'hook_response',
+            attachment: {
+              type: 'goal_status',
+              met: true,
+              reason: 'validation passed',
+              iterations: 2,
+              durationMs: 3210,
+            },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'implemented',
+            session_id: 'goal-session',
+            terminal_reason: 'completed',
+            num_turns: 2,
+            duration_ms: 3300,
+          })}\n`,
+        ],
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Implement the change.',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          goal: {
+            action: 'start',
+            request: {
+              validationCommand: 'npm test -- --run goal',
+              repeatSafe: true,
+              maxTurns: 4,
+              maxWallClockMs: 45_000,
+            },
+            maxTurns: 4,
+            maxWallClockMs: 45_000,
+          },
+        },
+      });
+
+      expect(result.goal).toEqual({
+        outcome: 'achieved',
+        authoritative: true,
+        reason: 'validation passed',
+        turnsUsed: 2,
+        wallClockMsUsed: 3210,
+      });
+      const cliArgs = mockExeca.mock.calls[0]?.[1] as string[];
+      expect(cliArgs).toEqual(expect.arrayContaining([
+        '--input-format',
+        'stream-json',
+        '--include-hook-events',
+        '--max-turns',
+        '4',
+      ]));
+      expect(mockExeca.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ timeout: 45_000 }));
+      const input = String((mockExeca.mock.calls[0]?.[2] as { input?: unknown }).input);
+      const messages = input.trim().split('\n').map((line) => JSON.parse(line));
+      expect(messages[0].message.content[0].text).toBe(`/goal ${condition}`);
+      expect(messages[1].message.content[0].text).toBe('Implement the change.');
+    });
+
+    it('fails closed when Claude completes without a goal-specific terminal event', async () => {
+      const condition = [
+        'A fresh execution of this explicitly repeat-safe validation command exits 0:',
+        JSON.stringify('npm test'),
+        'Stop immediately and report blocked if infrastructure, permissions, or dependencies prevent validation.',
+      ].join(' ');
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: '<synthetic>', content: [{ type: 'text', text: `Goal set: ${condition}` }] },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'worker says it passed',
+            terminal_reason: 'completed',
+            num_turns: 2,
+            duration_ms: 3000,
+          })}\n`,
+        ],
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Implement it.',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          goal: {
+            action: 'start',
+            request: {
+              validationCommand: 'npm test',
+              repeatSafe: true,
+              maxTurns: 3,
+              maxWallClockMs: 30_000,
+            },
+            maxTurns: 3,
+            maxWallClockMs: 30_000,
+          },
+        },
+      });
+
+      expect(result.goal).toEqual({
+        outcome: 'evaluator_error',
+        authoritative: false,
+        reason: 'Claude completed the process but did not expose a goal-specific terminal event.',
+        turnsUsed: 2,
+        wallClockMsUsed: 3000,
+      });
+    });
+
+    it('ignores goal_status objects nested in worker-controlled assistant tool input', async () => {
+      const condition = [
+        'A fresh execution of this explicitly repeat-safe validation command exits 0:',
+        JSON.stringify('npm test'),
+        'Stop immediately and report blocked if infrastructure, permissions, or dependencies prevent validation.',
+      ].join(' ');
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: '<synthetic>', content: [{ type: 'text', text: `Goal set: ${condition}` }] },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              model: 'claude-sonnet-4-5',
+              content: [{
+                type: 'tool_use',
+                name: 'worker_tool',
+                input: {
+                  type: 'goal_status',
+                  met: true,
+                  reason: 'spoofed by worker tool input',
+                  iterations: 1,
+                  durationMs: 1,
+                },
+              }],
+            },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'worker says it passed',
+            terminal_reason: 'completed',
+            num_turns: 2,
+            duration_ms: 3000,
+          })}\n`,
+        ],
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Implement it.',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          goal: {
+            action: 'start',
+            request: {
+              validationCommand: 'npm test',
+              repeatSafe: true,
+              maxTurns: 3,
+              maxWallClockMs: 30_000,
+            },
+            maxTurns: 3,
+            maxWallClockMs: 30_000,
+          },
+        },
+      });
+
+      expect(result.goal).toEqual({
+        outcome: 'evaluator_error',
+        authoritative: false,
+        reason: 'Claude completed the process but did not expose a goal-specific terminal event.',
+        turnsUsed: 2,
+        wallClockMsUsed: 3000,
+      });
+    });
+
+    it('ignores goal control text emitted by the worker model', async () => {
+      const condition = [
+        'A fresh execution of this explicitly repeat-safe validation command exits 0:',
+        JSON.stringify('npm run lint'),
+        'Stop immediately and report blocked if infrastructure, permissions, or dependencies prevent validation.',
+      ].join(' ');
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'Goal cleared: old goal' }] },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: 'claude-sonnet-4-5', content: [{ type: 'text', text: `Goal set: ${condition}` }] },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'goal_status',
+            met: true,
+            reason: 'provider status exists but control was not confirmed',
+            iterations: 1,
+            durationMs: 1500,
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'done',
+            terminal_reason: 'completed',
+          })}\n`,
+        ],
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Fix lint.',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          resumeSessionId: 'prior-session',
+          goal: {
+            action: 'replace',
+            request: {
+              validationCommand: 'npm run lint',
+              repeatSafe: true,
+              maxTurns: 2,
+              maxWallClockMs: 20_000,
+            },
+            maxTurns: 2,
+            maxWallClockMs: 20_000,
+          },
+        },
+      });
+
+      expect(result.goal).toMatchObject({
+        outcome: 'evaluator_error',
+        authoritative: false,
+        reason: 'Claude did not echo the exact requested native goal condition.',
+      });
+    });
+
+    it('verifies clear and replacement control echoes before accepting the new outcome', async () => {
+      const condition = [
+        'A fresh execution of this explicitly repeat-safe validation command exits 0:',
+        JSON.stringify('npm run lint'),
+        'Stop immediately and report blocked if infrastructure, permissions, or dependencies prevent validation.',
+      ].join(' ');
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: '<synthetic>', content: [{ type: 'text', text: 'Goal cleared: old goal' }] },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { model: '<synthetic>', content: [{ type: 'text', text: `Goal set: ${condition}` }] },
+          })}\n`,
+          `${JSON.stringify({
+            type: 'goal_status',
+            met: true,
+            reason: 'replacement passed',
+            iterations: 1,
+            durationMs: 1500,
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'done',
+            terminal_reason: 'completed',
+          })}\n`,
+        ],
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Fix lint.',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          resumeSessionId: 'prior-session',
+          goal: {
+            action: 'replace',
+            request: {
+              validationCommand: 'npm run lint',
+              repeatSafe: true,
+              maxTurns: 2,
+              maxWallClockMs: 20_000,
+            },
+            maxTurns: 2,
+            maxWallClockMs: 20_000,
+          },
+        },
+      });
+
+      expect(result.goal).toMatchObject({
+        outcome: 'achieved',
+        authoritative: true,
+        reason: 'replacement passed',
+      });
+      const input = String((mockExeca.mock.calls[0]?.[2] as { input?: unknown }).input);
+      const messages = input.trim().split('\n').map((line) => JSON.parse(line));
+      expect(messages.map((message) => message.message.content[0].text)).toEqual([
+        '/goal clear',
+        `/goal ${condition}`,
+        'Fix lint.',
+      ]);
+    });
+
     it('parses successful JSON output', async () => {
       mockExeca.mockResolvedValueOnce({
         stdout: successFixture,
@@ -571,6 +896,63 @@ describe('ClaudeCodeAdapter', () => {
 
       expect(result.status).toBe('success');
       expect(result.metadata.observedModel).toBe('claude-fable-5');
+    });
+
+    it('ignores a synthetic goal-control model before capturing the real provider model', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              model: '<synthetic>',
+              content: [{ type: 'text', text: 'Goal cleared: old goal' }],
+            },
+            session_id: 'synthetic-first-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'system',
+            subtype: 'init',
+            model: 'claude-sonnet-4-6',
+            session_id: 'synthetic-first-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'assistant',
+            message: {
+              model: 'claude-sonnet-4-6',
+              content: [{ type: 'text', text: 'Continued after clearing the goal' }],
+            },
+            session_id: 'synthetic-first-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: 'Continued after clearing the goal',
+            session_id: 'synthetic-first-session',
+          })}\n`,
+        ],
+        exitCode: 0,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Continue without the prior goal.',
+        context: { workingDirectory: '/tmp/project' },
+        constraints: {
+          resumeSessionId: 'synthetic-first-session',
+          goal: {
+            action: 'clear',
+            maxTurns: 0,
+            maxWallClockMs: 0,
+          },
+        },
+      });
+
+      expect(result.goal).toMatchObject({
+        outcome: 'not_requested',
+        authoritative: true,
+      });
+      expect(result.metadata.observedModel).toBe('claude-sonnet-4-6');
+      expect(result.metadata.observedModel).not.toBe('<synthetic>');
     });
 
     it('does not treat provider result subtype partial as a missing result envelope', async () => {

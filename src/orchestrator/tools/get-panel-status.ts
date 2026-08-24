@@ -17,6 +17,7 @@ import {
   markdownContent,
   mdInlineCode,
 } from './shared.js';
+import { goalTurnToWire, type WireGoalTurn } from '../goals.js';
 
 export const PANEL_STATUS_SUMMARY_MAX_CHARS = 200;
 export const PANEL_STATUS_TRUNCATION_MARKER =
@@ -40,6 +41,7 @@ export type PanelReviewerStatus =
       readonly failure?: TaskFailure;
       readonly dispatch_warnings: readonly string[];
       readonly model_selection?: WireModelSelection;
+      readonly goal?: WireGoalTurn;
     }
   | {
       readonly run_id: string;
@@ -48,6 +50,7 @@ export type PanelReviewerStatus =
       readonly state_unavailable_reason: string;
       readonly dispatch_warnings: readonly string[];
       readonly model_selection?: WireModelSelection;
+      readonly goal?: WireGoalTurn;
     };
 
 export interface GetPanelStatusOutput {
@@ -164,6 +167,7 @@ export function getPanelStatusHandler(
       }
       if (!isTerminalRunStatus(state.status)) {
         const modelSelection = latestModelSelection(state.prompts) ?? reviewer.modelSelection;
+        const goal = state.prompts.at(-1)?.goal;
         return {
           run_id: reviewer.runId,
           agent_id: reviewer.agentId,
@@ -173,10 +177,12 @@ export function getPanelStatusHandler(
           ...(modelSelection !== undefined
             ? { model_selection: modelSelectionToWire(modelSelection) }
             : {}),
+          ...(goal !== undefined ? { goal: goalTurnToWire(goal) } : {}),
         };
       }
       const summary = state.prompts.at(-1)?.summary;
       const modelSelection = latestModelSelection(state.prompts) ?? reviewer.modelSelection;
+      const goal = state.prompts.at(-1)?.goal;
       return {
         run_id: reviewer.runId,
         agent_id: reviewer.agentId,
@@ -190,6 +196,7 @@ export function getPanelStatusHandler(
         ...(modelSelection !== undefined
           ? { model_selection: modelSelectionToWire(modelSelection) }
           : {}),
+        ...(goal !== undefined ? { goal: goalTurnToWire(goal) } : {}),
       };
     });
 
@@ -265,6 +272,7 @@ function statusFromSnapshot(
           ),
         }
       : {}),
+    ...(snapshot.goal !== undefined ? { goal: goalTurnToWire(snapshot.goal) } : {}),
   };
 }
 

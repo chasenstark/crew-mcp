@@ -29,6 +29,7 @@ import {
 import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
 import { markdownContent } from './shared.js';
 import { renderUntrustedWorkerContentNotice } from '../untrusted-provenance.js';
+import { goalTurnToWire, type WireGoalTurn } from '../goals.js';
 
 const RUN_STATUS_VALUES = [
   'running',
@@ -65,7 +66,7 @@ export const listRunsInputSchema = z.object({
 export type ListRunsInput = z.infer<typeof listRunsInputSchema>;
 
 export const LIST_RUNS_DESCRIPTION =
-  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status (single or array), include_unknown_repo for legacy records without repoRoot, completedAfter ISO filtering, and limit. Returns run_id, agent_id, latest model_selection, status, startedAt, completedAt, worktreePath, latest truncated summary/error plus summary_truncated marker, and typed failure when present. Use get_run_status for the rich per-run payload.';
+  'List persisted crew runs for the current repo, newest-first, to recover running or newly-terminal work after context loss. Input supports status, legacy-repo inclusion, completedAfter, and limit. Returns run identity, latest model_selection and goal, status/timestamps/worktree, truncated summary marker, and typed failure. Use get_run_status for per-turn goal outcomes and aggregate budgets.';
 
 export interface ListRunsEntry {
   readonly run_id: string;
@@ -80,6 +81,7 @@ export interface ListRunsEntry {
   readonly summary_truncated: boolean;
   readonly failure?: RunStateV1['failure'];
   readonly model_selection?: WireModelSelection;
+  readonly goal?: WireGoalTurn;
 }
 
 export interface ListRunsOutput {
@@ -183,6 +185,9 @@ export function listRuns(
       ...(latestModelSelection(state.prompts) !== undefined
         ? { model_selection: modelSelectionToWire(latestModelSelection(state.prompts)!) }
         : {}),
+      ...(state.prompts.at(-1)?.goal !== undefined
+        ? { goal: goalTurnToWire(state.prompts.at(-1)!.goal!) }
+        : {}),
       ...summaryField(state),
       ...(state.failure !== undefined ? { failure: listRunsFailure(state.failure) } : {}),
     })),
@@ -265,10 +270,11 @@ function renderListRunsMarkdown(out: ListRunsOutput): string {
     const model = run.model_selection
       ? ` model=${run.model_selection.observed_model ?? run.model_selection.display_name ?? run.model_selection.model_argument ?? 'CLI default'}`
       : '';
+    const goal = run.goal ? ` goal=${run.goal.outcome ?? 'running'}` : '';
     const summary = run.summary ? ` - ${compactLine(run.summary)}` : '';
     const truncation = run.summary_truncated ? ' (summary truncated; use get_run_status)' : '';
     lines.push(
-      `- ${run.run_id} [${run.status}] agent=${run.agent_id}${model}${mode} started=${run.startedAt}${completed}${truncation}${summary}`,
+      `- ${run.run_id} [${run.status}] agent=${run.agent_id}${model}${goal}${mode} started=${run.startedAt}${completed}${truncation}${summary}`,
     );
   }
   return lines.join('\n');
