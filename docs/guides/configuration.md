@@ -2,7 +2,8 @@
 
 `crew-mcp config` is the supported per-machine configuration surface. It
 manages notifications, merge confirmation, cleanup retention, provider model
-defaults, agent strengths, and default implementer/reviewer choices.
+defaults, agent strengths, crew-iterate round limits, and default
+implementer/reviewer choices.
 
 ## Interactive configuration
 
@@ -17,6 +18,7 @@ The main screens are:
 - `Agent defaults...` for iterate and panel routing
 - `Provider models...` for an exact default model per built-in provider
 - agent strengths and `useWhen` guidance
+- `Iteration limits...` for per-epoch and total crew-iterate pause points
 - `Cleanup & retention...` for worktree, run-directory, and criteria lifetimes
 
 The captain still asks before merging or discarding; `confirmBeforeMerge` adds
@@ -29,8 +31,15 @@ crew-mcp config show
 crew-mcp config show notifications.success
 crew-mcp config set notifications.success false
 crew-mcp config set confirmBeforeMerge true
+crew-mcp config set iterate.maxRoundsPerEpoch 5
+crew-mcp config set iterate.maxTotalRounds 15
 crew-mcp config unset notifications.success
 ```
+
+Crew-iterate defaults to 3 rounds per criteria epoch and 9 rounds total.
+`maxTotalRounds` must be greater than or equal to `maxRoundsPerEpoch`. The
+captain pauses for a user choice at either limit; the server derives a higher
+runaway-loop backstop from the same settings.
 
 Agent-default paths are also scriptable:
 
@@ -59,7 +68,7 @@ the effective result.
 ## Where settings live
 
 ```text
-~/.crew/config.json    notifications, merge gate, cleanup retention
+~/.crew/config.json    notifications, merge gate, iteration limits, cleanup retention
 ~/.crew/agents.json    agents, useWhen, strengths, provider model defaults, effort
 ~/.crew/workflow.yaml  surviving agent-default compatibility surface
 .crew/workflow.yaml    optional project-level agent defaults

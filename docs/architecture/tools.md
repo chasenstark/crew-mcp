@@ -20,7 +20,7 @@ The complete catalog contains twenty tools. Nineteen are captain-facing;
 | --- | --- | --- |
 | `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, `model_selection_support`, and `goal_support`. |
 | `list_models` | Captain | Discovers one agent's provider-native model catalog. Accepts `{agent_id, refresh?}` and returns exact arguments, catalog provenance, authority, and warnings. |
-| `get_crew_preferences` | Captain | Reads effective per-machine crew preferences. |
+| `get_crew_preferences` | Captain | Reads effective per-machine crew preferences, including crew-iterate round limits. |
 | `list_runs` | Captain | Lists repo-scoped persisted runs, including each run's latest model and goal state. |
 | `check_captain_inbox` | Captain | Reads durable worker-to-captain messages. |
 | `acknowledge_messages` | Captain | Acknowledges captain inbox messages. |

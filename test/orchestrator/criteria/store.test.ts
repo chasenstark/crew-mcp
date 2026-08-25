@@ -10,6 +10,7 @@ import {
 import {
   criteriaDir,
   gcCriteriaSets,
+  iterationContinuationBackstop,
   recordCriteriaIterationContinuation,
   readCriteriaState,
   writeCriteriaStateAtomic,
@@ -132,6 +133,36 @@ describe('criteria store', () => {
       expect.stringContaining('criteria.iteration_continuation_cap_override:'),
     ]));
     expect(readCriteriaState(dir)?.rounds).toEqual(rounds);
+  });
+
+  it('derives the continuation backstop from configured captain limits', async () => {
+    expect(iterationContinuationBackstop({
+      maxRoundsPerEpoch: 5,
+      maxTotalRounds: 15,
+    })).toEqual({
+      warnPerEpoch: 6,
+      totalCap: 20,
+    });
+
+    const dir = criteriaDir(crewHome, 'criteria-1');
+    mkdirSync(dir, { recursive: true });
+    writeCriteriaStateAtomic(dir, {
+      ...state('criteria-1'),
+      status: 'confirmed',
+      iterationContinuations: 5,
+    });
+
+    const warned = await recordCriteriaIterationContinuation({
+      crewHome,
+      criteriaSetId: 'criteria-1',
+      expectedEpoch: 0,
+      capOverride: false,
+      iterationLimits: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
+    });
+    expect(warned.epochContinuations).toBe(6);
+    expect(warned.warnings).toEqual([
+      expect.stringContaining('criteria.iteration_continuation_warning:'),
+    ]);
   });
 
   it('rejects unknown schema versions', () => {

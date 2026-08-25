@@ -366,9 +366,10 @@ reveals a criterion is malformed or impossible:
 4. Require explicit re-confirmation with `confirm_criteria` before any
    new dispatch. The next round re-scores the FULL revised list.
 5. **Start a new loop epoch.** The revised criteria define a fresh
-   epoch with its own captain round counter starting at 0. Keep the
-   proactive **3 rounds per epoch / 9 total** captain cap. The server's
-   separate continuation backstop reports its typed remedy when reached.
+   epoch with its own captain round counter starting at 0. Keep the effective
+   `iterationLimits.maxRoundsPerEpoch` / `iterationLimits.maxTotalRounds`
+   captain cap from Step 0.5. The server's separate continuation backstop
+   derives from those limits and reports its typed remedy when reached.
 
 Any persisted criterion edit, including a wording-only one, goes through
 `revise_criteria` and explicit reconfirmation — the tool always bumps the
@@ -399,12 +400,17 @@ provider-reported `observed_model`; do not claim observation from the argument.
 
 1. Call `list_agents` and `get_crew_preferences({scope: "iterate"})`; skip
    preferences only when that tool is absent.
-2. Apply `iterate.banList` absolutely. Leave an emptied role unfilled.
-3. Apply the own-host routing invariant to crew pools, while retaining the
+2. Read `iterationLimits.maxRoundsPerEpoch` and
+   `iterationLimits.maxTotalRounds` from the preference result and retain them
+   for the full loop. If the field is absent because the server predates
+   configurable limits, use the compatibility defaults `3` and `9`. These are
+   pause points, not permission to skip convergence or merge gates.
+3. Apply `iterate.banList` absolutely. Leave an emptied role unfilled.
+4. Apply the own-host routing invariant to crew pools, while retaining the
    host as the native reviewer unless excluded.
-4. Fill roles by conversation override, then configured preference, then
+5. Fill roles by conversation override, then configured preference, then
    heuristic. Never inject variety over a decision or preference.
-5. Decide any docs-only roster reduction now. Pure docs may justify
+6. Decide any docs-only roster reduction now. Pure docs may justify
    proposing no crew reviewer, but the user must confirm that roster; do not
    silently remove a confirmed reviewer in Step 2.
 
@@ -455,7 +461,7 @@ in the tools-absent fallback:
 
 ```
 ## Loop state (Step 0.5)
-Round: <N> (epoch <E>; captain-enforced cap: 3 per epoch, 9 total)
+Round: <N> (epoch <E>; captain-enforced cap: <maxRoundsPerEpoch> per epoch, <maxTotalRounds> total)
 Criteria: <criteria_set_id> (epoch <E>, confirmed)
 Implementer: <id> (<reason>)
 Crew reviewer(s): <id, id> (<reason>; effort <level>)
@@ -868,9 +874,11 @@ Every round re-scores all criteria.
   Recommended action. Ask: "rethink the approach, revise the
   criteria, discard, or continue anyway?" Apply the Structured-choice rule.
   **Silence is not consent.** Do NOT silently continue.
-- **Iteration cap reached (captain 3 rounds per epoch / 9 total).**
-  Reframe with criteria context: "We've iterated 3 rounds; criteria
-  still failing: [2, 4]. Options: revise criteria → starts a new
+- **Iteration cap reached (effective configured per-epoch or total limit).**
+  Reframe with criteria context: "We've iterated <epoch-rounds> rounds in
+  epoch <E> and <total-rounds> total; criteria still failing: [2, 4]. The
+  configured limits are <maxRoundsPerEpoch> per epoch and <maxTotalRounds>
+  total. Options: revise criteria → starts a new
   epoch (epoch-aware total cap still applies); switch implementer →
   continues current epoch; accept failing finding(s) and merge →
   carries into Step 4 as user-accepted/deferred (recorded in commit

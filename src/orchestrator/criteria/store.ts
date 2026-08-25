@@ -8,6 +8,11 @@ import {
 import { join } from 'node:path';
 
 import { atomicWrite } from '../../utils/atomic-write.js';
+import {
+  DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH,
+  DEFAULT_ITERATE_MAX_TOTAL_ROUNDS,
+  type CrewIterateConfig,
+} from '../../utils/config-store.js';
 import { logger } from '../../utils/logger.js';
 import { renderCriteriaBlock } from './render.js';
 import {
@@ -132,8 +137,29 @@ export interface CriteriaContractResolution {
   readonly contractPrefix: string;
 }
 
-export const ITERATION_CONTINUATION_WARN_PER_EPOCH = 4;
-export const ITERATION_CONTINUATION_TOTAL_CAP = 12;
+export interface IterationContinuationBackstop {
+  readonly warnPerEpoch: number;
+  readonly totalCap: number;
+}
+
+/**
+ * Keep the runtime backstop beyond the captain's configured pause points.
+ * The extra epoch's worth of total headroom preserves room for a user-approved
+ * criteria revision without letting a stale captain loop forever.
+ */
+export function iterationContinuationBackstop(
+  limits: CrewIterateConfig,
+): IterationContinuationBackstop {
+  return {
+    warnPerEpoch: limits.maxRoundsPerEpoch + 1,
+    totalCap: limits.maxTotalRounds + limits.maxRoundsPerEpoch,
+  };
+}
+
+export const ITERATION_CONTINUATION_WARN_PER_EPOCH =
+  DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH + 1;
+export const ITERATION_CONTINUATION_TOTAL_CAP =
+  DEFAULT_ITERATE_MAX_TOTAL_ROUNDS + DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH;
 
 export interface CriteriaIterationContinuationResult {
   readonly epoch: number;
@@ -147,8 +173,13 @@ export async function recordCriteriaIterationContinuation(args: {
   readonly criteriaSetId: string;
   readonly expectedEpoch: number;
   readonly capOverride: boolean;
+  readonly iterationLimits?: CrewIterateConfig;
   readonly now?: () => string;
 }): Promise<CriteriaIterationContinuationResult> {
+  const backstop = iterationContinuationBackstop(args.iterationLimits ?? {
+    maxRoundsPerEpoch: DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH,
+    maxTotalRounds: DEFAULT_ITERATE_MAX_TOTAL_ROUNDS,
+  });
   return withCriteriaLock(
     { crewHome: args.crewHome, criteriaSetId: args.criteriaSetId },
     async () => {
@@ -180,26 +211,26 @@ export async function recordCriteriaIterationContinuation(args: {
       });
 
       if (
-        totalContinuations >= ITERATION_CONTINUATION_TOTAL_CAP
+        totalContinuations >= backstop.totalCap
         && !args.capOverride
       ) {
         throw new Error(
           `criteria.iteration_continuation_cap: ${args.criteriaSetId} recorded `
           + `${totalContinuations} total continue_run attempt(s), reaching the server cap of `
-          + `${ITERATION_CONTINUATION_TOTAL_CAP}. Ask the user whether to override the runaway-loop `
+          + `${backstop.totalCap}. Ask the user whether to override the runaway-loop `
           + 'backstop, then retry with cap_override:true. The refused attempt remains counted.',
         );
       }
 
       const warnings: string[] = [];
-      if (epochContinuations >= ITERATION_CONTINUATION_WARN_PER_EPOCH) {
+      if (epochContinuations >= backstop.warnPerEpoch) {
         warnings.push(
           `criteria.iteration_continuation_warning: ${args.criteriaSetId} has `
           + `${epochContinuations} continuation(s) in epoch ${current.epoch} `
           + `(${totalContinuations} total); review loop progress before continuing.`,
         );
       }
-      if (totalContinuations >= ITERATION_CONTINUATION_TOTAL_CAP) {
+      if (totalContinuations >= backstop.totalCap) {
         warnings.push(
           `criteria.iteration_continuation_cap_override: ${args.criteriaSetId} is at `
           + `${totalContinuations} total continuation(s); cap_override:true was supplied.`,

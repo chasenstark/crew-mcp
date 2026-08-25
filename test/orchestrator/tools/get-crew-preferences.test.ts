@@ -36,13 +36,16 @@ describe('getCrewPreferencesHandler', () => {
     mockedHomedir.mockRestore();
   });
 
-  it('returns an empty result when no agent defaults are configured', async () => {
+  it('returns default iteration limits when no agent defaults are configured', async () => {
     const out = await getCrewPreferencesHandler({ scope: 'all' }, {
       projectRoot: cwd,
       registry: makeRegistry([makeMockAdapter({ name: 'codex' })]),
     });
 
-    expect(out).toEqual({});
+    expect(out).toEqual({
+      iterationLimits: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      warnings: [],
+    });
   });
 
   it('returns populated iterate and panel preferences', async () => {
@@ -63,9 +66,23 @@ describe('getCrewPreferencesHandler', () => {
         implementer: 'codex',
         reviewers: ['claude-code'],
       },
+      iterationLimits: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
       panel: {
         reviewers: ['codex', 'claude-code'],
       },
+      warnings: [],
+    });
+  });
+
+  it('returns configured iteration limits independently of agent defaults', async () => {
+    const out = await getCrewPreferencesHandler({ scope: 'iterate' }, {
+      projectRoot: cwd,
+      registry: makeRegistry([makeMockAdapter({ name: 'codex' })]),
+      iterationLimits: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
+    });
+
+    expect(out).toEqual({
+      iterationLimits: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
       warnings: [],
     });
   });

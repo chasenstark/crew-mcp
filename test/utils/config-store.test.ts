@@ -32,6 +32,7 @@ describe('config-store', () => {
     const config = {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
+      iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
       cleanup: { worktreeTtlDays: 3, runDirTtlDays: 60, criteriaSetTtlDays: 90 },
     };
     writeConfigFile(home, config);
@@ -47,8 +48,30 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: false, error: false },
       confirmBeforeMerge: true,
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
       cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
     });
+  });
+
+  it('parses positive iterate limits and rejects invalid relationships', () => {
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 } }),
+      'utf-8',
+    );
+    expect(readConfigFile(home).iterate).toEqual({
+      maxRoundsPerEpoch: 5,
+      maxTotalRounds: 15,
+    });
+
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ iterate: { maxRoundsPerEpoch: 10, maxTotalRounds: 5 } }),
+      'utf-8',
+    );
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    expect(readConfigFile(home).iterate).toEqual(DEFAULT_CONFIG.iterate);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('must be greater than or equal'));
   });
 
   it('parses cleanup TTLs, accepts -1 (off), and drops bad values', () => {
@@ -96,6 +119,7 @@ describe('config-store', () => {
     writeConfigFile(home, {
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
       cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
@@ -118,6 +142,7 @@ describe('config-store', () => {
     writeConfigFile(home, {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
       cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
@@ -154,6 +179,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
       cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
     });
     expect(warn).toHaveBeenCalled();
@@ -169,6 +195,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: true, error: true },
       confirmBeforeMerge: false,
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
       cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
     });
     expect(warn).toHaveBeenCalled();

@@ -1,4 +1,4 @@
-> **Current as of 2026-08-22.**
+> **Current as of 2026-08-25.**
 
 # Config path registry
 
@@ -14,16 +14,21 @@ preferences and cleanup retention.
 
 ## Direct server settings
 
-`crew-mcp config set` and `unset` handle these boolean paths directly:
+`crew-mcp config set` and `unset` handle these server-setting paths directly:
 
 ```text
 notifications.success
 notifications.error
 confirmBeforeMerge
+iterate.maxRoundsPerEpoch
+iterate.maxTotalRounds
 ```
 
-Unset restores the code-defined default. Cleanup retention is edited through
-the TUI or its environment overrides rather than the workflow registry.
+The notification and merge paths are booleans. Iteration limits are positive
+integers, with `maxTotalRounds >= maxRoundsPerEpoch`; their code-defined
+defaults are 3 and 9. Unset restores the corresponding default. Cleanup
+retention is edited through the TUI or its environment overrides rather than
+the workflow registry.
 
 ## Workflow registry contract
 

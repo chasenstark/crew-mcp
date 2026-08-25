@@ -37,6 +37,7 @@ import {
   type AgentStrengthsEntry,
 } from './config-tui/agent-strengths-state.js';
 import { CleanupScreen } from './config-tui/cleanup-screen.js';
+import { IterateLimitsScreen } from './config-tui/iterate-limits-screen.js';
 import { ProviderModelDefaultsScreen } from './config-tui/provider-model-defaults-screen.js';
 import {
   ProviderModelDefaultsState,
@@ -82,6 +83,10 @@ export type MutableCrewConfig = {
     error: boolean;
   };
   confirmBeforeMerge: boolean;
+  iterate: {
+    maxRoundsPerEpoch: number;
+    maxTotalRounds: number;
+  };
   cleanup: {
     worktreeTtlDays: number;
     runDirTtlDays: number;
@@ -158,6 +163,8 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     stdout.write(`  cleanup.worktreeTtlDays: ${fmtTtlDays(current.cleanup.worktreeTtlDays)}\n`);
     stdout.write(`  cleanup.runDirTtlDays: ${fmtTtlDays(current.cleanup.runDirTtlDays)}\n`);
     stdout.write(`  cleanup.criteriaSetTtlDays: ${fmtTtlDays(current.cleanup.criteriaSetTtlDays)}\n`);
+    stdout.write(`  iterate.maxRoundsPerEpoch: ${current.iterate.maxRoundsPerEpoch}\n`);
+    stdout.write(`  iterate.maxTotalRounds: ${current.iterate.maxTotalRounds}\n`);
     writeAgentDefaultsSummary(stdout, showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults);
     writeProviderModelDefaultsSummary(stdout, readAgentPrefsFile(crewHome));
     stdout.write(
@@ -173,6 +180,10 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       error: current.notifications.error,
     },
     confirmBeforeMerge: current.confirmBeforeMerge,
+    iterate: {
+      maxRoundsPerEpoch: current.iterate.maxRoundsPerEpoch,
+      maxTotalRounds: current.iterate.maxTotalRounds,
+    },
     cleanup: {
       worktreeTtlDays: current.cleanup.worktreeTtlDays,
       runDirTtlDays: current.cleanup.runDirTtlDays,
@@ -201,6 +212,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
   );
   const agentStrengthsScreen = new AgentStrengthsListScreen(agentStrengthsState);
   const cleanupScreen = new CleanupScreen(state.cleanup);
+  const iterateLimitsScreen = new IterateLimitsScreen(state.iterate);
   const rootScreen = createRootScreen({
     entries,
     state,
@@ -223,6 +235,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
         label: 'Agent strengths...',
         description: 'Tune per-agent routing prose and strength tags',
         onActivate: () => ({ push: agentStrengthsScreen }),
+      },
+      {
+        kind: 'action',
+        label: 'Iteration limits...',
+        description: 'Set crew-iterate round limits per epoch and overall',
+        onActivate: () => ({ push: iterateLimitsScreen }),
       },
       {
         kind: 'action',
@@ -254,7 +272,9 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
   const crewChanged = !sameConfig(current, state, entries)
     || current.cleanup.worktreeTtlDays !== state.cleanup.worktreeTtlDays
     || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays
-    || current.cleanup.criteriaSetTtlDays !== state.cleanup.criteriaSetTtlDays;
+    || current.cleanup.criteriaSetTtlDays !== state.cleanup.criteriaSetTtlDays
+    || current.iterate.maxRoundsPerEpoch !== state.iterate.maxRoundsPerEpoch
+    || current.iterate.maxTotalRounds !== state.iterate.maxTotalRounds;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
   const providerModelsChanged = providerModelDefaultsState.hasChanges();
   const agentStrengthsChanged = agentStrengthsState.hasChanges();
@@ -370,7 +390,8 @@ export async function configSetCommand(
   if (isCrewSettingPath(path)) {
     const crewHome = opts.crewHome ?? resolveCrewHome();
     const next = mutableConfig(readConfigFile(crewHome));
-    writeCrewSetting(next, path, parseBooleanValue(path, rawValue));
+    writeCrewSetting(next, path, parseCrewSettingValue(path, rawValue));
+    validateIterateLimits(next.iterate);
     writeConfigFile(crewHome, next);
     stdout.write(`${path}: ${JSON.stringify(readCrewSetting(next, path))}\n`);
     return 0;
@@ -398,6 +419,7 @@ export async function configUnsetCommand(
     const crewHome = opts.crewHome ?? resolveCrewHome();
     const next = mutableConfig(readConfigFile(crewHome));
     writeCrewSetting(next, path, readCrewSetting(DEFAULT_CONFIG, path));
+    validateIterateLimits(next.iterate);
     writeConfigFile(crewHome, next);
     stdout.write(`${path}: ${JSON.stringify(readCrewSetting(next, path))}\n`);
     return 0;
@@ -416,6 +438,7 @@ function buildShowPayload(opts: ConfigSubcommandOptions): Record<string, unknown
   return {
     notifications: crewConfig.notifications,
     confirmBeforeMerge: crewConfig.confirmBeforeMerge,
+    iterate: crewConfig.iterate,
     cleanup: crewConfig.cleanup,
     providerModels: configuredProviderModels(readAgentPrefsFile(crewHome)),
     ...workflow.effectiveConfig,
@@ -471,13 +494,22 @@ async function resolveBuiltinProviderModel(
   return adapter.resolveModel(requested, { refreshOnMiss: true });
 }
 
-function isCrewSettingPath(path: string): path is 'notifications.success' | 'notifications.error' | 'confirmBeforeMerge' {
+type CrewSettingPath =
+  | 'notifications.success'
+  | 'notifications.error'
+  | 'confirmBeforeMerge'
+  | 'iterate.maxRoundsPerEpoch'
+  | 'iterate.maxTotalRounds';
+
+function isCrewSettingPath(path: string): path is CrewSettingPath {
   return path === 'notifications.success'
     || path === 'notifications.error'
-    || path === 'confirmBeforeMerge';
+    || path === 'confirmBeforeMerge'
+    || path === 'iterate.maxRoundsPerEpoch'
+    || path === 'iterate.maxTotalRounds';
 }
 
-function readCrewSetting(config: CrewConfig, path: string): boolean {
+function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | number {
   switch (path) {
     case 'notifications.success':
       return config.notifications.success;
@@ -485,6 +517,10 @@ function readCrewSetting(config: CrewConfig, path: string): boolean {
       return config.notifications.error;
     case 'confirmBeforeMerge':
       return config.confirmBeforeMerge;
+    case 'iterate.maxRoundsPerEpoch':
+      return config.iterate.maxRoundsPerEpoch;
+    case 'iterate.maxTotalRounds':
+      return config.iterate.maxTotalRounds;
     default:
       throw new Error(`Unsupported config path "${path}".`);
   }
@@ -492,22 +528,33 @@ function readCrewSetting(config: CrewConfig, path: string): boolean {
 
 function writeCrewSetting(
   config: MutableCrewConfig,
-  path: string,
-  value: boolean,
+  path: CrewSettingPath,
+  value: boolean | number,
 ): void {
   switch (path) {
     case 'notifications.success':
-      config.notifications.success = value;
+      config.notifications.success = value as boolean;
       return;
     case 'notifications.error':
-      config.notifications.error = value;
+      config.notifications.error = value as boolean;
       return;
     case 'confirmBeforeMerge':
-      config.confirmBeforeMerge = value;
+      config.confirmBeforeMerge = value as boolean;
+      return;
+    case 'iterate.maxRoundsPerEpoch':
+      config.iterate.maxRoundsPerEpoch = value as number;
+      return;
+    case 'iterate.maxTotalRounds':
+      config.iterate.maxTotalRounds = value as number;
       return;
     default:
       throw new Error(`Unsupported config path "${path}".`);
   }
+}
+
+function parseCrewSettingValue(path: CrewSettingPath, raw: string): boolean | number {
+  if (path.startsWith('iterate.')) return parsePositiveIntegerValue(path, raw);
+  return parseBooleanValue(path, raw);
 }
 
 function parseBooleanValue(path: string, raw: string): boolean {
@@ -517,6 +564,27 @@ function parseBooleanValue(path: string, raw: string): boolean {
   throw new Error(`Invalid value for ${path}: expected boolean, received "${raw}".`);
 }
 
+function parsePositiveIntegerValue(path: string, raw: string): number {
+  const normalized = raw.trim();
+  if (!/^[1-9]\d*$/.test(normalized)) {
+    throw new Error(`Invalid value for ${path}: expected a positive integer, received "${raw}".`);
+  }
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`Invalid value for ${path}: expected a safe positive integer, received "${raw}".`);
+  }
+  return value;
+}
+
+function validateIterateLimits(iterate: MutableCrewConfig['iterate']): void {
+  if (iterate.maxTotalRounds < iterate.maxRoundsPerEpoch) {
+    throw new Error(
+      'Invalid iterate limits: iterate.maxTotalRounds must be greater than or equal to '
+      + 'iterate.maxRoundsPerEpoch.',
+    );
+  }
+}
+
 function mutableConfig(config: CrewConfig): MutableCrewConfig {
   return {
     notifications: {
@@ -524,6 +592,10 @@ function mutableConfig(config: CrewConfig): MutableCrewConfig {
       error: config.notifications.error,
     },
     confirmBeforeMerge: config.confirmBeforeMerge,
+    iterate: {
+      maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
+      maxTotalRounds: config.iterate.maxTotalRounds,
+    },
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,

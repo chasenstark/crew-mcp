@@ -356,7 +356,10 @@ describe('crew-iterate body — criteria-store adoption', () => {
   it('keeps the captain cap while deferring server continuation mechanics to typed errors', async () => {
     const body = await loadBody();
     const flat = flattenWhitespace(body);
-    expectContainsCI(flat, '3 rounds per epoch / 9 total');
+    expectContainsCI(flat, 'iterationLimits.maxRoundsPerEpoch');
+    expectContainsCI(flat, 'iterationLimits.maxTotalRounds');
+    expectContainsCI(flat, 'compatibility defaults `3` and `9`');
+    expectContainsCI(flat, '<maxRoundsPerEpoch> per epoch, <maxTotalRounds> total');
     expectContainsCI(flat, 'separate continuation backstop');
     expectContainsCI(flat, 'cap_override:true');
     expectContainsCI(flat, 'criteria.iteration_continuation_cap');

@@ -17,6 +17,7 @@ import {
 } from './panel-test-harness.js';
 import { getDefaultConfig } from '../../../src/workflow/config-codec.js';
 import type { FullConfig } from '../../../src/workflow/types.js';
+import { DEFAULT_CONFIG, writeConfigFile } from '../../../src/utils/config-store.js';
 
 const cleanups: Array<() => void> = [];
 
@@ -330,5 +331,33 @@ describe('continue_run criteria linkage', () => {
       expect.stringContaining('criteria.iteration_continuation_cap_override:'),
     ]));
     expect(readCriteriaState(dir)?.iterationContinuations).toBe(13);
+  });
+
+  it('uses configured iteration limits for the continuation backstop', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'mock', enforcesReadOnly: true })]);
+    cleanups.push(h.cleanup);
+    await createConfirmedCriteria(h);
+    await seedTerminalLinkedRun(h);
+    writeConfigFile(h.crewHome, {
+      ...DEFAULT_CONFIG,
+      iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
+    });
+    const dir = criteriaDir(h.crewHome, 'criteria-1');
+    writeCriteriaStateAtomic(dir, {
+      ...readCriteriaState(dir)!,
+      iterationContinuations: 11,
+    });
+
+    const accepted = await continueRunToolHandler({
+      run_id: 'run-1',
+      prompt: 'twelfth under custom limits',
+    }, extra, depsFor(h, getDefaultConfig()));
+
+    expect(accepted.isError).not.toBe(true);
+    expect(accepted.structuredContent?.warnings).toEqual([
+      expect.stringContaining('criteria.iteration_continuation_warning:'),
+    ]);
+    await waitFor(() => h.runStateStore.read('run-1')?.status === 'success');
+    expect(readCriteriaState(dir)?.iterationContinuations).toBe(12);
   });
 });

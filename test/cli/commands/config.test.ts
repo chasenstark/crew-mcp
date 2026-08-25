@@ -165,6 +165,56 @@ describe('crew-mcp config subcommands', () => {
     expect(JSON.parse(afterUnset.text).confirmBeforeMerge).toBe(true);
   });
 
+  it('sets, validates, shows, and unsets crew-iterate limits', async () => {
+    await configSetCommand('iterate.maxRoundsPerEpoch', '5', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
+    await configSetCommand('iterate.maxTotalRounds', '15', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
+
+    const shown = new CaptureStdout();
+    await configShowCommand('iterate', { cwd, crewHome, stdout: shown });
+    expect(JSON.parse(shown.text)).toEqual({
+      maxRoundsPerEpoch: 5,
+      maxTotalRounds: 15,
+    });
+
+    await expect(configSetCommand('iterate.maxTotalRounds', '4', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    })).rejects.toThrow(/must be greater than or equal/);
+    await expect(configSetCommand('iterate.maxRoundsPerEpoch', '0', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    })).rejects.toThrow(/positive integer/);
+    expect(readConfigFile(crewHome).iterate).toEqual({
+      maxRoundsPerEpoch: 5,
+      maxTotalRounds: 15,
+    });
+
+    await configUnsetCommand('iterate.maxTotalRounds', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
+    await configUnsetCommand('iterate.maxRoundsPerEpoch', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
+    expect(readConfigFile(crewHome).iterate).toEqual({
+      maxRoundsPerEpoch: 3,
+      maxTotalRounds: 9,
+    });
+  });
+
   it('sets, shows, and unsets exact provider model defaults', async () => {
     const resolveProviderModel = vi.fn(async (_providerName: string, requested: string) => ({
       ok: true as const,
@@ -254,6 +304,8 @@ describe('crew-mcp config subcommands', () => {
 
     expect(code).toBe(1);
     expect(stdout.text).toContain('  notifications.success: on\n');
+    expect(stdout.text).toContain('  iterate.maxRoundsPerEpoch: 3\n');
+    expect(stdout.text).toContain('  iterate.maxTotalRounds: 9\n');
     expect(stdout.text).toContain('  workflow.agentDefaults.iterate.implementer: codex\n');
     expect(stdout.text).toContain('  workflow.agentDefaults.iterate.reviewers: claude-code, codex\n');
     expect(stdout.text).toContain('  workflow.agentDefaults.iterate.banList: gemini-cli\n');
@@ -279,7 +331,7 @@ describe('crew-mcp config subcommands', () => {
     });
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
-    expect(stdout.text.split('\n').slice(0, 9)).toEqual([
+    expect(stdout.text.split('\n').slice(0, 10)).toEqual([
       'crew-mcp config — toggle settings',
       '',
       '> [x] notifications.success   OS toast on successful runs',
@@ -288,6 +340,7 @@ describe('crew-mcp config subcommands', () => {
       '      Agent defaults...       Configure default agents for iterate and panel workflows',
       '      Provider models...      Choose the default model for each provider',
       '      Agent strengths...      Tune per-agent routing prose and strength tags',
+      '      Iteration limits...     Set crew-iterate round limits per epoch and overall',
       '      Cleanup & retention...  Set GC retention windows and reclaim stale worktrees/run-dirs now',
     ]);
 
@@ -442,7 +495,8 @@ describe('crew-mcp config subcommands', () => {
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
     // Root rows: notifications.success(0), notifications.error(1),
     // confirmBeforeMerge(2), Agent defaults(3), Provider models(4),
-    // Agent strengths(5), Cleanup(6).
+    // Agent strengths(5), Iteration limits(6), Cleanup(7).
+    stdin.press('down');
     stdin.press('down');
     stdin.press('down');
     stdin.press('down');

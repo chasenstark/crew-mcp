@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
+import {
+  DEFAULT_CONFIG,
+  readConfigFile,
+  type CrewIterateConfig,
+} from '../../utils/config-store.js';
 import type {
   IterateAgentDefaultsConfig,
   PanelAgentDefaultsConfig,
@@ -20,10 +25,11 @@ export const getCrewPreferencesInputSchema = z.object({
 export type GetCrewPreferencesInput = z.infer<typeof getCrewPreferencesInputSchema>;
 
 export const GET_CREW_PREFERENCES_DESCRIPTION =
-  'Read user-set agent defaults for iterate and review panels. Captains call this before agent-pick prompts to honor workflow.agentDefaults preferences; unresolved ids are returned as warnings instead of throwing.';
+  'Read user-set agent defaults for iterate and review panels plus effective crew-iterate round limits. Captains call this before agent-pick prompts to honor workflow.agentDefaults preferences and iteration limits; unresolved ids are returned as warnings instead of throwing.';
 
 export interface GetCrewPreferencesOutput {
   readonly iterate?: IterateAgentDefaultsConfig;
+  readonly iterationLimits?: CrewIterateConfig;
   readonly panel?: PanelAgentDefaultsConfig;
   readonly warnings?: readonly string[];
 }
@@ -32,13 +38,14 @@ export interface GetCrewPreferencesContext {
   readonly projectRoot: string;
   readonly registry: AgentListSource;
   readonly agentPrefs?: AgentPrefsMap;
+  readonly iterationLimits?: CrewIterateConfig;
   readonly refresh?: boolean;
   readonly loadConfig?: (projectRoot: string) => { workflow: { agentDefaults?: WorkflowAgentDefaultsConfig } };
 }
 
 export async function getCrewPreferencesToolHandler(
   args: GetCrewPreferencesInput,
-  deps: Pick<ToolHandlerDeps, 'projectRoot' | 'registry' | 'readAgentPrefs'>,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'projectRoot' | 'registry' | 'readAgentPrefs'>,
 ): Promise<ToolCallReturn> {
   const agentPrefs = deps.readAgentPrefs();
   try {
@@ -46,6 +53,7 @@ export async function getCrewPreferencesToolHandler(
       projectRoot: deps.projectRoot,
       registry: deps.registry,
       agentPrefs,
+      iterationLimits: readConfigFile(deps.crewHome).iterate,
     });
     return jsonContent(out);
   } catch (err) {
@@ -61,20 +69,23 @@ export async function getCrewPreferencesHandler(
   const scope = input.scope ?? 'all';
   const config = (ctx.loadConfig ?? loadWorkflowConfig)(ctx.projectRoot);
   const defaults = config.workflow.agentDefaults;
-  if (!defaults) return {};
 
   const output: {
     iterate?: IterateAgentDefaultsConfig;
+    iterationLimits?: CrewIterateConfig;
     panel?: PanelAgentDefaultsConfig;
     warnings?: string[];
   } = {};
-  if ((scope === 'iterate' || scope === 'all') && hasIterateDefaults(defaults.iterate)) {
+  if ((scope === 'iterate' || scope === 'all') && hasIterateDefaults(defaults?.iterate)) {
     output.iterate = cloneIterateDefaults(defaults.iterate);
   }
-  if ((scope === 'panel' || scope === 'all') && hasPanelDefaults(defaults.panel)) {
+  if (scope === 'iterate' || scope === 'all') {
+    output.iterationLimits = { ...(ctx.iterationLimits ?? DEFAULT_CONFIG.iterate) };
+  }
+  if ((scope === 'panel' || scope === 'all') && hasPanelDefaults(defaults?.panel)) {
     output.panel = clonePanelDefaults(defaults.panel);
   }
-  if (!output.iterate && !output.panel) return {};
+  if (!output.iterate && !output.iterationLimits && !output.panel) return {};
 
   const knownIds = listAgentIds(ctx.registry);
   const warnings = buildWarnings(output, knownIds);

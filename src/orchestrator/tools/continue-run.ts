@@ -33,6 +33,7 @@ import { appendWorkerFooterForAdapter } from '../peer-messages/worker-footer.js'
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
+import { readConfigFile } from '../../utils/config-store.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import {
   deleteWorkerReadyMarker,
@@ -289,6 +290,7 @@ export async function continueRunToolHandler(
         criteriaSetId: criteriaContract.criteriaSetId,
         expectedEpoch: criteriaContract.criteriaEpoch,
         capOverride: args.cap_override === true,
+        iterationLimits: readConfigFile(deps.crewHome).iterate,
       });
       dispatchWarnings.push(...continuation.warnings);
     } catch (err) {
