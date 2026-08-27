@@ -1,10 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import {
   closeSync,
+  existsSync,
   fstatSync,
   openSync,
   readFileSync,
   readdirSync,
   readSync,
+  realpathSync,
   statSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -13,6 +16,12 @@ import type { RunStateV1 } from '../run-state.js';
 import { runModeFromState } from '../run-mode.js';
 import { resolveRunDirTtlMs } from '../run-gc.js';
 import type { ClientKind } from '../tools/shared.js';
+import { PrWatchStore } from '../../pr-watch/store.js';
+import {
+  claimPrWatchSurface,
+  deliverPrWatchSurface,
+  recoverExpiredPrWatchSurfaceClaim,
+} from '../../pr-watch/reducer.js';
 import {
   isWaitingWaitParams,
   toolJournalPath,
@@ -36,6 +45,7 @@ export const JIT_NUDGE_MAX_COUNT = 4;
 export const JIT_NUDGE_MAX_BYTES = 2 * 1_024;
 export const DETECTION_JOURNAL_TAIL_BYTES = 128 * 1_024;
 export const DETECTION_WATCH_TAIL_BYTES = 128 * 1_024;
+export const PR_WATCH_JIT_TAIL_BYTES = 128 * 1_024;
 export const DETECTION_MAX_RUN_STATES = 256;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -70,6 +80,14 @@ export interface DetectJitNudgesInput {
   readonly currentCall: JitNudgeCurrentCall;
   readonly confirmationAttempt?: ConfirmationAttempt;
   readonly nowMs?: number;
+}
+
+export interface ClaimedPrWatchJitNudge {
+  readonly watchId: string;
+  readonly surfaceId: string;
+  readonly requestId: string;
+  readonly attempt: number;
+  readonly warning: string;
 }
 
 /**
@@ -202,10 +220,194 @@ export function detectJitNudges(input: DetectJitNudgesInput): string[] {
       );
     }
 
+    warnings.push(...readPrWatchRecoveryWarnings({
+      crewHome: input.crewHome,
+      repoRoot: input.repoRoot,
+      nowMs,
+    }));
+
     return capWarnings(warnings);
   } catch {
     return [];
   }
+}
+
+function readPrWatchRecoveryWarnings(args: {
+  readonly crewHome: string;
+  readonly repoRoot: string;
+  readonly nowMs: number;
+}): string[] {
+  if (!existsSync(join(args.crewHome, 'pr-watches'))) return [];
+  const store = new PrWatchStore(args.crewHome);
+  const expectedRepo = existsSync(args.repoRoot) ? realpathSync(args.repoRoot) : resolve(args.repoRoot);
+  const warnings: string[] = [];
+  for (const watchId of store.listWatchIds().slice(0, DETECTION_MAX_RUN_STATES)) {
+    let bounded;
+    try {
+      bounded = store.readBoundedTail(watchId, PR_WATCH_JIT_TAIL_BYTES);
+    } catch {
+      continue;
+    }
+    if (bounded.status === 'cache_lag') {
+      if (
+        bounded.cachedState !== undefined
+        && resolve(bounded.cachedState.repoRoot) === expectedRepo
+      ) {
+        warnings.push(
+          `pr_watch_cache_lag: watch "${watchId}" exceeds the bounded JIT ledger read; no lifecycle remedy was claimed. Restart its waiter/controller to repair the cache, then inspect with get_pr_watch_status.`,
+        );
+      }
+      continue;
+    }
+    const state = bounded.read.state;
+    if (resolve(state.repoRoot) !== expectedRepo) continue;
+    if (state.status === 'actionable') {
+      warnings.push(
+        `pr_watch_actionable: watch "${watchId}" has action batch "${state.batch.actionBatchId}" awaiting disposition; call get_pr_watch_status before acting.`,
+      );
+    } else if (
+      state.status === 'active'
+      && state.waiter.state === 'exited'
+      && state.waiter.exitReason === 'timeout'
+      && args.nowMs >= Date.parse(state.waiter.exitedAt ?? state.updatedAt)
+    ) {
+      warnings.push(
+        `pr_watch_waiter_recovery: watch "${watchId}" has no live waiter after timeout; use rearm_pr_watch with the persisted waiter identity.`,
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Claim one repo-scoped blocker/expiry remedy for JIT delivery. The claim is
+ * durable before its warning is added to an MCP response, so concurrent host
+ * calls cannot surface the same remedy. An abandoned claim becomes eligible
+ * again only after its lease has expired and that failed attempt is recorded.
+ */
+export async function claimPrWatchJitNudge(args: {
+  readonly crewHome: string;
+  readonly repoRoot: string;
+  readonly now?: Date;
+  readonly requestId?: string;
+  readonly leaseMs?: number;
+  readonly maxWarningBytes?: number;
+  readonly maxTailBytes?: number;
+}): Promise<ClaimedPrWatchJitNudge | undefined> {
+  try {
+    if (!existsSync(join(args.crewHome, 'pr-watches'))) return undefined;
+    const store = new PrWatchStore(args.crewHome);
+    const expectedRepo = existsSync(args.repoRoot) ? realpathSync(args.repoRoot) : resolve(args.repoRoot);
+    const now = args.now ?? new Date();
+    const requestId = args.requestId ?? randomUUID();
+    const leaseMs = args.leaseMs ?? 60_000;
+    const maxTailBytes = args.maxTailBytes ?? PR_WATCH_JIT_TAIL_BYTES;
+    for (const watchId of store.listWatchIds().slice(0, DETECTION_MAX_RUN_STATES)) {
+      let bounded;
+      try {
+        bounded = store.readBoundedTail(watchId, maxTailBytes);
+      } catch {
+        continue;
+      }
+      if (bounded.status === 'cache_lag') continue;
+      const initial = bounded.read.state;
+      if (resolve(initial.repoRoot) !== expectedRepo) continue;
+      const candidate = currentRemedySurface(initial);
+      if (!candidate) continue;
+      const warning = remedyWarning(initial);
+      if (
+        args.maxWarningBytes !== undefined
+        && Buffer.byteLength(warning, 'utf-8') > args.maxWarningBytes
+      ) continue;
+      try {
+        const mutation = await store.mutateBoundedTail(watchId, maxTailBytes, (state) => {
+          const current = currentRemedySurface(state);
+          if (!current || current.surfaceId !== candidate.surfaceId) {
+            throw new Error('pr_watch.surface_not_claimable');
+          }
+          let next = state;
+          if (
+            current.state === 'claimed'
+            && current.claimedByRequestId !== undefined
+            && current.claimLeaseExpiresAt !== undefined
+            && Date.parse(current.claimLeaseExpiresAt) <= now.getTime()
+          ) {
+            next = recoverExpiredPrWatchSurfaceClaim(next, {
+              surfaceId: current.surfaceId,
+              requestId: current.claimedByRequestId,
+              attempt: current.latestClaimAttempt,
+              now,
+            }).state;
+          }
+          return claimPrWatchSurface(next, {
+            surfaceId: current.surfaceId,
+            requestId,
+            leaseMs,
+            now,
+          });
+        });
+        if (mutation.status === 'cache_lag') continue;
+        const surface = currentRemedySurface(mutation.read.state);
+        if (
+          !surface
+          || surface.surfaceId !== candidate.surfaceId
+          || surface.claimedByRequestId !== requestId
+        ) continue;
+        return {
+          watchId,
+          surfaceId: surface.surfaceId,
+          requestId,
+          attempt: surface.latestClaimAttempt,
+          warning,
+        };
+      } catch {
+        // Another call may have claimed, delivered, or closed this surface.
+      }
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Mark a response-constructed JIT remedy as durably delivered. */
+export async function auditPrWatchJitNudge(args: {
+  readonly crewHome: string;
+  readonly claim: ClaimedPrWatchJitNudge;
+  readonly now?: Date;
+}): Promise<void> {
+  const store = new PrWatchStore(args.crewHome);
+  await store.mutate(args.claim.watchId, (state) => deliverPrWatchSurface(state, {
+    surfaceId: args.claim.surfaceId,
+    requestId: args.claim.requestId,
+    attempt: args.claim.attempt,
+    via: 'jit',
+    now: args.now ?? new Date(),
+  }));
+}
+
+function currentRemedySurface(state: ReturnType<PrWatchStore['read']>['state']) {
+  if (state.status === 'blocked') {
+    return state.blockerSurfaces.find((entry) => (
+      entry.surfaceId === state.currentBlockerSurfaceId && entry.closedAt === undefined
+    ));
+  }
+  if (state.status === 'expired') {
+    return state.expirySurfaces.find((entry) => (
+      entry.surfaceId === state.currentExpirySurfaceId && entry.closedAt === undefined
+    ));
+  }
+  return undefined;
+}
+
+function remedyWarning(state: ReturnType<PrWatchStore['read']>['state']): string {
+  if (state.status === 'blocked') {
+    return `pr_watch_blocked_remedy: watch "${state.watchId}" is blocked by ${state.blocker.kind}; read get_pr_watch_status for its typed remedy.`;
+  }
+  if (state.status === 'expired') {
+    return `pr_watch_expiry_remedy: watch "${state.watchId}" expired with suspended ${state.suspendedState.status} state; read get_pr_watch_status to extend or cancel.`;
+  }
+  throw new Error('pr_watch.no_remedy_surface');
 }
 
 /** Read the stable generation identity used by the in-process consent map. */

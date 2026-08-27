@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isCrewWaitOnPath,
+  isTrustedProjectPrWatchCommand,
+  isTrustedProjectPrWatchWaitCommand,
   isTrustedProjectCrewWaitCommand,
+  prWatchCommandFromCrewWait,
+  prWatchWaitCommandFromCrewWait,
   projectCrewBinaryResolver,
   projectCrewWaitCommand,
   quoteExecutablePath,
@@ -72,6 +76,19 @@ describe('projectCrewWaitCommand', () => {
     expect(isTrustedProjectCrewWaitCommand('npx --no-install crew-wait')).toBe(true);
     expect(isTrustedProjectCrewWaitCommand('crew-wait')).toBe(false);
     expect(isTrustedProjectCrewWaitCommand('npx --no-install crew-wait; echo owned')).toBe(false);
+  });
+
+  it('derives and trusts the scoped PR-watch sibling commands', () => {
+    expect(prWatchCommandFromCrewWait('./node_modules/crew-wait/bin/crew-wait')).toBe(
+      './node_modules/crew-wait/bin/crew-pr-watch',
+    );
+    expect(prWatchWaitCommandFromCrewWait('npx --no-install crew-wait')).toBe(
+      'npx --no-install crew-pr-watch-wait',
+    );
+    expect(isTrustedProjectPrWatchCommand('./node_modules/.bin/crew-pr-watch')).toBe(true);
+    expect(isTrustedProjectPrWatchWaitCommand('npx --no-install crew-pr-watch-wait')).toBe(true);
+    expect(isTrustedProjectPrWatchCommand('crew-pr-watch; echo owned')).toBe(false);
+    expect(isTrustedProjectPrWatchWaitCommand('crew-pr-watch-wait')).toBe(false);
   });
 });
 

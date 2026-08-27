@@ -9,6 +9,8 @@ import {
 import { join } from 'node:path';
 
 import { withStateLock } from '../orchestrator/run-state-lock.js';
+import { parsePrWatchId } from '../pr-watch/id.js';
+import type { PrWatchStore } from '../pr-watch/store.js';
 import { CodexWakeRpcError } from './app-server-bridge.js';
 
 const TERMINAL_STATUSES = new Set(['success', 'partial', 'error', 'cancelled']);
@@ -27,6 +29,14 @@ export type ClaimedCodexWakeResult<T> =
     readonly started: false;
     readonly reason: 'stale_generation' | 'already_claimed';
   };
+
+export interface ClaimedCodexPrWatchWakeOptions<T> {
+  readonly store: PrWatchStore;
+  readonly threadId: string;
+  readonly watchId: string;
+  readonly generation: number;
+  readonly startTurn: () => Promise<T>;
+}
 
 export function encodeRunGenerations(generations: readonly number[]): string {
   return Buffer.from(JSON.stringify(generations), 'utf-8').toString('base64url');
@@ -112,6 +122,54 @@ export async function runClaimedCodexWake<T>(
     if (error instanceof CodexWakeRpcError) {
       removeOwnedClaim(claim.claimPath, claim.ownerId);
     }
+    throw error;
+  }
+}
+
+/** Claim one repeatable PR-watch generation without changing the run-wake byte contract. */
+export async function runClaimedCodexPrWatchWake<T>(
+  options: ClaimedCodexPrWatchWakeOptions<T>,
+): Promise<ClaimedCodexWakeResult<T>> {
+  const watchId = parsePrWatchId(options.watchId);
+  if (!Number.isSafeInteger(options.generation) || options.generation < 1) {
+    throw new Error('Invalid Codex PR-watch generation');
+  }
+  const claim = await options.store.withWatchLock(watchId, async () => {
+    const state = options.store.read(watchId).state;
+    if (
+      state.generation !== options.generation
+      || state.status === 'active'
+    ) {
+      return { claimed: false, reason: 'stale_generation' } as const;
+    }
+    const ownerId = randomUUID();
+    const digest = createHash('sha256')
+      .update(JSON.stringify({
+        threadId: options.threadId,
+        watchId,
+        generation: options.generation,
+      }))
+      .digest('hex');
+    const claimPath = join(options.store.watchDir(watchId), `.codex-wake-${digest}.claim`);
+    try {
+      writeFileSync(
+        claimPath,
+        `${JSON.stringify({ ownerId, threadId: options.threadId, watchId, generation: options.generation })}\n`,
+        { encoding: 'utf-8', flag: 'wx', mode: 0o600 },
+      );
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'EEXIST') {
+        return { claimed: false, reason: 'already_claimed' } as const;
+      }
+      throw error;
+    }
+    return { claimed: true, claimPath, ownerId } as const;
+  });
+  if (!claim.claimed) return { started: false, reason: claim.reason };
+  try {
+    return { started: true, result: await options.startTurn() };
+  } catch (error) {
+    if (error instanceof CodexWakeRpcError) removeOwnedClaim(claim.claimPath, claim.ownerId);
     throw error;
   }
 }

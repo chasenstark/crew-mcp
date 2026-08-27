@@ -1,10 +1,11 @@
-> **Current as of 2026-08-22.**
+> **Current as of 2026-08-27.**
 
 # Crew Architecture
 
 Crew is a TypeScript MCP server that lets a host CLI act as captain over
 Claude Code, Codex, agy/Antigravity, and configured custom agents. The package
-publishes `crew-mcp` plus the `crew-wait` terminal watcher.
+publishes `crew-mcp`, the `crew-wait` terminal watcher, and the
+`crew-pr-watch` / `crew-pr-watch-wait` durable PR-watch pair.
 
 ## Runtime shape
 
@@ -13,6 +14,7 @@ publishes `crew-mcp` plus the `crew-wait` terminal watcher.
 | CLI | `src/index.ts`, `src/cli/commands/` | `serve`, host installation, verification, preferences, agent editing, cleanup, and uninstall. |
 | Install | `src/install/` | Host config/skill rendering, manifests, binary resolution, and static tool-catalog parity. |
 | Orchestrator | `src/orchestrator/` | MCP tools, run state, criteria, panels, progress, inbox messages, and dispatch lifecycle. |
+| PR watch | `src/pr-watch/` | Separate durable GitHub observation, evidence, deadlines, wake ownership, authorization, action leases, and remote-effect recovery. |
 | Adapters | `src/adapters/` | Provider-native execution, health, model discovery/resolution, stream parsing, and failure classification. |
 | Git isolation | `src/git/` | Per-run write worktrees and ephemeral review snapshots. |
 
@@ -27,7 +29,7 @@ The current CLI commands are `serve`, `codex`, `status`, `cleanup`, `config`,
 Historical `run`, `init`, `profile`, `state reset`, and `resume` commands live
 only in `docs/architecture/v0.1-archive/`.
 
-The catalog contains twenty MCP tools: nineteen captain tools and the
+The catalog contains twenty-five MCP tools: twenty-four captain tools and the
 worker-only `send_message`. `src/cli/commands/serve.ts` owns the live
 registrations and `src/install/tool-catalog.ts` owns install-time parity. See
 `docs/architecture/tools.md` for the catalog and envelope contracts.
@@ -54,6 +56,15 @@ lifecycle mode, criteria linkage, model-selection audit records, provider
 session identity, files, failures, and merge state. Terminal lifecycle
 listeners persist adapter results; only explicit `merge_run` or `discard_run`
 crosses the mutation/cleanup boundary.
+
+PR watches are not agent runs. Their digest-chained ledgers and monotonic state
+caches live under `~/.crew/pr-watches/`. A background waiter polls typed GitHub
+and optional CircleCI evidence outside model turns, then wakes the originating
+Claude Code or Codex conversation for an actionable batch, remedy, expiry, or
+terminal result. This release is monitor-only: actionable events are handed to
+ordinary, separately authorized workflows, and the watch records dispositions
+before rearming. The PR-watch controller cannot mutate GitHub or git. See
+`docs/architecture/pr-watch.md`.
 
 ## Provider and model identity
 
@@ -84,4 +95,5 @@ change must update the runtime, catalog, skill prose, and parity tests together.
 - `docs/architecture/captain-portability.md` — install-time host wiring.
 - `docs/architecture/config-registry.md` — workflow configuration paths.
 - `docs/architecture/run-state-contract.md` — durable run-state behavior.
+- `docs/architecture/pr-watch.md` — durable PR-watch lifecycle and action boundary.
 - `docs/architecture/v0.1-archive/` — historical runner/session design only.

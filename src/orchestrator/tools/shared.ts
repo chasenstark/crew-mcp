@@ -236,6 +236,7 @@ export interface ProgressTokenSeen {
 }
 
 export type ToolRequestExtra = {
+  signal?: AbortSignal;
   _meta?: {
     progressToken?: string | number;
     threadId?: unknown;

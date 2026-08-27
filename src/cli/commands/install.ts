@@ -55,6 +55,8 @@ import {
   parseProjectCrewBinaryStrategy,
   projectCrewBinaryResolver,
   projectCrewWaitCommand,
+  prWatchCommandFromCrewWait,
+  prWatchWaitCommandFromCrewWait,
   quoteExecutablePath,
   resolveCrewWaitBinary,
   type CrewBinaryResolver,
@@ -83,6 +85,7 @@ import {
 import {
   captainSkillTools,
   renderSkill,
+  renderSkillCompanion,
   resolvePackageRoot,
   SKILL_MANIFEST,
   templatePathForHost,
@@ -442,14 +445,18 @@ export async function installSingleTarget(args: {
         : absolute;
     }
   }
+  const prWatchWaitCommand = prWatchWaitCommandFromCrewWait(crewWaitCommand);
+  const crewPrWatchCommand = prWatchCommandFromCrewWait(crewWaitCommand);
 
   // 1+2. Render + write each skill in the manifest via the helper
   // (single seam for preflight + legacy-removal + atomic-write).
-  const { skillsMap, writtenPaths, skillPath, sharedSkills } = await renderAndWriteSkills({
+  const { skillsMap, skillFiles, writtenPaths, skillPath, sharedSkills } = await renderAndWriteSkills({
     adapter,
     home,
     packageRoot,
     crewWaitCommand,
+    crewPrWatchCommand,
+    crewPrWatchWaitCommand: prWatchWaitCommand,
   });
 
   // 3. Merge MCP block into host config.
@@ -490,8 +497,12 @@ export async function installSingleTarget(args: {
       approvalExisting,
       `Bash(${crewWaitCommand}:*)`,
     );
-    if (approvalUpdated !== approvalExisting) {
-      writeFileAtomic(approvalFile, approvalUpdated);
+    const prWatchApprovalUpdated = addClaudePermission(
+      approvalUpdated,
+      `Bash(${prWatchWaitCommand}:*)`,
+    );
+    if (prWatchApprovalUpdated !== approvalExisting) {
+      writeFileAtomic(approvalFile, prWatchApprovalUpdated);
     }
     logger.info(
       `crew install: Claude Code crew-wait watcher allowlisted as Bash(${crewWaitCommand}:*). `
@@ -511,6 +522,7 @@ export async function installSingleTarget(args: {
     configPath,
     skillPath,
     skills: skillsMap,
+    skillFiles,
     writtenPaths,
     ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
     version: CREW_MCP_VERSION,
@@ -518,6 +530,8 @@ export async function installSingleTarget(args: {
     serverCommand: crewBin,
     serverArgs: [...crewArgs],
     crewWaitCommand,
+    crewPrWatchCommand,
+    prWatchWaitCommand,
     autoApproved: autoApprove,
   };
   await recordInstalledTarget(home, adapter.id, entry);
@@ -550,13 +564,17 @@ export async function installSingleProjectTarget(args: {
     strategy,
     platform: args.platform,
   });
+  const prWatchWaitCommand = prWatchWaitCommandFromCrewWait(crewWaitCommand);
+  const crewPrWatchCommand = prWatchCommandFromCrewWait(crewWaitCommand);
 
-  const { skillsMap, writtenPaths: skillWrittenPaths, skillPath, sharedSkills } =
+  const { skillsMap, skillFiles, writtenPaths: skillWrittenPaths, skillPath, sharedSkills } =
     await renderAndWriteSkills({
       adapter,
       home: repoRoot,
       packageRoot,
       crewWaitCommand,
+      crewPrWatchCommand,
+      crewPrWatchWaitCommand: prWatchWaitCommand,
       skillInstallSpecFor: (skill) => adapter.projectSkillInstallSpecFor!(repoRoot, skill),
       fallbackSkillPath: adapter.projectSkillPath!(repoRoot),
       ownedPaths: await collectProjectCrewOwnedPaths(repoRoot),
@@ -598,8 +616,12 @@ export async function installSingleProjectTarget(args: {
       approvalExisting,
       `Bash(${crewWaitCommand}:*)`,
     );
-    if (approvalUpdated !== approvalExisting) {
-      writeFileAtomic(approvalFile, approvalUpdated);
+    const prWatchApprovalUpdated = addClaudePermission(
+      approvalUpdated,
+      `Bash(${prWatchWaitCommand}:*)`,
+    );
+    if (prWatchApprovalUpdated !== approvalExisting) {
+      writeFileAtomic(approvalFile, prWatchApprovalUpdated);
     }
     if (approvalFile !== configPath && !writtenPaths.includes(approvalFile)) {
       writtenPaths.push(approvalFile);
@@ -621,6 +643,7 @@ export async function installSingleProjectTarget(args: {
     configPath,
     skillPath,
     skills: skillsMap,
+    skillFiles,
     writtenPaths,
     ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
     ...(permissionsPath ? { permissionsPath } : {}),
@@ -629,6 +652,8 @@ export async function installSingleProjectTarget(args: {
     serverCommand: crewBin,
     serverArgs: [...crewArgs],
     crewWaitCommand,
+    crewPrWatchCommand,
+    prWatchWaitCommand,
     autoApproved: autoApprove,
   };
   const relativeEntry = relativizeProjectTarget(repoRoot, absoluteEntry);
@@ -666,39 +691,57 @@ async function renderAndWriteSkills(args: {
   readonly home: string;
   readonly packageRoot: string;
   readonly crewWaitCommand: string;
+  readonly crewPrWatchCommand: string;
+  readonly crewPrWatchWaitCommand: string;
   readonly skillInstallSpecFor?: (skill: SkillManifestEntry) => SkillInstallSpec;
   readonly fallbackSkillPath?: string;
   readonly ownedPaths?: Set<string>;
 }): Promise<{
   readonly skillsMap: Record<string, string>;
+  readonly skillFiles: Record<string, readonly string[]>;
   readonly writtenPaths: string[];
   readonly skillPath: string;
   readonly sharedSkills: Record<string, string>;
 }> {
-  const { adapter, home, packageRoot, crewWaitCommand } = args;
+  const {
+    adapter,
+    home,
+    packageRoot,
+    crewWaitCommand,
+    crewPrWatchCommand,
+    crewPrWatchWaitCommand,
+  } = args;
   const templatePath = templatePathForHost(packageRoot, adapter.id);
   const skillInstallSpecFor = args.skillInstallSpecFor
     ?? ((skill: SkillManifestEntry) => adapter.skillInstallSpecFor(home, skill));
 
   // Resolve all specs up front so the preflight check sees every
   // target before we touch anything on disk.
-  const specs = SKILL_MANIFEST.map((skill) => ({
-    skill,
-    spec: skillInstallSpecFor(skill),
-  }));
+  const specs = SKILL_MANIFEST.map((skill) => {
+    const spec = skillInstallSpecFor(skill);
+    const companions = (skill.companions ?? []).map((companion) => {
+      if (!/^[A-Za-z0-9._-]+$/.test(companion.outputFile)) {
+        throw new Error(`crew install: invalid companion filename ${companion.outputFile}`);
+      }
+      return { ...companion, finalPath: join(dirname(spec.skillPath), companion.outputFile) };
+    });
+    return { skill, spec, companions };
+  });
 
   // Preflight: refuse if any destination SKILL.md exists AND wasn't
   // written by a prior crew install. Plan §"Atomicity & locking
   // requirements" — preflight collision check.
   const ownedPaths = args.ownedPaths ?? await collectCrewOwnedPaths(home);
-  for (const { spec } of specs) {
+  for (const { spec, companions } of specs) {
     if (spec.skip) continue;
-    if (existsSync(spec.skillPath) && !ownedPaths.has(spec.skillPath)) {
-      throw new Error(
-        `crew install: refusing to overwrite ${spec.skillPath} — `
-        + 'a file exists at that path but was not written by a prior crew install. '
-        + 'Move or delete the file, then re-run install.',
-      );
+    for (const destination of [spec.skillPath, ...companions.map((entry) => entry.finalPath)]) {
+      if (existsSync(destination) && !ownedPaths.has(destination)) {
+        throw new Error(
+          `crew install: refusing to overwrite ${destination} — `
+          + 'a file exists at that path but was not written by a prior crew install. '
+          + 'Move or delete the file, then re-run install.',
+        );
+      }
     }
   }
 
@@ -712,8 +755,13 @@ async function renderAndWriteSkills(args: {
     spec: SkillInstallSpec;
     stagingPath: string;
   }> = [];
+  const stagedCompanions: Array<{
+    skill: SkillManifestEntry;
+    finalPath: string;
+    stagingPath: string;
+  }> = [];
   try {
-    for (const { skill, spec } of specs) {
+    for (const { skill, spec, companions } of specs) {
       // Skipped skills render nothing — the host already discovers
       // them from a shared search-path location (~/.agents/skills/).
       // No current host adapter produces skip:true (the retired gemini
@@ -735,12 +783,36 @@ async function renderAndWriteSkills(args: {
         spec,
         tools: CAPTAIN_CATALOG_TOOLS,
         crewWaitCommand,
+        crewPrWatchCommand,
+        crewPrWatchWaitCommand,
         packageRoot,
       });
       const stagingPath = `${spec.skillPath}${stagingSuffix}`;
       mkdirSync(dirname(stagingPath), { recursive: true });
       writeFileSync(stagingPath, skillContent, 'utf-8');
       staged.push({ skill, spec, stagingPath });
+      for (const companion of companions) {
+        const content = await renderSkillCompanion({
+          templatePath,
+          hostId: adapter.id,
+          skill,
+          spec,
+          sourceFile: companion.sourceFile,
+          tools: CAPTAIN_CATALOG_TOOLS,
+          crewWaitCommand,
+          crewPrWatchCommand,
+          crewPrWatchWaitCommand,
+          packageRoot,
+        });
+        const companionStagingPath = `${companion.finalPath}${stagingSuffix}`;
+        mkdirSync(dirname(companionStagingPath), { recursive: true });
+        writeFileSync(companionStagingPath, content, 'utf-8');
+        stagedCompanions.push({
+          skill,
+          finalPath: companion.finalPath,
+          stagingPath: companionStagingPath,
+        });
+      }
     }
 
     // Legacy removal AFTER Phase 1 (so a render failure doesn't trash
@@ -777,15 +849,19 @@ async function renderAndWriteSkills(args: {
     }
     const ledger: LedgerEntry[] = [];
     try {
-      for (const { spec, stagingPath } of staged) {
-        const backupPath = existsSync(spec.skillPath)
-          ? `${spec.skillPath}.crew-backup-${process.pid}-${Date.now()}-${ledger.length}`
+      const swaps = [
+        ...staged.map(({ spec, stagingPath }) => ({ finalPath: spec.skillPath, stagingPath })),
+        ...stagedCompanions.map(({ finalPath, stagingPath }) => ({ finalPath, stagingPath })),
+      ];
+      for (const { finalPath, stagingPath } of swaps) {
+        const backupPath = existsSync(finalPath)
+          ? `${finalPath}.crew-backup-${process.pid}-${Date.now()}-${ledger.length}`
           : null;
         if (backupPath !== null) {
-          renameSync(spec.skillPath, backupPath);
+          renameSync(finalPath, backupPath);
         }
         try {
-          renameSync(stagingPath, spec.skillPath);
+          renameSync(stagingPath, finalPath);
         } catch (renameErr) {
           // Inner-swap failure: the destination is empty (we already
           // moved the original to backup, and the new file didn't
@@ -794,7 +870,7 @@ async function renderAndWriteSkills(args: {
           // in the ledger).
           if (backupPath !== null && existsSync(backupPath)) {
             try {
-              renameSync(backupPath, spec.skillPath);
+              renameSync(backupPath, finalPath);
             } catch {
               // Best-effort; if restore fails too, the user is in a
               // degraded state and `verify` will surface it.
@@ -802,7 +878,7 @@ async function renderAndWriteSkills(args: {
           }
           throw renameErr;
         }
-        ledger.push({ finalPath: spec.skillPath, backupPath });
+        ledger.push({ finalPath, backupPath });
       }
     } catch (swapErr) {
       // Roll back completed swaps in reverse order. Each entry either
@@ -855,10 +931,16 @@ async function renderAndWriteSkills(args: {
     }
 
     const skillsMap: Record<string, string> = {};
+    const skillFiles: Record<string, readonly string[]> = {};
     const writtenPaths: string[] = [];
     for (const { skill, spec } of staged) {
       skillsMap[skill.id] = spec.skillPath;
       writtenPaths.push(spec.skillPath);
+      const companionPaths = stagedCompanions
+        .filter((entry) => entry.skill.id === skill.id)
+        .map((entry) => entry.finalPath);
+      skillFiles[skill.id] = [spec.skillPath, ...companionPaths];
+      writtenPaths.push(...companionPaths);
     }
     // Skills served from a shared search-path location (skip === true):
     // record where the host loads them so verify can confirm presence,
@@ -875,12 +957,21 @@ async function renderAndWriteSkills(args: {
     // that path would be the per-host copy we deliberately didn't write.
     const skillPath = skillsMap['crew']
       ?? (sharedSkills['crew'] ? '' : (args.fallbackSkillPath ?? adapter.skillPath(home)));
-    return { skillsMap, writtenPaths, skillPath, sharedSkills };
+    return { skillsMap, skillFiles, writtenPaths, skillPath, sharedSkills };
   } finally {
     // Always clean up leftover staging files (render-failure or
     // swap-failure paths). On full success they've already been
     // renamed and existsSync is false.
     for (const { stagingPath } of staged) {
+      if (existsSync(stagingPath)) {
+        try {
+          unlinkSync(stagingPath);
+        } catch {
+          // ignore — best-effort cleanup
+        }
+      }
+    }
+    for (const { stagingPath } of stagedCompanions) {
       if (existsSync(stagingPath)) {
         try {
           unlinkSync(stagingPath);

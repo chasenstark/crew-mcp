@@ -58,6 +58,9 @@ export const SKILL_DESCRIPTION =
 export const ITERATE_SKILL_DESCRIPTION =
   'Keep iterating on an implementation until acceptance criteria pass and reviewers approve. Loads when the user wants to ship-quality something via a multi-agent implement-review loop — phrasings like "keep working on X with review", "implement X and review until it\'s good", "iterate to convergence", "keep going until tests/criteria pass", "loop until reviewers approve", "don\'t stop until it\'s done", "ship-quality loop", "review loop", "polish until it ships", "use Claude + Codex to push this until criteria pass". The captain derives acceptance criteria, confirms with the user, dispatches an implementer with criteria embedded, runs crew + host-native review scoring per criterion, and folds findings back via continue_run until every criterion is PASS and every reviewer\'s verdict is APPROVE. Composes run_agent, continue_run, run_panel, aggregate_panel, merge_run.';
 
+export const PR_WATCH_SKILL_DESCRIPTION =
+  'Durably watch, babysit, or monitor a GitHub pull request or linear PR stack without keeping a model turn open. TRIGGER when the user asks to watch a PR, keep a PR or stack green, wait for checks or approvals, babysit CI/reviews, or continue until a pull request is ready. Uses one trusted background waiter. Monitoring is the default; a wake is never mutation authority. Bounded comments, replies, thread resolution, or a single-PR fast-forward push require a separate explicit grant. Crew never merges, auto-merges, force-pushes, closes, or approves a pull request.';
+
 export interface SkillTool {
   readonly name: string;
   readonly description: string;
@@ -82,6 +85,11 @@ export interface SkillManifestEntry {
   readonly bodyFile: string;
   /** Description string for the host matcher. */
   readonly description: string;
+  /** Canonical sibling assets rendered beside SKILL.md through the same body pipeline. */
+  readonly companions?: readonly {
+    readonly sourceFile: string;
+    readonly outputFile: string;
+  }[];
 }
 
 /**
@@ -101,6 +109,13 @@ export const SKILL_MANIFEST: readonly SkillManifestEntry[] = [
     slug: 'iterate',
     bodyFile: 'crew-iterate.body.md',
     description: ITERATE_SKILL_DESCRIPTION,
+  },
+  {
+    id: 'crew:pr-watch',
+    slug: 'pr-watch',
+    bodyFile: 'crew-pr-watch.body.md',
+    description: PR_WATCH_SKILL_DESCRIPTION,
+    companions: [{ sourceFile: 'crew-pr-watch.action.md', outputFile: 'ACTION.md' }],
   },
 ];
 
@@ -164,6 +179,12 @@ export interface RenderSkillArgs {
    * the prose reads sensibly.
    */
   readonly crewWaitCommand?: string;
+  /** Exact packaged controller command for manual PR-watch acknowledgements/effects. */
+  readonly crewPrWatchCommand?: string;
+  /** Exact packaged auto-wake command. */
+  readonly crewPrWatchWaitCommand?: string;
+  /** Rendered sibling reference for the PR-watch action companion. */
+  readonly actionReferencePath?: string;
   /**
    * Override for tests. Defaults to a path resolved relative to this
    * file's compiled location (which sits in dist/install/ at runtime,
@@ -307,9 +328,15 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
 
   const toolList = renderToolList(captainSkillTools(args.tools));
   const crewWaitCommand = args.crewWaitCommand ?? 'crew-wait';
+  const crewPrWatchCommand = args.crewPrWatchCommand ?? 'crew-pr-watch';
+  const crewPrWatchWaitCommand = args.crewPrWatchWaitCommand ?? 'crew-pr-watch-wait';
+  const actionReferencePath = args.actionReferencePath ?? './ACTION.md';
   const bodyWithTools = body
     .replace('{{TOOL_LIST}}', toolList)
-    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
+    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand)
+    .replace(/\{\{CREW_PR_WATCH_COMMAND\}\}/g, crewPrWatchCommand)
+    .replace(/\{\{CREW_PR_WATCH_WAIT_COMMAND\}\}/g, crewPrWatchWaitCommand)
+    .replace(/\{\{ACTION_REFERENCE_PATH\}\}/g, actionReferencePath);
 
   const frontmatterName = args.spec?.frontmatterName ?? skill.slug;
 
@@ -318,9 +345,31 @@ export async function renderSkill(args: RenderSkillArgs): Promise<string> {
     .replace(/\{\{NAME\}\}/g, frontmatterName)
     .replace(/\{\{DESCRIPTION\}\}/g, skill.description)
     .replace(/\{\{CREW_VERSION\}\}/g, CREW_MCP_VERSION)
-    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand);
+    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand)
+    .replace(/\{\{CREW_PR_WATCH_COMMAND\}\}/g, crewPrWatchCommand)
+    .replace(/\{\{CREW_PR_WATCH_WAIT_COMMAND\}\}/g, crewPrWatchWaitCommand)
+    .replace(/\{\{ACTION_REFERENCE_PATH\}\}/g, actionReferencePath);
 
   return rendered.trimEnd() + '\n';
+}
+
+export async function renderSkillCompanion(
+  args: RenderSkillArgs & { readonly sourceFile: string },
+): Promise<string> {
+  const packageRoot = resolvePackageRoot(args.packageRoot);
+  const body = await loadSkillBody(packageRoot, args.sourceFile, args.hostId);
+  const crewWaitCommand = args.crewWaitCommand ?? 'crew-wait';
+  const crewPrWatchCommand = args.crewPrWatchCommand ?? 'crew-pr-watch';
+  const crewPrWatchWaitCommand = args.crewPrWatchWaitCommand ?? 'crew-pr-watch-wait';
+  const actionReferencePath = args.actionReferencePath ?? './ACTION.md';
+  return body
+    .replace('{{TOOL_LIST}}', renderToolList(captainSkillTools(args.tools)))
+    .replace(/\{\{CREW_WAIT_COMMAND\}\}/g, crewWaitCommand)
+    .replace(/\{\{CREW_PR_WATCH_COMMAND\}\}/g, crewPrWatchCommand)
+    .replace(/\{\{CREW_PR_WATCH_WAIT_COMMAND\}\}/g, crewPrWatchWaitCommand)
+    .replace(/\{\{ACTION_REFERENCE_PATH\}\}/g, actionReferencePath)
+    .replace(/\{\{CREW_VERSION\}\}/g, CREW_MCP_VERSION)
+    .trimEnd() + '\n';
 }
 
 /**

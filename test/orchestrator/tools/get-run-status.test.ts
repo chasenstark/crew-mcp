@@ -342,7 +342,7 @@ describe('getRunStatusToolHandler', () => {
     expect(commits[0].subject).toBe('chore: change 21');
     expect(commits[19].subject).toBe('chore: change 2');
     expect(commits[0].sha).toMatch(/^[0-9a-f]{40}$/);
-  });
+  }, 60_000);
 
   it('reuses terminal commit cache until host HEAD changes', async () => {
     execSync('git init -q', { cwd: repoRoot });

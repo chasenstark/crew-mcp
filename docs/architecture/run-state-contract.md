@@ -1,4 +1,4 @@
-> **Current as of 2026-08-23.**
+> **Current as of 2026-08-27.**
 
 # Run State Contract
 
@@ -7,6 +7,13 @@ directory under `<crewHome>/runs/<runId>/` contains one `state.json` record,
 one append-only `events.log`, and any helper files such as `tail.command`.
 The TypeScript source of truth is `RunStateV1` and `RunStatus` in
 `src/orchestrator/run-state.ts`.
+
+PR-watch state is deliberately outside this contract. It lives under
+`<crewHome>/pr-watches/<watchId>/`, uses a digest-chained `events.jsonl` as the
+authority and `state.json` only as a monotonic replayable cache, and has its own
+`active`, `actionable`, `blocked`, `expired`, `terminal`, and `cancelled`
+lifecycle. Run merge, discard, continuation, and goal semantics never apply to
+a watch. See [PR-watch architecture](pr-watch.md).
 
 ## Atomic Writes
 

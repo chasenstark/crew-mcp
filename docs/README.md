@@ -20,7 +20,8 @@ documentation
     |-- MCP tool surface
     |-- adapters
     |-- host portability
-    `-- run-state contract
+    |-- run-state contract
+    `-- durable PR watch
 ```
 
 ## Guides
@@ -42,6 +43,7 @@ documentation
 - [Captain portability](architecture/captain-portability.md)
 - [Config path registry](architecture/config-registry.md)
 - [Run-state contract](architecture/run-state-contract.md)
+- [Durable PR watch](architecture/pr-watch.md)
 
 Guides explain what users should do. Architecture documents explain how the
 runtime enforces those behaviors. Keep detailed claims in one canonical place

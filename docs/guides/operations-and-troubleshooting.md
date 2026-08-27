@@ -41,6 +41,29 @@ one-shot claims suppress stale or duplicate completion turns.
 Do not foreground or repeatedly poll `crew-wait`. If the watcher cannot start,
 the run still continues; ask for status on the next turn.
 
+## Watch a pull request
+
+Ask the captain to start a PR watch. It performs bounded `gh` capability,
+discovery, policy, and evidence checks, persists the watch, then launches the
+exact returned `crew-pr-watch-wait` command once. Unchanged polls use no model
+turns. On a wake, read `get_pr_watch_status` once; do not poll the status tool.
+
+`blocked` and `expired` include typed remedies. Status/list are pure, so use
+`rearm_pr_watch` for an explicit compare-and-set recovery or confirmed 1–30 day
+extension. An extension restores the exact suspended state and returns a waiter
+only for active observation.
+
+PR watch is monitor-only in this release. Investigate actionable events through
+ordinary, separately authorized workflows, record their dispositions with the
+packaged acknowledgement command, and explicitly rearm the batch. A wake never
+authorizes an action, and PR watch cannot comment, reply, resolve, push, merge,
+auto-merge, close, create, or approve a PR.
+
+If start reports capability trouble, fix `gh auth status`; when CircleCI is
+configured, verify its CLI authentication too. Ordinary `crew-mcp verify` is
+intentionally offline. Use `crew-mcp verify --scope project` to validate the
+project waiter/companion and shared git lock after a project install.
+
 ## A run is stuck or no longer wanted
 
 Ask the captain to:

@@ -41,6 +41,7 @@ function makeProjectTarget(repoRoot: string): ProjectInstalledTarget {
     serverCommand: './node_modules/.bin/crew-mcp',
     serverArgs: ['serve'],
     crewWaitCommand: './node_modules/.bin/crew-wait',
+    crewPrWatchCommand: './node_modules/.bin/crew-pr-watch',
     autoApproved: true,
   };
 }
@@ -50,7 +51,7 @@ describe('project install manifest', () => {
     await withTmpRepo(async (repoRoot) => {
       const manifest = await readProjectInstallManifest(repoRoot);
       expect(manifest).toEqual({
-        schemaVersion: 1,
+        schemaVersion: 2,
         scope: 'project',
         targets: {},
       });
@@ -76,6 +77,7 @@ describe('project install manifest', () => {
         join(repoRoot, '.codex', 'config.toml'),
       );
       expect(absolute.crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
+      expect(absolute.crewPrWatchCommand).toBe('./node_modules/.bin/crew-pr-watch');
     });
   });
 

@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, posix, win32 } from 'node:path';
+import { isAbsolute, join, posix, win32 } from 'node:path';
 
 import { HOST_ADAPTERS, isGlobalHostId, type HostId } from '../../install/hosts/index.js';
 import {
@@ -30,6 +30,8 @@ import {
 } from '../../install/project-install-manifest.js';
 import {
   projectCrewBinaryResolver,
+  isTrustedProjectPrWatchCommand,
+  isTrustedProjectPrWatchWaitCommand,
 } from '../../install/crew-binary.js';
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
@@ -220,9 +222,12 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
     }
 
     if (targetId === 'claude-code') {
-      issues.push(...await verifyClaudeCrewWaitAllowlist({
+      issues.push(...await verifyClaudeWaiterAllowlists({
         permissionsPath: adapter.permissionsPath?.(home),
-        crewWaitCommand: entry.crewWaitCommand,
+        commands: [
+          entry.crewWaitCommand,
+          entry.prWatchWaitCommand ?? entry.crewWaitCommand.replace('crew-wait', 'crew-pr-watch-wait'),
+        ],
       }));
     }
 
@@ -262,20 +267,25 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
   const home = opts.home ?? homedir();
   const repoRoot = await resolveGitRepoRoot({ repoRoot: opts.repoRoot });
   const manifest = await readProjectInstallManifest(repoRoot);
-  const targets = opts.target
+  const targets = (opts.target
     ? resolveTargets(opts.target, 'project')
-    : Object.keys(manifest.targets) as HostId[];
+    : Object.keys(manifest.targets) as HostId[]).sort();
 
   if (targets.length === 0) {
     const note = 'No project installed targets. Run `crew-mcp install --scope project --target <host>` first.';
     logger.info(note);
-    return { ok: true, probes: [], targets: [], note };
+    return { ok: false, probes: [{
+      name: 'project_targets_missing',
+      status: 'error',
+      message: note,
+    }], targets: [], note };
   }
 
   const expectedNames = CAPTAIN_CATALOG_TOOLS.map((t) => `mcp__crew__${t.name}`);
   const probes: VerifyProbeReport[] = [];
   const reports: VerifyTargetReport[] = [];
   let codexTrustChecked = false;
+
 
   for (const targetId of targets) {
     const adapter = HOST_ADAPTERS[targetId];
@@ -375,10 +385,19 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     }
 
     if (targetId === 'claude-code') {
-      issues.push(...await verifyClaudeCrewWaitAllowlist({
+      issues.push(...await verifyClaudeWaiterAllowlists({
         permissionsPath: entry.permissionsPath,
-        crewWaitCommand: entry.crewWaitCommand,
+        commands: [
+          entry.crewWaitCommand,
+          entry.prWatchWaitCommand ?? entry.crewWaitCommand.replace('crew-wait', 'crew-pr-watch-wait'),
+        ],
       }));
+    }
+    if (!isTrustedProjectPrWatchWaitCommand(entry.prWatchWaitCommand ?? '')) {
+      issues.push(`untrusted or missing project prWatchWaitCommand: ${entry.prWatchWaitCommand ?? '(missing)'}`);
+    }
+    if (!isTrustedProjectPrWatchCommand(entry.crewPrWatchCommand ?? '')) {
+      issues.push(`untrusted or missing project crewPrWatchCommand: ${entry.crewPrWatchCommand ?? '(missing)'}`);
     }
 
     if (targetId === 'codex' && !codexTrustChecked) {
@@ -428,6 +447,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
   }
 
   const ok = reports.every((report) => report.ok);
+  logger.info(`crew verify: project targets checked: ${reports.map((report) => report.host).join(',')}`);
   if (!ok) {
     logger.warn('crew verify: project drift detected. Run `crew-mcp install --scope project --target <host>` to re-sync.');
   }
@@ -571,17 +591,19 @@ async function verifyAutoApproval(args: {
   return issues;
 }
 
-async function verifyClaudeCrewWaitAllowlist(args: {
+async function verifyClaudeWaiterAllowlists(args: {
   readonly permissionsPath?: string;
-  readonly crewWaitCommand: string;
+  readonly commands: readonly string[];
 }): Promise<string[]> {
-  const expected = `Bash(${args.crewWaitCommand}:*)`;
   const permissions = args.permissionsPath && existsSync(args.permissionsPath)
     ? await readFile(args.permissionsPath, 'utf-8')
     : '';
-  return permissions.includes(expected)
-    ? []
-    : [`Claude Code permissions missing ${expected} allowlist`];
+  return args.commands.flatMap((command) => {
+    const expected = `Bash(${command}:*)`;
+    return permissions.includes(expected)
+      ? []
+      : [`Claude Code permissions missing ${expected} allowlist`];
+  });
 }
 
 function forbiddenProjectCommandReason(
@@ -661,6 +683,7 @@ async function runRuntimeProbes(options: RuntimeProbeOptions): Promise<VerifyPro
   const probes = [
     await verifyStateLocksWritable(options.crewHome),
     await verifyPanelsWritable(options.crewHome),
+    await verifyPrWatchesWritable(options.crewHome),
     verifyPeerMessagesPipeline(options.env),
   ];
 
@@ -673,6 +696,27 @@ async function runRuntimeProbes(options: RuntimeProbeOptions): Promise<VerifyPro
   }
 
   return probes;
+}
+
+async function verifyPrWatchesWritable(crewHome: string): Promise<VerifyProbeReport> {
+  const watchesDir = join(crewHome, 'pr-watches');
+  const probePath = join(watchesDir, `.verify-probe-${randomUUID()}.tmp`);
+  try {
+    await mkdir(watchesDir, { recursive: true });
+    await writeFile(probePath, 'crew-mcp verify pr-watches probe\n', 'utf-8');
+    await rm(probePath);
+    return {
+      name: 'pr-watches-writable',
+      status: 'ok',
+      message: `pr-watches/ writable at ${watchesDir}`,
+    };
+  } catch (error) {
+    return {
+      name: 'pr-watches-writable',
+      status: 'error',
+      message: formatWritableProbeError('pr-watches/', 'write/delete', probePath, error, watchesDir),
+    };
+  }
 }
 
 async function verifyStateLocksWritable(crewHome: string): Promise<VerifyProbeReport> {

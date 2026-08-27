@@ -9,6 +9,8 @@ CLI. Claude Code and Codex support global and project scope. Antigravity
 - Node.js 20 or newer
 - git
 - At least one authenticated captain host: Claude Code or Codex
+- Authenticated `gh` CLI with repository access when using PR watch
+- Authenticated CircleCI CLI only when `.crew/pr-watch.yaml` enables CircleCI evidence
 - macOS is the primary tested platform; the live tail URL handler is macOS-only
 
 ## Global install
@@ -28,7 +30,8 @@ crew-mcp install --target codex
 
 Restart the host after installation so it reloads its MCP configuration and
 skills. `crew-mcp verify` checks the installed configuration, skill rendering,
-and static tool-catalog parity; it does not execute a live provider dispatch.
+static tool-catalog parity, and local state probes. It is offline and
+repo-independent: it does not execute a provider dispatch or probe GitHub/CI.
 
 ## Install from source
 
@@ -64,6 +67,10 @@ After cloning a project-scoped install, each developer runs:
 npm install
 npx crew-mcp verify --scope project
 ```
+
+Project verification requires a non-empty project manifest and enumerates the
+exact installed targets. It additionally validates the project PR-watch waiter,
+companion skill, trusted commands, and the contained git-common-dir host lock.
 
 Codex loads project `.codex/config.toml` only for trusted repositories. Accept
 the trust prompt or add this to `~/.codex/config.toml`:
@@ -109,6 +116,11 @@ crew-mcp codex -- -C /path/to/project
 If neither wake transport is available, the captain recovers terminal runs on
 the next user turn. Watcher commands pin run generations and take a durable
 one-shot claim so stale or duplicate processes do not enqueue duplicate turns.
+
+PR watch uses the same host transports through the separately installed
+observation-only `crew-pr-watch-wait` binary. PR watch has no mutation command
+in this release. Restart the host after install or upgrade so it loads the
+PR-watch tools and companion `ACTION.md`.
 
 ## Upgrade
 

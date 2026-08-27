@@ -48,10 +48,24 @@ export interface CrewIterateConfig {
 export const DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH = 3;
 export const DEFAULT_ITERATE_MAX_TOTAL_ROUNDS = 9;
 
+export const DEFAULT_PR_WATCH_MAX_ACTIONABLE_WAKES = 20;
+export const DEFAULT_PR_WATCH_MAX_ACTION_ROUNDS = 5;
+export const DEFAULT_PR_WATCH_MAX_AGE_DAYS = 14;
+
+export interface CrewPrWatchConfig {
+  /** Actionable batches that may wake the captain before terminal-only mode is required. */
+  readonly maxActionableWakes: number;
+  /** Maximum action rounds any Milestone B grant may authorize. */
+  readonly maxActionRounds: number;
+  /** Absolute watch-age limit snapshotted at start; -1 disables age expiry. */
+  readonly maxWatchAgeDays: number;
+}
+
 /** Default retention windows for the terminal-run garbage collector. */
 export const DEFAULT_WORKTREE_TTL_DAYS = 7;
 export const DEFAULT_RUNDIR_TTL_DAYS = 30;
 export const DEFAULT_CRITERIA_SET_TTL_DAYS = DEFAULT_RUNDIR_TTL_DAYS;
+export const DEFAULT_PR_WATCH_TTL_DAYS = DEFAULT_RUNDIR_TTL_DAYS;
 
 export interface CrewCleanupConfig {
   /**
@@ -73,6 +87,8 @@ export interface CrewCleanupConfig {
    * overrides.
    */
   readonly criteriaSetTtlDays: number;
+  /** Days after a terminal/cancelled PR watch is eligible for reclamation. */
+  readonly prWatchTtlDays: number;
 }
 
 export interface CrewConfig {
@@ -88,6 +104,8 @@ export interface CrewConfig {
   readonly confirmBeforeMerge: boolean;
   /** Limits used by the crew-iterate captain loop and its server backstop. */
   readonly iterate: CrewIterateConfig;
+  /** Durable external PR-watch budgets and age policy. */
+  readonly prWatch: CrewPrWatchConfig;
   /** Terminal-run garbage-collection retention windows. */
   readonly cleanup: CrewCleanupConfig;
 }
@@ -102,10 +120,16 @@ export const DEFAULT_CONFIG: CrewConfig = {
     maxRoundsPerEpoch: DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH,
     maxTotalRounds: DEFAULT_ITERATE_MAX_TOTAL_ROUNDS,
   },
+  prWatch: {
+    maxActionableWakes: DEFAULT_PR_WATCH_MAX_ACTIONABLE_WAKES,
+    maxActionRounds: DEFAULT_PR_WATCH_MAX_ACTION_ROUNDS,
+    maxWatchAgeDays: DEFAULT_PR_WATCH_MAX_AGE_DAYS,
+  },
   cleanup: {
     worktreeTtlDays: DEFAULT_WORKTREE_TTL_DAYS,
     runDirTtlDays: DEFAULT_RUNDIR_TTL_DAYS,
     criteriaSetTtlDays: DEFAULT_CRITERIA_SET_TTL_DAYS,
+    prWatchTtlDays: DEFAULT_PR_WATCH_TTL_DAYS,
   },
 };
 
@@ -219,6 +243,36 @@ export function readConfigFile(crewHome: string): CrewConfig {
       logger.warn(`[config] ${path}: "iterate" must be an object; using defaults`);
     }
   }
+  if ('prWatch' in record) {
+    if (
+      record.prWatch
+      && typeof record.prWatch === 'object'
+      && !Array.isArray(record.prWatch)
+    ) {
+      const prWatch = record.prWatch as Record<string, unknown>;
+      out.prWatch.maxActionableWakes = readPositiveInteger(
+        prWatch.maxActionableWakes,
+        'prWatch.maxActionableWakes',
+        DEFAULT_CONFIG.prWatch.maxActionableWakes,
+        path,
+      );
+      out.prWatch.maxActionRounds = readPositiveInteger(
+        prWatch.maxActionRounds,
+        'prWatch.maxActionRounds',
+        DEFAULT_CONFIG.prWatch.maxActionRounds,
+        path,
+      );
+      out.prWatch.maxWatchAgeDays = readBoundedDays(
+        prWatch.maxWatchAgeDays,
+        'prWatch.maxWatchAgeDays',
+        DEFAULT_CONFIG.prWatch.maxWatchAgeDays,
+        path,
+        365,
+      );
+    } else {
+      logger.warn(`[config] ${path}: "prWatch" must be an object; using defaults`);
+    }
+  }
   if ('cleanup' in record) {
     if (
       record.cleanup
@@ -244,6 +298,14 @@ export function readConfigFile(crewHome: string): CrewConfig {
             cleanup.criteriaSetTtlDays,
             'cleanup.criteriaSetTtlDays',
             DEFAULT_CONFIG.cleanup.criteriaSetTtlDays,
+            path,
+          );
+      out.cleanup.prWatchTtlDays = cleanup.prWatchTtlDays === undefined
+        ? DEFAULT_CONFIG.cleanup.prWatchTtlDays
+        : readTtlDays(
+            cleanup.prWatchTtlDays,
+            'cleanup.prWatchTtlDays',
+            DEFAULT_CONFIG.cleanup.prWatchTtlDays,
             path,
           );
     } else {
@@ -283,6 +345,12 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
     maxRoundsPerEpoch: iterate.maxRoundsPerEpoch,
     maxTotalRounds: iterate.maxTotalRounds,
   };
+  const prWatch = config.prWatch ?? DEFAULT_CONFIG.prWatch;
+  merged.prWatch = {
+    maxActionableWakes: prWatch.maxActionableWakes,
+    maxActionRounds: prWatch.maxActionRounds,
+    maxWatchAgeDays: prWatch.maxWatchAgeDays,
+  };
   // Tolerate a config missing `cleanup` (partial literals from callers /
   // tests) by falling back to defaults rather than throwing.
   const cleanup = config.cleanup ?? DEFAULT_CONFIG.cleanup;
@@ -290,6 +358,7 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
     worktreeTtlDays: cleanup.worktreeTtlDays,
     runDirTtlDays: cleanup.runDirTtlDays,
     criteriaSetTtlDays: cleanup.criteriaSetTtlDays ?? DEFAULT_CONFIG.cleanup.criteriaSetTtlDays,
+    prWatchTtlDays: cleanup.prWatchTtlDays ?? DEFAULT_CONFIG.cleanup.prWatchTtlDays,
   };
   const serialized = JSON.stringify(merged, null, 2) + '\n';
   atomicWrite(path, serialized);
@@ -331,6 +400,25 @@ function readPositiveInteger(
   return fallback;
 }
 
+function readBoundedDays(
+  value: unknown,
+  field: string,
+  fallback: number,
+  path: string,
+  maximum: number,
+): number {
+  if (
+    value === -1
+    || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= maximum)
+  ) {
+    return value;
+  }
+  logger.warn(
+    `[config] ${path}: "${field}" must be -1 or an integer from 1 to ${maximum}; using default (${fallback})`,
+  );
+  return fallback;
+}
+
 function readRawObject(path: string): Record<string, unknown> | undefined {
   if (!existsSync(path)) return undefined;
   try {
@@ -357,6 +445,9 @@ const DEFAULT_README: readonly string[] = [
   '    captain pauses within one confirmed criteria epoch.',
   '  - iterate.maxTotalRounds (positive integer): rounds before the captain',
   '    pauses across all epochs; must be >= maxRoundsPerEpoch.',
+  '  - prWatch.maxActionableWakes (positive integer): actionable wake budget.',
+  '  - prWatch.maxActionRounds (positive integer): maximum authorized action rounds.',
+  '  - prWatch.maxWatchAgeDays (-1 or 1..365): age before explicit extension is required.',
   '  - cleanup.worktreeTtlDays (number): days before a terminal run\'s',
   '    worktree is reclaimed by the GC (-1 = off). Env var',
   '    CREW_WORKTREE_TTL_DAYS overrides.',
@@ -364,6 +455,8 @@ const DEFAULT_README: readonly string[] = [
   '    is deleted by the GC (-1 = off). Env var CREW_RUNDIR_TTL_DAYS overrides.',
   '  - cleanup.criteriaSetTtlDays (number): days before a criteria set',
   '    is deleted by the GC (-1 = off). Env var CREW_CRITERIA_SET_TTL_DAYS overrides.',
+  '  - cleanup.prWatchTtlDays (number): days before a terminal/cancelled',
+  '    PR watch is reclaimed (-1 = off).',
   'Delete this file to reset to defaults.',
 ];
 
@@ -378,10 +471,16 @@ function cloneConfig(config: CrewConfig): CrewConfig {
       maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
       maxTotalRounds: config.iterate.maxTotalRounds,
     },
+    prWatch: {
+      maxActionableWakes: config.prWatch.maxActionableWakes,
+      maxActionRounds: config.prWatch.maxActionRounds,
+      maxWatchAgeDays: config.prWatch.maxWatchAgeDays,
+    },
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,
       criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
+      prWatchTtlDays: config.cleanup.prWatchTtlDays,
     },
   };
 }
@@ -390,7 +489,13 @@ function mutableConfig(config: CrewConfig): {
   notifications: { success: boolean; error: boolean };
   confirmBeforeMerge: boolean;
   iterate: { maxRoundsPerEpoch: number; maxTotalRounds: number };
-  cleanup: { worktreeTtlDays: number; runDirTtlDays: number; criteriaSetTtlDays: number };
+  prWatch: { maxActionableWakes: number; maxActionRounds: number; maxWatchAgeDays: number };
+  cleanup: {
+    worktreeTtlDays: number;
+    runDirTtlDays: number;
+    criteriaSetTtlDays: number;
+    prWatchTtlDays: number;
+  };
 } {
   return {
     notifications: {
@@ -402,10 +507,16 @@ function mutableConfig(config: CrewConfig): {
       maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
       maxTotalRounds: config.iterate.maxTotalRounds,
     },
+    prWatch: {
+      maxActionableWakes: config.prWatch.maxActionableWakes,
+      maxActionRounds: config.prWatch.maxActionRounds,
+      maxWatchAgeDays: config.prWatch.maxWatchAgeDays,
+    },
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,
       criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
+      prWatchTtlDays: config.cleanup.prWatchTtlDays,
     },
   };
 }

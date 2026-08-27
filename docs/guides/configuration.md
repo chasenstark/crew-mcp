@@ -1,8 +1,8 @@
 # Configuration
 
 `crew-mcp config` is the supported per-machine configuration surface. It
-manages notifications, merge confirmation, cleanup retention, provider model
-defaults, agent strengths, crew-iterate round limits, and default
+manages notifications, merge confirmation, cleanup retention, PR-watch
+budgets/age, provider model defaults, agent strengths, crew-iterate round limits, and default
 implementer/reviewer choices.
 
 ## Interactive configuration
@@ -20,6 +20,7 @@ The main screens are:
 - agent strengths and `useWhen` guidance
 - `Iteration limits...` for per-epoch and total crew-iterate pause points
 - `Cleanup & retention...` for worktree, run-directory, and criteria lifetimes
+- `PR-watch limits...` for actionable wakes, action rounds, and maximum watch age
 
 The captain still asks before merging or discarding; `confirmBeforeMerge` adds
 an independent server-side confirmation requirement.
@@ -33,6 +34,10 @@ crew-mcp config set notifications.success false
 crew-mcp config set confirmBeforeMerge true
 crew-mcp config set iterate.maxRoundsPerEpoch 5
 crew-mcp config set iterate.maxTotalRounds 15
+crew-mcp config set prWatch.maxActionableWakes 20
+crew-mcp config set prWatch.maxActionRounds 5
+crew-mcp config set prWatch.maxWatchAgeDays 14
+crew-mcp config set cleanup.prWatchTtlDays 30
 crew-mcp config unset notifications.success
 ```
 
@@ -68,7 +73,7 @@ the effective result.
 ## Where settings live
 
 ```text
-~/.crew/config.json    notifications, merge gate, iteration limits, cleanup retention
+~/.crew/config.json    notifications, merge gate, iteration limits, cleanup and PR-watch limits
 ~/.crew/agents.json    agents, useWhen, strengths, provider model defaults, effort
 ~/.crew/workflow.yaml  surviving agent-default compatibility surface
 .crew/workflow.yaml    optional project-level agent defaults
@@ -86,6 +91,7 @@ Terminal run state lives under `~/.crew/runs/`. Default retention is:
 | Terminal worktree | 7 days | Worktree reclaimed; unmerged branch kept when possible |
 | Run directory | 30 days | Persisted run record removed |
 | Criteria set | 30 days | Expired criteria record removed |
+| Terminal/cancelled PR watch | 30 days | Watch ledger and reclaimed start mapping removed |
 
 Preview or run cleanup explicitly:
 
@@ -96,7 +102,9 @@ crew-mcp cleanup --all-repos
 ```
 
 Use the interactive cleanup screen to change retention. `-1` or `off` disables
-the corresponding window.
+the corresponding window. PR-watch GC refuses active, actionable, blocked, and
+expired states; maximum watch age pauses observation as `expired` and is not a
+deletion TTL.
 
 ## Common environment variables
 
@@ -113,6 +121,7 @@ for automation and diagnostics:
 | `CREW_WORKTREE_TTL_DAYS` | 7 | Terminal-worktree retention |
 | `CREW_RUNDIR_TTL_DAYS` | 30 | Run-directory retention |
 | `CREW_CRITERIA_SET_TTL_DAYS` | 30 | Criteria-set retention |
+| `CREW_PR_WATCH_TTL_DAYS` | 30 | Terminal/cancelled PR-watch retention |
 | `CREW_RUN_GC_INTERVAL_MS` | 24h | Periodic cleanup cadence |
 | `CREW_STALE_RUN_GRACE_MS` | 30s | Dead-server stale-run grace |
 | `CREW_SHUTDOWN_GRACE_MS` | 10s | Shutdown drain window |

@@ -14,6 +14,7 @@ import {
 } from '../../src/install/skill-verify.js';
 import {
   renderSkill,
+  renderSkillCompanion,
   SKILL_MANIFEST,
   templatePathForHost,
 } from '../../src/install/skill-renderer.js';
@@ -32,6 +33,7 @@ describe('shared canonical skill verification', () => {
     const home = mkdtempSync(join(tmpdir(), 'crew-skill-verify-'));
     cleanup.push(home);
     const skills: Record<string, string> = {};
+    const skillFiles: Record<string, readonly string[]> = {};
     for (const skill of SKILL_MANIFEST) {
       const spec = HOST_ADAPTERS.codex.skillInstallSpecFor(home, skill);
       skills[skill.id] = spec.skillPath;
@@ -45,8 +47,24 @@ describe('shared canonical skill verification', () => {
         crewWaitCommand: 'crew-wait',
         packageRoot: REPO_ROOT,
       }), 'utf-8');
+      const companionPaths: string[] = [];
+      for (const companion of skill.companions ?? []) {
+        const companionPath = join(dirname(spec.skillPath), companion.outputFile);
+        writeFileSync(companionPath, await renderSkillCompanion({
+          templatePath: templatePathForHost(REPO_ROOT, 'codex'),
+          hostId: 'codex',
+          skill,
+          spec,
+          sourceFile: companion.sourceFile,
+          tools: CAPTAIN_CATALOG_TOOLS,
+          crewWaitCommand: 'crew-wait',
+          packageRoot: REPO_ROOT,
+        }), 'utf-8');
+        companionPaths.push(companionPath);
+      }
+      skillFiles[skill.id] = [spec.skillPath, ...companionPaths];
     }
-    const entry = installedTarget(home, skills);
+    const entry = installedTarget(home, skills, skillFiles);
     await expect(verifyCanonicalSkillContent({
       targetId: 'codex',
       entry,
@@ -78,12 +96,17 @@ describe('shared canonical skill verification', () => {
   });
 });
 
-function installedTarget(home: string, skills: Record<string, string>): InstalledTarget {
+function installedTarget(
+  home: string,
+  skills: Record<string, string>,
+  skillFiles: Record<string, readonly string[]>,
+): InstalledTarget {
   return {
     configPath: join(home, '.codex', 'config.toml'),
     skillPath: skills.crew,
     skills,
-    writtenPaths: Object.values(skills),
+    skillFiles,
+    writtenPaths: Object.values(skillFiles).flat(),
     version: '0.7.0',
     installedAt: new Date().toISOString(),
     serverCommand: 'crew-mcp',

@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import {
+  codexPrWatchWakePrompt,
   codexWakePrompt,
+  type WakeCodexPrWatchThreadOptions,
   validateCodexThreadId,
 } from './app-server-bridge.js';
 import { withoutCodexCaptainEnvironment } from './environment.js';
@@ -20,6 +22,18 @@ export interface QueueCodexThreadOptions {
 
 export interface QueueCodexThreadResult {
   readonly queued: true;
+}
+
+export interface QueueCodexPrWatchThreadOptions {
+  readonly threadId: string;
+  readonly watchId: string;
+  readonly generation: number;
+  readonly status: WakeCodexPrWatchThreadOptions['status'];
+  readonly actionBatchId?: string;
+  readonly codexBinary?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly timeoutMs?: number;
+  readonly spawnProcess?: typeof spawn;
 }
 
 export class CodexQueueWakeError extends Error {
@@ -45,6 +59,30 @@ export async function queueCodexThread(
     throw new CodexQueueWakeError('Codex queue timeout must be positive');
   }
 
+  return queueCodexPrompt(options, codexWakePrompt(options.runIds));
+}
+
+export async function queueCodexPrWatchThread(
+  options: QueueCodexPrWatchThreadOptions,
+): Promise<QueueCodexThreadResult> {
+  validateCodexThreadId(options.threadId);
+  if (!/^pw-[0-9a-f]{32}$/.test(options.watchId)) {
+    throw new CodexQueueWakeError('Codex queue wake requires a valid PR-watch id');
+  }
+  if (!Number.isSafeInteger(options.generation) || options.generation < 1) {
+    throw new CodexQueueWakeError('Codex queue wake requires a valid PR-watch generation');
+  }
+  return queueCodexPrompt(options, codexPrWatchWakePrompt(options));
+}
+
+async function queueCodexPrompt(
+  options: Pick<QueueCodexThreadOptions, 'threadId' | 'codexBinary' | 'env' | 'timeoutMs' | 'spawnProcess'>,
+  prompt: string,
+): Promise<QueueCodexThreadResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new CodexQueueWakeError('Codex queue timeout must be positive');
+  }
   const child = (options.spawnProcess ?? spawn)(
     options.codexBinary ?? 'codex',
     [
@@ -52,7 +90,7 @@ export async function queueCodexThread(
       '--thread',
       options.threadId,
       '--message',
-      codexWakePrompt(options.runIds),
+      prompt,
     ],
     {
       env: withoutCodexCaptainEnvironment(options.env ?? process.env),

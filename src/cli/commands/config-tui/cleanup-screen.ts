@@ -9,13 +9,17 @@ export interface CleanupScreenState {
   worktreeTtlDays: number;
   runDirTtlDays: number;
   criteriaSetTtlDays: number;
+  prWatchTtlDays: number;
 }
 
 /** Day presets the TTL rows cycle through (-1 renders as "off"). */
 const PRESETS: readonly number[] = [-1, 0, 1, 3, 7, 14, 30, 60, 90];
 
-type Row = 'worktree' | 'rundir' | 'criteria' | 'preview' | 'run' | 'back';
-const ROWS: readonly Row[] = ['worktree', 'rundir', 'criteria', 'preview', 'run', 'back'];
+type Row = 'worktree' | 'rundir' | 'criteria' | 'pr-watch' | 'preview' | 'run' | 'back';
+// Preserve the original action-row positions so existing muscle memory and
+// scripted TUI navigation continue to select Preview, Run, and Back. The new
+// TTL remains reachable after Back without shifting those controls.
+const ROWS: readonly Row[] = ['worktree', 'rundir', 'criteria', 'preview', 'run', 'back', 'pr-watch'];
 
 function fmtDays(days: number): string {
   return days < 0 ? 'off' : `${days}d`;
@@ -60,6 +64,9 @@ export class CleanupScreen implements Screen {
           break;
         case 'criteria':
           lines.push(`${pointer} criteria TTL:  ${fmtDays(this.state.criteriaSetTtlDays)}   (space cycles)`);
+          break;
+        case 'pr-watch':
+          lines.push(`${pointer} PR-watch TTL:  ${fmtDays(this.state.prWatchTtlDays)}   (space cycles)`);
           break;
         case 'preview':
           lines.push(`${pointer} Preview cleanup now (dry run)`);
@@ -120,6 +127,9 @@ export class CleanupScreen implements Screen {
         return 'continue';
       case 'criteria':
         this.state.criteriaSetTtlDays = nextPreset(this.state.criteriaSetTtlDays);
+        return 'continue';
+      case 'pr-watch':
+        this.state.prWatchTtlDays = nextPreset(this.state.prWatchTtlDays);
         return 'continue';
       case 'preview':
         this.requested = 'dry';

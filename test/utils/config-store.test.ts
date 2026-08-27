@@ -33,7 +33,13 @@ describe('config-store', () => {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
       iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
-      cleanup: { worktreeTtlDays: 3, runDirTtlDays: 60, criteriaSetTtlDays: 90 },
+      prWatch: { maxActionableWakes: 9, maxActionRounds: 4, maxWatchAgeDays: 21 },
+      cleanup: {
+        worktreeTtlDays: 3,
+        runDirTtlDays: 60,
+        criteriaSetTtlDays: 90,
+        prWatchTtlDays: 45,
+      },
     };
     writeConfigFile(home, config);
     expect(readConfigFile(home)).toEqual(config);
@@ -49,7 +55,8 @@ describe('config-store', () => {
       notifications: { success: false, error: false },
       confirmBeforeMerge: true,
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
-      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
+      prWatch: DEFAULT_CONFIG.prWatch,
+      cleanup: DEFAULT_CONFIG.cleanup,
     });
   });
 
@@ -86,6 +93,7 @@ describe('config-store', () => {
       worktreeTtlDays: 14,
       runDirTtlDays: -1,
       criteriaSetTtlDays: 3,
+      prWatchTtlDays: 30,
     });
 
     writeFileSync(
@@ -105,6 +113,7 @@ describe('config-store', () => {
       worktreeTtlDays: 7,
       runDirTtlDays: 30,
       criteriaSetTtlDays: 30,
+      prWatchTtlDays: 30,
     });
     expect(warn).toHaveBeenCalled();
   });
@@ -120,7 +129,8 @@ describe('config-store', () => {
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
-      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
+      prWatch: DEFAULT_CONFIG.prWatch,
+      cleanup: DEFAULT_CONFIG.cleanup,
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('legacy');
@@ -143,7 +153,8 @@ describe('config-store', () => {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
-      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
+      prWatch: DEFAULT_CONFIG.prWatch,
+      cleanup: DEFAULT_CONFIG.cleanup,
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('hand-edited');
@@ -180,7 +191,8 @@ describe('config-store', () => {
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
-      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
+      prWatch: DEFAULT_CONFIG.prWatch,
+      cleanup: DEFAULT_CONFIG.cleanup,
     });
     expect(warn).toHaveBeenCalled();
   });
@@ -196,7 +208,8 @@ describe('config-store', () => {
       notifications: { success: true, error: true },
       confirmBeforeMerge: false,
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
-      cleanup: { worktreeTtlDays: 7, runDirTtlDays: 30, criteriaSetTtlDays: 30 },
+      prWatch: DEFAULT_CONFIG.prWatch,
+      cleanup: DEFAULT_CONFIG.cleanup,
     });
     expect(warn).toHaveBeenCalled();
   });

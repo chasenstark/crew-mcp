@@ -23,6 +23,7 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
+import { execFileSync } from 'child_process';
 
 import { installCommand } from '../../../src/cli/commands/install.js';
 import { uninstallCommand } from '../../../src/cli/commands/uninstall.js';
@@ -106,9 +107,10 @@ describe('install / verify / uninstall — happy path', () => {
         writtenPaths: string[];
         version: string;
         crewWaitCommand: string;
+        crewPrWatchCommand: string;
       }>;
     };
-    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.schemaVersion).toBe(3);
     expect(manifest.targets.codex).toBeDefined();
     expect(manifest.targets.codex.configPath).toBe(adapter.configPath(home));
     expect(manifest.targets.codex.skillPath).toBe(adapter.skillPath(home));
@@ -117,6 +119,7 @@ describe('install / verify / uninstall — happy path', () => {
     expect(manifest.targets.codex.writtenPaths).toContain(adapter.skillPath(home));
     expect(manifest.targets.codex.version).toBe(CREW_MCP_VERSION);
     expect(manifest.targets.codex.crewWaitCommand).toBe('crew-wait');
+    expect(manifest.targets.codex.crewPrWatchCommand).toBe('crew-pr-watch');
   });
 
   it('install --target all installs every host (with forceWithoutBinary)', async () => {
@@ -1135,6 +1138,7 @@ describe('project-scope install / verify / uninstall', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'crew-project-home-'));
     repoRoot = mkdtempSync(join(tmpdir(), 'crew-project-repo-'));
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
   });
 
   afterEach(() => {
@@ -1147,6 +1151,7 @@ describe('project-scope install / verify / uninstall', () => {
     const out: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === '.git') continue;
         const abs = join(dir, entry.name);
         const rel = abs.slice(repoRoot.length + 1);
         if (entry.isDirectory()) {
@@ -1178,9 +1183,13 @@ describe('project-scope install / verify / uninstall', () => {
     expect(repoFiles()).toEqual([
       '.claude/settings.json',
       '.claude/skills/crew-iterate/SKILL.md',
+      '.claude/skills/crew-pr-watch/ACTION.md',
+      '.claude/skills/crew-pr-watch/SKILL.md',
       '.claude/skills/crew/SKILL.md',
       '.codex/config.toml',
       '.codex/skills/crew-iterate/SKILL.md',
+      '.codex/skills/crew-pr-watch/ACTION.md',
+      '.codex/skills/crew-pr-watch/SKILL.md',
       '.codex/skills/crew/SKILL.md',
       '.crew/install.project.json',
       '.mcp.json',
@@ -1218,14 +1227,17 @@ describe('project-scope install / verify / uninstall', () => {
         serverCommand: string;
         serverArgs: string[];
         crewWaitCommand: string;
+        crewPrWatchCommand: string;
       }>;
     };
     expect(manifest.scope).toBe('project');
     expect(manifest.targets['claude-code'].crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
+    expect(manifest.targets['claude-code'].crewPrWatchCommand).toBe('./node_modules/.bin/crew-pr-watch');
     expect(manifest.targets.codex.configPath).toBe('.codex/config.toml');
     expect(manifest.targets.codex.serverCommand).toBe('./node_modules/.bin/crew-mcp');
     expect(manifest.targets.codex.serverArgs).toEqual(['serve']);
     expect(manifest.targets.codex.crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
+    expect(manifest.targets.codex.crewPrWatchCommand).toBe('./node_modules/.bin/crew-pr-watch');
     expect(JSON.stringify(manifest)).not.toContain(repoRoot);
     expect(JSON.stringify(manifest)).not.toContain(home);
     expect(JSON.stringify(manifest)).not.toContain('dist/index.js');

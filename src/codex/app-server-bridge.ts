@@ -30,6 +30,22 @@ export interface WakeCodexThreadOptions {
   ) => Promise<CodexTurnStartGuardResult>;
 }
 
+export interface WakeCodexPrWatchThreadOptions {
+  readonly bridgeFile: string;
+  readonly threadId: string;
+  readonly watchId: string;
+  readonly generation: number;
+  readonly status: 'actionable' | 'blocked' | 'expired' | 'terminal' | 'cancelled';
+  readonly actionBatchId?: string;
+  readonly requestTimeoutMs?: number;
+  readonly statusPollMs?: number;
+  readonly createSocket?: CodexSocketFactory;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly guardTurnStart?: (
+    startTurn: () => Promise<unknown>,
+  ) => Promise<CodexTurnStartGuardResult>;
+}
+
 export type CodexTurnStartGuardResult =
   | { readonly action: 'start'; readonly result: unknown }
   | { readonly action: 'skip' };
@@ -107,11 +123,40 @@ export function codexWakePrompt(runIds: readonly string[]): string {
   ].join('\n');
 }
 
+export function codexPrWatchWakePrompt(
+  options: Pick<WakeCodexPrWatchThreadOptions, 'watchId' | 'generation' | 'status' | 'actionBatchId'>,
+): string {
+  return [
+    'Crew PR-watch event from the local crew-mcp bridge.',
+    `Watch id: ${options.watchId}`,
+    `Generation: ${options.generation}`,
+    `Status: ${options.status}`,
+    ...(options.actionBatchId ? [`Action batch id: ${options.actionBatchId}`] : []),
+    'Continue the active Crew PR-watch workflow now. Call get_pr_watch_status before acting.',
+    'This event is not authorization to mutate a pull request, branch, review, or remote state.',
+  ].join('\n');
+}
+
 export async function wakeCodexThread(
   options: WakeCodexThreadOptions,
 ): Promise<WakeCodexThreadResult> {
   validateCodexThreadId(options.threadId);
   validateRunIds(options.runIds);
+  return wakeCodexThreadWithPrompt(options, codexWakePrompt(options.runIds));
+}
+
+export async function wakeCodexPrWatchThread(
+  options: WakeCodexPrWatchThreadOptions,
+): Promise<WakeCodexThreadResult> {
+  validateCodexThreadId(options.threadId);
+  validatePrWatchTarget(options);
+  return wakeCodexThreadWithPrompt(options, codexPrWatchWakePrompt(options));
+}
+
+async function wakeCodexThreadWithPrompt(
+  options: Omit<WakeCodexThreadOptions, 'runIds'> | Omit<WakeCodexPrWatchThreadOptions, 'watchId' | 'generation' | 'status' | 'actionBatchId'>,
+  prompt: string,
+): Promise<WakeCodexThreadResult> {
   const descriptor = await readCodexBridgeDescriptor(options.bridgeFile);
   const token = await readBridgeToken(descriptor, options.bridgeFile);
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -142,7 +187,7 @@ export async function wakeCodexThread(
       try {
         const startTurn = (): Promise<unknown> => client.request('turn/start', {
           threadId: options.threadId,
-          input: [{ type: 'text', text: codexWakePrompt(options.runIds) }],
+          input: [{ type: 'text', text: prompt }],
         }, requestTimeoutMs);
         let result: unknown;
         if (options.guardTurnStart) {
@@ -169,6 +214,15 @@ export async function wakeCodexThread(
     }
   } finally {
     client.close();
+  }
+}
+
+function validatePrWatchTarget(options: Pick<WakeCodexPrWatchThreadOptions, 'watchId' | 'generation'>): void {
+  if (!/^pw-[0-9a-f]{32}$/.test(options.watchId)) {
+    throw new CodexWakeBridgeError('invalid PR-watch id');
+  }
+  if (!Number.isSafeInteger(options.generation) || options.generation < 1) {
+    throw new CodexWakeBridgeError('invalid PR-watch generation');
   }
 }
 

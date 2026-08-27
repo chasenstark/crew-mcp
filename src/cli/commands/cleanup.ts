@@ -24,6 +24,7 @@ import {
 } from '../../orchestrator/run-gc.js';
 import { gcCriteriaSets } from '../../orchestrator/criteria/store.js';
 import { gcPanelStates } from '../../orchestrator/panels/store.js';
+import { gcPrWatches, resolvePrWatchTtlMs } from '../../pr-watch/gc.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 
 export interface CleanupCommandOptions {
@@ -37,6 +38,8 @@ export interface CleanupCommandOptions {
   readonly runDirTtlDays?: number;
   /** Override the criteria-set retention window (days; -1 = off). */
   readonly criteriaSetTtlDays?: number;
+  /** Override the closed PR-watch retention window (days; -1 = off). */
+  readonly prWatchTtlDays?: number;
   /** Test seam. */
   readonly stdout?: NodeJS.WriteStream;
   /** Test seam — fixed clock. */
@@ -96,6 +99,9 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
   const criteriaSetTtlMs = opts.criteriaSetTtlDays !== undefined
     ? daysToMs(opts.criteriaSetTtlDays)
     : resolveCriteriaSetTtlMs(crewHome);
+  const prWatchTtlMs = opts.prWatchTtlDays !== undefined
+    ? daysToMs(opts.prWatchTtlDays)
+    : resolvePrWatchTtlMs(crewHome);
 
   const repoRoots = opts.allRepos ? discoverRepoRoots(crewHome) : [cwd];
 
@@ -103,6 +109,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     `crew cleanup${opts.dryRun ? ' (dry run)' : ''}: `
     + `worktree TTL ${fmtTtl(worktreeTtlMs)}, run-dir TTL ${fmtTtl(runDirTtlMs)}, `
     + `criteria-set TTL ${fmtTtl(criteriaSetTtlMs)}, `
+    + `PR-watch TTL ${fmtTtl(prWatchTtlMs)}, `
     + `${opts.allRepos ? `${repoRoots.length} repo(s)` : 'current repo'}\n`,
   );
 
@@ -113,6 +120,7 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     runDirsPending: 0,
     criteriaSetsDeleted: 0,
     panelStatesDeleted: 0,
+    prWatchesReclaimed: 0,
   };
   const allOutcomes: RunGcOutcome[] = [];
 
@@ -139,6 +147,15 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
     totals.criteriaSetsDeleted = gcCriteriaSets(crewHome, criteriaSetTtlMs, opts.now);
     totals.panelStatesDeleted = gcPanelStates(crewHome, criteriaSetTtlMs, opts.now);
   }
+  const prWatchGc = await gcPrWatches({
+    crewHome,
+    repoRoot: cwd,
+    allRepos: opts.allRepos,
+    ttlMs: prWatchTtlMs,
+    dryRun: opts.dryRun,
+    now: opts.now,
+  });
+  totals.prWatchesReclaimed = prWatchGc.watchesReclaimed;
 
   if (opts.dryRun && allOutcomes.length > 0) {
     stdout.write('\nWould reclaim:\n');
@@ -150,6 +167,9 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
       ].filter(Boolean).join(' + ');
       stdout.write(`  ${o.runId.padEnd(32)}  ${o.status.padEnd(14)}  ${o.ageDays}d old  → ${acts}\n`);
     }
+    for (const outcome of prWatchGc.outcomes.filter((candidate) => candidate.reclaimed)) {
+      stdout.write(`  ${outcome.watchId.padEnd(32)}  ${outcome.status.padEnd(14)}  ${outcome.ageDays}d old  → PR watch\n`);
+    }
   }
 
   if (opts.dryRun) {
@@ -158,7 +178,8 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
       + ` (${totals.branchesDeleted} merged branch(es) deleted), `
       + `${totals.runDirsDeleted} run-dir(s) now, `
       + `${totals.criteriaSetsDeleted} criteria set(s), `
-      + `${totals.panelStatesDeleted} panel state(s).\n`,
+      + `${totals.panelStatesDeleted} panel state(s), `
+      + `${totals.prWatchesReclaimed} PR watch(es).\n`,
     );
     if (totals.runDirsPending > 0) {
       stdout.write(
@@ -172,13 +193,15 @@ export async function cleanupCommand(opts: CleanupCommandOptions = {}): Promise<
       + ` (${totals.branchesDeleted} merged branch(es) deleted), `
       + `${totals.runDirsDeleted} run-dir(s) deleted, `
       + `${totals.criteriaSetsDeleted} criteria set(s) deleted, `
-      + `${totals.panelStatesDeleted} panel state(s) deleted.\n`,
+      + `${totals.panelStatesDeleted} panel state(s) deleted, `
+      + `${totals.prWatchesReclaimed} PR watch(es) deleted.\n`,
     );
     if (
       totals.worktreesReclaimed > 0
       || totals.runDirsDeleted > 0
       || totals.criteriaSetsDeleted > 0
       || totals.panelStatesDeleted > 0
+      || totals.prWatchesReclaimed > 0
     ) {
       stdout.write('Tip: run `du -sh ~/.crew` to see reclaimed disk.\n');
     }

@@ -296,7 +296,8 @@ describe('host-conditional real skill bodies', () => {
     });
   }
 
-  for (const skill of SKILL_MANIFEST) {
+  const legacyWorkflowSkills = SKILL_MANIFEST.filter((skill) => skill.id !== 'crew:pr-watch');
+  for (const skill of legacyWorkflowSkills) {
     it.each(HOST_IDS)(
       `${skill.id} rendered for %s includes only that host's lifecycle sentinel`,
       async (hostId) => {
@@ -345,7 +346,7 @@ describe('host-conditional real skill bodies', () => {
     });
   }
 
-  it.each(SKILL_MANIFEST)(
+  it.each(legacyWorkflowSkills)(
     '$id renders the native structured-question contract for each host',
     async (skill) => {
       const claude = await renderForHost(skill, 'claude-code');
@@ -369,7 +370,7 @@ describe('host-conditional real skill bodies', () => {
 
   it('uses only registered HOST_ADAPTERS keys in real body markers', async () => {
     const registeredHosts = new Set(Object.keys(HOST_ADAPTERS));
-    for (const skill of SKILL_MANIFEST) {
+    for (const skill of legacyWorkflowSkills) {
       const raw = await readFile(join(REPO_ROOT, 'skills', skill.bodyFile), 'utf-8');
       for (const marker of raw.matchAll(/<!--\s*host:\s*([^>]+?)\s*-->/g)) {
         for (const token of marker[1].split(',').map((value) => value.trim())) {
@@ -378,6 +379,25 @@ describe('host-conditional real skill bodies', () => {
         }
       }
     }
+  });
+
+  it.each(HOST_IDS)('crew:pr-watch renders its monitor-only contract for %s', async (hostId) => {
+    const skill = SKILL_MANIFEST.find((entry) => entry.id === 'crew:pr-watch')!;
+    const out = await renderForHost(skill, hostId);
+    for (const tool of [
+      'start_pr_watch',
+      'list_pr_watches',
+      'get_pr_watch_status',
+      'rearm_pr_watch',
+      'cancel_pr_watch',
+    ]) {
+      expect(out).toContain(tool);
+    }
+    expect(out).toContain('[ACTION.md](./ACTION.md)');
+    expect(out).toContain('Default to monitor-only');
+    expect(out).toContain('ordinary separately authorized user workflow');
+    expect(out).toContain('no controller-owned GitHub or git mutation path');
+    expect(out).toContain('never authority to mutate');
   });
 
   it('keeps the complete panel-readiness and agy-reviewer placement contract shared', async () => {
@@ -396,7 +416,7 @@ describe('host-conditional real skill bodies', () => {
   });
 
   it('pins Phase 1 JIT relay, terminal action, inbox, and provenance prose in both skills', async () => {
-    for (const skill of SKILL_MANIFEST) {
+    for (const skill of legacyWorkflowSkills) {
       const out = await renderForHost(skill, 'claude-code');
       expect(out).toContain('`relay_verbatim` verbatim');
       expect(out).toContain('`ledger_line`');

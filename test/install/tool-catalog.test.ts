@@ -25,11 +25,31 @@ import { CONTINUE_RUN_DESCRIPTION } from '../../src/orchestrator/tools/continue-
 import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run-status.js';
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
 import { RUN_PANEL_DESCRIPTION } from '../../src/orchestrator/tools/run-panel.js';
+import {
+  CANCEL_PR_WATCH_DESCRIPTION,
+  GET_PR_WATCH_STATUS_DESCRIPTION,
+  LIST_PR_WATCHES_DESCRIPTION,
+  REARM_PR_WATCH_DESCRIPTION,
+  START_PR_WATCH_DESCRIPTION,
+} from '../../src/orchestrator/tools/pr-watch.js';
+import { PR_WATCH_SKILL_DESCRIPTION } from '../../src/install/skill-renderer.js';
 import * as toolsIndex from '../../src/orchestrator/tools/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 describe('install/tool-catalog ↔ crew serve parity', () => {
+  it('keeps PR-watch descriptions within their frozen UTF-8 budgets', () => {
+    const descriptions = [
+      START_PR_WATCH_DESCRIPTION,
+      LIST_PR_WATCHES_DESCRIPTION,
+      GET_PR_WATCH_STATUS_DESCRIPTION,
+      REARM_PR_WATCH_DESCRIPTION,
+      CANCEL_PR_WATCH_DESCRIPTION,
+    ];
+    expect(Buffer.byteLength(descriptions.join(''), 'utf-8')).toBeLessThanOrEqual(5 * 1024);
+    expect(Buffer.byteLength(PR_WATCH_SKILL_DESCRIPTION, 'utf-8')).toBeLessThanOrEqual(768);
+  });
+
   it('listTools() returns exactly the tools declared in CATALOG_TOOLS', async () => {
     const crewHome = mkdtempSync(join(tmpdir(), 'crew-tool-catalog-home-'));
     const { server } = buildCrewMcpServer({ crewHome });
@@ -44,10 +64,17 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       const names = result.tools.map((t) => t.name).sort();
       const expected = captainSkillTools(CATALOG_TOOLS).map((t) => t.name).sort();
       expect(names).toEqual(expected);
-      expect(CATALOG_TOOLS).toHaveLength(20);
-      expect(names).toHaveLength(19);
+      expect(CATALOG_TOOLS).toHaveLength(25);
+      expect(names).toHaveLength(24);
       expect(names).toContain('list_models');
       expect(names).not.toContain('send_message');
+      expect(names).toEqual(expect.arrayContaining([
+        'start_pr_watch',
+        'list_pr_watches',
+        'get_pr_watch_status',
+        'rearm_pr_watch',
+        'cancel_pr_watch',
+      ]));
 
       const propertiesFor = (name: string): Record<string, unknown> => {
         const schema = result.tools.find((tool) => tool.name === name)?.inputSchema as {

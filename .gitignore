@@ -17,6 +17,8 @@ docs/architecture/*
 !docs/architecture/captain-portability.md
 !docs/architecture/config-registry.md
 !docs/architecture/run-state-contract.md
+!docs/architecture/pr-watch-behavioral-contract.md
+!docs/architecture/pr-watch.md
 
 # scripts
 scripts/*

@@ -36,6 +36,10 @@ function makeTarget(overrides: Partial<InstalledTarget> = {}): InstalledTarget {
       crew: '/home/me/.claude/skills/crew/SKILL.md',
       'crew:iterate': '/home/me/.claude/skills/crew-iterate/SKILL.md',
     },
+    skillFiles: {
+      crew: ['/home/me/.claude/skills/crew/SKILL.md'],
+      'crew:iterate': ['/home/me/.claude/skills/crew-iterate/SKILL.md'],
+    },
     writtenPaths: [
       '/home/me/.claude/skills/crew/SKILL.md',
       '/home/me/.claude/skills/crew-iterate/SKILL.md',
@@ -45,6 +49,7 @@ function makeTarget(overrides: Partial<InstalledTarget> = {}): InstalledTarget {
     serverCommand: 'node',
     serverArgs: ['/path/dist/index.js', 'serve'],
     crewWaitCommand: '/home/me/bin/crew-wait',
+    crewPrWatchCommand: '/home/me/bin/crew-pr-watch',
     autoApproved: true,
     ...overrides,
   };
@@ -54,12 +59,12 @@ describe('install-manifest round-trip', () => {
   it('returns an empty manifest when the file does not exist', async () => {
     await withTmpHome(async (home) => {
       const manifest = await readInstallManifest(home);
-      expect(manifest.schemaVersion).toBe(2);
+      expect(manifest.schemaVersion).toBe(3);
       expect(manifest.targets).toEqual({});
     });
   });
 
-  it('persists a v2 target through write+read', async () => {
+  it('persists a v3 target through write+read', async () => {
     await withTmpHome(async (home) => {
       const entry = makeTarget();
       await recordInstalledTarget(home, 'claude-code', entry);
@@ -79,12 +84,12 @@ describe('install-manifest round-trip', () => {
     });
   });
 
-  it('writes schemaVersion 2 to disk', async () => {
+  it('writes schemaVersion 3 to disk', async () => {
     await withTmpHome(async (home) => {
       await recordInstalledTarget(home, 'claude-code', makeTarget());
       const raw = await readFile(manifestPath(home), 'utf-8');
       const parsed = JSON.parse(raw) as { schemaVersion: number };
-      expect(parsed.schemaVersion).toBe(2);
+      expect(parsed.schemaVersion).toBe(3);
     });
   });
 });
@@ -172,7 +177,7 @@ describe('install-manifest v1→v2 migration', () => {
     });
   });
 
-  it('writes v2 on disk after migrating in memory (forward-only via writeInstallManifest)', async () => {
+  it('writes v3 on disk after migrating in memory (forward-only via writeInstallManifest)', async () => {
     await withTmpHome(async (home) => {
       await seedV1(home, {
         configPath: '/home/me/.claude.json',
@@ -186,7 +191,7 @@ describe('install-manifest v1→v2 migration', () => {
       await writeInstallManifest(home, manifest);
       const raw = await readFile(manifestPath(home), 'utf-8');
       const parsed = JSON.parse(raw) as { schemaVersion: number; targets: Record<string, unknown> };
-      expect(parsed.schemaVersion).toBe(2);
+      expect(parsed.schemaVersion).toBe(3);
       const t = parsed.targets['claude-code'] as Record<string, unknown>;
       expect(t.skills).toEqual({
         crew: '/home/me/.claude/skills/crew/SKILL.md',
@@ -357,7 +362,7 @@ describe('install-manifest top-level extras preservation (plan §migration-cases
       expect(raw._userNote).toBe('this is a hand-edited annotation');
       expect(raw.customTool).toEqual({ lastChecked: '2026-05-01' });
       // Plus our managed keys are still authoritative.
-      expect(raw.schemaVersion).toBe(2);
+      expect(raw.schemaVersion).toBe(3);
       expect((raw.targets as Record<string, unknown>)['claude-code']).toBeDefined();
     });
   });
@@ -370,7 +375,7 @@ describe('install-manifest top-level extras preservation (plan §migration-cases
       // The writer must overwrite it with the canonical value, not
       // round-trip the bogus one.
       const initial = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         targets: {},
         // No way for the reader to receive `schemaVersion` as an
         // extra because it's filtered into the known set; this test
@@ -385,7 +390,7 @@ describe('install-manifest top-level extras preservation (plan §migration-cases
         _extras: { schemaVersion: 999, targets: { hacked: true } as unknown as never },
       });
       const raw = JSON.parse(await readFile(manifestPath(home), 'utf-8')) as Record<string, unknown>;
-      expect(raw.schemaVersion).toBe(2);
+      expect(raw.schemaVersion).toBe(3);
       expect(raw.targets).toEqual({});
     });
   });

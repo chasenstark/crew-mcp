@@ -157,3 +157,23 @@ export {
   type SendMessageInput,
   type SendMessageToolDeps,
 } from './send-message.js';
+export {
+  cancelPrWatchInputSchema,
+  cancelPrWatchToolHandler,
+  CANCEL_PR_WATCH_DESCRIPTION,
+  getPrWatchStatusInputSchema,
+  getPrWatchStatusToolHandler,
+  GET_PR_WATCH_STATUS_DESCRIPTION,
+  listPrWatchesInputSchema,
+  listPrWatchesToolHandler,
+  LIST_PR_WATCHES_DESCRIPTION,
+  rearmPrWatchInputSchema,
+  rearmPrWatchToolHandler,
+  REARM_PR_WATCH_DESCRIPTION,
+  startPrWatchInputSchema,
+  startPrWatchToolHandler,
+  START_PR_WATCH_DESCRIPTION,
+  type PrWatchToolContext,
+  type RearmPrWatchInput,
+  type StartPrWatchInput,
+} from './pr-watch.js';

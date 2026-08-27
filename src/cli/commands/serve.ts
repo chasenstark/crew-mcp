@@ -52,8 +52,12 @@ import {
   drainPendingTerminalPersists,
 } from '../../orchestrator/run-lifecycle-listeners.js';
 import {
+  auditPrWatchJitNudge,
+  claimPrWatchJitNudge,
   detectJitNudges,
   isConfirmationRequiredResult,
+  JIT_NUDGE_MAX_BYTES,
+  JIT_NUDGE_MAX_COUNT,
   readRunGeneration,
   type ConfirmationAttempt,
 } from '../../orchestrator/detection/jit-nudges.js';
@@ -178,6 +182,24 @@ import {
   SEND_MESSAGE_DESCRIPTION,
 } from '../../orchestrator/tools/send-message.js';
 import {
+  cancelPrWatchInputSchema,
+  cancelPrWatchToolHandler,
+  CANCEL_PR_WATCH_DESCRIPTION,
+  getPrWatchStatusInputSchema,
+  getPrWatchStatusToolHandler,
+  GET_PR_WATCH_STATUS_DESCRIPTION,
+  listPrWatchesInputSchema,
+  listPrWatchesToolHandler,
+  LIST_PR_WATCHES_DESCRIPTION,
+  rearmPrWatchInputSchema,
+  rearmPrWatchToolHandler,
+  REARM_PR_WATCH_DESCRIPTION,
+  startPrWatchInputSchema,
+  startPrWatchToolHandler,
+  START_PR_WATCH_DESCRIPTION,
+  type PrWatchToolContext,
+} from '../../orchestrator/tools/pr-watch.js';
+import {
   classifyClient,
   mergeEnvelopeWarnings,
   MIN_CODEX_APP_SERVER_WATCHER_VERSION,
@@ -203,7 +225,10 @@ import {
   projectManifestPath,
   readProjectInstallManifest,
 } from '../../install/project-install-manifest.js';
-import { isTrustedProjectCrewWaitCommand } from '../../install/crew-binary.js';
+import {
+  isTrustedProjectCrewWaitCommand,
+  isTrustedProjectPrWatchWaitCommand,
+} from '../../install/crew-binary.js';
 import type { HostId } from '../../install/hosts/index.js';
 import { resolvePackageRoot } from '../../install/skill-renderer.js';
 import {
@@ -212,6 +237,12 @@ import {
   type SkillStalenessResult,
 } from '../../install/skill-verify.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
+import { PrWatchController } from '../../pr-watch/controller.js';
+import { PrWatchDeadlineController } from '../../pr-watch/deadline-controller.js';
+import { SubprocessProviderCommandRunner, type ProviderCommandRunner } from '../../pr-watch/provider-runner.js';
+import { PrWatchStartIndex } from '../../pr-watch/start-index.js';
+import { PrWatchStore } from '../../pr-watch/store.js';
+import { PrWatchSurfaceLeaseController } from '../../pr-watch/surface-lease-controller.js';
 import { logger, setLogFilePath } from '../../utils/logger.js';
 import {
   appendToolJournal,
@@ -316,6 +347,9 @@ export interface ServeOptions {
 
   /** Test seam for Codex bridge and thread-queue environment variables. */
   env?: NodeJS.ProcessEnv;
+
+  /** Injected read-only provider runner for PR-watch tests. */
+  prWatchRunner?: ProviderCommandRunner;
 }
 
 export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
@@ -522,6 +556,44 @@ export function resolveCrewWaitCommandForClientKind(args: {
   };
 }
 
+export function resolvePrWatchWaitCommandForClientKind(args: {
+  readonly clientKind: ClientKind;
+  readonly projectRoot: string;
+  readonly home: string;
+  readonly projectInstallActive: boolean;
+}): CrewWaitCommandResolution {
+  const hostId = hostIdForClientKind(args.clientKind);
+  if (hostId === undefined) return { source: 'legacy-fallback' };
+  if (args.projectInstallActive) {
+    const project = readStoredWaitCommand(
+      projectManifestPath(args.projectRoot),
+      hostId,
+      'prWatchWaitCommand',
+    );
+    if (project.targetPresent) {
+      if (project.command && !isTrustedProjectPrWatchWaitCommand(project.command)) {
+        return {
+          source: 'invalid-project-manifest',
+          reason: `untrusted project prWatchWaitCommand ${JSON.stringify(project.command)}`,
+        };
+      }
+      return {
+        command: project.command,
+        source: project.command ? 'project-manifest' : 'legacy-fallback',
+      };
+    }
+  }
+  const global = readStoredWaitCommand(
+    manifestPath(args.home),
+    hostId,
+    'prWatchWaitCommand',
+  );
+  return {
+    command: global.command,
+    source: global.command ? 'global-manifest' : 'legacy-fallback',
+  };
+}
+
 function legacyCrewWaitCommand(kind: ClientKind): string | undefined {
   return kind === 'claude-code' ? LEGACY_CREW_WAIT_COMMAND : undefined;
 }
@@ -576,6 +648,14 @@ function readStoredCrewWaitCommand(
   path: string,
   hostId: HostId,
 ): { targetPresent: boolean; command?: string } {
+  return readStoredWaitCommand(path, hostId, 'crewWaitCommand');
+}
+
+function readStoredWaitCommand(
+  path: string,
+  hostId: HostId,
+  field: 'crewWaitCommand' | 'prWatchWaitCommand',
+): { targetPresent: boolean; command?: string } {
   if (!existsSync(path)) return { targetPresent: false };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
@@ -585,7 +665,7 @@ function readStoredCrewWaitCommand(
     if (!target || typeof target !== 'object' || Array.isArray(target)) {
       return { targetPresent: false };
     }
-    const command = (target as Record<string, unknown>).crewWaitCommand;
+    const command = (target as Record<string, unknown>)[field];
     return {
       targetPresent: true,
       ...(typeof command === 'string' && command.trim().length > 0
@@ -783,6 +863,8 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
           try {
             const source = args as Record<string, unknown>;
             const nowMs = Date.now();
+            const purePrWatchRead = name === 'get_pr_watch_status'
+              || name === 'list_pr_watches';
             const waitParams = waitParamsFromArgs(source);
             const runId = typeof source.run_id === 'string' ? source.run_id : undefined;
             const generation = runId ? readRunGeneration(crewHome, runId) : undefined;
@@ -799,6 +881,10 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
                     : {}),
                 } satisfies ConfirmationAttempt
               : undefined;
+            if (!purePrWatchRead) {
+              await prWatchDeadlineController.sweep();
+              await prWatchSurfaceLeaseController.preflightSweep();
+            }
             const nudges = detectJitNudges({
               crewHome,
               repoRoot: projectRoot,
@@ -813,6 +899,26 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
               nowMs,
             });
             result = appendEnvelopeWarnings(result, nudges);
+            if (!purePrWatchRead && nudges.length < JIT_NUDGE_MAX_COUNT) {
+              const claimedNudge = await claimPrWatchJitNudge({
+                crewHome,
+                repoRoot: projectRoot,
+                maxWarningBytes: JIT_NUDGE_MAX_BYTES
+                  - Buffer.byteLength(nudges.join(''), 'utf-8'),
+              });
+              if (claimedNudge !== undefined) {
+                const decorated = appendEnvelopeWarnings(result, [claimedNudge.warning]);
+                const appended = Array.isArray(decorated.structuredContent?.warnings)
+                  && decorated.structuredContent.warnings.includes(claimedNudge.warning);
+                if (appended) {
+                  // Audit before returning the constructed response. If this
+                  // write fails, leave the response undecorated; the durable
+                  // claim lease makes a later recovery explicit.
+                  await auditPrWatchJitNudge({ crewHome, claim: claimedNudge });
+                  result = decorated;
+                }
+              }
+            }
 
             if (confirmationKey && source.confirmed === true) {
               confirmationRejections.delete(confirmationKey);
@@ -939,8 +1045,30 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     { crewHome, projectRoot, runStateStore, worktreeManager },
     options.runGc,
   );
+  const prWatchStore = new PrWatchStore(crewHome);
+  const prWatchRunner = options.prWatchRunner ?? new SubprocessProviderCommandRunner();
+  const prWatchController = new PrWatchController(
+    prWatchStore,
+    new PrWatchStartIndex(crewHome),
+    prWatchRunner,
+  );
+  const prWatchDeadlineController = new PrWatchDeadlineController(prWatchStore);
+  const prWatchSurfaceLeaseController = new PrWatchSurfaceLeaseController(prWatchStore);
+  const unregisterPrWatchCommitControllers = prWatchStore.onCommit((state) => {
+    prWatchDeadlineController.register(state);
+    prWatchSurfaceLeaseController.register(state);
+  });
+  void prWatchDeadlineController.start().catch((error) => {
+    logger.warn(`pr-watch deadline startup: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  void prWatchSurfaceLeaseController.start().catch((error) => {
+    logger.warn(`pr-watch surface startup: ${error instanceof Error ? error.message : String(error)}`);
+  });
   const stopPeriodicRunGc = (): void => {
     if (periodicRunGcTimer) clearInterval(periodicRunGcTimer);
+    unregisterPrWatchCommitControllers();
+    prWatchDeadlineController.stop();
+    prWatchSurfaceLeaseController.stop();
   };
   // Per-server one-shot loud-log state for progressToken presence/absence.
   // Crew's stdio MCP server is normally 1:1 with a single host client, so
@@ -977,8 +1105,48 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   };
   let cachedCrewWaitCommand: string | undefined;
   let crewWaitCommandResolved = false;
+  let cachedPrWatchWaitCommand: string | undefined;
+  let prWatchWaitCommandResolved = false;
   let loggedCrewWaitResolution = false;
   let loggedCodexWakeUnavailable = false;
+  const attachCodexWakeTransport = (
+    command: string | undefined,
+    clientKind: ClientKind,
+    extra?: ToolRequestExtra,
+  ): string | undefined => {
+    if (clientKind !== 'codex' || command === undefined) return command;
+    const bridgeFile = runtimeEnv[CODEX_BRIDGE_FILE_ENV];
+    if (bridgeFile && isAbsolute(bridgeFile) && existsSync(bridgeFile)) {
+      return `${command} --codex-bridge-base64 ${encodeCodexBridgeFile(bridgeFile)}`;
+    }
+    const requestThread = resolveCodexThreadIdFromRequestMeta(extra?._meta);
+    let threadId = requestThread.threadId;
+    if (threadId === undefined && requestThread.reason === undefined) {
+      const environmentThreadId = runtimeEnv[CODEX_THREAD_ID_ENV];
+      try {
+        validateCodexThreadId(environmentThreadId ?? '');
+        threadId = environmentThreadId;
+      } catch {
+        // Current Codex hosts prefer per-call metadata; env remains fallback.
+      }
+    }
+    const clientVersion = server.server.getClientVersion()?.version;
+    if (threadId !== undefined && supportsCodexQueueWatcher(clientVersion)) {
+      return `${command} --codex-queue-thread ${threadId}`;
+    }
+    if (!loggedCodexWakeUnavailable) {
+      loggedCodexWakeUnavailable = true;
+      const queueRequirement = !supportsCodexQueueWatcher(clientVersion)
+        ? `Codex ${MIN_CODEX_QUEUE_WATCHER_VERSION}+`
+        : requestThread.reason ?? 'a valid Codex thread id in MCP request metadata or CODEX_THREAD_ID';
+      logger.warn(
+        'crew-mcp serve: this Codex session is not attached to Crew\'s App Server bridge '
+        + `and standalone queue wake requires ${queueRequirement}; watcher auto-wake is disabled. `
+        + 'Launch through `crew-mcp codex` or update Codex for queue-backed wake.',
+      );
+    }
+    return undefined;
+  };
   const getCrewWaitCommand = (extra?: ToolRequestExtra): string | undefined => {
     const clientKind = getClientKind();
     if (!crewWaitCommandResolved) {
@@ -1012,43 +1180,27 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       }
       cachedCrewWaitCommand = resolution.command;
     }
-    if (clientKind === 'codex' && cachedCrewWaitCommand !== undefined) {
-      const bridgeFile = runtimeEnv[CODEX_BRIDGE_FILE_ENV];
-      if (bridgeFile && isAbsolute(bridgeFile) && existsSync(bridgeFile)) {
-        return `${cachedCrewWaitCommand} --codex-bridge-base64 ${encodeCodexBridgeFile(bridgeFile)}`;
-      }
-
-      const requestThread = resolveCodexThreadIdFromRequestMeta(extra?._meta);
-      let threadId = requestThread.threadId;
-      if (threadId === undefined && requestThread.reason === undefined) {
-        const environmentThreadId = runtimeEnv[CODEX_THREAD_ID_ENV];
-        try {
-          validateCodexThreadId(environmentThreadId ?? '');
-          threadId = environmentThreadId;
-        } catch {
-          // CODEX_THREAD_ID is a compatibility fallback. Current Codex hosts
-          // propagate the active thread in per-call MCP request metadata.
-        }
-      }
-      const clientVersion = server.server.getClientVersion()?.version;
-      if (threadId !== undefined && supportsCodexQueueWatcher(clientVersion)) {
-        return `${cachedCrewWaitCommand} --codex-queue-thread ${threadId}`;
-      }
-
-      if (!loggedCodexWakeUnavailable) {
-        loggedCodexWakeUnavailable = true;
-        const queueRequirement = !supportsCodexQueueWatcher(clientVersion)
-          ? `Codex ${MIN_CODEX_QUEUE_WATCHER_VERSION}+`
-          : requestThread.reason ?? 'a valid Codex thread id in MCP request metadata or CODEX_THREAD_ID';
+    return attachCodexWakeTransport(cachedCrewWaitCommand, clientKind, extra);
+  };
+  const getPrWatchWaitCommand = (extra?: ToolRequestExtra): string | undefined => {
+    const clientKind = getClientKind();
+    if (!prWatchWaitCommandResolved) {
+      prWatchWaitCommandResolved = true;
+      const resolution = resolvePrWatchWaitCommandForClientKind({
+        clientKind,
+        projectRoot,
+        home: installManifestHome,
+        projectInstallActive,
+      });
+      cachedPrWatchWaitCommand = resolution.command;
+      if (!resolution.command) {
         logger.warn(
-          'crew-mcp serve: this Codex session is not attached to Crew\'s App Server bridge '
-          + `and standalone queue wake requires ${queueRequirement}; watcher auto-wake is disabled. `
-          + 'Launch through `crew-mcp codex` or update Codex for queue-backed wake.',
+          `crew-mcp serve: ${resolution.reason ?? 'no exact installed PR-watch waiter command'}; `
+          + 'PR-watch start is disabled until crew-mcp install is rerun and the host reconnects.',
         );
       }
-      return undefined;
     }
-    return cachedCrewWaitCommand;
+    return attachCodexWakeTransport(cachedPrWatchWaitCommand, clientKind, extra);
   };
 
   const toolDeps: ToolHandlerDeps = {
@@ -1079,6 +1231,16 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
         });
       }
     },
+  };
+  const prWatchToolContext: PrWatchToolContext = {
+    store: prWatchStore,
+    controller: prWatchController,
+    runner: prWatchRunner,
+    projectRoot,
+    crewHome,
+    getClientKind,
+    getCrewWaitCommand,
+    getPrWatchWaitCommand,
   };
 
   void sweepExpiredMessages({
@@ -1281,6 +1443,32 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     async (args) => cancelRunToolHandler(args, toolDeps),
   );
 
+  // ---- durable PR watch (monitor-only) --------------------------------
+  registerJournaledTool(
+    'start_pr_watch',
+    { description: START_PR_WATCH_DESCRIPTION, inputSchema: startPrWatchInputSchema.shape },
+    async (args, extra) => startPrWatchToolHandler(args, extra, prWatchToolContext),
+  );
+  registerJournaledTool(
+    'list_pr_watches',
+    { description: LIST_PR_WATCHES_DESCRIPTION, inputSchema: listPrWatchesInputSchema.shape },
+    async (args) => listPrWatchesToolHandler(args, prWatchToolContext),
+  );
+  registerJournaledTool(
+    'get_pr_watch_status',
+    { description: GET_PR_WATCH_STATUS_DESCRIPTION, inputSchema: getPrWatchStatusInputSchema.shape },
+    async (args) => getPrWatchStatusToolHandler(args, prWatchToolContext),
+  );
+  registerJournaledTool(
+    'rearm_pr_watch',
+    { description: REARM_PR_WATCH_DESCRIPTION, inputSchema: rearmPrWatchInputSchema.shape },
+    async (args, extra) => rearmPrWatchToolHandler(args, extra, prWatchToolContext),
+  );
+  registerJournaledTool(
+    'cancel_pr_watch',
+    { description: CANCEL_PR_WATCH_DESCRIPTION, inputSchema: cancelPrWatchInputSchema.shape },
+    async (args) => cancelPrWatchToolHandler(args, prWatchToolContext),
+  );
   return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
 }
 

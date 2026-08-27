@@ -1,4 +1,4 @@
-> **Current as of 2026-08-22.**
+> **Current as of 2026-08-27.**
 
 # Captain portability
 
@@ -28,8 +28,10 @@ because it loads MCP servers only from a repository-local config.
 | Codex | `~/.codex/config.toml` / `~/.codex/skills/<skill>/SKILL.md` | `.codex/config.toml` / `.codex/skills/<skill>/SKILL.md` |
 | agy | Not supported | `.agents/mcp_config.json` / `.agents/skills/<skill>/SKILL.md` |
 
-The canonical skill bodies are `skills/crew-captain.body.md` and
-`skills/crew-iterate.body.md`. `src/install/skill-renderer.ts` injects
+The canonical skill bodies are `skills/crew-captain.body.md`,
+`skills/crew-iterate.body.md`, and `skills/crew-pr-watch.body.md`; PR watch
+also owns a canonically rendered sibling `ACTION.md`.
+`src/install/skill-renderer.ts` injects
 host-specific watcher and invocation text without changing the shared
 orchestration contract.
 
@@ -77,6 +79,13 @@ the captain recovers terminal state on the next user turn.
 Every watcher command carries run-generation tokens. At completion,
 `crew-wait` revalidates them under run-state locks and takes a durable
 per-thread claim before waking the host, preventing stale and duplicate turns.
+
+PR watch resolves and stores a separate exact `crew-pr-watch-wait` command.
+Only that observation-only waiter joins Claude's safe allowlist or Codex's
+watcher escalation. PR watch has no mutation command in this release.
+PR-watch wake claims bind `(thread, watchId, generation)` and reuse the same
+queue/App Server transports without changing run-batch claim semantics.
+Project verification checks the exact project waiter command.
 
 ## Adding a host
 

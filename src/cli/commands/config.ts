@@ -38,6 +38,7 @@ import {
 } from './config-tui/agent-strengths-state.js';
 import { CleanupScreen } from './config-tui/cleanup-screen.js';
 import { IterateLimitsScreen } from './config-tui/iterate-limits-screen.js';
+import { PrWatchLimitsScreen } from './config-tui/pr-watch-limits-screen.js';
 import { ProviderModelDefaultsScreen } from './config-tui/provider-model-defaults-screen.js';
 import {
   ProviderModelDefaultsState,
@@ -87,10 +88,16 @@ export type MutableCrewConfig = {
     maxRoundsPerEpoch: number;
     maxTotalRounds: number;
   };
+  prWatch: {
+    maxActionableWakes: number;
+    maxActionRounds: number;
+    maxWatchAgeDays: number;
+  };
   cleanup: {
     worktreeTtlDays: number;
     runDirTtlDays: number;
     criteriaSetTtlDays: number;
+    prWatchTtlDays: number;
   };
 };
 
@@ -165,6 +172,10 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     stdout.write(`  cleanup.criteriaSetTtlDays: ${fmtTtlDays(current.cleanup.criteriaSetTtlDays)}\n`);
     stdout.write(`  iterate.maxRoundsPerEpoch: ${current.iterate.maxRoundsPerEpoch}\n`);
     stdout.write(`  iterate.maxTotalRounds: ${current.iterate.maxTotalRounds}\n`);
+    stdout.write(`  prWatch.maxActionableWakes: ${current.prWatch.maxActionableWakes}\n`);
+    stdout.write(`  prWatch.maxActionRounds: ${current.prWatch.maxActionRounds}\n`);
+    stdout.write(`  prWatch.maxWatchAgeDays: ${fmtTtlDays(current.prWatch.maxWatchAgeDays)}\n`);
+    stdout.write(`  cleanup.prWatchTtlDays: ${fmtTtlDays(current.cleanup.prWatchTtlDays)}\n`);
     writeAgentDefaultsSummary(stdout, showWorkflowConfig(cwd).effectiveConfig.workflow.agentDefaults);
     writeProviderModelDefaultsSummary(stdout, readAgentPrefsFile(crewHome));
     stdout.write(
@@ -184,10 +195,16 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       maxRoundsPerEpoch: current.iterate.maxRoundsPerEpoch,
       maxTotalRounds: current.iterate.maxTotalRounds,
     },
+    prWatch: {
+      maxActionableWakes: current.prWatch.maxActionableWakes,
+      maxActionRounds: current.prWatch.maxActionRounds,
+      maxWatchAgeDays: current.prWatch.maxWatchAgeDays,
+    },
     cleanup: {
       worktreeTtlDays: current.cleanup.worktreeTtlDays,
       runDirTtlDays: current.cleanup.runDirTtlDays,
       criteriaSetTtlDays: current.cleanup.criteriaSetTtlDays,
+      prWatchTtlDays: current.cleanup.prWatchTtlDays,
     },
   };
   const agentInventory = await loadAgentInventory({
@@ -213,6 +230,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
   const agentStrengthsScreen = new AgentStrengthsListScreen(agentStrengthsState);
   const cleanupScreen = new CleanupScreen(state.cleanup);
   const iterateLimitsScreen = new IterateLimitsScreen(state.iterate);
+  const prWatchLimitsScreen = new PrWatchLimitsScreen(state.prWatch);
   const rootScreen = createRootScreen({
     entries,
     state,
@@ -248,6 +266,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
         description: 'Set GC retention windows and reclaim stale worktrees/run-dirs now',
         onActivate: () => ({ push: cleanupScreen }),
       },
+      {
+        kind: 'action',
+        label: 'PR-watch limits...',
+        description: 'Set actionable wake, action-round, and watch-age limits',
+        onActivate: () => ({ push: prWatchLimitsScreen }),
+      },
     ],
   });
   const result = await driveTui({
@@ -273,8 +297,12 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     || current.cleanup.worktreeTtlDays !== state.cleanup.worktreeTtlDays
     || current.cleanup.runDirTtlDays !== state.cleanup.runDirTtlDays
     || current.cleanup.criteriaSetTtlDays !== state.cleanup.criteriaSetTtlDays
+    || current.cleanup.prWatchTtlDays !== state.cleanup.prWatchTtlDays
     || current.iterate.maxRoundsPerEpoch !== state.iterate.maxRoundsPerEpoch
-    || current.iterate.maxTotalRounds !== state.iterate.maxTotalRounds;
+    || current.iterate.maxTotalRounds !== state.iterate.maxTotalRounds
+    || current.prWatch.maxActionableWakes !== state.prWatch.maxActionableWakes
+    || current.prWatch.maxActionRounds !== state.prWatch.maxActionRounds
+    || current.prWatch.maxWatchAgeDays !== state.prWatch.maxWatchAgeDays;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
   const providerModelsChanged = providerModelDefaultsState.hasChanges();
   const agentStrengthsChanged = agentStrengthsState.hasChanges();
@@ -439,6 +467,7 @@ function buildShowPayload(opts: ConfigSubcommandOptions): Record<string, unknown
     notifications: crewConfig.notifications,
     confirmBeforeMerge: crewConfig.confirmBeforeMerge,
     iterate: crewConfig.iterate,
+    prWatch: crewConfig.prWatch,
     cleanup: crewConfig.cleanup,
     providerModels: configuredProviderModels(readAgentPrefsFile(crewHome)),
     ...workflow.effectiveConfig,
@@ -499,14 +528,22 @@ type CrewSettingPath =
   | 'notifications.error'
   | 'confirmBeforeMerge'
   | 'iterate.maxRoundsPerEpoch'
-  | 'iterate.maxTotalRounds';
+  | 'iterate.maxTotalRounds'
+  | 'prWatch.maxActionableWakes'
+  | 'prWatch.maxActionRounds'
+  | 'prWatch.maxWatchAgeDays'
+  | 'cleanup.prWatchTtlDays';
 
 function isCrewSettingPath(path: string): path is CrewSettingPath {
   return path === 'notifications.success'
     || path === 'notifications.error'
     || path === 'confirmBeforeMerge'
     || path === 'iterate.maxRoundsPerEpoch'
-    || path === 'iterate.maxTotalRounds';
+    || path === 'iterate.maxTotalRounds'
+    || path === 'prWatch.maxActionableWakes'
+    || path === 'prWatch.maxActionRounds'
+    || path === 'prWatch.maxWatchAgeDays'
+    || path === 'cleanup.prWatchTtlDays';
 }
 
 function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | number {
@@ -521,6 +558,14 @@ function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | n
       return config.iterate.maxRoundsPerEpoch;
     case 'iterate.maxTotalRounds':
       return config.iterate.maxTotalRounds;
+    case 'prWatch.maxActionableWakes':
+      return config.prWatch.maxActionableWakes;
+    case 'prWatch.maxActionRounds':
+      return config.prWatch.maxActionRounds;
+    case 'prWatch.maxWatchAgeDays':
+      return config.prWatch.maxWatchAgeDays;
+    case 'cleanup.prWatchTtlDays':
+      return config.cleanup.prWatchTtlDays;
     default:
       throw new Error(`Unsupported config path "${path}".`);
   }
@@ -547,13 +592,31 @@ function writeCrewSetting(
     case 'iterate.maxTotalRounds':
       config.iterate.maxTotalRounds = value as number;
       return;
+    case 'prWatch.maxActionableWakes':
+      config.prWatch.maxActionableWakes = value as number;
+      return;
+    case 'prWatch.maxActionRounds':
+      config.prWatch.maxActionRounds = value as number;
+      return;
+    case 'prWatch.maxWatchAgeDays':
+      config.prWatch.maxWatchAgeDays = value as number;
+      return;
+    case 'cleanup.prWatchTtlDays':
+      config.cleanup.prWatchTtlDays = value as number;
+      return;
     default:
       throw new Error(`Unsupported config path "${path}".`);
   }
 }
 
 function parseCrewSettingValue(path: CrewSettingPath, raw: string): boolean | number {
-  if (path.startsWith('iterate.')) return parsePositiveIntegerValue(path, raw);
+  if (
+    path.startsWith('iterate.')
+    || path === 'prWatch.maxActionableWakes'
+    || path === 'prWatch.maxActionRounds'
+  ) return parsePositiveIntegerValue(path, raw);
+  if (path === 'prWatch.maxWatchAgeDays') return parseBoundedOrDisabledDays(path, raw, 365);
+  if (path === 'cleanup.prWatchTtlDays') return parseTtlValue(path, raw);
   return parseBooleanValue(path, raw);
 }
 
@@ -572,6 +635,28 @@ function parsePositiveIntegerValue(path: string, raw: string): number {
   const value = Number(normalized);
   if (!Number.isSafeInteger(value)) {
     throw new Error(`Invalid value for ${path}: expected a safe positive integer, received "${raw}".`);
+  }
+  return value;
+}
+
+function parseBoundedOrDisabledDays(path: string, raw: string, maximum: number): number {
+  const normalized = raw.trim();
+  if (normalized === '-1') return -1;
+  const value = parsePositiveIntegerValue(path, normalized);
+  if (value > maximum) {
+    throw new Error(`Invalid value for ${path}: expected -1 or 1..${maximum}, received "${raw}".`);
+  }
+  return value;
+}
+
+function parseTtlValue(path: string, raw: string): number {
+  const normalized = raw.trim();
+  if (!/^(?:-1|0|[1-9]\d*)$/.test(normalized)) {
+    throw new Error(`Invalid value for ${path}: expected an integer >= -1, received "${raw}".`);
+  }
+  const value = Number(normalized);
+  if (!Number.isSafeInteger(value) || value < -1) {
+    throw new Error(`Invalid value for ${path}: expected a safe integer >= -1, received "${raw}".`);
   }
   return value;
 }
@@ -596,10 +681,16 @@ function mutableConfig(config: CrewConfig): MutableCrewConfig {
       maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
       maxTotalRounds: config.iterate.maxTotalRounds,
     },
+    prWatch: {
+      maxActionableWakes: config.prWatch.maxActionableWakes,
+      maxActionRounds: config.prWatch.maxActionRounds,
+      maxWatchAgeDays: config.prWatch.maxWatchAgeDays,
+    },
     cleanup: {
       worktreeTtlDays: config.cleanup.worktreeTtlDays,
       runDirTtlDays: config.cleanup.runDirTtlDays,
       criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
+      prWatchTtlDays: config.cleanup.prWatchTtlDays,
     },
   };
 }

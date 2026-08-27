@@ -1,6 +1,6 @@
 {
   "name": "crew-mcp",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -10,7 +10,9 @@
   "type": "module",
   "bin": {
     "crew-mcp": "./dist/index.js",
-    "crew-wait": "./dist/cli/wait.js"
+    "crew-wait": "./dist/cli/wait.js",
+    "crew-pr-watch": "./dist/cli/pr-watch.js",
+    "crew-pr-watch-wait": "./dist/cli/pr-watch-wait.js"
   },
   "scripts": {
     "build": "tsup",

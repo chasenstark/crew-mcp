@@ -12,13 +12,13 @@ export interface ProjectInstalledTarget extends InstalledTarget {
 }
 
 export interface ProjectInstallManifest {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly scope: Extract<InstallScope, 'project'>;
   readonly targets: Partial<Record<HostId, ProjectInstalledTarget>>;
   readonly _extras?: Record<string, unknown>;
 }
 
-const PROJECT_SCHEMA_VERSION = 1 as const;
+const PROJECT_SCHEMA_VERSION = 2 as const;
 /** Canonical repo-relative path of the project install manifest. */
 export const PROJECT_MANIFEST_RELATIVE_PATH = '.crew/install.project.json';
 const KNOWN_TOP_LEVEL_KEYS = new Set(['schemaVersion', 'scope', 'targets']);
@@ -42,7 +42,7 @@ export async function readProjectInstallManifest(
     targets?: unknown;
   };
 
-  if (parsed.schemaVersion !== PROJECT_SCHEMA_VERSION) {
+  if (parsed.schemaVersion !== PROJECT_SCHEMA_VERSION && parsed.schemaVersion !== 1) {
     throw new Error(
       `install.project.json schemaVersion=${String(parsed.schemaVersion)} is unsupported; `
       + `expected ${PROJECT_SCHEMA_VERSION}`,
@@ -127,6 +127,9 @@ export function relativizeProjectTarget(
     configPath: toRepoRelativePath(repoRoot, entry.configPath),
     skillPath: entry.skillPath ? toRepoRelativePath(repoRoot, entry.skillPath) : '',
     skills: mapValues(entry.skills, (path) => toRepoRelativePath(repoRoot, path)),
+    ...(entry.skillFiles
+      ? { skillFiles: mapArrays(entry.skillFiles, (path) => toRepoRelativePath(repoRoot, path)) }
+      : {}),
     writtenPaths: entry.writtenPaths.map((path) => toRepoRelativePath(repoRoot, path)),
     ...(entry.sharedSkills
       ? { sharedSkills: mapValues(entry.sharedSkills, (path) => toRepoRelativePath(repoRoot, path)) }
@@ -146,6 +149,9 @@ export function absolutizeProjectTarget(
     configPath: resolveProjectPath(repoRoot, entry.configPath),
     skillPath: entry.skillPath ? resolveProjectPath(repoRoot, entry.skillPath) : '',
     skills: mapValues(entry.skills, (path) => resolveProjectPath(repoRoot, path)),
+    ...(entry.skillFiles
+      ? { skillFiles: mapArrays(entry.skillFiles, (path) => resolveProjectPath(repoRoot, path)) }
+      : {}),
     writtenPaths: entry.writtenPaths.map((path) => resolveProjectPath(repoRoot, path)),
     ...(entry.sharedSkills
       ? { sharedSkills: mapValues(entry.sharedSkills, (path) => resolveProjectPath(repoRoot, path)) }
@@ -229,6 +235,7 @@ function normalizeProjectTargetEntry(value: unknown): ProjectInstalledTarget | n
     configPath,
     skillPath: skillPath || skills.crew || '',
     skills,
+    skillFiles: stringArrayRecord(v.skillFiles, skills),
     writtenPaths,
     ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
     version: typeof v.version === 'string' ? v.version : '',
@@ -236,6 +243,12 @@ function normalizeProjectTargetEntry(value: unknown): ProjectInstalledTarget | n
     serverCommand: typeof v.serverCommand === 'string' ? v.serverCommand : '',
     serverArgs: stringArray(v.serverArgs),
     crewWaitCommand: typeof v.crewWaitCommand === 'string' ? v.crewWaitCommand : 'crew-wait',
+    ...(typeof v.crewPrWatchCommand === 'string'
+      ? { crewPrWatchCommand: v.crewPrWatchCommand }
+      : {}),
+    ...(typeof v.prWatchWaitCommand === 'string'
+      ? { prWatchWaitCommand: v.prWatchWaitCommand }
+      : {}),
     ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
     ...(typeof v.permissionsPath === 'string' ? { permissionsPath: v.permissionsPath } : {}),
   };
@@ -264,5 +277,29 @@ function mapValues(
   for (const [key, value] of Object.entries(input)) {
     out[key] = map(value);
   }
+  return out;
+}
+
+function mapArrays(
+  input: Readonly<Record<string, readonly string[]>>,
+  map: (value: string) => string,
+): Record<string, readonly string[]> {
+  return Object.fromEntries(
+    Object.entries(input).map(([key, values]) => [key, values.map(map)]),
+  );
+}
+
+function stringArrayRecord(
+  raw: unknown,
+  skills: Readonly<Record<string, string>>,
+): Record<string, readonly string[]> {
+  const out: Record<string, readonly string[]> = {};
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      const values = stringArray(value);
+      if (values.length > 0) out[key] = values;
+    }
+  }
+  for (const [key, value] of Object.entries(skills)) out[key] ??= [value];
   return out;
 }

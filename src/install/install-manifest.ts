@@ -45,6 +45,8 @@ export interface InstalledTarget {
    * sub-skills) appear when their manifest entries are installed.
    */
   skills: Readonly<Record<string, string>>;
+  /** Per-skill owned file set: primary SKILL.md followed by any sibling companions. */
+  skillFiles?: Readonly<Record<string, readonly string[]>>;
   /**
    * Every file/dir crew wrote during install. Authoritative list for
    * thorough uninstall cleanup — uninstall iterates this and prunes
@@ -75,6 +77,10 @@ export interface InstalledTarget {
    * `npx --no-install crew-wait`.
    */
   crewWaitCommand: string;
+  /** Exact packaged PR-watch controller command rendered into the skill. */
+  crewPrWatchCommand?: string;
+  /** Exact separately authorized monitor-only PR-watch waiter executable. */
+  prWatchWaitCommand?: string;
   /**
    * Whether the install wrote auto-approval state to bypass per-call
    * tool prompts. Optional for backward-compatibility with v0.2.0-dev
@@ -95,12 +101,12 @@ export interface InstalledTarget {
  * fields → preserve unknown keys at the top level; do not fail."
  */
 export interface InstallManifestV2 {
-  schemaVersion: 2;
+  schemaVersion: 3;
   targets: Partial<Record<HostId, InstalledTarget>>;
   _extras?: Record<string, unknown>;
 }
 
-const SCHEMA_VERSION = 2 as const;
+const SCHEMA_VERSION = 3 as const;
 
 export function manifestPath(home: string): string {
   return join(home, '.crew', 'install.json');
@@ -135,6 +141,9 @@ export async function readInstallManifest(home: string): Promise<InstallManifest
   }
   if (schemaVersion === 1) {
     return finalize(migrateV1Targets(parsed.targets), extras);
+  }
+  if (schemaVersion === 2) {
+    return finalize(normalizeTargets(parsed.targets), extras);
   }
   if (typeof schemaVersion === 'number' && schemaVersion > SCHEMA_VERSION) {
     throw new Error(
@@ -325,10 +334,21 @@ function normalizeTargetEntry(value: unknown): InstalledTarget | null {
       if (typeof val === 'string') sharedSkills[k] = val;
     }
   }
+  const skillFiles: Record<string, readonly string[]> = {};
+  if (v.skillFiles && typeof v.skillFiles === 'object' && !Array.isArray(v.skillFiles)) {
+    for (const [key, value] of Object.entries(v.skillFiles as Record<string, unknown>)) {
+      if (Array.isArray(value)) {
+        const paths = value.filter((path): path is string => typeof path === 'string');
+        if (paths.length > 0) skillFiles[key] = paths;
+      }
+    }
+  }
+  for (const [key, value] of Object.entries(skills)) skillFiles[key] ??= [value];
   return {
     configPath,
     skillPath: skillPath || skills['crew'] || '',
     skills,
+    skillFiles,
     writtenPaths,
     ...(Object.keys(sharedSkills).length > 0 ? { sharedSkills } : {}),
     version: typeof v.version === 'string' ? v.version : '',
@@ -338,6 +358,12 @@ function normalizeTargetEntry(value: unknown): InstalledTarget | null {
       ? v.serverArgs.filter((a): a is string => typeof a === 'string')
       : [],
     crewWaitCommand: typeof v.crewWaitCommand === 'string' ? v.crewWaitCommand : 'crew-wait',
+    ...(typeof v.crewPrWatchCommand === 'string'
+      ? { crewPrWatchCommand: v.crewPrWatchCommand }
+      : {}),
+    ...(typeof v.prWatchWaitCommand === 'string'
+      ? { prWatchWaitCommand: v.prWatchWaitCommand }
+      : {}),
     ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
   };
 }
@@ -373,6 +399,7 @@ function migrateV1Targets(
       configPath,
       skillPath,
       skills,
+      skillFiles: Object.fromEntries(Object.entries(skills).map(([key, path]) => [key, [path]])),
       writtenPaths,
       version: typeof v.version === 'string' ? v.version : '',
       installedAt: typeof v.installedAt === 'string' ? v.installedAt : '',
@@ -381,6 +408,12 @@ function migrateV1Targets(
         ? v.serverArgs.filter((a): a is string => typeof a === 'string')
         : [],
       crewWaitCommand: typeof v.crewWaitCommand === 'string' ? v.crewWaitCommand : 'crew-wait',
+      ...(typeof v.crewPrWatchCommand === 'string'
+        ? { crewPrWatchCommand: v.crewPrWatchCommand }
+        : {}),
+      ...(typeof v.prWatchWaitCommand === 'string'
+        ? { prWatchWaitCommand: v.prWatchWaitCommand }
+        : {}),
       ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
     };
   }

@@ -33,6 +33,11 @@ import {
   RUN_PANEL_DESCRIPTION,
   RUN_AGENT_DESCRIPTION,
   SEND_MESSAGE_DESCRIPTION,
+  START_PR_WATCH_DESCRIPTION,
+  LIST_PR_WATCHES_DESCRIPTION,
+  GET_PR_WATCH_STATUS_DESCRIPTION,
+  REARM_PR_WATCH_DESCRIPTION,
+  CANCEL_PR_WATCH_DESCRIPTION,
 } from '../orchestrator/tools/index.js';
 import type { SkillTool } from './skill-renderer.js';
 
@@ -56,5 +61,10 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'confirm_criteria', description: CONFIRM_CRITERIA_DESCRIPTION },
   { name: 'get_criteria', description: GET_CRITERIA_DESCRIPTION },
   { name: 'revise_criteria', description: REVISE_CRITERIA_DESCRIPTION },
+  { name: 'start_pr_watch', description: START_PR_WATCH_DESCRIPTION, mode: 'captain' },
+  { name: 'list_pr_watches', description: LIST_PR_WATCHES_DESCRIPTION, mode: 'captain' },
+  { name: 'get_pr_watch_status', description: GET_PR_WATCH_STATUS_DESCRIPTION, mode: 'captain' },
+  { name: 'rearm_pr_watch', description: REARM_PR_WATCH_DESCRIPTION, mode: 'captain' },
+  { name: 'cancel_pr_watch', description: CANCEL_PR_WATCH_DESCRIPTION, mode: 'captain' },
   { name: 'send_message', description: SEND_MESSAGE_DESCRIPTION, mode: 'worker' },
 ];

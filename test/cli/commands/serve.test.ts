@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, existsSync, readFileSync, statSync, readdirSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execSync, spawn } from 'child_process';
@@ -74,6 +74,13 @@ import type {
   CanonicalSkillVerificationOptions,
   SkillStalenessResult,
 } from '../../../src/install/skill-verify.js';
+import { sha256Canonical } from '../../../src/pr-watch/canonical.js';
+import { makePrWatchId, makePrWatchTransactionId } from '../../../src/pr-watch/id.js';
+import {
+  createInitialPrWatchState,
+  transitionToBlocked,
+} from '../../../src/pr-watch/reducer.js';
+import { PrWatchStore } from '../../../src/pr-watch/store.js';
 
 // --- helpers ---
 
@@ -603,10 +610,11 @@ describe('crew serve — listTools surface', () => {
   it('exposes the captain tool surface without worker-only tools', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toHaveLength(19);
+    expect(names).toHaveLength(24);
     expect(names).toEqual([
       'acknowledge_messages',
       'aggregate_panel',
+      'cancel_pr_watch',
       'cancel_run',
       'check_captain_inbox',
       'confirm_criteria',
@@ -616,14 +624,18 @@ describe('crew serve — listTools surface', () => {
       'get_crew_preferences',
       'get_criteria',
       'get_panel_status',
+      'get_pr_watch_status',
       'get_run_status',
       'list_agents',
       'list_models',
+      'list_pr_watches',
       'list_runs',
       'merge_run',
+      'rearm_pr_watch',
       'revise_criteria',
       'run_agent',
       'run_panel',
+      'start_pr_watch',
     ]);
     expect(names).not.toContain('send_message');
   });
@@ -2237,6 +2249,133 @@ describe('crew serve — stale-run sweeper', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('crew serve — pure PR-watch reads', () => {
+  it('does not sweep or claim durable remedies during status/list RPCs', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const store = new PrWatchStore(h.crewHome);
+      const watchId = makePrWatchId();
+      await store.create(createInitialPrWatchState({
+        watchId,
+        initialization: {
+          repository: 'example/repo',
+          anchorPrNumber: 42,
+          repoRoot: realpathSync(h.root),
+          effectiveConfig: {
+            maxPrs: 50,
+            maxActionableWakes: 20,
+            maxActionRounds: 5,
+            maxWatchAgeDays: -1,
+            policyHash: sha256Canonical({ mode: 'github_rules' }),
+          },
+          expectedHeads: { '42': 'abc123' },
+        },
+      }), makePrWatchTransactionId());
+      await store.mutate(watchId, (state) => transitionToBlocked(state, {
+        blocker: {
+          causeId: 'provider-auth',
+          version: 1,
+          kind: 'provider_auth',
+          class: 'revalidate',
+          message: 'authenticate gh',
+          evidence: {},
+          allowedConsumingReasons: ['blocked_resolved'],
+        },
+      }));
+      const ledgerPath = join(store.watchDir(watchId), 'events.jsonl');
+      const before = readFileSync(ledgerPath, 'utf-8');
+
+      await h.client.callTool({
+        name: 'get_pr_watch_status',
+        arguments: { watch_id: watchId },
+      });
+      expect(readFileSync(ledgerPath, 'utf-8')).toBe(before);
+      const list = await h.client.callTool({ name: 'list_pr_watches', arguments: {} });
+      expect(readFileSync(ledgerPath, 'utf-8')).toBe(before);
+      expect(list.structuredContent).toMatchObject({
+        count: 1,
+        total_count: 1,
+        watches: [{
+          watch_id: watchId,
+          watched_pr_count: 1,
+          status: 'blocked',
+          pending_remedy: true,
+          summary: 'authenticate gh',
+        }],
+      });
+
+      await h.client.callTool({ name: 'list_agents', arguments: {} });
+      expect(readFileSync(ledgerPath, 'utf-8')).not.toBe(before);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('returns a typed restart-required blocker for a corrupt authoritative ledger', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const store = new PrWatchStore(h.crewHome);
+      const watchId = makePrWatchId();
+      await store.create(createInitialPrWatchState({
+        watchId,
+        initialization: {
+          repository: 'example/repo',
+          anchorPrNumber: 42,
+          repoRoot: realpathSync(h.root),
+          effectiveConfig: {
+            maxPrs: 50,
+            maxActionableWakes: 20,
+            maxActionRounds: 5,
+            maxWatchAgeDays: -1,
+            policyHash: sha256Canonical({ mode: 'github_rules' }),
+          },
+          expectedHeads: { '42': 'abc123' },
+        },
+      }), makePrWatchTransactionId());
+      const ledgerPath = join(store.watchDir(watchId), 'events.jsonl');
+      const ledger = readFileSync(ledgerPath);
+      writeFileSync(ledgerPath, ledger.subarray(0, ledger.length - 1));
+
+      const status = await h.client.callTool({
+        name: 'get_pr_watch_status',
+        arguments: { watch_id: watchId },
+      });
+      expect(status.structuredContent).toMatchObject({
+        watch_id: watchId,
+        status: 'blocked',
+        blocker: {
+          kind: 'corrupt_state',
+          class: 'restart_required',
+          allowedConsumingReasons: [],
+        },
+      });
+      const list = await h.client.callTool({ name: 'list_pr_watches', arguments: {} });
+      expect(list.structuredContent).toMatchObject({
+        count: 1,
+        watches: [{ watch_id: watchId, status: 'blocked' }],
+      });
+
+      writeFileSync(join(store.watchDir(watchId), 'state.json'), '{corrupt cache\n');
+      const doublyCorrupt = await h.client.callTool({
+        name: 'list_pr_watches',
+        arguments: { limit: 1 },
+      });
+      expect(doublyCorrupt.structuredContent).toMatchObject({
+        count: 1,
+        total_count: 1,
+        watches: [{
+          watch_id: watchId,
+          status: 'blocked',
+          repo_scope_unknown: true,
+          pending_remedy: true,
+        }],
+      });
+    } finally {
+      await h.close();
     }
   });
 });

@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import {
   HOST_ADAPTERS,
@@ -97,6 +98,7 @@ async function uninstallGlobalCommand(opts: UninstallOptions): Promise<Uninstall
       const candidatePaths = new Set<string>();
       for (const p of target?.writtenPaths ?? []) candidatePaths.add(p);
       for (const p of Object.values(target?.skills ?? {})) candidatePaths.add(p);
+      for (const p of Object.values(target?.skillFiles ?? {}).flat()) candidatePaths.add(p);
       if (target?.skillPath) candidatePaths.add(target.skillPath);
       candidatePaths.add(adapter.skillPath(home));
       for (const skillPath of candidatePaths) {
@@ -192,10 +194,15 @@ async function uninstallProjectCommand(opts: UninstallOptions): Promise<Uninstal
         if (p.endsWith('/SKILL.md') || p.endsWith('\\SKILL.md')) candidatePaths.add(p);
       }
       for (const p of Object.values(target?.skills ?? {})) candidatePaths.add(p);
+      for (const p of Object.values(target?.skillFiles ?? {}).flat()) candidatePaths.add(p);
       if (target?.skillPath) candidatePaths.add(target.skillPath);
       if (!target) {
         for (const skill of SKILL_MANIFEST) {
-          candidatePaths.add(adapter.projectSkillInstallSpecFor(repoRoot, skill).skillPath);
+          const skillPath = adapter.projectSkillInstallSpecFor(repoRoot, skill).skillPath;
+          candidatePaths.add(skillPath);
+          for (const companion of skill.companions ?? []) {
+            candidatePaths.add(join(dirname(skillPath), companion.outputFile));
+          }
         }
         candidatePaths.add(adapter.projectSkillPath(repoRoot));
       }
@@ -276,5 +283,7 @@ function assertProjectCapable(
 function isCrewWaitBashPermission(entry: string): boolean {
   if (entry === 'Bash(crew-wait:*)') return true;
   if (entry === 'Bash(npx --no-install crew-wait:*)') return true;
-  return /^Bash\(.+[\\/]crew-wait(?:\.(?:cmd|ps1|exe|bat))?:\*\)$/i.test(entry);
+  if (entry === 'Bash(crew-pr-watch-wait:*)') return true;
+  if (entry === 'Bash(npx --no-install crew-pr-watch-wait:*)') return true;
+  return /^Bash\(.+[\\/]crew(?:-pr-watch)?-wait(?:\.(?:cmd|ps1|exe|bat))?:\*\)$/i.test(entry);
 }

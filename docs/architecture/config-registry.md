@@ -1,4 +1,4 @@
-> **Current as of 2026-08-25.**
+> **Current as of 2026-08-27.**
 
 # Config path registry
 
@@ -22,13 +22,19 @@ notifications.error
 confirmBeforeMerge
 iterate.maxRoundsPerEpoch
 iterate.maxTotalRounds
+prWatch.maxActionableWakes
+prWatch.maxActionRounds
+prWatch.maxWatchAgeDays
+cleanup.prWatchTtlDays
 ```
 
 The notification and merge paths are booleans. Iteration limits are positive
 integers, with `maxTotalRounds >= maxRoundsPerEpoch`; their code-defined
 defaults are 3 and 9. Unset restores the corresponding default. Cleanup
-retention is edited through the TUI or its environment overrides rather than
-the workflow registry.
+retention is edited through the TUI, these direct PR-watch paths, or environment
+overrides rather than the workflow registry. `-1` disables maximum watch age or
+PR-watch retention; positive wake/round budgets are snapshotted when a watch
+starts and bound any later grant.
 
 ## Workflow registry contract
 

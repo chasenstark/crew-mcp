@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import { HOST_ADAPTERS, type HostId } from './hosts/index.js';
 import type { InstalledTarget } from './install-manifest.js';
@@ -8,6 +9,7 @@ import { CATALOG_TOOLS } from './tool-catalog.js';
 import {
   captainSkillTools,
   renderSkill,
+  renderSkillCompanion,
   SKILL_MANIFEST,
   templatePathForHost,
 } from './skill-renderer.js';
@@ -85,11 +87,45 @@ async function compareCanonicalSkillContent(
       spec,
       tools: CAPTAIN_CATALOG_TOOLS,
       crewWaitCommand: args.entry.crewWaitCommand,
+      crewPrWatchCommand: args.entry.crewPrWatchCommand,
+      crewPrWatchWaitCommand: args.entry.prWatchWaitCommand,
       packageRoot: args.packageRoot,
     });
     const actual = await readFile(installedPath, 'utf-8');
     if (actual !== expected) {
       issues.push(`skill content stale: ${installedPath}`);
+    }
+    const expectedFiles = [
+      installedPath,
+      ...(skill.companions ?? []).map((companion) => join(dirname(installedPath), companion.outputFile)),
+    ];
+    const recordedFiles = args.entry.skillFiles?.[skill.id] ?? [installedPath];
+    if (JSON.stringify(recordedFiles) !== JSON.stringify(expectedFiles)) {
+      issues.push(`install manifest companion file set mismatch for ${skill.id}`);
+    }
+    for (const companion of skill.companions ?? []) {
+      const companionPath = expectedFiles.find((path) => basename(path) === companion.outputFile);
+      if (!companionPath) continue;
+      installedPaths.push(companionPath);
+      if (!existsSync(companionPath)) {
+        issues.push(`missing skill companion: ${companionPath}`);
+        continue;
+      }
+      const expectedCompanion = await renderSkillCompanion({
+        templatePath: templatePathForHost(args.packageRoot, args.targetId),
+        hostId: args.targetId,
+        skill,
+        spec,
+        sourceFile: companion.sourceFile,
+        tools: CAPTAIN_CATALOG_TOOLS,
+        crewWaitCommand: args.entry.crewWaitCommand,
+        crewPrWatchCommand: args.entry.crewPrWatchCommand,
+        crewPrWatchWaitCommand: args.entry.prWatchWaitCommand,
+        packageRoot: args.packageRoot,
+      });
+      if (await readFile(companionPath, 'utf-8') !== expectedCompanion) {
+        issues.push(`skill companion content stale: ${companionPath}`);
+      }
     }
   }
   return { issues, installedPaths };

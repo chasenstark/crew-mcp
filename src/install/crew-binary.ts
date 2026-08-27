@@ -88,6 +88,22 @@ export function projectCrewWaitCommand(options: {
     : './node_modules/.bin/crew-wait';
 }
 
+export function prWatchWaitCommandFromCrewWait(command: string): string {
+  return siblingCommandFromCrewWait(command, 'crew-pr-watch-wait');
+}
+
+export function prWatchCommandFromCrewWait(command: string): string {
+  return siblingCommandFromCrewWait(command, 'crew-pr-watch');
+}
+
+function siblingCommandFromCrewWait(command: string, sibling: string): string {
+  const index = command.lastIndexOf('crew-wait');
+  if (index < 0) {
+    throw new Error(`Cannot derive crew-pr-watch-wait from ${JSON.stringify(command)}`);
+  }
+  return `${command.slice(0, index)}${sibling}${command.slice(index + 'crew-wait'.length)}`;
+}
+
 const TRUSTED_PROJECT_CREW_WAIT_COMMANDS = new Set([
   projectCrewWaitCommand({ platform: 'darwin' }),
   projectCrewWaitCommand({ platform: 'win32' }),
@@ -101,6 +117,18 @@ const TRUSTED_PROJECT_CREW_WAIT_COMMANDS = new Set([
  */
 export function isTrustedProjectCrewWaitCommand(command: string): boolean {
   return TRUSTED_PROJECT_CREW_WAIT_COMMANDS.has(command);
+}
+
+export function isTrustedProjectPrWatchWaitCommand(command: string): boolean {
+  return [...TRUSTED_PROJECT_CREW_WAIT_COMMANDS]
+    .map(prWatchWaitCommandFromCrewWait)
+    .includes(command);
+}
+
+export function isTrustedProjectPrWatchCommand(command: string): boolean {
+  return [...TRUSTED_PROJECT_CREW_WAIT_COMMANDS]
+    .map(prWatchCommandFromCrewWait)
+    .includes(command);
 }
 
 export function parseProjectCrewBinaryStrategy(raw: unknown): ProjectCrewBinaryStrategy {
