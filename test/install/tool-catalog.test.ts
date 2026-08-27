@@ -26,6 +26,7 @@ import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
 import { RUN_PANEL_DESCRIPTION } from '../../src/orchestrator/tools/run-panel.js';
 import {
+  AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
   CANCEL_PR_WATCH_DESCRIPTION,
   GET_PR_WATCH_STATUS_DESCRIPTION,
   LIST_PR_WATCHES_DESCRIPTION,
@@ -45,6 +46,7 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       GET_PR_WATCH_STATUS_DESCRIPTION,
       REARM_PR_WATCH_DESCRIPTION,
       CANCEL_PR_WATCH_DESCRIPTION,
+      AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
     ];
     expect(Buffer.byteLength(descriptions.join(''), 'utf-8')).toBeLessThanOrEqual(5 * 1024);
     expect(Buffer.byteLength(PR_WATCH_SKILL_DESCRIPTION, 'utf-8')).toBeLessThanOrEqual(768);
@@ -64,8 +66,8 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       const names = result.tools.map((t) => t.name).sort();
       const expected = captainSkillTools(CATALOG_TOOLS).map((t) => t.name).sort();
       expect(names).toEqual(expected);
-      expect(CATALOG_TOOLS).toHaveLength(25);
-      expect(names).toHaveLength(24);
+      expect(CATALOG_TOOLS).toHaveLength(26);
+      expect(names).toHaveLength(25);
       expect(names).toContain('list_models');
       expect(names).not.toContain('send_message');
       expect(names).toEqual(expect.arrayContaining([
@@ -74,6 +76,7 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
         'get_pr_watch_status',
         'rearm_pr_watch',
         'cancel_pr_watch',
+        'authorize_pr_watch_actions',
       ]));
 
       const propertiesFor = (name: string): Record<string, unknown> => {

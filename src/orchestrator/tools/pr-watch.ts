@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { simpleGit } from 'simple-git';
 
-import { prWatchTopologyHash } from '../../pr-watch/action-authority.js';
+import {
+  PrWatchActionBlockedError,
+  prWatchTopologyHash,
+  type PrWatchActionController,
+} from '../../pr-watch/action-controller.js';
 import type { PrWatchController } from '../../pr-watch/controller.js';
 import { sha256Canonical } from '../../pr-watch/canonical.js';
 import { parsePrWatchId } from '../../pr-watch/id.js';
@@ -12,7 +16,7 @@ import { runGitHubReadCommand } from '../../pr-watch/github-provider.js';
 import type { ProviderCommandRunner } from '../../pr-watch/provider-runner.js';
 import { cancelPrWatch, rearmPrWatch } from '../../pr-watch/reducer.js';
 import { PrWatchCorruptStateError, type PrWatchStore } from '../../pr-watch/store.js';
-import type { PrWatchRearmReason, PrWatchStateV1 } from '../../pr-watch/types.js';
+import type { PrWatchEffectKind, PrWatchRearmReason, PrWatchStateV1 } from '../../pr-watch/types.js';
 import type { ClientKind, ToolCallReturn, ToolRequestExtra } from './shared.js';
 
 const watchIdSchema = z.string().regex(/^pw-[0-9a-f]{32}$/);
@@ -87,6 +91,46 @@ export const cancelPrWatchInputSchema = z.object({
   watch_id: watchIdSchema,
 }).strict();
 
+const effectKindSchema = z.enum([
+  'push_single_branch',
+  'reply_review_comment',
+  'post_pr_comment',
+  'resolve_review_thread',
+]);
+
+export const authorizePrWatchActionsInputSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('grant'),
+    watch_id: watchIdSchema,
+    expected_generation: z.number().int().positive(),
+    expected_policy_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    expected_topology_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    effect_kinds: z.array(effectKindSchema).min(1).max(4),
+    max_action_rounds: z.number().int().positive(),
+    max_actionable_wakes: z.number().int().positive(),
+    expires_at: z.string().datetime().optional(),
+    confirmed: z.literal(true),
+  }).strict(),
+  z.object({
+    action: z.literal('revoke'),
+    watch_id: watchIdSchema,
+    reason: z.string().trim().min(1).max(500).optional(),
+  }).strict(),
+]);
+export const authorizePrWatchActionsMcpInputSchema = z.object({
+  action: z.enum(['grant', 'revoke']),
+  watch_id: watchIdSchema,
+  expected_generation: z.number().int().positive().optional(),
+  expected_policy_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  expected_topology_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  effect_kinds: z.array(effectKindSchema).min(1).max(4).optional(),
+  max_action_rounds: z.number().int().positive().optional(),
+  max_actionable_wakes: z.number().int().positive().optional(),
+  expires_at: z.string().datetime().optional(),
+  confirmed: z.literal(true).optional(),
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
 export const START_PR_WATCH_DESCRIPTION =
   'Start or resume one durable, monitor-only GitHub PR/linear-stack watch. Performs bounded provider preflight, persists typed blockers, and returns one trusted background waiter action on supported Claude Code or Codex hosts. It never comments, pushes, merges, closes, or approves.';
 export const LIST_PR_WATCHES_DESCRIPTION =
@@ -97,9 +141,13 @@ export const REARM_PR_WATCH_DESCRIPTION =
   'Explicitly compare-and-set a PR watch after a disposed batch, timed-out/stale waiter, budget handoff, confirmed expiry extension, or freshly revalidated blocker. Required durable identities must match. Returns the exact persisted receipt and at most one next waiter action.';
 export const CANCEL_PR_WATCH_DESCRIPTION =
   'Stop a durable PR watch without deleting its history or changing GitHub, git, reviews, checks, branches, or pull requests. Cancellation is idempotent for an already-cancelled watch and does not authorize any other lifecycle action.';
+export const AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION =
+  'Grant or revoke bounded PR-watch action authority. A grant requires explicit confirmation, exact policy/topology hashes, current remote heads, effect kinds, and budgets; it creates or validates a dedicated worktree lease but performs no remote effect. Default is deny.';
+
 export interface PrWatchToolContext {
   readonly store: PrWatchStore;
   readonly controller: PrWatchController;
+  readonly actionController: PrWatchActionController;
   readonly runner: ProviderCommandRunner;
   readonly projectRoot: string;
   readonly crewHome: string;
@@ -277,6 +325,37 @@ export async function cancelPrWatchToolHandler(
   return envelope(statusPayload(state));
 }
 
+export async function authorizePrWatchActionsToolHandler(
+  rawInput: Record<string, unknown>,
+  extra: ToolRequestExtra,
+  context: PrWatchToolContext,
+): Promise<ToolCallReturn> {
+  const input = authorizePrWatchActionsInputSchema.parse(rawInput);
+  const watchId = parsePrWatchId(input.watch_id);
+  if (input.action === 'revoke') {
+    const state = await context.actionController.revoke(watchId, input.reason ?? 'user_revoked');
+    return envelope(statusPayload(state));
+  }
+  try {
+    const result = await context.actionController.authorize({
+      watchId,
+      expectedGeneration: input.expected_generation,
+      expectedPolicyHash: input.expected_policy_hash,
+      expectedTopologyHash: input.expected_topology_hash,
+      effectKinds: input.effect_kinds as readonly PrWatchEffectKind[],
+      maxActionRounds: input.max_action_rounds,
+      maxActionableWakes: input.max_actionable_wakes,
+      ...(input.expires_at !== undefined ? { expiresAt: input.expires_at } : {}),
+      confirmed: true,
+      ...(extra.signal ? { signal: extra.signal } : {}),
+    });
+    return envelope({ ...statusPayload(result.state), grant: result.grant });
+  } catch (error) {
+    if (!(error instanceof PrWatchActionBlockedError)) throw error;
+    return envelope({ ...statusPayload(error.state), authorization_blocked: true });
+  }
+}
+
 function renderWatchResult(
   state: PrWatchStateV1,
   context: PrWatchToolContext,
@@ -324,6 +403,9 @@ function statusPayload(state: PrWatchStateV1): Record<string, unknown> {
     ...(state.status === 'cancelled' ? { cancelled_at: state.cancelledAt } : {}),
     last_observation: state.lastObservation ?? null,
     pending_events: Object.values(state.events).filter((event) => event.disposition === undefined),
+    action_grant: state.actionGrant ?? null,
+    prepared_worktree_lease: state.preparedWorktreeLease ?? null,
+    worktree_lease: state.worktreeLease ?? null,
   };
 }
 

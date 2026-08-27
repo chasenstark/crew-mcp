@@ -158,6 +158,10 @@ export {
   type SendMessageToolDeps,
 } from './send-message.js';
 export {
+  authorizePrWatchActionsInputSchema,
+  authorizePrWatchActionsMcpInputSchema,
+  authorizePrWatchActionsToolHandler,
+  AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
   cancelPrWatchInputSchema,
   cancelPrWatchToolHandler,
   CANCEL_PR_WATCH_DESCRIPTION,

@@ -41,9 +41,7 @@ describe('crew PR-watch skill body', () => {
     expect(Buffer.byteLength(rendered, 'utf-8')).toBeLessThanOrEqual(6 * 1024);
     expect(rendered).toContain('`./node_modules/.bin/crew-pr-watch ack`');
     expect(rendered).toContain('[ACTION.md](./ACTION.md)');
-    expect(companion).toContain('`./node_modules/.bin/crew-pr-watch ack`');
-    expect(companion).toContain('no GitHub or git mutation path');
-    expect(companion).not.toContain('crew-pr-watch effect');
+    expect(companion).toContain('`./node_modules/.bin/crew-pr-watch effect');
     expect(`${rendered}\n${companion}`).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
   });
 });

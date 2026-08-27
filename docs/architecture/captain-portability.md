@@ -82,10 +82,11 @@ per-thread claim before waking the host, preventing stale and duplicate turns.
 
 PR watch resolves and stores a separate exact `crew-pr-watch-wait` command.
 Only that observation-only waiter joins Claude's safe allowlist or Codex's
-watcher escalation. PR watch has no mutation command in this release.
-PR-watch wake claims bind `(thread, watchId, generation)` and reuse the same
-queue/App Server transports without changing run-batch claim semantics.
-Project verification checks the exact project waiter command.
+watcher escalation; the mutation-capable `crew-pr-watch effect` command never
+does. PR-watch wake claims bind `(thread, watchId, generation)` and reuse the
+same queue/App Server transports without changing run-batch claim semantics.
+Project verification checks the exact project waiter command and the current
+repository's git-common-dir host-lock path.
 
 ## Adding a host
 

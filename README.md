@@ -101,11 +101,11 @@ they cannot read the repository until context injection is implemented.
 | Observe | `get_run_status` · `get_panel_status` · `list_runs` · `list_agents` · `list_models` |
 | Decide | `merge_run` · `discard_run` · `cancel_run` · `aggregate_panel` |
 | Contract | `create_criteria` · `confirm_criteria` · `get_criteria` · `revise_criteria` |
-| PR watch | `start_pr_watch` · `list_pr_watches` · `get_pr_watch_status` · `rearm_pr_watch` · `cancel_pr_watch` |
+| PR watch | `start_pr_watch` · `list_pr_watches` · `get_pr_watch_status` · `rearm_pr_watch` · `cancel_pr_watch` · `authorize_pr_watch_actions` |
 | Preferences | `get_crew_preferences` |
 | Messaging | `check_captain_inbox` · `acknowledge_messages` — workers get only `send_message` |
 
-That is 24 captain tools plus one worker-only tool. The
+That is 25 captain tools plus one worker-only tool. The
 [tool reference](https://github.com/chasenstark/crew-mcp/blob/main/docs/architecture/tools.md)
 owns the complete schemas and envelope contracts.
 

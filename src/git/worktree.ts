@@ -489,6 +489,23 @@ export class WorktreeManager {
     return this.withRunLock(runId, operation);
   }
 
+  /**
+   * Cross-lifecycle writer used by bounded PR-watch worktree/ref sections.
+   * The identity is the repository's resolved git common directory, so every
+   * linked worktree shares the same exclusion domain.
+   */
+  async withHostMutationExclusion<T>(operation: () => Promise<T>): Promise<T> {
+    return this.withHostMutationLock(operation);
+  }
+
+  async withHostSnapshotReadExclusion<T>(operation: () => Promise<T>): Promise<T> {
+    return this.withHostSnapshotReadLock(operation);
+  }
+
+  async getHostSnapshotLockRoot(): Promise<string> {
+    return (await this.resolveHostSnapshotLockPaths()).rootDir;
+  }
+
   trackBackgroundCleanup(cleanup: Promise<unknown>): void {
     this.backgroundCleanups.add(cleanup);
     void cleanup.then(
@@ -1545,7 +1562,7 @@ export class WorktreeManager {
     if (options.lockAlreadyHeld) {
       await cleanup();
     } else {
-      await this.withRunLock(runId, cleanup);
+      await this.withHostMutationLock(async () => this.withRunLock(runId, cleanup));
     }
     return result;
   }
@@ -2092,6 +2109,14 @@ export class WorktreeManager {
       operation,
     );
   }
+}
+
+/** Resolve the shared host-lock root without constructing a run manager. */
+export async function resolveHostSnapshotLockRoot(projectRoot: string): Promise<string> {
+  const root = realpathSync(projectRoot);
+  const raw = (await simpleGit(root).raw(['rev-parse', '--git-common-dir'])).trim();
+  const commonDirRealpath = realpathSync(resolve(root, raw.length > 0 ? raw : '.git'));
+  return join(commonDirRealpath, 'crew-host-snapshot-lock', repoLockName(commonDirRealpath));
 }
 
 /**

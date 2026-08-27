@@ -182,6 +182,9 @@ import {
   SEND_MESSAGE_DESCRIPTION,
 } from '../../orchestrator/tools/send-message.js';
 import {
+  authorizePrWatchActionsMcpInputSchema,
+  authorizePrWatchActionsToolHandler,
+  AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
   cancelPrWatchInputSchema,
   cancelPrWatchToolHandler,
   CANCEL_PR_WATCH_DESCRIPTION,
@@ -238,6 +241,7 @@ import {
 } from '../../install/skill-verify.js';
 import { resolveCrewHome } from '../../utils/crew-home.js';
 import { PrWatchController } from '../../pr-watch/controller.js';
+import { PrWatchActionController } from '../../pr-watch/action-controller.js';
 import { PrWatchDeadlineController } from '../../pr-watch/deadline-controller.js';
 import { SubprocessProviderCommandRunner, type ProviderCommandRunner } from '../../pr-watch/provider-runner.js';
 import { PrWatchStartIndex } from '../../pr-watch/start-index.js';
@@ -1052,6 +1056,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     new PrWatchStartIndex(crewHome),
     prWatchRunner,
   );
+  const prWatchActionController = new PrWatchActionController(prWatchStore, prWatchRunner);
   const prWatchDeadlineController = new PrWatchDeadlineController(prWatchStore);
   const prWatchSurfaceLeaseController = new PrWatchSurfaceLeaseController(prWatchStore);
   const unregisterPrWatchCommitControllers = prWatchStore.onCommit((state) => {
@@ -1235,6 +1240,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
   const prWatchToolContext: PrWatchToolContext = {
     store: prWatchStore,
     controller: prWatchController,
+    actionController: prWatchActionController,
     runner: prWatchRunner,
     projectRoot,
     crewHome,
@@ -1469,6 +1475,15 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
     { description: CANCEL_PR_WATCH_DESCRIPTION, inputSchema: cancelPrWatchInputSchema.shape },
     async (args) => cancelPrWatchToolHandler(args, prWatchToolContext),
   );
+  registerJournaledTool(
+    'authorize_pr_watch_actions',
+    {
+      description: AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
+      inputSchema: authorizePrWatchActionsMcpInputSchema.shape,
+    },
+    async (args, extra) => authorizePrWatchActionsToolHandler(args, extra, prWatchToolContext),
+  );
+
   return { server, dispatcher, worktreeManager, runStateStore, stopPeriodicRunGc };
 }
 

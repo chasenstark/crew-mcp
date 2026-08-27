@@ -97,10 +97,11 @@ export async function discardRunToolHandler(
     );
   }
   if (shouldCleanupWorktree) {
-    const backgroundCleanup = deps.worktreeManager.withRunWorktreeLock(args.run_id, async () => {
-      const cleanup = await deps.worktreeManager.cleanupByRunId(args.run_id, {
-        lockAlreadyHeld: true,
-      });
+    const backgroundCleanup = deps.worktreeManager.withHostMutationExclusion(() =>
+      deps.worktreeManager.withRunWorktreeLock(args.run_id, () =>
+        deps.worktreeManager.cleanupByRunId(args.run_id, { lockAlreadyHeld: true }),
+      ),
+    ).then((cleanup) => {
       if (!cleanup.success) {
         logger.warn(
           `discard_run ${args.run_id}: worktree cleanup failed after `

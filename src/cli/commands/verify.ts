@@ -15,10 +15,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, posix, win32 } from 'node:path';
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path';
 
 import { HOST_ADAPTERS, isGlobalHostId, type HostId } from '../../install/hosts/index.js';
 import {
@@ -33,6 +33,7 @@ import {
   isTrustedProjectPrWatchCommand,
   isTrustedProjectPrWatchWaitCommand,
 } from '../../install/crew-binary.js';
+import { resolveHostSnapshotLockRoot } from '../../git/worktree.js';
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
@@ -286,6 +287,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
   const reports: VerifyTargetReport[] = [];
   let codexTrustChecked = false;
 
+  probes.push(await verifyProjectHostSnapshotLock(repoRoot));
 
   for (const targetId of targets) {
     const adapter = HOST_ADAPTERS[targetId];
@@ -452,6 +454,35 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     logger.warn('crew verify: project drift detected. Run `crew-mcp install --scope project --target <host>` to re-sync.');
   }
   return { ok, probes, targets: reports };
+}
+
+async function verifyProjectHostSnapshotLock(repoRoot: string): Promise<VerifyProbeReport> {
+  try {
+    const root = await resolveHostSnapshotLockRoot(repoRoot);
+    const gitDirRaw = await import('simple-git').then(({ simpleGit }) =>
+      simpleGit(repoRoot).raw(['rev-parse', '--git-common-dir']));
+    const commonDir = realpathSync(resolve(repoRoot, gitDirRaw.trim() || '.git'));
+    const rel = relative(commonDir, root);
+    if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+      throw new Error(`lock root escapes git common directory: ${root}`);
+    }
+    const probeDir = join(root, `.verify-${randomUUID()}`);
+    await mkdir(probeDir, { recursive: true });
+    const probeFile = join(probeDir, 'probe');
+    await writeFile(probeFile, 'ok\n', { mode: 0o600 });
+    await rm(probeDir, { recursive: true, force: true });
+    return {
+      name: 'host-snapshot-lock-writable',
+      status: 'ok',
+      message: `shared git-common-dir host lock writable at ${root}`,
+    };
+  } catch (error) {
+    return {
+      name: 'host-snapshot-lock-writable',
+      status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /**

@@ -610,10 +610,11 @@ describe('crew serve — listTools surface', () => {
   it('exposes the captain tool surface without worker-only tools', async () => {
     const result = await h.client.listTools();
     const names = result.tools.map((t) => t.name).sort();
-    expect(names).toHaveLength(24);
+    expect(names).toHaveLength(25);
     expect(names).toEqual([
       'acknowledge_messages',
       'aggregate_panel',
+      'authorize_pr_watch_actions',
       'cancel_pr_watch',
       'cancel_run',
       'check_captain_inbox',

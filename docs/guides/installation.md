@@ -118,9 +118,9 @@ the next user turn. Watcher commands pin run generations and take a durable
 one-shot claim so stale or duplicate processes do not enqueue duplicate turns.
 
 PR watch uses the same host transports through the separately installed
-observation-only `crew-pr-watch-wait` binary. PR watch has no mutation command
-in this release. Restart the host after install or upgrade so it loads the
-PR-watch tools and companion `ACTION.md`.
+observation-only `crew-pr-watch-wait` binary. The mutation-capable
+`crew-pr-watch effect` command is never auto-approved. Restart the host after
+install or upgrade so it loads the PR-watch tools and companion `ACTION.md`.
 
 ## Upgrade
 

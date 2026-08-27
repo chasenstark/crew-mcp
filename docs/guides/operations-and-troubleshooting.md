@@ -53,11 +53,12 @@ turns. On a wake, read `get_pr_watch_status` once; do not poll the status tool.
 extension. An extension restores the exact suspended state and returns a waiter
 only for active observation.
 
-PR watch is monitor-only in this release. Investigate actionable events through
-ordinary, separately authorized workflows, record their dispositions with the
-packaged acknowledgement command, and explicitly rearm the batch. A wake never
-authorizes an action, and PR watch cannot comment, reply, resolve, push, merge,
-auto-merge, close, create, or approve a PR.
+Monitoring is default deny for remote effects. A comment, reply, thread
+resolution, or single-PR fast-forward push requires a separately confirmed
+`authorize_pr_watch_actions` grant bound to current hashes, heads, named kinds,
+budgets, and expiry. Authorization creates a dedicated branch worktree but
+performs no effect. A wake never authorizes an action, and PR watch never merges,
+auto-merges, closes, approves, force-pushes, or mutates a multi-PR stack branch.
 
 If start reports capability trouble, fix `gh auth status`; when CircleCI is
 configured, verify its CLI authentication too. Ordinary `crew-mcp verify` is

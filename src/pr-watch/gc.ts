@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs';
 
 import { readConfigFile } from '../utils/config-store.js';
+import { PrWatchWorktreeManager } from './action-worktree.js';
 import { sha256Canonical } from './canonical.js';
 import { cancelPrWatch, createInitialPrWatchState } from './reducer.js';
 import { PrWatchStartIndex } from './start-index.js';
@@ -156,6 +157,18 @@ export async function gcPrWatches(args: {
       return now - Date.parse(currentClosedAt) >= args.ttlMs;
     };
     try {
+      if (state.worktreeLease !== undefined || state.preparedWorktreeLease !== undefined) {
+        const manager = new PrWatchWorktreeManager(args.crewHome, state.repoRoot);
+        await manager.withHostMutationExclusion(async (signal) => store.withWatchLock(
+          watchId,
+          async () => {
+            if (!store.exists(watchId)) return;
+            const current = store.read(watchId).state;
+            if (!predicate(current)) return;
+            await manager.removeLeaseInsideHostLock(current, signal);
+          },
+        ));
+      }
       let reclaimed = false;
       if (state.reverseStartKeyDigest !== undefined) {
         reclaimed = await startIndex.withLock(state.reverseStartKeyDigest, async () => {

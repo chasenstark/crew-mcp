@@ -11,7 +11,7 @@ the install-time surface in `CATALOG_TOOLS` in
 in-memory MCP client to a fresh server and requires the live registrations and
 static catalog to stay identical.
 
-The complete catalog contains twenty-five tools. Twenty-four are captain-facing;
+The complete catalog contains twenty-six tools. Twenty-five are captain-facing;
 `send_message` is installed only for workers.
 
 ## Current catalog
@@ -39,19 +39,27 @@ The complete catalog contains twenty-five tools. Twenty-four are captain-facing;
 | `revise_criteria` | Captain | Revises an unconfirmed criteria set or advances its epoch. |
 | `start_pr_watch` | Captain | Starts or resumes one durable PR or linear-stack watch after bounded provider and policy preflight. |
 | `list_pr_watches` | Captain | Pure repo-scoped or all-repo authoritative watch listing. |
-| `get_pr_watch_status` | Captain | Pure snapshot of lifecycle, evidence, batch, budgets, and remedies. |
+| `get_pr_watch_status` | Captain | Pure snapshot of lifecycle, evidence, batch, budgets, remedies, grant, and lease. |
 | `rearm_pr_watch` | Captain | Explicit compare-and-set transition after disposition, waiter recovery, budget handoff, expiry extension, or blocker revalidation. |
 | `cancel_pr_watch` | Captain | Stops observation without deleting history or changing GitHub/git state. |
+| `authorize_pr_watch_actions` | Captain | Grants or revokes bounded effect authority and a dedicated worktree lease; grant performs no remote effect. |
 | `send_message` | Worker | Sends a durable authenticated message to another run or the captain. |
 
 ## PR-watch lifecycle
 
 The five monitor tools are safe by default. Status and list are byte-pure;
 start owns bounded provider readiness; rearm is the only public observation
-generation transition. This release has no controller-owned GitHub or git
-mutation path. Actionable events are investigated through ordinary,
-separately authorized workflows, recorded with the packaged acknowledgement
-command, and explicitly rearmed.
+generation transition. `authorize_pr_watch_actions` requires an explicit
+`confirmed:true` grant bound to generation, policy/topology hashes, remote
+heads, named effect kinds, budgets, and optional expiry. It prepares or recovers
+the dedicated worktree but does not comment, reply, resolve, or push.
+
+Effects run through the packaged typed CLI against the persisted grant and
+action batch. The controller journals prepare/observe/apply/verify/settle and
+observes before retrying. Only top-level PR comments, review-comment replies,
+review-thread resolution, and a single-PR fast-forward SHA push exist. There is
+no MCP merge, auto-merge, close, approve, force/lease push, or multi-PR branch
+mutation surface.
 
 ## Model discovery and exact selection
 

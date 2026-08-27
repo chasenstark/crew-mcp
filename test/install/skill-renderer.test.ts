@@ -381,7 +381,7 @@ describe('host-conditional real skill bodies', () => {
     }
   });
 
-  it.each(HOST_IDS)('crew:pr-watch renders its monitor-only contract for %s', async (hostId) => {
+  it.each(HOST_IDS)('crew:pr-watch renders its default-deny authorization contract for %s', async (hostId) => {
     const skill = SKILL_MANIFEST.find((entry) => entry.id === 'crew:pr-watch')!;
     const out = await renderForHost(skill, hostId);
     for (const tool of [
@@ -390,13 +390,14 @@ describe('host-conditional real skill bodies', () => {
       'get_pr_watch_status',
       'rearm_pr_watch',
       'cancel_pr_watch',
+      'authorize_pr_watch_actions',
     ]) {
       expect(out).toContain(tool);
     }
     expect(out).toContain('[ACTION.md](./ACTION.md)');
     expect(out).toContain('Default to monitor-only');
-    expect(out).toContain('ordinary separately authorized user workflow');
-    expect(out).toContain('no controller-owned GitHub or git mutation path');
+    expect(out).toContain('explicit user confirmation');
+    expect(out).toContain('performs no remote effect');
     expect(out).toContain('never authority to mutate');
   });
 

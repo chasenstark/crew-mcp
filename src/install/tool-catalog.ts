@@ -38,6 +38,7 @@ import {
   GET_PR_WATCH_STATUS_DESCRIPTION,
   REARM_PR_WATCH_DESCRIPTION,
   CANCEL_PR_WATCH_DESCRIPTION,
+  AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
 } from '../orchestrator/tools/index.js';
 import type { SkillTool } from './skill-renderer.js';
 
@@ -66,5 +67,6 @@ export const CATALOG_TOOLS: readonly SkillTool[] = [
   { name: 'get_pr_watch_status', description: GET_PR_WATCH_STATUS_DESCRIPTION, mode: 'captain' },
   { name: 'rearm_pr_watch', description: REARM_PR_WATCH_DESCRIPTION, mode: 'captain' },
   { name: 'cancel_pr_watch', description: CANCEL_PR_WATCH_DESCRIPTION, mode: 'captain' },
+  { name: 'authorize_pr_watch_actions', description: AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION, mode: 'captain' },
   { name: 'send_message', description: SEND_MESSAGE_DESCRIPTION, mode: 'worker' },
 ];

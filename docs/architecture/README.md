@@ -29,7 +29,7 @@ The current CLI commands are `serve`, `codex`, `status`, `cleanup`, `config`,
 Historical `run`, `init`, `profile`, `state reset`, and `resume` commands live
 only in `docs/architecture/v0.1-archive/`.
 
-The catalog contains twenty-five MCP tools: twenty-four captain tools and the
+The catalog contains twenty-six MCP tools: twenty-five captain tools and the
 worker-only `send_message`. `src/cli/commands/serve.ts` owns the live
 registrations and `src/install/tool-catalog.ts` owns install-time parity. See
 `docs/architecture/tools.md` for the catalog and envelope contracts.
@@ -61,9 +61,9 @@ PR watches are not agent runs. Their digest-chained ledgers and monotonic state
 caches live under `~/.crew/pr-watches/`. A background waiter polls typed GitHub
 and optional CircleCI evidence outside model turns, then wakes the originating
 Claude Code or Codex conversation for an actionable batch, remedy, expiry, or
-terminal result. This release is monitor-only: actionable events are handed to
-ordinary, separately authorized workflows, and the watch records dispositions
-before rearming. The PR-watch controller cannot mutate GitHub or git. See
+terminal result. Monitoring is the default. Remote effects require a separate
+bounded grant and a dedicated worktree lease; merge, auto-merge, close, approve,
+force push, and multi-PR branch mutation remain unavailable. See
 `docs/architecture/pr-watch.md`.
 
 ## Provider and model identity

@@ -10,13 +10,15 @@ synthetic Crew run. The frozen behavior and provenance input is in
 ## Runtime and state
 
 `src/pr-watch/` owns provider capability checks, discovery, policy resolution,
-evidence reduction, deadlines, waiters, recovery surfaces, and retention. Each
-watch lives at:
+evidence reduction, deadlines, waiters, recovery surfaces, retention, action
+leases, and effect settlement. Each watch lives at:
 
 ```text
 <crewHome>/pr-watches/<pw-id>/
   events.jsonl       digest-chained authoritative state transitions
   state.json         monotonic cache, replayed from the ledger on pure reads
+  effects.jsonl      digest-chained remote-effect phases when authorized
+  worktree/          dedicated attached action worktree when authorized
 ```
 
 Watch IDs are server-issued `pw-` plus 32 lowercase hex characters and are
@@ -62,19 +64,43 @@ waiter action and execution lease own polling; a separate thread/watch/
 generation claim owns synthetic-turn delivery. A wake is information, never
 mutation authority. Unsupported host survival fails before watch allocation.
 
-The captain tools are `start_pr_watch`, `list_pr_watches`,
-`get_pr_watch_status`, `rearm_pr_watch`, and `cancel_pr_watch`.
+The captain tools are:
+
+- `start_pr_watch`, `list_pr_watches`, `get_pr_watch_status`,
+  `rearm_pr_watch`, and `cancel_pr_watch` for monitoring;
+- `authorize_pr_watch_actions` for a separately confirmed bounded grant.
 
 The installed `crew:pr-watch` skill launches exactly the returned trusted
 waiter command and reads `ACTION.md` only for an actionable batch or remedy.
 
-## Action handling
+## Authorized actions
 
-This release is monitor-only. PR watch does not own a GitHub or git mutation
-path. A captain may investigate an actionable event through an ordinary,
-separately authorized workflow, record each disposition with the packaged
-`crew-pr-watch ack` command, and explicitly rearm the disposed batch. A watcher
-wake is information only and never grants mutation authority.
+Default is deny. A grant is durably bound to watch generation, exact policy and
+topology hashes, observed heads, named effect kinds, maximum action rounds,
+maximum actionable wakes, and optional expiry. Authorization performs a fresh
+bounded head snapshot and creates or crash-recovers a prepared dedicated
+worktree lease under the existing git-common-dir host writer. It performs no
+remote effect.
+
+The worktree is clean, attached to the watched head branch, and unavailable if
+another worktree owns that branch. Host writer sections have a 10-second
+aggregate budget and never contain provider/network calls or settlement. A
+single-PR push uses two short writer/revalidation sections. The first binds the
+remote URL and proves local lease, head, and fast-forward ancestry; one explicit
+`<sha>:refs/heads/<branch>` push runs after releasing it, and remote
+verification remains outside before the second local revalidation.
+
+Effects are serialized by deterministic ID and journaled through
+`prepared`, `observed_absent`, `applied` or `ambiguous`, `verified`, and
+`settled`. Recovery observes the marker or remote head before retrying. Settle
+records the event disposition, increments the action budget, rolls forward
+heads/lease when needed, and rearms a fully disposed batch in one watch-ledger
+transaction.
+
+Supported effects are top-level PR comment, review-comment reply,
+review-thread resolution, and single-PR fast-forward push. Merge, auto-merge,
+merge queue, PR close/create/approve, force/lease/delete/mirror push, and every
+multi-PR branch mutation are structurally unavailable.
 
 ## Retention and verification
 
