@@ -57,8 +57,15 @@ records fail closed and are never skipped.
 
 An actionable handoff freezes a batch ID and inclusive ledger watermark.
 Disposition and explicit rearm are idempotent. Events observed after the
-watermark survive into the next batch. `get_pr_watch_status` is byte-pure;
-`rearm_pr_watch` is the only public Milestone A generation/replacement writer.
+watermark survive into the next batch. `get_pr_watch_status` is byte-pure and
+may derive stale waiter health from persisted lease timestamps, but it never
+mutates lifecycle. `rearm_pr_watch` is the only public Milestone A
+generation/replacement writer.
+
+The standalone waiter keeps its polling timer referenced. While a provider
+poll is in flight, a bounded independent heartbeat renews the execution lease;
+renewal at or after the persisted deadline fails closed so an expired waiter
+cannot become healthy again without compare-and-set rearm.
 
 Every nonterminal watch has a snapshotted age deadline unless age is disabled.
 One internal deadline controller owns active, terminal-only, actionable, and

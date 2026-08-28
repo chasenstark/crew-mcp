@@ -17,6 +17,7 @@ import type { ProviderCommandRunner } from '../../pr-watch/provider-runner.js';
 import { cancelPrWatch, rearmPrWatch } from '../../pr-watch/reducer.js';
 import { PrWatchCorruptStateError, type PrWatchStore } from '../../pr-watch/store.js';
 import type { PrWatchEffectKind, PrWatchRearmReason, PrWatchStateV1 } from '../../pr-watch/types.js';
+import { derivePrWatchWaiterHealth } from '../../pr-watch/waiter-health.js';
 import type { ClientKind, ToolCallReturn, ToolRequestExtra } from './shared.js';
 
 const watchIdSchema = z.string().regex(/^pw-[0-9a-f]{32}$/);
@@ -136,7 +137,7 @@ export const START_PR_WATCH_DESCRIPTION =
 export const LIST_PR_WATCHES_DESCRIPTION =
   'List durable PR watches for the current repository, or all repositories when all_repos is true. This is a pure authoritative ledger read and never polls providers, launches a waiter, delivers a wake, or changes generation.';
 export const GET_PR_WATCH_STATUS_DESCRIPTION =
-  'Read one durable PR-watch snapshot immediately by server-issued watch_id. Reports generation, batch, evidence gaps, blocker/expiry remedy, budgets, waiter, and history summary. Strictly read-only: status never polls, rearms, launches, or acknowledges.';
+  'Read one durable PR-watch snapshot immediately by server-issued watch_id. Reports generation, batch, evidence gaps, blocker/expiry remedy, budgets, and derived waiter health/recovery. Strictly read-only: status never polls, rearms, launches, or acknowledges.';
 export const REARM_PR_WATCH_DESCRIPTION =
   'Explicitly compare-and-set a PR watch after a disposed batch, timed-out/stale waiter, budget handoff, confirmed expiry extension, or freshly revalidated blocker. Required durable identities must match. Returns the exact persisted receipt and at most one next waiter action.';
 export const CANCEL_PR_WATCH_DESCRIPTION =
@@ -257,7 +258,7 @@ export function getPrWatchStatusToolHandler(
 ): ToolCallReturn {
   const watchId = parsePrWatchId(input.watch_id);
   try {
-    return envelope(statusPayload(context.store.read(watchId).state));
+    return envelope(statusPayload(context.store.read(watchId).state, new Date()));
   } catch (error) {
     if (!(error instanceof PrWatchCorruptStateError)) throw error;
     return envelope(corruptStatusPayload(context.store, watchId, error));
@@ -305,7 +306,7 @@ export async function rearmPrWatchToolHandler(
   const clientKind = context.getClientKind();
   const waitCommand = context.getPrWatchWaitCommand(extra);
   return envelope({
-    ...statusPayload(state),
+    ...statusPayload(state, new Date()),
     receipt,
     ...(state.status === 'active' && waitCommand && (clientKind === 'claude-code' || clientKind === 'codex')
       ? { required_next_action: requiredAction(state, context, waitCommand, clientKind) }
@@ -322,7 +323,7 @@ export async function cancelPrWatchToolHandler(
   const state = current.status === 'cancelled'
     ? current
     : (await context.store.mutate(watchId, (value) => cancelPrWatch(value))).state;
-  return envelope(statusPayload(state));
+  return envelope(statusPayload(state, new Date()));
 }
 
 export async function authorizePrWatchActionsToolHandler(
@@ -334,7 +335,7 @@ export async function authorizePrWatchActionsToolHandler(
   const watchId = parsePrWatchId(input.watch_id);
   if (input.action === 'revoke') {
     const state = await context.actionController.revoke(watchId, input.reason ?? 'user_revoked');
-    return envelope(statusPayload(state));
+    return envelope(statusPayload(state, new Date()));
   }
   try {
     const result = await context.actionController.authorize({
@@ -349,10 +350,10 @@ export async function authorizePrWatchActionsToolHandler(
       confirmed: true,
       ...(extra.signal ? { signal: extra.signal } : {}),
     });
-    return envelope({ ...statusPayload(result.state), grant: result.grant });
+    return envelope({ ...statusPayload(result.state, new Date()), grant: result.grant });
   } catch (error) {
     if (!(error instanceof PrWatchActionBlockedError)) throw error;
-    return envelope({ ...statusPayload(error.state), authorization_blocked: true });
+    return envelope({ ...statusPayload(error.state, new Date()), authorization_blocked: true });
   }
 }
 
@@ -363,14 +364,39 @@ function renderWatchResult(
   clientKind: 'claude-code' | 'codex',
 ): Record<string, unknown> {
   return {
-    ...statusPayload(state),
+    ...statusPayload(state, new Date()),
     ...(state.status === 'active'
       ? { required_next_action: requiredAction(state, context, waitCommand, clientKind) }
       : {}),
   };
 }
 
-function statusPayload(state: PrWatchStateV1): Record<string, unknown> {
+function statusPayload(state: PrWatchStateV1, now: Date): Record<string, unknown> {
+  const waiterHealth = state.status === 'active'
+    ? derivePrWatchWaiterHealth(state.waiter, now)
+    : undefined;
+  const waiterHealthPayload = state.status === 'active' && waiterHealth !== undefined
+    ? {
+        state: waiterHealth.state,
+        recoverable: waiterHealth.recoverable,
+        ...(waiterHealth.reason !== undefined ? { reason: waiterHealth.reason } : {}),
+        ...(waiterHealth.leaseExpiresAt !== undefined
+          ? { lease_expires_at: waiterHealth.leaseExpiresAt }
+          : {}),
+        ...(waiterHealth.exitReason !== undefined ? { exit_reason: waiterHealth.exitReason } : {}),
+        message: waiterHealth.message,
+        ...(waiterHealth.recoverable && waiterHealth.rearmReason !== undefined
+          ? {
+              rearm_arguments: {
+                watch_id: state.watchId,
+                expected_generation: state.generation,
+                reason: waiterHealth.rearmReason,
+                prior_watcher_action_id: state.waiter.watcherActionId,
+              },
+            }
+          : {}),
+      }
+    : undefined;
   return {
     watch_id: state.watchId,
     repository: state.repository,
@@ -384,7 +410,12 @@ function statusPayload(state: PrWatchStateV1): Record<string, unknown> {
     actionable_wake_budget: state.actionableWakeBudget,
     action_round_budget: state.actionRoundBudget,
     ...(state.watchExpiresAt ? { watch_expires_at: state.watchExpiresAt } : {}),
-    ...(state.status === 'active' ? { waiter: state.waiter } : {}),
+    ...(state.status === 'active'
+      ? {
+          waiter: state.waiter,
+          waiter_health: waiterHealthPayload,
+        }
+      : {}),
     ...(state.status === 'actionable' ? { action_batch: state.batch } : {}),
     ...(state.status === 'blocked' ? {
       blocker: state.blocker,
@@ -509,6 +540,9 @@ function requiredAction(
     command,
     ...(clientKind === 'codex' ? { command_json: JSON.stringify(command) } : {}),
     working_directory: context.projectRoot,
+    ...(clientKind === 'codex'
+      ? { working_directory_json: JSON.stringify(context.projectRoot) }
+      : {}),
     watch_id: state.watchId,
     generation: state.generation,
     watcher_action_id: state.waiter.watcherActionId,

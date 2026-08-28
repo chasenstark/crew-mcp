@@ -39,6 +39,7 @@ export interface WaitForPrWatchOptions {
   readonly ownerId?: string;
   readonly pollIntervalMs?: number;
   readonly leaseMs?: number;
+  readonly heartbeatIntervalMs?: number;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly now?: () => Date;
@@ -59,11 +60,20 @@ export async function waitForPrWatch(
   const sleep = options.sleep ?? abortableSleep;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+  const heartbeatIntervalMs = options.heartbeatIntervalMs
+    ?? Math.min(60_000, Math.floor(leaseMs / 3));
   if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) {
     throw new Error('pr_watch.invalid_poll_interval');
   }
   if (leaseMs <= pollIntervalMs || leaseMs < 60_000) {
     throw new Error('pr_watch.invalid_waiter_lease');
+  }
+  if (
+    !Number.isSafeInteger(heartbeatIntervalMs)
+    || heartbeatIntervalMs < 1
+    || heartbeatIntervalMs >= leaseMs
+  ) {
+    throw new Error('pr_watch.invalid_waiter_heartbeat_interval');
   }
   const ownerId = options.ownerId ?? randomUUID();
   const startedAt = now();
@@ -107,7 +117,13 @@ export async function waitForPrWatch(
         leaseMs,
         now: now(),
       }));
-      const polled = await options.controller.pollOnce(options.watchId, { signal: options.signal });
+      const polled = await pollWithLeaseHeartbeats({
+        options,
+        ownerId,
+        leaseMs,
+        heartbeatIntervalMs,
+        now,
+      });
       if (polled.state.status !== 'active') {
         await deliverWake(options, polled.state);
         return finish(options, polled.state, polled.state.status);
@@ -124,6 +140,66 @@ export async function waitForPrWatch(
     });
     throw error;
   }
+}
+
+async function pollWithLeaseHeartbeats(args: {
+  readonly options: WaitForPrWatchOptions;
+  readonly ownerId: string;
+  readonly leaseMs: number;
+  readonly heartbeatIntervalMs: number;
+  readonly now: () => Date;
+}): Promise<Awaited<ReturnType<PrWatchController['pollOnce']>>> {
+  const stopHeartbeat = new AbortController();
+  const abortPoll = new AbortController();
+  const heartbeatSignal = combineSignals([args.options.signal, stopHeartbeat.signal]);
+  const pollSignal = combineSignals([args.options.signal, abortPoll.signal]);
+  let stopping = false;
+  let rejectHeartbeatFailure!: (error: unknown) => void;
+  const heartbeatFailure = new Promise<never>((_resolve, reject) => {
+    rejectHeartbeatFailure = reject;
+  });
+  const heartbeat = (async () => {
+    try {
+      for (;;) {
+        await abortableSleep(args.heartbeatIntervalMs, heartbeatSignal);
+        await args.options.store.mutate(args.options.watchId, (state) => heartbeatPrWatchWaiter(state, {
+          watcherActionId: args.options.watcherActionId,
+          generation: args.options.generation,
+          leaseOwnerId: args.ownerId,
+          leaseMs: args.leaseMs,
+          now: args.now(),
+        }));
+      }
+    } catch (error) {
+      if (stopping) return;
+      const failure = args.options.signal?.aborted
+        ? new Error('pr_watch.waiter_cancelled')
+        : error;
+      // Settle our side of the race before aborting the provider. Some
+      // controller implementations may ignore AbortSignal, while compliant
+      // ones can reject synchronously from their abort listener.
+      rejectHeartbeatFailure(failure);
+      abortPoll.abort(failure);
+    }
+  })();
+
+  try {
+    return await Promise.race([
+      args.options.controller.pollOnce(args.options.watchId, { signal: pollSignal }),
+      heartbeatFailure,
+    ]);
+  } finally {
+    stopping = true;
+    stopHeartbeat.abort();
+    await heartbeat;
+  }
+}
+
+function combineSignals(signals: readonly (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const defined = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (defined.length === 0) return undefined;
+  if (defined.length === 1) return defined[0];
+  return AbortSignal.any(defined);
 }
 
 async function deliverWake(
@@ -232,11 +308,20 @@ function finish(
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(new Error('pr_watch.waiter_cancelled'));
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
-    signal?.addEventListener('abort', () => {
+    let settled = false;
+    const finish = (operation: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      operation();
+    };
+    const onAbort = (): void => {
       clearTimeout(timer);
-      reject(new Error('pr_watch.waiter_cancelled'));
-    }, { once: true });
+      finish(() => reject(new Error('pr_watch.waiter_cancelled')));
+    };
+    const timer = setTimeout(() => finish(resolve), ms);
+    // This referenced timer owns the standalone waiter's process lifetime.
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }

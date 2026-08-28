@@ -908,6 +908,7 @@ export function heartbeatPrWatchWaiter(
     readonly now?: Date;
   },
 ): PrWatchReducerResult {
+  const nowDate = args.now ?? new Date();
   if (
     state.status !== 'active'
     || state.generation !== args.generation
@@ -917,10 +918,13 @@ export function heartbeatPrWatchWaiter(
   ) {
     throw new Error('pr_watch.waiter_lease_lost');
   }
+  const leaseExpiresMs = Date.parse(state.waiter.leaseExpiresAt ?? '');
+  if (!Number.isFinite(leaseExpiresMs) || leaseExpiresMs <= nowDate.getTime()) {
+    throw new Error('pr_watch.waiter_lease_lost');
+  }
   if (!Number.isSafeInteger(args.leaseMs) || args.leaseMs <= 0) {
     throw new Error('pr_watch.invalid_waiter_lease');
   }
-  const nowDate = args.now ?? new Date();
   requireBeforeDeadline(state, nowDate);
   const now = nowDate.toISOString();
   return transition({

@@ -33,6 +33,13 @@ describe('crew PR-watch skill body', () => {
       packageRoot: REPO_ROOT,
     };
     const rendered = await renderSkill(args);
+    const claudeSpec = HOST_ADAPTERS['claude-code'].skillInstallSpecFor(REPO_ROOT, PR_WATCH_SKILL);
+    const renderedClaude = await renderSkill({
+      ...args,
+      hostId: 'claude-code',
+      templatePath: templatePathForHost(REPO_ROOT, 'claude-code'),
+      spec: claudeSpec,
+    });
     const companion = await renderSkillCompanion({
       ...args,
       sourceFile: 'crew-pr-watch.action.md',
@@ -41,6 +48,10 @@ describe('crew PR-watch skill body', () => {
     expect(Buffer.byteLength(rendered, 'utf-8')).toBeLessThanOrEqual(6 * 1024);
     expect(rendered).toContain('`./node_modules/.bin/crew-pr-watch ack`');
     expect(rendered).toContain('[ACTION.md](./ACTION.md)');
+    expect(rendered).toContain('required_next_action.working_directory_json');
+    expect(rendered).toContain("sandbox_permissions: 'require_escalated'");
+    expect(rendered).toContain('crew-pr-watch-wait failed to start');
+    expect(renderedClaude).not.toContain("sandbox_permissions: 'require_escalated'");
     expect(companion).toContain('`./node_modules/.bin/crew-pr-watch effect');
     expect(`${rendered}\n${companion}`).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
   });

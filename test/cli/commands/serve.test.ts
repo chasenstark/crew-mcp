@@ -77,6 +77,7 @@ import type {
 import { sha256Canonical } from '../../../src/pr-watch/canonical.js';
 import { makePrWatchId, makePrWatchTransactionId } from '../../../src/pr-watch/id.js';
 import {
+  claimPrWatchWaiter,
   createInitialPrWatchState,
   transitionToBlocked,
 } from '../../../src/pr-watch/reducer.js';
@@ -2255,6 +2256,66 @@ describe('crew serve — stale-run sweeper', () => {
 });
 
 describe('crew serve — pure PR-watch reads', () => {
+  it('derives stale/recoverable waiter health from an expired running lease without writing', async () => {
+    const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    try {
+      const store = new PrWatchStore(h.crewHome);
+      const watchId = makePrWatchId();
+      const initial = createInitialPrWatchState({
+        watchId,
+        initialization: {
+          repository: 'example/repo',
+          anchorPrNumber: 42,
+          repoRoot: realpathSync(h.root),
+          effectiveConfig: {
+            maxPrs: 50,
+            maxActionableWakes: 20,
+            maxActionRounds: 5,
+            maxWatchAgeDays: -1,
+            policyHash: sha256Canonical({ mode: 'github_rules' }),
+          },
+          expectedHeads: { '42': 'abc123' },
+        },
+      });
+      await store.create(initial, makePrWatchTransactionId());
+      const claimedAt = new Date(Date.now() - 61_000);
+      await store.mutate(watchId, (state) => claimPrWatchWaiter(state, {
+        watcherActionId: initial.waiter.watcherActionId,
+        generation: initial.generation,
+        leaseOwnerId: 'dead-process-owner',
+        leaseMs: 60_000,
+        now: claimedAt,
+      }));
+      const ledgerPath = join(store.watchDir(watchId), 'events.jsonl');
+      const before = readFileSync(ledgerPath, 'utf-8');
+
+      const status = await h.client.callTool({
+        name: 'get_pr_watch_status',
+        arguments: { watch_id: watchId },
+      });
+
+      expect(status.structuredContent).toMatchObject({
+        watch_id: watchId,
+        status: 'active',
+        waiter: { state: 'running', leaseOwnerId: 'dead-process-owner' },
+        waiter_health: {
+          state: 'stale',
+          recoverable: true,
+          reason: 'lease_expired',
+          rearm_arguments: {
+            watch_id: watchId,
+            expected_generation: initial.generation,
+            reason: 'stale_waiter',
+            prior_watcher_action_id: initial.waiter.watcherActionId,
+          },
+        },
+      });
+      expect(readFileSync(ledgerPath, 'utf-8')).toBe(before);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('does not sweep or claim durable remedies during status/list RPCs', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
     try {

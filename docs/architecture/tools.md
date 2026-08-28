@@ -39,7 +39,7 @@ The complete catalog contains twenty-six tools. Twenty-five are captain-facing;
 | `revise_criteria` | Captain | Revises an unconfirmed criteria set or advances its epoch. |
 | `start_pr_watch` | Captain | Starts or resumes one durable PR or linear-stack watch after bounded provider and policy preflight. |
 | `list_pr_watches` | Captain | Pure repo-scoped or all-repo authoritative watch listing. |
-| `get_pr_watch_status` | Captain | Pure snapshot of lifecycle, evidence, batch, budgets, remedies, grant, and lease. |
+| `get_pr_watch_status` | Captain | Pure snapshot of lifecycle, evidence, batch, budgets, remedies, grant, lease, and derived waiter health/recovery hints. |
 | `rearm_pr_watch` | Captain | Explicit compare-and-set transition after disposition, waiter recovery, budget handoff, expiry extension, or blocker revalidation. |
 | `cancel_pr_watch` | Captain | Stops observation without deleting history or changing GitHub/git state. |
 | `authorize_pr_watch_actions` | Captain | Grants or revokes bounded effect authority and a dedicated worktree lease; grant performs no remote effect. |

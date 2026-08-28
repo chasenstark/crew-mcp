@@ -7,10 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   auditPrWatchJitNudge,
   claimPrWatchJitNudge,
+  detectJitNudges,
 } from '../../src/orchestrator/detection/jit-nudges.js';
 import { sha256Canonical } from '../../src/pr-watch/canonical.js';
 import { makePrWatchId } from '../../src/pr-watch/id.js';
 import {
+  claimPrWatchWaiter,
   createInitialPrWatchState,
   transitionToBlocked,
   tryExpirePrWatch,
@@ -26,6 +28,59 @@ afterEach(() => {
 });
 
 describe('PR-watch JIT remedy claims', () => {
+  it('recognizes an expired running waiter lease at the exact boundary without mutating it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'crew-pr-watch-jit-waiter-'));
+    roots.push(root);
+    const crewHome = join(root, 'crew-home');
+    const repoRoot = join(root, 'repo');
+    const store = new PrWatchStore(crewHome);
+    const watchId = makePrWatchId();
+    const initial = createInitialPrWatchState({
+      watchId,
+      initialization: {
+        repository: 'example/repo',
+        anchorPrNumber: 42,
+        repoRoot,
+        effectiveConfig: {
+          maxPrs: 50,
+          maxActionableWakes: 20,
+          maxActionRounds: 5,
+          maxWatchAgeDays: -1,
+          policyHash: sha256Canonical({ mode: 'github_rules' }),
+        },
+        expectedHeads: { '42': 'abc123' },
+      },
+      now: T0,
+    });
+    await store.create(initial, 'create-jit-waiter-fixture');
+    await store.mutate(watchId, (state) => claimPrWatchWaiter(state, {
+      watcherActionId: initial.waiter.watcherActionId,
+      generation: initial.generation,
+      leaseOwnerId: 'abandoned-waiter',
+      leaseMs: 60_000,
+      now: T0,
+    }));
+    const ledgerPath = join(store.watchDir(watchId), 'events.jsonl');
+    const before = readFileSync(ledgerPath, 'utf-8');
+    const detectAt = (nowMs: number) => detectJitNudges({
+      crewHome,
+      repoRoot,
+      clientKind: 'codex',
+      currentCall: { tsMs: nowMs, tool: 'list_agents', waitBearing: false },
+      nowMs,
+    });
+
+    expect(detectAt(T0.getTime() + 59_999)).not.toContainEqual(
+      expect.stringContaining('pr_watch_waiter_recovery'),
+    );
+    const warnings = detectAt(T0.getTime() + 60_000);
+    expect(warnings).toContainEqual(expect.stringContaining(
+      `rearm_pr_watch({watch_id:"${watchId}",expected_generation:1,reason:"stale_waiter",`
+      + `prior_watcher_action_id:"${initial.waiter.watcherActionId}"})`,
+    ));
+    expect(readFileSync(ledgerPath, 'utf-8')).toBe(before);
+  });
+
   it('claims, decorates, and audits a blocker surface only once', async () => {
     const fixture = await makeFixture('blocked');
     const claim = await claimPrWatchJitNudge({

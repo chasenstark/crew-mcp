@@ -51,7 +51,18 @@ turns. On a wake, read `get_pr_watch_status` once; do not poll the status tool.
 `blocked` and `expired` include typed remedies. Status/list are pure, so use
 `rearm_pr_watch` for an explicit compare-and-set recovery or confirmed 1–30 day
 extension. An extension restores the exact suspended state and returns a waiter
-only for active observation.
+only for active observation. `get_pr_watch_status` derives waiter health from
+the persisted lease without writing: an expired running lease reports
+`waiter_health.state: "stale"`, while an exited timeout reports `"timed_out"`.
+In either case, pass the exact reported `waiter_health.rearm_arguments` to
+`rearm_pr_watch`, then launch its returned waiter action once.
+
+Codex launches the exact server-returned waiter command with narrowly scoped
+filesystem escalation because the server-pinned Crew home can sit outside the
+project sandbox. An `EPERM` under the Crew-home `pr-watches` path means the
+watch was created but polling did not start; do not change its home, generation,
+or waiter identity. Retry only that trusted launch, or recover it on a later
+turn from the status snapshot.
 
 Monitoring is default deny for remote effects. A comment, reply, thread
 resolution, or single-PR fast-forward push requires a separately confirmed

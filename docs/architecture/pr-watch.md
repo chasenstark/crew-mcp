@@ -1,4 +1,4 @@
-> **Current as of 2026-08-27.**
+> **Current as of 2026-08-28.**
 
 # Durable PR watch
 
@@ -63,6 +63,14 @@ or Codex conversations through Crew's existing transports. One persisted
 waiter action and execution lease own polling; a separate thread/watch/
 generation claim owns synthetic-turn delivery. A wake is information, never
 mutation authority. Unsupported host survival fails before watch allocation.
+
+The standalone polling sleep stays referenced so Node cannot exit between
+polls. During provider work, an independent lease heartbeat runs at most every
+60 seconds and is stopped before the polling sleep; the polling sleep then owns
+process lifetime. A heartbeat at or after its lease deadline is rejected, so a
+stale process cannot resurrect after recovery becomes eligible. Status remains
+pure but derives `waiter_health` and exact compare-and-set rearm arguments from
+that deadline; JIT diagnostics use the same derivation.
 
 The captain tools are:
 

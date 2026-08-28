@@ -161,6 +161,40 @@ describe('PrWatchStore', () => {
     expect(state.status === 'active' ? state.waiter.leaseHeartbeatAt : undefined)
       .toBe(new Date(t0.getTime() + 20_000).toISOString());
   });
+
+  it('rejects a heartbeat at the lease deadline instead of resurrecting a stale waiter', async () => {
+    const root = tempRoot();
+    const store = new PrWatchStore(root);
+    const watchId = makePrWatchId();
+    const t0 = new Date('2026-08-27T12:00:00.000Z');
+    await store.create(createInitialPrWatchState({
+      watchId,
+      initialization: initialization(),
+      now: t0,
+    }), 'create-expired-heartbeat-fixture');
+    await store.mutate(watchId, (state) => claimPrWatchWaiter(state, {
+      watcherActionId: state.status === 'active' ? state.waiter.watcherActionId : '',
+      generation: state.generation,
+      leaseOwnerId: 'expired-waiter-owner',
+      leaseMs: 60_000,
+      now: t0,
+    }));
+
+    await expect(store.mutate(watchId, (state) => heartbeatPrWatchWaiter(state, {
+      watcherActionId: state.status === 'active' ? state.waiter.watcherActionId : '',
+      generation: state.generation,
+      leaseOwnerId: 'expired-waiter-owner',
+      leaseMs: 60_000,
+      now: new Date(t0.getTime() + 60_000),
+    }))).rejects.toThrow('pr_watch.waiter_lease_lost');
+    expect(store.read(watchId).state).toMatchObject({
+      status: 'active',
+      waiter: {
+        state: 'running',
+        leaseExpiresAt: new Date(t0.getTime() + 60_000).toISOString(),
+      },
+    });
+  });
 });
 
 describe('PrWatchStartIndex', () => {

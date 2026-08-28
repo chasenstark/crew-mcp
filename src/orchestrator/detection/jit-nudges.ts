@@ -17,6 +17,7 @@ import { runModeFromState } from '../run-mode.js';
 import { resolveRunDirTtlMs } from '../run-gc.js';
 import type { ClientKind } from '../tools/shared.js';
 import { PrWatchStore } from '../../pr-watch/store.js';
+import { derivePrWatchWaiterHealth } from '../../pr-watch/waiter-health.js';
 import {
   claimPrWatchSurface,
   deliverPrWatchSurface,
@@ -265,14 +266,15 @@ function readPrWatchRecoveryWarnings(args: {
       warnings.push(
         `pr_watch_actionable: watch "${watchId}" has action batch "${state.batch.actionBatchId}" awaiting disposition; call get_pr_watch_status before acting.`,
       );
-    } else if (
-      state.status === 'active'
-      && state.waiter.state === 'exited'
-      && state.waiter.exitReason === 'timeout'
-      && args.nowMs >= Date.parse(state.waiter.exitedAt ?? state.updatedAt)
-    ) {
+    } else if (state.status === 'active') {
+      const waiterHealth = derivePrWatchWaiterHealth(state.waiter, new Date(args.nowMs));
+      if (!waiterHealth.recoverable) continue;
+      const rearmReason = waiterHealth.rearmReason ?? 'stale_waiter';
       warnings.push(
-        `pr_watch_waiter_recovery: watch "${watchId}" has no live waiter after timeout; use rearm_pr_watch with the persisted waiter identity.`,
+        `pr_watch_waiter_recovery: watch "${watchId}" has no live waiter (${waiterHealth.reason}); `
+        + `call rearm_pr_watch({watch_id:"${watchId}",expected_generation:${state.generation},`
+        + `reason:"${rearmReason}",prior_watcher_action_id:"${state.waiter.watcherActionId}"}) `
+        + 'and launch the returned required_next_action once.',
       );
     }
   }
