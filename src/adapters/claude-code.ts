@@ -37,9 +37,22 @@ import { redactRunToken } from '../utils/redaction.js';
 import { codexSafeSpawnEnvironment } from '../codex/environment.js';
 
 /**
+ * The CLI emits explicit `null`s for fields it has no value for —
+ * `"api_error_status": null` rides on every successful result envelope. Zod's
+ * `.optional()` accepts `undefined` but not `null`, so the nulls are stripped
+ * before validation rather than widening every field to `.nullish()`.
+ */
+function stripNullFields(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, fieldValue]) => fieldValue !== null);
+  return Object.fromEntries(entries);
+}
+
+/**
  * Schema for the JSON response from `claude -p ... --output-format json`.
  */
-const ClaudeResponseSchema = z.object({
+const ClaudeResponseFieldsSchema = z.object({
   type: z.string(),
   subtype: z.string().optional(),
   result: z.string().optional(),
@@ -57,7 +70,9 @@ const ClaudeResponseSchema = z.object({
   model: z.string().optional(),
 });
 
-type ClaudeResponse = z.infer<typeof ClaudeResponseSchema>;
+const ClaudeResponseSchema = z.preprocess(stripNullFields, ClaudeResponseFieldsSchema);
+
+type ClaudeResponse = z.infer<typeof ClaudeResponseFieldsSchema>;
 
 interface ClaudeGoalStatus {
   readonly met?: boolean;
@@ -210,6 +225,52 @@ function getNumericField(
   return undefined;
 }
 
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  const candidate = value[key];
+  return typeof candidate === 'string' ? candidate : undefined;
+}
+
+/**
+ * Parses one stream-json `type: "result"` line into the response envelope.
+ *
+ * A schema mismatch used to discard the whole envelope and push the caller onto
+ * the synthetic fallback, reporting a complete run as `partial` /
+ * `missing_result_envelope` because one field changed shape. A real result line
+ * is authoritative even when it fails validation, so the mismatch is
+ * warn-logged and the well-typed fields are salvaged one by one.
+ */
+function parseClaudeResultEnvelope(raw: unknown): ClaudeResponse | undefined {
+  const parsed = ClaudeResponseSchema.safeParse(raw);
+  if (parsed.success) return parsed.data as ClaudeResponse;
+  const event = asObject(raw);
+  if (event.type !== 'result') return undefined;
+  logger.warn('[adapter:claude-code] result envelope failed schema validation; salvaging fields', {
+    issues: parsed.error.issues
+      .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+      .join('; '),
+  });
+  const apiErrorStatus = event.api_error_status;
+  return {
+    type: 'result',
+    subtype: stringField(event, 'subtype'),
+    result: stringField(event, 'result'),
+    structured_output: event.structured_output,
+    session_id: stringField(event, 'session_id'),
+    total_cost_usd: getNumericField(event, ['total_cost_usd']),
+    cost_usd: getNumericField(event, ['cost_usd']),
+    duration_ms: getNumericField(event, ['duration_ms']),
+    num_turns: getNumericField(event, ['num_turns']),
+    is_error: typeof event.is_error === 'boolean' ? event.is_error : undefined,
+    terminal_reason: stringField(event, 'terminal_reason'),
+    api_error_status: typeof apiErrorStatus === 'number' || typeof apiErrorStatus === 'string'
+      ? apiErrorStatus
+      : undefined,
+    api_error_message: stringField(event, 'api_error_message'),
+    rate_limit_info: event.rate_limit_info,
+    model: stringField(event, 'model'),
+  };
+}
+
 /**
  * Extracts the final result envelope from claude's stream-json output, which
  * emits one JSON object per line. The last `type: "result"` line is the
@@ -229,7 +290,8 @@ function extractStreamEnvelope(stdout: string): ClaudeResponse | undefined {
     try {
       const obj = JSON.parse(lines[i]) as { type?: string; session_id?: string };
       if (obj.type === 'result') {
-        return ClaudeResponseSchema.parse(obj);
+        const envelope = parseClaudeResultEnvelope(obj);
+        if (envelope) return envelope;
       }
     } catch {
       // non-JSON line, skip
@@ -348,7 +410,7 @@ function createClaudeStreamCapture(): {
     envelope: () => {
       if (lastResultLine) {
         try {
-          return ClaudeResponseSchema.parse(JSON.parse(lastResultLine));
+          return parseClaudeResultEnvelope(JSON.parse(lastResultLine));
         } catch {
           return undefined;
         }
@@ -1233,7 +1295,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       if (!parsed) parseError = 'no result envelope or assistant text in stream';
     } else {
       try {
-        parsed = ClaudeResponseSchema.parse(JSON.parse(stdoutText));
+        const raw: unknown = JSON.parse(stdoutText);
+        parsed = parseClaudeResultEnvelope(raw)
+          ?? (ClaudeResponseSchema.parse(raw) as ClaudeResponse);
       } catch (error: unknown) {
         parseError = error instanceof Error ? error.message : 'JSON parse error';
       }

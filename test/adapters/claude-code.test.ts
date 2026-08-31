@@ -860,6 +860,76 @@ describe('ClaudeCodeAdapter', () => {
       expect(result.failure?.recommendation).toBeUndefined();
     });
 
+    it('accepts a result envelope carrying explicit nulls (CLI 2.1.x success shape)', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: 'Reviewed the diff' }] },
+            session_id: 'null-fields-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: '## Verdict: APPROVE',
+            session_id: 'null-fields-session',
+            terminal_reason: 'completed',
+            api_error_status: null,
+            api_error_message: null,
+            num_turns: 3,
+            duration_ms: 1200,
+          })}\n`,
+        ],
+        exitCode: 0,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Review the diff',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.output).toBe('## Verdict: APPROVE');
+      expect(result.sessionId).toBe('null-fields-session');
+      expect(result.failure).toBeUndefined();
+    });
+
+    it('salvages a result envelope whose field types drifted instead of reporting partial', async () => {
+      mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
+        stdoutChunks: [
+          `${JSON.stringify({
+            type: 'assistant',
+            message: { content: [{ type: 'text', text: 'Reviewed the diff' }] },
+            session_id: 'drifted-session',
+          })}\n`,
+          `${JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: '## Verdict: APPROVE',
+            session_id: 'drifted-session',
+            // A future CLI turns a scalar into an object.
+            model: { id: 'claude-opus-5' },
+            num_turns: 3,
+          })}\n`,
+        ],
+        exitCode: 0,
+      }) as any);
+
+      const result = await adapter.execute({
+        prompt: 'Review the diff',
+        context: { workingDirectory: '/tmp/project' },
+        onOutput: vi.fn(),
+      });
+
+      expect(result.status).toBe('success');
+      expect(result.output).toBe('## Verdict: APPROVE');
+      expect(result.sessionId).toBe('drifted-session');
+      expect(result.failure).toBeUndefined();
+    });
+
     it('records the primary model observed in Claude stream events', async () => {
       mockExeca.mockReturnValueOnce(createStreamingClaudeProcess({
         stdoutChunks: [
