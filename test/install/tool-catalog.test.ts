@@ -66,10 +66,11 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       const names = result.tools.map((t) => t.name).sort();
       const expected = captainSkillTools(CATALOG_TOOLS).map((t) => t.name).sort();
       expect(names).toEqual(expected);
-      expect(CATALOG_TOOLS).toHaveLength(26);
-      expect(names).toHaveLength(25);
+      expect(CATALOG_TOOLS).toHaveLength(27);
+      expect(names).toHaveLength(26);
       expect(names).toContain('list_models');
       expect(names).not.toContain('send_message');
+      expect(names).toContain('manage_native_reviewer');
       expect(names).toEqual(expect.arrayContaining([
         'start_pr_watch',
         'list_pr_watches',

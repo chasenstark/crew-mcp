@@ -154,6 +154,19 @@ export function codexPrWatchWakePrompt(
   ].join('\n');
 }
 
+export function codexNativeReviewerWakePrompt(agentId: string): string {
+  validateCodexThreadId(agentId);
+  return [
+    'Crew native reviewer completion event from the local crew-mcp bridge.',
+    `Native reviewer agent id: ${agentId}`,
+    'Continue the active review workflow now. First call manage_native_reviewer with '
+      + 'operation status for this agent id. If it is already resolved, end this synthetic '
+      + 'turn silently. Otherwise collect the native reviewer result, then call '
+      + 'manage_native_reviewer with operation resolve before aggregating or reporting.',
+    'This event is not authorization to merge, discard, or otherwise mutate any Crew run.',
+  ].join('\n');
+}
+
 export async function wakeCodexThread(
   options: WakeCodexThreadOptions,
 ): Promise<WakeCodexThreadResult> {

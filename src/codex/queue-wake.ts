@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import {
   codexPrWatchWakePrompt,
+  codexNativeReviewerWakePrompt,
   codexWakePrompt,
   type WakeCodexPrWatchThreadOptions,
   validateCodexThreadId,
@@ -37,10 +38,26 @@ export interface QueueCodexPrWatchThreadOptions {
   readonly spawnProcess?: typeof spawn;
 }
 
+export interface QueueCodexNativeReviewerThreadOptions {
+  readonly threadId: string;
+  readonly agentId: string;
+  readonly codexBinary?: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly timeoutMs?: number;
+  readonly spawnProcess?: typeof spawn;
+}
+
 export class CodexQueueWakeError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly delivery: 'definitive_failure' | 'ambiguous' = 'definitive_failure',
+  ) {
     super(message);
     this.name = 'CodexQueueWakeError';
+  }
+
+  get ambiguous(): boolean {
+    return this.delivery === 'ambiguous';
   }
 }
 
@@ -77,6 +94,14 @@ export async function queueCodexPrWatchThread(
     throw new CodexQueueWakeError('Codex queue wake requires a valid PR-watch generation');
   }
   return queueCodexPrompt(options, codexPrWatchWakePrompt(options));
+}
+
+export async function queueCodexNativeReviewerThread(
+  options: QueueCodexNativeReviewerThreadOptions,
+): Promise<QueueCodexThreadResult> {
+  validateCodexThreadId(options.threadId);
+  validateCodexThreadId(options.agentId);
+  return queueCodexPrompt(options, codexNativeReviewerWakePrompt(options.agentId));
 }
 
 async function queueCodexPrompt(
@@ -130,7 +155,10 @@ function waitForExit(child: ChildProcess, timeoutMs: number): Promise<number> {
       if (settled) return;
       settled = true;
       child.kill('SIGTERM');
-      reject(new CodexQueueWakeError(`codex queue timed out after ${timeoutMs}ms`));
+      reject(new CodexQueueWakeError(
+        `codex queue timed out after ${timeoutMs}ms`,
+        'ambiguous',
+      ));
     }, timeoutMs);
     timer.unref?.();
 

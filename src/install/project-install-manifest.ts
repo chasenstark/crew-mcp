@@ -137,6 +137,9 @@ export function relativizeProjectTarget(
     ...(entry.permissionsPath
       ? { permissionsPath: toRepoRelativePath(repoRoot, entry.permissionsPath) }
       : {}),
+    ...(entry.nativeReviewerHookPath
+      ? { nativeReviewerHookPath: toRepoRelativePath(repoRoot, entry.nativeReviewerHookPath) }
+      : {}),
   };
 }
 
@@ -158,6 +161,9 @@ export function absolutizeProjectTarget(
       : {}),
     ...(entry.permissionsPath
       ? { permissionsPath: resolveProjectPath(repoRoot, entry.permissionsPath) }
+      : {}),
+    ...(entry.nativeReviewerHookPath
+      ? { nativeReviewerHookPath: resolveProjectPath(repoRoot, entry.nativeReviewerHookPath) }
       : {}),
   };
 }
@@ -248,6 +254,12 @@ function normalizeProjectTargetEntry(value: unknown): ProjectInstalledTarget | n
       : {}),
     ...(typeof v.prWatchWaitCommand === 'string'
       ? { prWatchWaitCommand: v.prWatchWaitCommand }
+      : {}),
+    ...(typeof v.nativeReviewerHookPath === 'string'
+      ? { nativeReviewerHookPath: v.nativeReviewerHookPath }
+      : {}),
+    ...(typeof v.nativeReviewerHookCommand === 'string'
+      ? { nativeReviewerHookCommand: v.nativeReviewerHookCommand }
       : {}),
     ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
     ...(typeof v.permissionsPath === 'string' ? { permissionsPath: v.permissionsPath } : {}),

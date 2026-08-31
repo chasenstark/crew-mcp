@@ -186,6 +186,25 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     expect(flat).not.toContain('too large to review');
   });
 
+  it('registers native Codex review and preserves the terminal join fallback', async () => {
+    const body = await loadBody();
+    const start = body.indexOf('### Step 2 —');
+    const end = body.indexOf('### Step 4 —', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const reviewLoop = flattenWhitespace(body.slice(start, end));
+
+    expectContainsCI(reviewLoop, 'Codex native completion is not a Crew run');
+    expectContainsCI(reviewLoop, 'host `agent_id`, not a Crew `run_id`');
+    expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "register", agent_id, panel_id})`');
+    expectContainsCI(reviewLoop, '`SubagentStop` hook is trusted');
+    expectContainsCI(reviewLoop, '`running_count` covers only Crew reviewers');
+    expectContainsCI(reviewLoop, 'do not end the turn while the required native Codex reviewer is outstanding');
+    expectContainsCI(reviewLoop, 'long native `wait_agent` call');
+    expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "status", agent_id})` first');
+    expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "resolve", agent_id})`');
+  });
+
   it('keeps timestamp-free list_runs recovery in shared host prose', async () => {
     const raw = await loadRawBody();
     const recovery = 'without `completedAfter`; filter terminal statuses and dedupe by `run_id`';

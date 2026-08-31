@@ -108,6 +108,8 @@ describe('install / verify / uninstall — happy path', () => {
         version: string;
         crewWaitCommand: string;
         crewPrWatchCommand: string;
+        nativeReviewerHookPath: string;
+        nativeReviewerHookCommand: string;
       }>;
     };
     expect(manifest.schemaVersion).toBe(3);
@@ -120,6 +122,37 @@ describe('install / verify / uninstall — happy path', () => {
     expect(manifest.targets.codex.version).toBe(CREW_MCP_VERSION);
     expect(manifest.targets.codex.crewWaitCommand).toBe('crew-wait');
     expect(manifest.targets.codex.crewPrWatchCommand).toBe('crew-pr-watch');
+    expect(manifest.targets.codex.nativeReviewerHookPath)
+      .toBe(join(home, '.codex', 'hooks.json'));
+    expect(manifest.targets.codex.nativeReviewerHookCommand)
+      .toBe('crew-native-reviewer-hook');
+    expect(readFileSync(manifest.targets.codex.nativeReviewerHookPath, 'utf-8'))
+      .toContain('crew-native-reviewer-hook');
+  });
+
+  it('preflights malformed Codex hooks before writing config, skills, or manifest', async () => {
+    const adapter = HOST_ADAPTERS.codex;
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    mkdirSync(dirname(hooksPath), { recursive: true });
+    writeFileSync(hooksPath, '{ malformed');
+
+    const result = await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
+    });
+
+    expect(result.installed).toEqual([]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({ host: 'codex', reason: expect.stringMatching(/hooks/i) }),
+    ]);
+    expect(existsSync(adapter.configPath(home))).toBe(false);
+    expect(existsSync(adapter.skillPath(home))).toBe(false);
+    expect(existsSync(manifestPath(home))).toBe(false);
+    expect(readFileSync(hooksPath, 'utf-8')).toBe('{ malformed');
   });
 
   it('install --target all installs every host (with forceWithoutBinary)', async () => {
@@ -210,13 +243,42 @@ describe('install / verify / uninstall — happy path', () => {
     await installCommand(args);
     const skill1 = readFileSync(HOST_ADAPTERS.codex.skillPath(home), 'utf-8');
     const config1 = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    const hooks1 = readFileSync(hooksPath, 'utf-8');
 
     await installCommand(args);
     const skill2 = readFileSync(HOST_ADAPTERS.codex.skillPath(home), 'utf-8');
     const config2 = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
+    const hooks2 = readFileSync(hooksPath, 'utf-8');
 
     expect(skill2).toBe(skill1);
     expect(config2).toBe(config1);
+    expect(hooks2).toBe(hooks1);
+  });
+
+  it('install and uninstall preserve unrelated Codex hooks', async () => {
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    mkdirSync(dirname(hooksPath), { recursive: true });
+    const unrelated = {
+      custom: { keep: true },
+      hooks: {
+        BeforeTool: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'audit' }] }],
+        SubagentStop: [{ matcher: 'special', hooks: [{ type: 'command', command: 'notify' }] }],
+      },
+    };
+    writeFileSync(hooksPath, `${JSON.stringify(unrelated, null, 2)}\n`);
+
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    expect(readFileSync(hooksPath, 'utf-8')).toContain('crew-native-reviewer-hook');
+
+    await uninstallCommand({ target: 'codex', home });
+    expect(JSON.parse(readFileSync(hooksPath, 'utf-8'))).toEqual(unrelated);
   });
 
   it('install preserves unrelated keys in claude-code config', async () => {
@@ -260,6 +322,45 @@ describe('install / verify / uninstall — happy path', () => {
     expect(report.targets).toHaveLength(1);
     expect(report.targets[0].host).toBe('codex');
     expect(report.targets[0].issues).toEqual([]);
+    expect(report.targets[0].notes).toContain(
+      'native reviewer hook definition is installed; Codex hook trust is session-visible only, so confirm it with `/hooks`',
+    );
+  });
+
+  it('verify distinguishes a missing or changed Codex native reviewer hook', async () => {
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    rmSync(hooksPath, { force: true });
+    const missing = await verifyCommand({ target: 'codex', home });
+    expect(missing.targets[0].issues).toContain(
+      `Codex native reviewer hook file missing: ${hooksPath}`,
+    );
+
+    await installCommand({
+      target: 'codex',
+      home,
+      skipRunningCheck: true,
+      forceWithoutBinary: true,
+      resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+    });
+    writeFileSync(
+      hooksPath,
+      readFileSync(hooksPath, 'utf-8').replace(
+        'crew-native-reviewer-hook',
+        '/changed/crew-native-reviewer-hook',
+      ),
+      'utf-8',
+    );
+    const changed = await verifyCommand({ target: 'codex', home });
+    expect(changed.targets[0].issues).toContain(
+      `Codex native reviewer hook command changed in ${hooksPath}`,
+    );
   });
 
   it('verify reports drift when global Codex is missing send_message auto-approval', async () => {
@@ -1187,6 +1288,7 @@ describe('project-scope install / verify / uninstall', () => {
       '.claude/skills/crew-pr-watch/SKILL.md',
       '.claude/skills/crew/SKILL.md',
       '.codex/config.toml',
+      '.codex/hooks.json',
       '.codex/skills/crew-iterate/SKILL.md',
       '.codex/skills/crew-pr-watch/ACTION.md',
       '.codex/skills/crew-pr-watch/SKILL.md',
@@ -1228,6 +1330,8 @@ describe('project-scope install / verify / uninstall', () => {
         serverArgs: string[];
         crewWaitCommand: string;
         crewPrWatchCommand: string;
+        nativeReviewerHookPath?: string;
+        nativeReviewerHookCommand?: string;
       }>;
     };
     expect(manifest.scope).toBe('project');
@@ -1238,6 +1342,11 @@ describe('project-scope install / verify / uninstall', () => {
     expect(manifest.targets.codex.serverArgs).toEqual(['serve']);
     expect(manifest.targets.codex.crewWaitCommand).toBe('./node_modules/.bin/crew-wait');
     expect(manifest.targets.codex.crewPrWatchCommand).toBe('./node_modules/.bin/crew-pr-watch');
+    expect(manifest.targets.codex.nativeReviewerHookPath).toBe('.codex/hooks.json');
+    expect(manifest.targets.codex.nativeReviewerHookCommand)
+      .toBe('./node_modules/.bin/crew-native-reviewer-hook');
+    expect(readFileSync(join(repoRoot, '.codex', 'hooks.json'), 'utf-8'))
+      .toContain('./node_modules/.bin/crew-native-reviewer-hook');
     expect(JSON.stringify(manifest)).not.toContain(repoRoot);
     expect(JSON.stringify(manifest)).not.toContain(home);
     expect(JSON.stringify(manifest)).not.toContain('dist/index.js');

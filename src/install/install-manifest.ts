@@ -81,6 +81,10 @@ export interface InstalledTarget {
   crewPrWatchCommand?: string;
   /** Exact separately authorized monitor-only PR-watch waiter executable. */
   prWatchWaitCommand?: string;
+  /** Codex SubagentStop hook file merged without taking ownership of the file. */
+  nativeReviewerHookPath?: string;
+  /** Exact selective hook command installed into nativeReviewerHookPath. */
+  nativeReviewerHookCommand?: string;
   /**
    * Whether the install wrote auto-approval state to bypass per-call
    * tool prompts. Optional for backward-compatibility with v0.2.0-dev
@@ -363,6 +367,12 @@ function normalizeTargetEntry(value: unknown): InstalledTarget | null {
       : {}),
     ...(typeof v.prWatchWaitCommand === 'string'
       ? { prWatchWaitCommand: v.prWatchWaitCommand }
+      : {}),
+    ...(typeof v.nativeReviewerHookPath === 'string'
+      ? { nativeReviewerHookPath: v.nativeReviewerHookPath }
+      : {}),
+    ...(typeof v.nativeReviewerHookCommand === 'string'
+      ? { nativeReviewerHookCommand: v.nativeReviewerHookCommand }
       : {}),
     ...(typeof v.autoApproved === 'boolean' ? { autoApproved: v.autoApproved } : {}),
   };

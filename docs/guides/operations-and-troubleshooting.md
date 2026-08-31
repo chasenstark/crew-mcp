@@ -41,6 +41,29 @@ one-shot claims suppress stale or duplicate completion turns.
 Do not foreground or repeatedly poll `crew-wait`. If the watcher cannot start,
 the run still continues; ask for status on the next turn.
 
+### Codex native reviewers
+
+Host-native Codex reviewers are not Crew runs, so the run watcher cannot see
+them. Current installs add a selective `SubagentStop` hook that can wake only a
+parent thread which registered the exact native reviewer `agent_id`. The hook
+stores no prompt, transcript, or reviewer result and its completion event does
+not authorize merge, discard, or any remote mutation.
+
+After installing or refreshing Codex support, open `/hooks` in Codex and trust
+the exact `crew-native-reviewer-hook` command. `crew-mcp verify` checks whether
+the hook definition and recorded command are present, but Codex exposes trust
+in the live session rather than as a static Crew verification signal. If the
+hook is missing or untrusted, review remains correct but the captain must keep
+the turn open and join the native reviewer once no Crew panel watcher remains.
+
+If native review still does not wake:
+
+1. Run `crew-mcp install --target codex` and restart Codex.
+2. Open `/hooks` and confirm the Crew `SubagentStop` command is trusted.
+3. Run `crew-mcp verify` and repair any missing/changed hook report.
+4. Continue the conversation; the captain will use the direct-join fallback
+   until the installed hook is trusted.
+
 ## Watch a pull request
 
 Ask the captain to start a PR watch. It performs bounded `gh` capability,

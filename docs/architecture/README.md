@@ -1,10 +1,11 @@
-> **Current as of 2026-08-27.**
+> **Current as of 2026-08-31.**
 
 # Crew Architecture
 
 Crew is a TypeScript MCP server that lets a host CLI act as captain over
 Claude Code, Codex, agy/Antigravity, and configured custom agents. The package
-publishes `crew-mcp`, the `crew-wait` terminal watcher, and the
+publishes `crew-mcp`, the `crew-wait` terminal watcher, the selective
+`crew-native-reviewer-hook`, and the
 `crew-pr-watch` / `crew-pr-watch-wait` durable PR-watch pair.
 
 ## Runtime shape
@@ -29,7 +30,7 @@ The current CLI commands are `serve`, `codex`, `status`, `cleanup`, `config`,
 Historical `run`, `init`, `profile`, `state reset`, and `resume` commands live
 only in `docs/architecture/v0.1-archive/`.
 
-The catalog contains twenty-six MCP tools: twenty-five captain tools and the
+The catalog contains twenty-seven MCP tools: twenty-six captain tools and the
 worker-only `send_message`. `src/cli/commands/serve.ts` owns the live
 registrations and `src/install/tool-catalog.ts` owns install-time parity. See
 `docs/architecture/tools.md` for the catalog and envelope contracts.
@@ -50,6 +51,13 @@ shell watcher. Codex uses the authenticated App Server bridge when launched by
 using the active thread id carried in MCP request metadata. `CODEX_THREAD_ID`
 remains a compatibility fallback. Other hosts recover terminal state on the
 next user turn.
+
+Codex host-native reviewers use a separate selective bridge because they are
+not Crew runs. The captain registers the returned native `agent_id` through
+`manage_native_reviewer`; a trusted `SubagentStop` hook can then enqueue one
+parent-thread turn. Durable state is identity-only and repo-scoped, and a
+resolved claim suppresses a redundant queued turn. If the hook is absent,
+untrusted, or unregistered, the captain joins the reviewer in-turn.
 
 Run state is persisted under the Crew home and contains prompt turns,
 lifecycle mode, criteria linkage, model-selection audit records, provider

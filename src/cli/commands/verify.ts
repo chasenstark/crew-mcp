@@ -35,6 +35,12 @@ import {
 } from '../../install/crew-binary.js';
 import { resolveHostSnapshotLockRoot } from '../../git/worktree.js';
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
+import {
+  codexGlobalHooksPath,
+  codexProjectHooksPath,
+  hasCodexNativeReviewerHook,
+  isCrewNativeReviewerHookCommand,
+} from '../../install/codex-hooks.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { CATALOG_TOOLS } from '../../install/tool-catalog.js';
 import {
@@ -74,6 +80,7 @@ export interface VerifyTargetReport {
   host: HostId;
   ok: boolean;
   issues: string[];
+  notes?: string[];
 }
 
 export type VerifyProbeStatus = 'ok' | 'warn' | 'error';
@@ -138,6 +145,7 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
   for (const targetId of installedTargets) {
     const adapter = HOST_ADAPTERS[targetId];
     const issues: string[] = [];
+    const notes: string[] = [];
     const entry = manifest.targets[targetId];
     if (!entry) {
       const report: VerifyTargetReport = {
@@ -231,11 +239,20 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
         ],
       }));
     }
+    if (targetId === 'codex') {
+      verifyCodexNativeReviewerHook({
+        path: entry.nativeReviewerHookPath ?? codexGlobalHooksPath(home),
+        expectedCommand: entry.nativeReviewerHookCommand,
+        issues,
+        notes,
+      });
+    }
 
     const report: VerifyTargetReport = {
       host: targetId,
       ok: issues.length === 0,
       issues,
+      ...(notes.length > 0 ? { notes } : {}),
     };
     reports.push(report);
 
@@ -251,6 +268,7 @@ async function verifyGlobalCommand(opts: VerifyOptions = {}): Promise<VerifyRepo
         logger.warn(`  - ${issue}`);
       }
     }
+    for (const note of notes) logger.info(`  note: ${note}`);
   }
 
   const ok = reports.every((r) => r.ok);
@@ -293,6 +311,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     const adapter = HOST_ADAPTERS[targetId];
     const manifestEntry = manifest.targets[targetId];
     const issues: string[] = [];
+    const notes: string[] = [];
 
     if (!manifestEntry) {
       issues.push(`project install manifest missing target: ${targetId}`);
@@ -307,6 +326,14 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
       issues.push(
         `installed version ${entry.version || '(missing)'} does not match crew-mcp ${CREW_MCP_VERSION}`,
       );
+    }
+    if (targetId === 'codex') {
+      verifyCodexNativeReviewerHook({
+        path: entry.nativeReviewerHookPath ?? codexProjectHooksPath(repoRoot),
+        expectedCommand: entry.nativeReviewerHookCommand,
+        issues,
+        notes,
+      });
     }
     const recordedPaths = new Set(entry.writtenPaths);
     for (const path of recordedPaths) {
@@ -423,6 +450,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
       host: targetId,
       ok: issues.length === 0,
       issues,
+      ...(notes.length > 0 ? { notes } : {}),
     };
     reports.push(report);
 
@@ -438,6 +466,7 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
         logger.warn(`  - ${issue}`);
       }
     }
+    for (const note of notes) logger.info(`  note: ${note}`);
   }
 
   for (const probe of probes) {
@@ -454,6 +483,46 @@ async function verifyProjectCommand(opts: VerifyOptions = {}): Promise<VerifyRep
     logger.warn('crew verify: project drift detected. Run `crew-mcp install --scope project --target <host>` to re-sync.');
   }
   return { ok, probes, targets: reports };
+}
+
+function verifyCodexNativeReviewerHook(args: {
+  readonly path: string;
+  readonly expectedCommand?: string;
+  readonly issues: string[];
+  readonly notes: string[];
+}): void {
+  if (!args.expectedCommand) {
+    args.issues.push('install manifest missing nativeReviewerHookCommand');
+    return;
+  }
+  if (!isCrewNativeReviewerHookCommand(args.expectedCommand)) {
+    args.issues.push(
+      `install manifest has invalid nativeReviewerHookCommand: ${args.expectedCommand}`,
+    );
+    return;
+  }
+  if (!existsSync(args.path)) {
+    args.issues.push(`Codex native reviewer hook file missing: ${args.path}`);
+    return;
+  }
+  try {
+    const raw = readFileSync(args.path, 'utf-8');
+    if (!hasCodexNativeReviewerHook(raw, args.expectedCommand)) {
+      args.issues.push(hasCodexNativeReviewerHook(raw)
+        ? `Codex native reviewer hook command changed in ${args.path}`
+        : `Codex native reviewer hook missing from ${args.path}`);
+      return;
+    }
+    args.notes.push(
+      'native reviewer hook definition is installed; Codex hook trust is session-visible only, so confirm it with `/hooks`',
+    );
+  } catch (error) {
+    args.issues.push(
+      `Codex native reviewer hook is unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 async function verifyProjectHostSnapshotLock(repoRoot: string): Promise<VerifyProbeReport> {

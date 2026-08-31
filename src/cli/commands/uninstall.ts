@@ -31,6 +31,11 @@ import {
   removeProjectInstalledTarget,
 } from '../../install/project-install-manifest.js';
 import { resolveGitRepoRoot } from '../../install/repo-root.js';
+import {
+  codexGlobalHooksPath,
+  codexProjectHooksPath,
+  removeCodexNativeReviewerHook,
+} from '../../install/codex-hooks.js';
 import { parseInstallScope, type InstallScope } from '../../install/scope.js';
 import { SKILL_MANIFEST } from '../../install/skill-renderer.js';
 import { logger } from '../../utils/logger.js';
@@ -127,6 +132,15 @@ async function uninstallGlobalCommand(opts: UninstallOptions): Promise<Uninstall
         }
       }
 
+      if (targetId === 'codex') {
+        const hooksPath = target?.nativeReviewerHookPath ?? codexGlobalHooksPath(home);
+        if (existsSync(hooksPath)) {
+          const before = readFileSync(hooksPath, 'utf-8');
+          const after = removeCodexNativeReviewerHook(before);
+          if (after !== before) writeFileSync(hooksPath, after, 'utf-8');
+        }
+      }
+
       // 4. Remove from install manifest.
       await removeInstalledTarget(home, targetId);
 
@@ -186,6 +200,15 @@ async function uninstallProjectCommand(opts: UninstallOptions): Promise<Uninstal
           if (after !== before) {
             writeFileSync(approvalFile, after, 'utf-8');
           }
+        }
+      }
+
+      if (targetId === 'codex') {
+        const hooksPath = target?.nativeReviewerHookPath ?? codexProjectHooksPath(repoRoot);
+        if (existsSync(hooksPath)) {
+          const before = readFileSync(hooksPath, 'utf-8');
+          const after = removeCodexNativeReviewerHook(before);
+          if (after !== before) writeFileSync(hooksPath, after, 'utf-8');
         }
       }
 

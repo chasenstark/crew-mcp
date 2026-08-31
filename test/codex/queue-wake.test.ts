@@ -6,11 +6,13 @@ import { describe, expect, it } from 'vitest';
 import {
   CODEX_BRIDGE_FILE_ENV,
   CODEX_THREAD_ID_ENV,
+  codexNativeReviewerWakePrompt,
   codexWakePrompt,
 } from '../../src/codex/app-server-bridge.js';
 import { CODEX_REMOTE_TOKEN_ENV } from '../../src/codex/environment.js';
 import {
   CodexQueueWakeError,
+  queueCodexNativeReviewerThread,
   queueCodexThread,
 } from '../../src/codex/queue-wake.js';
 
@@ -123,13 +125,41 @@ describe('queueCodexThread', () => {
     const child = new FakeChild();
     const spawnProcess = (() => child) as unknown as typeof spawn;
 
-    await expect(queueCodexThread({
+    const error = await queueCodexThread({
       threadId,
       runIds: ['run-a'],
       spawnProcess,
       timeoutMs: 5,
-    })).rejects.toThrow('codex queue timed out after 5ms');
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(CodexQueueWakeError);
+    expect(error).toMatchObject({
+      message: 'codex queue timed out after 5ms',
+      delivery: 'ambiguous',
+    });
     expect(child.signalCode).toBe('SIGTERM');
+  });
+
+  it('queues the selective native reviewer prompt', async () => {
+    const child = new FakeChild();
+    const calls: Array<{ args: readonly string[] }> = [];
+    const agentId = '019f5d0f-a60c-7d53-9f35-2036d92d71ed';
+    const spawnProcess = ((_command: string, args: readonly string[]) => {
+      calls.push({ args });
+      queueMicrotask(() => child.finish(0));
+      return child;
+    }) as unknown as typeof spawn;
+
+    await queueCodexNativeReviewerThread({ threadId, agentId, spawnProcess });
+
+    expect(calls[0]?.args).toEqual([
+      'queue',
+      '--thread',
+      threadId,
+      '--message',
+      codexNativeReviewerWakePrompt(agentId),
+    ]);
+    expect(calls[0]?.args.at(-1)).toContain('operation status');
+    expect(calls[0]?.args.at(-1)).toContain('not authorization');
   });
 
   it('rejects invalid thread and run ids before spawning', async () => {

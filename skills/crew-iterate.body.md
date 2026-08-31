@@ -564,6 +564,16 @@ review-only. Never reconstruct criteria from memory.
 - **Background it if your host supports it** (e.g. Claude Code's
   `run_in_background: true`) so chat stays available while it reviews.
 <!-- /host -->
+<!-- host:codex -->
+- **Codex native completion is not a Crew run.** The reviewer has a host
+  `agent_id`, not a Crew `run_id`, so `crew-wait`, the panel watcher, and
+  `list_runs` cannot observe it. Immediately after spawning it, call
+  `manage_native_reviewer({operation: "register", agent_id, panel_id})`. Rely
+  on its selective wake only when the Crew-installed `SubagentStop` hook is
+  trusted in this Codex session and registration succeeds. Otherwise
+  background it only while a valid Crew watcher guarantees a later collection
+  turn; with no Crew reviewer, join the native reviewer from the outset.
+<!-- /host -->
 - **If the native subagent is synchronous,** run it in the **foreground**
   after crew starts and keep it bounded.
 - **Inline review is the last resort** — only when the host exposes no
@@ -793,6 +803,20 @@ Join both review channels before scoring:
 3. Consolidate once after every vote is terminal. Terminal summaries and
    `aggregate_panel` are authoritative; inbox messages are additive.
 
+<!-- host:codex -->
+`running_count` covers only Crew reviewers. If the trusted native wake was not
+armed, once it reaches 0 do not end the turn while the required native Codex
+reviewer is outstanding: join its exact `agent_id` with a long native
+`wait_agent` call and continue until terminal. Do not stop after a fixed retry
+count or arbitrary time limit. On a native-reviewer synthetic turn, call
+`manage_native_reviewer({operation: "status", agent_id})` first; if it reports
+`resolved`, end silently. After collecting the vote on any turn, call
+`manage_native_reviewer({operation: "resolve", agent_id})` before
+`aggregate_panel` so a queued late duplicate becomes a no-op. If the user
+interrupts, answer them and continue collecting unless they explicitly drop
+the host reviewer.
+<!-- /host -->
+
 Terminal `required_next_action` is a single precedence-resolved slot:
 `merge_or_discard` is emitted only for successful write runs and wins over
 `check_inbox`; never merge or discard without the user gate. `check_inbox`
@@ -960,7 +984,7 @@ After merge, retry any reviewer cleanup that earlier hit
 
 Use the `mcp__crew__*` tools; their descriptions are in your tool schema.
 Names:
-`mcp__crew__list_agents mcp__crew__list_models mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria mcp__crew__start_pr_watch mcp__crew__list_pr_watches mcp__crew__get_pr_watch_status mcp__crew__rearm_pr_watch mcp__crew__cancel_pr_watch mcp__crew__authorize_pr_watch_actions`.
+`mcp__crew__list_agents mcp__crew__list_models mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__manage_native_reviewer mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria mcp__crew__start_pr_watch mcp__crew__list_pr_watches mcp__crew__get_pr_watch_status mcp__crew__rearm_pr_watch mcp__crew__cancel_pr_watch mcp__crew__authorize_pr_watch_actions`.
 If a tool seems missing or changed, ask the user to run `crew-mcp verify`;
 do not shell out yourself.
 

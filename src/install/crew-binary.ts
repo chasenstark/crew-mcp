@@ -96,10 +96,14 @@ export function prWatchCommandFromCrewWait(command: string): string {
   return siblingCommandFromCrewWait(command, 'crew-pr-watch');
 }
 
+export function nativeReviewerHookCommandFromCrewWait(command: string): string {
+  return siblingCommandFromCrewWait(command, 'crew-native-reviewer-hook');
+}
+
 function siblingCommandFromCrewWait(command: string, sibling: string): string {
   const index = command.lastIndexOf('crew-wait');
   if (index < 0) {
-    throw new Error(`Cannot derive crew-pr-watch-wait from ${JSON.stringify(command)}`);
+    throw new Error(`Cannot derive ${sibling} from ${JSON.stringify(command)}`);
   }
   return `${command.slice(0, index)}${sibling}${command.slice(index + 'crew-wait'.length)}`;
 }

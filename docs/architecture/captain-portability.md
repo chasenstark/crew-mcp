@@ -1,4 +1,4 @@
-> **Current as of 2026-08-27.**
+> **Current as of 2026-08-31.**
 
 # Captain portability
 
@@ -25,7 +25,7 @@ because it loads MCP servers only from a repository-local config.
 | Host | Global config / skill | Project config / skill |
 | --- | --- | --- |
 | Claude Code | `~/.claude.json` / `~/.claude/skills/<skill>/SKILL.md` | `.mcp.json` / `.claude/skills/<skill>/SKILL.md` |
-| Codex | `~/.codex/config.toml` / `~/.codex/skills/<skill>/SKILL.md` | `.codex/config.toml` / `.codex/skills/<skill>/SKILL.md` |
+| Codex | `~/.codex/config.toml` / `~/.codex/skills/<skill>/SKILL.md` / merged `~/.codex/hooks.json` | `.codex/config.toml` / `.codex/skills/<skill>/SKILL.md` / merged `.codex/hooks.json` |
 | agy | Not supported | `.agents/mcp_config.json` / `.agents/skills/<skill>/SKILL.md` |
 
 The canonical skill bodies are `skills/crew-captain.body.md`,
@@ -44,7 +44,9 @@ orchestration contract.
 3. renders each skill for the host,
 4. merges the `crew` MCP block without replacing unrelated config,
 5. applies supported auto-approval settings,
-6. writes an install manifest for later verification and uninstall.
+6. for Codex, merges the selective native-reviewer `SubagentStop` hook and
+   prints the explicit `/hooks` trust step,
+7. writes an install manifest for later verification and uninstall.
 
 Project installs prefer `./node_modules/.bin/crew-mcp serve` and store
 repo-relative paths in `.crew/install.project.json`.
@@ -79,6 +81,16 @@ the captain recovers terminal state on the next user turn.
 Every watcher command carries run-generation tokens. At completion,
 `crew-wait` revalidates them under run-state locks and takes a durable
 per-thread claim before waking the host, preventing stale and duplicate turns.
+
+Host-native reviewer completion is a distinct path. The captain registers the
+native `agent_id` through MCP, which derives the parent thread from trusted
+request metadata. The installed `crew-native-reviewer-hook` receives every
+`SubagentStop` event but queues only a matching repo-scoped registration. The
+state record stores no reviewer content, retains ambiguous queue delivery as a
+non-retryable claim, and supports `resolve` so a user-turn race does not create
+a second visible result. Install and uninstall preserve unrelated hook events
+and neighboring commands. Static verify checks definition/command parity;
+Codex session trust remains an explicit `/hooks` confirmation.
 
 PR watch resolves and stores a separate exact `crew-pr-watch-wait` command.
 Only that observation-only waiter joins Claude's safe allowlist or Codex's

@@ -55,6 +55,7 @@ import {
   parseProjectCrewBinaryStrategy,
   projectCrewBinaryResolver,
   projectCrewWaitCommand,
+  nativeReviewerHookCommandFromCrewWait,
   prWatchCommandFromCrewWait,
   prWatchWaitCommandFromCrewWait,
   quoteExecutablePath,
@@ -62,6 +63,11 @@ import {
   type CrewBinaryResolver,
   type ProjectCrewBinaryStrategy,
 } from '../../install/crew-binary.js';
+import {
+  codexGlobalHooksPath,
+  codexProjectHooksPath,
+  mergeCodexNativeReviewerHook,
+} from '../../install/codex-hooks.js';
 import {
   readInstallManifest,
   recordInstalledTarget,
@@ -447,6 +453,18 @@ export async function installSingleTarget(args: {
   }
   const prWatchWaitCommand = prWatchWaitCommandFromCrewWait(crewWaitCommand);
   const crewPrWatchCommand = prWatchCommandFromCrewWait(crewWaitCommand);
+  const nativeReviewerHookCommand = adapter.id === 'codex'
+    ? nativeReviewerHookCommandFromCrewWait(crewWaitCommand)
+    : undefined;
+  const nativeReviewerHookPath = adapter.id === 'codex'
+    ? codexGlobalHooksPath(home)
+    : undefined;
+  const nativeReviewerHookExisting = nativeReviewerHookPath && existsSync(nativeReviewerHookPath)
+    ? await readFile(nativeReviewerHookPath, 'utf-8')
+    : '';
+  const nativeReviewerHookUpdated = nativeReviewerHookPath && nativeReviewerHookCommand
+    ? mergeCodexNativeReviewerHook(nativeReviewerHookExisting, nativeReviewerHookCommand)
+    : undefined;
 
   // 1+2. Render + write each skill in the manifest via the helper
   // (single seam for preflight + legacy-removal + atomic-write).
@@ -510,10 +528,18 @@ export async function installSingleTarget(args: {
     );
   }
   if (adapter.id === 'codex') {
+    if (nativeReviewerHookUpdated !== nativeReviewerHookExisting) {
+      writeFileAtomic(nativeReviewerHookPath!, nativeReviewerHookUpdated!);
+    }
     logger.info(
       'crew install: ordinary Codex 0.149+ sessions support non-blocking queue wake. '
       + 'Use `crew-mcp codex -- <codex arguments>` only when you want Crew\'s '
       + 'authenticated direct App Server wake transport.',
+    );
+    logger.info(
+      `crew install: native reviewer wake hook written to ${nativeReviewerHookPath}. `
+      + `Open \`/hooks\` in Codex and trust exactly ${JSON.stringify(nativeReviewerHookCommand)}; `
+      + 'until trusted, captains keep the turn open and join native reviewers directly.',
     );
   }
 
@@ -532,6 +558,12 @@ export async function installSingleTarget(args: {
     crewWaitCommand,
     crewPrWatchCommand,
     prWatchWaitCommand,
+    ...(adapter.id === 'codex'
+      ? {
+          nativeReviewerHookPath,
+          nativeReviewerHookCommand,
+        }
+      : {}),
     autoApproved: autoApprove,
   };
   await recordInstalledTarget(home, adapter.id, entry);
@@ -566,6 +598,18 @@ export async function installSingleProjectTarget(args: {
   });
   const prWatchWaitCommand = prWatchWaitCommandFromCrewWait(crewWaitCommand);
   const crewPrWatchCommand = prWatchCommandFromCrewWait(crewWaitCommand);
+  const nativeReviewerHookCommand = adapter.id === 'codex'
+    ? nativeReviewerHookCommandFromCrewWait(crewWaitCommand)
+    : undefined;
+  const nativeReviewerHookPath = adapter.id === 'codex'
+    ? codexProjectHooksPath(repoRoot)
+    : undefined;
+  const nativeReviewerHookExisting = nativeReviewerHookPath && existsSync(nativeReviewerHookPath)
+    ? await readFile(nativeReviewerHookPath, 'utf-8')
+    : '';
+  const nativeReviewerHookUpdated = nativeReviewerHookPath && nativeReviewerHookCommand
+    ? mergeCodexNativeReviewerHook(nativeReviewerHookExisting, nativeReviewerHookCommand)
+    : undefined;
 
   const { skillsMap, skillFiles, writtenPaths: skillWrittenPaths, skillPath, sharedSkills } =
     await renderAndWriteSkills({
@@ -632,10 +676,18 @@ export async function installSingleProjectTarget(args: {
     );
   }
   if (adapter.id === 'codex') {
+    if (nativeReviewerHookUpdated !== nativeReviewerHookExisting) {
+      writeFileAtomic(nativeReviewerHookPath!, nativeReviewerHookUpdated!);
+    }
     logger.info(
       'crew install: ordinary Codex 0.149+ project sessions support non-blocking queue wake. '
       + 'Use `npx crew-mcp codex -- <codex arguments>` only when you want Crew\'s '
       + 'authenticated direct App Server wake transport.',
+    );
+    logger.info(
+      `crew install: native reviewer wake hook written to ${nativeReviewerHookPath}. `
+      + `Open \`/hooks\` in Codex and trust exactly ${JSON.stringify(nativeReviewerHookCommand)}; `
+      + 'until trusted, captains keep the turn open and join native reviewers directly.',
     );
   }
 
@@ -654,6 +706,12 @@ export async function installSingleProjectTarget(args: {
     crewWaitCommand,
     crewPrWatchCommand,
     prWatchWaitCommand,
+    ...(adapter.id === 'codex'
+      ? {
+          nativeReviewerHookPath,
+          nativeReviewerHookCommand,
+        }
+      : {}),
     autoApproved: autoApprove,
   };
   const relativeEntry = relativizeProjectTarget(repoRoot, absoluteEntry);

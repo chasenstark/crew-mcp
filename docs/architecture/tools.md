@@ -1,4 +1,4 @@
-> **Current as of 2026-08-27.**
+> **Current as of 2026-08-31.**
 
 # MCP Tool Surface
 
@@ -11,7 +11,7 @@ the install-time surface in `CATALOG_TOOLS` in
 in-memory MCP client to a fresh server and requires the live registrations and
 static catalog to stay identical.
 
-The complete catalog contains twenty-six tools. Twenty-five are captain-facing;
+The complete catalog contains twenty-seven tools. Twenty-six are captain-facing;
 `send_message` is installed only for workers.
 
 ## Current catalog
@@ -33,6 +33,7 @@ The complete catalog contains twenty-six tools. Twenty-five are captain-facing;
 | `run_panel` | Captain | Dispatches parallel reviewers and persists their independent agent/model identities. |
 | `get_panel_status` | Captain | Reads reviewer lifecycle, files, summaries, failures, and model selections. |
 | `aggregate_panel` | Captain | Converts terminal panel results into independently labeled peer messages. |
+| `manage_native_reviewer` | Captain | Registers, reads, and resolves a Codex host-native reviewer wake claim using trusted parent-thread request metadata. |
 | `create_criteria` | Captain | Creates an acceptance-criteria set. |
 | `confirm_criteria` | Captain | Confirms criteria before implementation dispatch. |
 | `get_criteria` | Captain | Reads criteria and review-round state. |
@@ -162,6 +163,32 @@ reviewers use read-only binding. Ephemeral-worktree reviewers such as agy get a
 disposable snapshot of the source HEAD plus dirty state. `aggregate_panel`
 refuses while any reviewer is running and labels every terminal result with
 its agent and model.
+
+### Codex host-native reviewer wake
+
+A Codex native reviewer is not a Crew run and has no `run_id`.
+`manage_native_reviewer` accepts only `register`, `status`, and `resolve` plus
+the host `agent_id`; callers cannot provide a parent thread id. The server
+derives that identity from duplicated Codex MCP request metadata and refuses
+missing or conflicting values.
+
+Codex install merges a selective `SubagentStop` command into `hooks.json`.
+The callback resolves the event's git root, records only session/agent/repo
+identity, and queues a turn only when an unexpired registration matches. It
+does not persist the prompt, transcript, or reviewer output. A ten-minute
+tombstone closes completion-before-registration races; registered claims expire
+after 24 hours, and each lifecycle operation opportunistically prunes expired
+records under their per-record locks. Durable delivery claims suppress
+duplicates; a queue timeout is retained as ambiguous instead of being retried.
+`resolve` makes a late queued turn a silent no-op after another user or Crew
+turn has already collected the vote.
+
+Hook trust remains explicit in Codex. Install tells the user to inspect and
+trust the exact command with `/hooks`; `verify` can prove the definition and
+command are present but reports that session trust is not statically
+observable. Until trusted, the rendered skill keeps the turn open and joins
+the native reviewer directly once no Crew watcher can guarantee a later turn.
+Completion events never grant merge, discard, or other mutation authority.
 
 ## Adding a tool
 

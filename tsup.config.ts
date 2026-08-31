@@ -6,6 +6,7 @@ export default defineConfig({
     'src/cli/wait.ts',
     'src/cli/pr-watch.ts',
     'src/cli/pr-watch-wait.ts',
+    'src/cli/native-reviewer-hook.ts',
   ],
   format: ['esm'],
   dts: false,

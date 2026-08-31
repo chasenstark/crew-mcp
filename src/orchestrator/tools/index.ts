@@ -158,6 +158,12 @@ export {
   type SendMessageToolDeps,
 } from './send-message.js';
 export {
+  manageNativeReviewerInputSchema,
+  manageNativeReviewerToolHandler,
+  MANAGE_NATIVE_REVIEWER_DESCRIPTION,
+  type ManageNativeReviewerInput,
+} from './manage-native-reviewer.js';
+export {
   authorizePrWatchActionsInputSchema,
   authorizePrWatchActionsMcpInputSchema,
   authorizePrWatchActionsToolHandler,

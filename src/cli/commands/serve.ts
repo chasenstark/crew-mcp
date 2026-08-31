@@ -182,6 +182,11 @@ import {
   SEND_MESSAGE_DESCRIPTION,
 } from '../../orchestrator/tools/send-message.js';
 import {
+  manageNativeReviewerInputSchema,
+  manageNativeReviewerToolHandler,
+  MANAGE_NATIVE_REVIEWER_DESCRIPTION,
+} from '../../orchestrator/tools/manage-native-reviewer.js';
+import {
   authorizePrWatchActionsMcpInputSchema,
   authorizePrWatchActionsToolHandler,
   AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
@@ -1357,6 +1362,23 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       inputSchema: aggregatePanelInputSchema.shape,
     },
     async (args) => aggregatePanelToolHandler(args, toolDeps),
+  );
+
+  // ---- Codex host-native reviewer wake bridge -------------------------
+  registerJournaledTool(
+    'manage_native_reviewer',
+    {
+      description: MANAGE_NATIVE_REVIEWER_DESCRIPTION,
+      inputSchema: manageNativeReviewerInputSchema.shape,
+    },
+    async (args, extra) => manageNativeReviewerToolHandler(args, extra, {
+      crewHome,
+      projectRoot,
+      getClientKind,
+      supportsNativeReviewerWake: () => supportsCodexQueueWatcher(
+        server.server.getClientVersion()?.version,
+      ),
+    }),
   );
 
   // ---- create_criteria -------------------------------------------------

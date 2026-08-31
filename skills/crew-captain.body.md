@@ -542,7 +542,7 @@ terminal state.
 
 Use the `mcp__crew__*` tools; their descriptions are in your tool schema.
 Names:
-`mcp__crew__list_agents mcp__crew__list_models mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria mcp__crew__start_pr_watch mcp__crew__list_pr_watches mcp__crew__get_pr_watch_status mcp__crew__rearm_pr_watch mcp__crew__cancel_pr_watch mcp__crew__authorize_pr_watch_actions`.
+`mcp__crew__list_agents mcp__crew__list_models mcp__crew__get_crew_preferences mcp__crew__list_runs mcp__crew__check_captain_inbox mcp__crew__acknowledge_messages mcp__crew__run_agent mcp__crew__continue_run mcp__crew__merge_run mcp__crew__discard_run mcp__crew__get_run_status mcp__crew__cancel_run mcp__crew__run_panel mcp__crew__get_panel_status mcp__crew__aggregate_panel mcp__crew__manage_native_reviewer mcp__crew__create_criteria mcp__crew__confirm_criteria mcp__crew__get_criteria mcp__crew__revise_criteria mcp__crew__start_pr_watch mcp__crew__list_pr_watches mcp__crew__get_pr_watch_status mcp__crew__rearm_pr_watch mcp__crew__cancel_pr_watch mcp__crew__authorize_pr_watch_actions`.
 If a tool seems missing or changed, ask the user to run `crew-mcp verify`;
 do not shell out yourself.
 
@@ -825,6 +825,32 @@ turn, no explanation line. Only act if the late output's verdict differs
 from what you folded in, and then re-open that round's consolidation.
 <!-- /host -->
 
+<!-- host:codex -->
+A native Codex reviewer has a host `agent_id`, not a Crew `run_id`. Its
+completion is not covered by `crew-wait`, the panel watcher, or `list_runs`,
+so register the exact native `agent_id` immediately after spawning it:
+`manage_native_reviewer({operation: "register", agent_id, panel_id})` (omit
+`panel_id` outside a Crew panel). The server derives the parent thread from
+trusted MCP request metadata; never supply or reconstruct a thread id.
+
+You may rely on the selective native wake only when the Crew-installed
+`SubagentStop` hook is trusted in the current Codex session and registration
+succeeds. Otherwise, while at least one Crew reviewer is still running and its
+valid panel watcher is active, you may end the turn because that Crew event
+guarantees collection. Once `get_panel_status` reports `running_count == 0`,
+keep the turn open and join the exact native `agent_id` with a long native
+`wait_agent` call. If there is no Crew reviewer/watcher, join from the outset.
+Do not give up after a fixed retry count or arbitrary time limit.
+
+On a native-reviewer synthetic turn, call `manage_native_reviewer` with
+`operation: "status"` first. If it reports `resolved`, end silently because a
+user or Crew turn already consumed the result. Otherwise collect the exact
+native result, then call `operation: "resolve"` before aggregation or visible
+reporting. On any non-synthetic collection turn, resolve after collecting too;
+this suppresses a queued late duplicate. If the user interrupts, answer them
+and continue collecting unless they explicitly drop the host reviewer.
+<!-- /host -->
+
 ### `run_panel` shape
 
 Bound to an implementer:
@@ -894,7 +920,9 @@ On any panel notification or recovery turn, call
 `get_panel_status({ panel_id })`. If
 `running_count > 0`, end
 with at most one short status line and no reviewer findings dump. When
-`running_count` is 0, call `aggregate_panel` and consolidate. Never
+`running_count` is 0, first join any required host-native vote; only after
+every Crew and host vote is terminal may you call `aggregate_panel` and
+consolidate. Never
 discover panel completeness by intentionally calling `aggregate_panel` and
 handling `run_panel.aggregate_not_ready`.
 

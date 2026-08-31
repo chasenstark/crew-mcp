@@ -174,6 +174,36 @@ describe('crew-captain body — dispatch lifecycle', () => {
   });
 });
 
+describe('crew-captain body — native reviewer terminal gate', () => {
+  it('registers the selective Codex wake and retains the direct-join fallback', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Host reviewer', '### `run_panel` shape');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'host `agent_id`, not a Crew `run_id`');
+    expectContainsCI(flat, 'not covered by `crew-wait`, the panel watcher, or `list_runs`');
+    expectContainsCI(flat, '`manage_native_reviewer({operation: "register", agent_id, panel_id})`');
+    expectContainsCI(flat, '`SubagentStop` hook is trusted');
+    expectContainsCI(flat, 'Once `get_panel_status` reports `running_count == 0`');
+    expectContainsCI(flat, 'keep the turn open and join the exact native `agent_id`');
+    expectContainsCI(flat, 'long native `wait_agent` call');
+    expectContainsCI(flat, 'Do not give up after a fixed retry count');
+    expectContainsCI(flat, '`operation: "status"` first');
+    expectContainsCI(flat, '`operation: "resolve"` before aggregation');
+  });
+
+  it('joins the host vote before panel aggregation', async () => {
+    const body = await loadBody();
+    const section = sliceBetween(body, '### Panel lifecycle', '### Aggregation and consolidation');
+    const flat = flattenWhitespace(section);
+
+    expectContainsCI(flat, 'first join any required host-native vote');
+    expectContainsCI(flat, 'after every Crew and host vote is terminal');
+    expect(flat.indexOf('first join any required host-native vote'))
+      .toBeLessThan(flat.indexOf('call `aggregate_panel`'));
+  });
+});
+
 describe('crew-captain body — concurrent implementers', () => {
   it('defines a complete isolated fan-out and landing protocol', async () => {
     const body = await loadBody();

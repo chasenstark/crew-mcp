@@ -406,7 +406,10 @@ describe('host-conditional real skill bodies', () => {
     expect(captain).toContain('`run_panel` returns `panel_id` and reviewer `run_id`s.');
     expect(captain).toContain('`get_panel_status({ panel_id })`');
     expect(captain).toContain('`running_count > 0`');
-    expect(captain).toContain('`running_count` is 0, call `aggregate_panel`');
+    expect(captain).toContain('`running_count` is 0, first join any required host-native vote');
+    expect(captain.replace(/\s+/g, ' ')).toContain(
+      'only after every Crew and host vote is terminal',
+    );
     expect(captain).toContain('handling `run_panel.aggregate_not_ready`');
 
     for (const hostId of HOST_IDS) {
@@ -414,6 +417,27 @@ describe('host-conditional real skill bodies', () => {
       expect(iterate).toContain('so it reviews the wrong diff');
       expect(iterate).toContain('ephemeral-worktree adapters are routed to their');
     }
+  });
+
+  it('renders the Codex native-review join gate without changing Claude completion banners', async () => {
+    for (const skill of legacyWorkflowSkills) {
+      const codex = await renderForHost(skill, 'codex');
+      const claude = await renderForHost(skill, 'claude-code');
+
+      const flatCodex = codex.replace(/\s+/g, ' ');
+      expect(flatCodex).toContain('not a Crew `run_id`');
+      expect(flatCodex).toContain('long native `wait_agent` call');
+      expect(flatCodex).toContain('manage_native_reviewer({operation: "register"');
+      expect(flatCodex).toContain('`SubagentStop` hook is trusted');
+      expect(codex).not.toContain('Agent "<label>" finished');
+
+      expect(claude).toContain('run_in_background');
+      expect(claude).not.toContain('long native `wait_agent` call');
+      expect(claude).not.toContain('not a Crew `run_id`');
+    }
+
+    const claudeCaptain = await renderForHost(SKILL_MANIFEST[0], 'claude-code');
+    expect(claudeCaptain).toContain('Agent "<label>" finished');
   });
 
   it('pins Phase 1 JIT relay, terminal action, inbox, and provenance prose in both skills', async () => {
