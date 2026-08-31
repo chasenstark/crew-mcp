@@ -1,13 +1,26 @@
 # crew-iterate
 
-`crew-iterate` is Crew's criteria-gated implementation and review workflow.
-Use it when work should continue until an agreed standard passes, not merely
-until an implementer finishes one turn.
+Most agent runs end when the agent decides it is finished. `crew-iterate`
+ends when *your* standard is met.
+
+You say what "done" means. The captain turns that into a handful of
+acceptance criteria you confirm, then implementation and independent review
+repeat — re-scoring the full criteria list every round — until every
+criterion passes and every reviewer approves. Nothing lands until you say so.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/crew-iterate-dark.png">
   <img alt="A request becomes confirmed acceptance criteria, then implementation and independent review repeat until every criterion passes and the user decides whether to merge." src="../assets/crew-iterate.png" width="980">
 </picture>
+
+## When to reach for it
+
+Use `crew-iterate` when the work has to clear a bar: a suite that must go
+green, a refactor that must not change behavior, a change you want a second
+model to sign off on before it touches your branch.
+
+Use the umbrella `crew` workflow instead for a one-shot implementation,
+review-only work, or an explicit "no review" request.
 
 ## Start an iteration
 
@@ -25,97 +38,144 @@ Or invoke the installed skill directly:
 The exact slash-command presentation depends on the host, but the installed
 skill name is `crew-iterate` in Claude Code, Codex, and agy.
 
-Use the umbrella `crew` workflow instead for a one-shot implementation,
-review-only work, or an explicit "no review" request.
+## A run, end to end
 
-## What the user controls
+**1. You confirm the contract.** Before anything is dispatched, the captain
+proposes three to seven acceptance criteria and prints them as a table you can
+actually read:
 
-Before implementation starts, the captain asks the user to confirm two parts
-of the loop contract:
+| # | Criterion | Type | Detail | Signal |
+| --- | --- | --- | --- | --- |
+| 1 | **Test suite passes** | [M] | Full unit suite green, including new rate-limiter cases | `npm run test:run` |
+| 2 | **Type check is clean** | [M] | No new strict-mode errors | `npm run lint` |
+| 3 | **Limits are per-caller** | [B] | Buckets keyed by caller identity, not process-global | — |
+| 4 | **Rejections are observable** | [B] | A throttled request returns 429 and increments a counter | — |
+| 5 | **Traffic under the limit is unchanged** | [N] | No behavior change for requests that never throttle | — |
 
-1. Three to seven acceptance criteria:
-   - `[M]` mechanical checks such as tests, lint, build, or a file assertion.
-   - `[B]` behavioral properties reviewers can verify from the diff.
-   - `[N]` negative requirements protecting behavior the change touches.
-2. The implementer, Crew reviewers, and host-native reviewer.
+It also proposes the roster: one implementer, the Crew reviewers, and the
+host-native reviewer. Edit either proposal, or approve it. Silence is not
+consent — nothing dispatches until you answer.
 
-The user can edit either proposal before approving it. Criteria changes during
-the loop start a new criteria epoch and require confirmation again. Roster
-changes also pause dispatch until the user confirms the new roster.
+**2. One implementer builds.** A single write run in an isolated git
+worktree. The captain reports the dispatch and hands the conversation back to
+you; a watcher wakes it when the run becomes terminal. Crew never holds the
+turn open by polling, and a wake by itself authorizes nothing — not
+continuation, not cleanup, not merge.
 
-The user retains three additional decisions:
+**3. Reviewers score every criterion.** The confirmed Crew reviewers and the
+host-native reviewer each read the full diff and return a complete
+PASS/FAIL score with `file:line` evidence — a full review each, not a
+concern-sliced one.
 
-- Whether an eligible Claude implementer may use a native `/goal` inner loop.
-- How to proceed if the loop reaches a configured round limit or a reviewer
-  returns `BLOCKING`.
-- Whether the converged implementation is merged. Convergence never implies
-  merge permission.
+**4. The captain re-runs the mechanics itself.** Every `[M]` command runs
+again in the implementer's worktree, and that result overrides any reviewer's
+`[M]` score. Reviewers are read-only, and read-only sandboxes fail for
+environmental reasons that have nothing to do with your code.
 
-## The outer Crew loop
+**5. Findings fold back.** Any FAIL or `CHANGES_NEEDED` goes back to the same
+worktree through `continue_run`, and the next round re-scores the *full*
+criteria set — not just what failed last time. Fixing criterion 3 cannot
+quietly break criterion 5.
 
-Crew owns the delivery lifecycle:
+**6. You decide the merge.** On convergence the captain presents the proposed
+commit title and body and asks. Convergence never implies merge permission.
 
-1. Persist the confirmed criteria.
-2. Dispatch one write implementer in an isolated worktree.
-3. Wait for the implementer to become terminal.
-4. Dispatch the confirmed Crew reviewers and host-native reviewer.
-5. Re-run every `[M]` command in the implementer's worktree and consolidate
-   every reviewer's complete criteria score.
-6. If anything fails, send the findings back through `continue_run` and review
-   the full criteria set again.
-7. Once every criterion passes and every reviewer approves, ask the user
-   whether to merge.
+## What you decide
 
-Watchers wake the captain when asynchronous work becomes terminal. Crew does
-not hold the conversation open by polling, and a watcher wake does not itself
-authorize continuation, cleanup, or merge.
+| Decision | Asked | If you stay silent |
+| --- | --- | --- |
+| The acceptance criteria | Before implementation, and again after any revision | Nothing dispatches |
+| The roster of implementer and reviewers | Before implementation, and again after any change to it | Dispatch stays paused |
+| Whether an eligible Claude implementer may use a bounded `/goal` inner loop | Only when every eligibility gate holds | Off — normal single-shot dispatch |
+| How to proceed at a round cap or a `BLOCKING` verdict | When it happens | The loop pauses |
+| Whether the converged work merges | At convergence | Nothing merges |
 
-## Optional Claude `/goal` inner loop
+## Writing criteria that work
 
-Claude Code's native `/goal` can reduce outer-loop round trips for mechanical
-fix-and-check work. It is a bounded execution primitive inside one implementer
-dispatch, not another orchestrator.
+Each criterion carries a type, because the type decides *who establishes
+truth*:
 
-These are two different slash commands:
+- **`[M]` mechanical** — a test, lint, build, or file-content assertion with a
+  binary signal. The captain owns it by re-running it.
+- **`[B]` behavioral** — a property a reviewer can confirm by reading the diff
+  and citing `file:line`.
+- **`[N]` negative** — a "doesn't break X" guard on load-bearing code the
+  change touches.
 
-- `/crew-iterate` is the user-facing skill invocation that starts Crew's
-  criteria, implementation, review, and merge-decision workflow.
-- Claude `/goal` is a provider control message that Crew may send inside the
-  selected implementer's dispatch after the user separately opts in.
+Avoid pure-vibes criteria ("looks idiomatic", "feels clean") unless you pair
+them with a concrete signal, and avoid claims no reviewer can check from the
+diff unless you also dispatch a benchmark or equivalent.
 
-### The user opts in
+Changing criteria mid-loop opens a **new epoch**: the revised set is snapshot,
+returns to `proposed` for your confirmation, resets the per-epoch round
+counter, and the next round re-scores the full revised list.
 
-Native goals are never inferred from a normal `crew-iterate` request. Choosing
-Claude as the implementer or confirming an `[M]` criterion is not consent.
+## Round limits
 
-When the change is eligible, the captain can propose a concrete choice such
-as:
+By default the captain pauses after 3 rounds in an epoch or 9 rounds overall.
+These are stop-and-ask points, not failures — the captain reports where the
+loop stands and asks how you want to proceed. Both are configurable through
+`iterate.maxRoundsPerEpoch` and `iterate.maxTotalRounds`; see
+[Configuration](configuration.md).
+
+## Convergence and merge
+
+The loop converges only when:
+
+- every captain-owned `[M]` command passes;
+- every `[B]` and `[N]` criterion is `PASS`, except an `N-A` you explicitly
+  accepted;
+- every reviewer returns a well-formed `APPROVE`; and
+- no unresolved critical or major finding remains.
+
+Squash is the default merge strategy after your approval, because iteration
+naturally produces implementation and fixup commits.
+
+## Advanced: the bounded Claude `/goal` inner loop
+
+For mechanical fix-and-check work — run the tests, fix, run again — a round
+trip through the captain is expensive. Claude Code's native `/goal` can absorb
+that retry loop inside a single implementer dispatch. It is a bounded
+execution primitive, not a second orchestrator.
+
+Do not confuse the two slash commands:
+
+- `/crew-iterate` starts Crew's criteria, implementation, review, and
+  merge-decision workflow.
+- Claude `/goal` is a provider control message Crew may send inside the
+  implementer's dispatch, after you separately opt in.
+
+### You opt in explicitly
+
+Native goals are never inferred from a normal `crew-iterate` request.
+Choosing Claude as the implementer is not consent. Confirming an `[M]`
+criterion is not consent. The captain proposes a concrete choice:
 
 > Let Claude use a bounded `/goal` loop for `npm run test:run` — up to six
 > turns or five minutes — or use a normal single-shot dispatch?
 
-Only an explicit affirmative selection permits the captain to attach `goal`
-to `run_agent`. The user does not need to type the provider slash command;
-Crew invokes it through the Claude adapter.
+Only an explicit affirmative permits the captain to attach `goal` to
+`run_agent`. You never type the provider command yourself; Crew sends it
+through the Claude adapter.
 
 ### Eligibility
 
-All of these conditions must hold:
+All of these must hold:
 
-- The user explicitly opted in.
-- The confirmed implementer is Claude Code.
-- The run is a write implementation, not a review or ephemeral run.
-- One `[M]` criterion provides one single-line validation command.
-- The command is safe to execute repeatedly.
-- The goal is bounded to 1--20 turns and 1,000--600,000 milliseconds, below
-  Crew's outer watchdog.
+- you explicitly opted in;
+- the confirmed implementer is Claude Code;
+- the run is a write implementation, not a review or ephemeral run;
+- one `[M]` criterion supplies one single-line validation command;
+- that command is safe to execute repeatedly; and
+- the goal is bounded to 1–20 turns and 1,000–600,000 ms, below Crew's outer
+  watchdog.
 
 The worker is told to stop on infrastructure, permission, or dependency
-failure instead of grinding on a condition it cannot establish.
+failure rather than grinding on a condition it cannot establish.
 
 ### Invocation
 
-The captain passes a structured goal with the ordinary Crew dispatch:
+The goal rides along with the ordinary Crew dispatch:
 
 ```text
 run_agent({
@@ -141,93 +201,73 @@ infrastructure, permissions, or dependencies prevent validation.
 <ordinary implementation prompt>
 ```
 
-The validation command is provider prompt data. Crew does not execute it as
-part of setting `/goal`; Claude performs the inner-loop work. After the run is
-terminal, the captain independently reruns the corresponding `[M]` command.
-Native goal success alone never proves Crew convergence.
+The validation command is provider prompt data — Crew does not execute it as
+part of setting `/goal`. After the run is terminal the captain independently
+reruns the corresponding `[M]` command anyway. Native goal success alone never
+proves Crew convergence.
 
 ### Continuations
 
-`continue_run` deliberately defaults `goal_policy` to `clear` so new review
-findings cannot accidentally resume a stale provider objective.
+`continue_run` defaults `goal_policy` to `clear` so new review findings cannot
+accidentally resume a stale provider objective.
 
 | Policy | Behavior | Required intent |
 | --- | --- | --- |
 | `clear` | Sends `/goal clear` before the new work prompt. This is the default. | No additional opt-in. |
-| `inherit` | Retains the same nonterminal native objective. | The user explicitly wants it retained. |
-| `replace` | Clears the old objective and sets a newly supplied goal. | The user confirms the replacement. |
+| `inherit` | Retains the same nonterminal native objective. | You explicitly want it retained. |
+| `replace` | Clears the old objective and sets a newly supplied goal. | You confirm the replacement. |
 
-Inherited and replacement goals consume the original run's cumulative turn
-and wall-clock budget. A continuation cannot reset or increase that ceiling.
-If Claude does not authoritatively confirm a clear, the next default-clear
+Inherited and replacement goals draw down the original run's cumulative turn
+and wall-clock budget; a continuation cannot reset or raise that ceiling. If
+Claude does not authoritatively confirm a clear, the next default-clear
 continuation retries it rather than silently resuming the stale goal.
 
 ### Outcomes
 
 The captain reads the structured `goal.outcome` from Crew status, never a
-worker's prose claim. Possible outcomes are:
+worker's prose claim:
 
 ```text
 not_requested  unsupported  achieved  impossible  turn_capped
 watchdog_timeout  cancelled  provider_error  evaluator_error
 ```
 
-Provider goal outcomes must come from trusted provider control or status
-events. If Crew cannot establish an authoritative outcome, it fails closed as
-`evaluator_error`; the captain investigates instead of treating the goal as
-successful.
+Outcomes must come from trusted provider control or status events. If Crew
+cannot establish an authoritative outcome it fails closed as
+`evaluator_error`, and the captain investigates instead of assuming success.
 
-## Why `/goal` stays inside one dispatch
+### Why the goal stays inside one dispatch
 
-Crew must remain the single continuation owner. A captain-level goal such as
+Crew must remain the single continuation owner. A captain-level goal like
 "continue until all criteria pass and all reviewers approve" would compete
-with Crew's watcher and durable run state. That creates several failure modes:
+with Crew's watchers and durable run state, producing:
 
 - duplicate or conflicting continuations;
-- provider work continuing with stale instructions after review findings;
-- disagreement between provider goal state, Crew watchdogs, and iteration
-  caps;
-- repeated wakes that rediscover nonterminal runs without an actionable event;
+- provider work continuing on stale instructions after review findings;
+- disagreement between provider goal state, Crew watchdogs, and round caps;
+- repeated wakes that rediscover nonterminal runs with no actionable event;
 - a weak transcript evaluator making review, terminal, or merge decisions.
 
-The inner boundary preserves the useful behavior — retrying mechanical work
-without a captain round trip — while Crew retains criteria, review cadence,
-watchers, cumulative budgets, terminal decisions, and the merge gate.
+The inner boundary keeps the useful part — retrying mechanical work without a
+captain round trip — while Crew keeps criteria, review cadence, watchers,
+cumulative budgets, terminal decisions, and the merge gate.
 
-## Codex goals are unsupported
+### Codex goals are unsupported
 
-Do not offer a native goal when Codex is the Crew implementer, and do not use
-the Codex captain's `/goal` to drive the outer `crew-iterate` loop.
-
-The isolated Codex lifecycle spike found both required gates missing:
+Do not offer a native goal when Codex is the implementer, and do not use the
+Codex captain's `/goal` to drive the outer loop. An isolated lifecycle spike
+found both required gates missing:
 
 1. `codex exec --json` ended after the first public turn instead of keeping an
    autonomous multi-turn goal process alive.
 2. Its public JSONL exposed no stable machine-readable terminal goal event.
 
-Without both properties, Crew cannot place the provider loop beneath its
-watchdog or distinguish achieved, impossible, interrupted, and still-active
-states authoritatively. If a goal is nevertheless sent to an unsupported
-provider, Crew records `unsupported` and performs one ordinary dispatch.
-
-Codex workers therefore use Crew's explicit `continue_run` outer loop. Native
-Codex support should be reconsidered only after a new isolated spike proves
-both lifecycle gates.
-
-## Convergence and merge
-
-The loop converges only when:
-
-- every captain-owned `[M]` command passes;
-- every `[B]` and `[N]` criterion is `PASS`, except an `N-A` the user
-  explicitly accepted;
-- every reviewer returns a well-formed `APPROVE`; and
-- no unresolved critical or major finding remains.
-
-At that point the captain presents the proposed commit title and body and asks
-whether to merge. Silence is not consent. The default merge strategy after
-approval is squash because iteration naturally produces implementation and
-fixup commits.
+Without both, Crew cannot put the provider loop beneath its watchdog or tell
+achieved, impossible, interrupted, and still-active apart. A goal sent to an
+unsupported provider is recorded as `unsupported` and Crew performs one
+ordinary dispatch. Codex workers use Crew's explicit `continue_run` outer
+loop; native support should be revisited only after a new spike proves both
+gates.
 
 ## Related references
 
