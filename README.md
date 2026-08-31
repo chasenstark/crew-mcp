@@ -58,7 +58,10 @@ while workers run.
 The confirmed criteria become the contract for the implementer and every
 reviewer. Crew combines dispatched reviewers with a host-native review, scores
 each criterion PASS/FAIL, and folds findings back through `continue_run`.
-The safety cap is 3 rounds per criteria epoch and 9 rounds total.
+The safety cap is 3 rounds per criteria epoch and 9 rounds total. The
+[crew-iterate guide](https://github.com/chasenstark/crew-mcp/blob/main/docs/guides/crew-iterate.md)
+explains confirmation gates, review convergence, and the optional bounded
+Claude `/goal` inner loop.
 
 ## Safe by design
 
@@ -114,6 +117,7 @@ owns the complete schemas and envelope contracts.
 - [Documentation home](https://github.com/chasenstark/crew-mcp/blob/main/docs/README.md)
 - [Install and upgrade](https://github.com/chasenstark/crew-mcp/blob/main/docs/guides/installation.md)
 - [Agents and models](https://github.com/chasenstark/crew-mcp/blob/main/docs/guides/agents-and-models.md)
+- [crew-iterate](https://github.com/chasenstark/crew-mcp/blob/main/docs/guides/crew-iterate.md)
 - [Configuration](https://github.com/chasenstark/crew-mcp/blob/main/docs/guides/configuration.md)
 - [Operations and troubleshooting](https://github.com/chasenstark/crew-mcp/blob/main/docs/guides/operations-and-troubleshooting.md)
 - [Runtime architecture](https://github.com/chasenstark/crew-mcp/blob/main/docs/architecture/README.md)

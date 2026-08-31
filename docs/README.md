@@ -9,7 +9,8 @@ documentation
 |
 |-- start
 |   |-- installation
-|   `-- agents and models
+|   |-- agents and models
+|   `-- crew-iterate
 |
 |-- operate
 |   |-- configuration
@@ -30,6 +31,8 @@ documentation
   installs; Codex and Antigravity notes; upgrades and uninstalling.
 - [Agents and models](guides/agents-and-models.md) — captains versus workers,
   model discovery, exact pins, routing defaults, and local agents.
+- [crew-iterate](guides/crew-iterate.md) — criteria-gated implementation and
+  review, user confirmation gates, and bounded Claude `/goal` inner loops.
 - [Configuration](guides/configuration.md) — interactive and scripted settings,
   cleanup retention, configuration ownership, and useful environment variables.
 - [Operations and troubleshooting](guides/operations-and-troubleshooting.md) —
