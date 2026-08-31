@@ -23,6 +23,10 @@ export interface ClaimedCodexWakeOptions<T> {
   readonly startTurn: () => Promise<T>;
 }
 
+export interface ClaimedCodexCheckInWakeOptions<T> extends ClaimedCodexWakeOptions<T> {
+  readonly checkInActionId: string;
+}
+
 export type ClaimedCodexWakeResult<T> =
   | { readonly started: true; readonly result: T }
   | {
@@ -119,6 +123,72 @@ export async function runClaimedCodexWake<T>(
     // timeout or transport failure is ambiguous: the server may already
     // have accepted the turn, so preserving the claim prevents a duplicate
     // synthetic turn at the cost of next-user-turn recovery.
+    if (error instanceof CodexWakeRpcError) {
+      removeOwnedClaim(claim.claimPath, claim.ownerId);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Claim one periodic check-in for an exact run generation. Unlike terminal
+ * wakes, a check-in is valid while the run is still active; a terminal race
+ * after the timer fires is also valid because the captain will read the fresh
+ * status before deciding what to do next.
+ */
+export async function runClaimedCodexCheckInWake<T>(
+  options: ClaimedCodexCheckInWakeOptions<T>,
+): Promise<ClaimedCodexWakeResult<T>> {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(options.checkInActionId)) {
+    throw new Error('Invalid Codex check-in action id');
+  }
+  const pairs = normalizedPairs(options.runIds, options.runGenerations);
+  const stateLockRoot = join(options.crewHome, 'state-locks');
+  mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') chmodSync(stateLockRoot, 0o700);
+
+  const claim = await withRunLocks(
+    options.crewHome,
+    pairs.map((pair) => pair.runId),
+    0,
+    async () => {
+      if (!generationsMatch(options.crewHome, pairs)) {
+        return { claimed: false, reason: 'stale_generation' } as const;
+      }
+
+      const ownerId = randomUUID();
+      const claimPath = checkInWakeClaimPath(
+        options.crewHome,
+        options.threadId,
+        pairs,
+        options.checkInActionId,
+      );
+      try {
+        writeFileSync(
+          claimPath,
+          `${JSON.stringify({
+            ownerId,
+            threadId: options.threadId,
+            pairs,
+            checkInActionId: options.checkInActionId,
+          })}\n`,
+          { encoding: 'utf-8', flag: 'wx', mode: 0o600 },
+        );
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'EEXIST') {
+          return { claimed: false, reason: 'already_claimed' } as const;
+        }
+        throw error;
+      }
+
+      return { claimed: true, claimPath, ownerId } as const;
+    },
+  );
+
+  if (!claim.claimed) return { started: false, reason: claim.reason };
+  try {
+    return { started: true, result: await options.startTurn() };
+  } catch (error) {
     if (error instanceof CodexWakeRpcError) {
       removeOwnedClaim(claim.claimPath, claim.ownerId);
     }
@@ -237,6 +307,28 @@ function generationsAreTerminal(
   return true;
 }
 
+function generationsMatch(
+  crewHome: string,
+  pairs: readonly RunGenerationPair[],
+): boolean {
+  for (const pair of pairs) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        readFileSync(join(crewHome, 'runs', pair.runId, 'state.json'), 'utf-8'),
+      );
+    } catch {
+      return false;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const state = parsed as { prompts?: unknown };
+    if (!Array.isArray(state.prompts) || state.prompts.length !== pair.generation) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function wakeClaimPath(
   crewHome: string,
   threadId: string,
@@ -246,6 +338,18 @@ function wakeClaimPath(
     .update(JSON.stringify({ threadId, pairs }))
     .digest('hex');
   return join(crewHome, 'runs', pairs[0].runId, `.codex-wake-${digest}.claim`);
+}
+
+function checkInWakeClaimPath(
+  crewHome: string,
+  threadId: string,
+  pairs: readonly RunGenerationPair[],
+  checkInActionId: string,
+): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify({ threadId, pairs, checkInActionId }))
+    .digest('hex');
+  return join(crewHome, 'runs', pairs[0].runId, `.codex-check-in-${digest}.claim`);
 }
 
 function removeOwnedClaim(path: string, ownerId: string): void {

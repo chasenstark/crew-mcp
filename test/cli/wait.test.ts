@@ -82,6 +82,37 @@ describe('crew-wait', () => {
     });
   });
 
+  it('returns a one-shot check-in when a run is still running at the deadline', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-check-in-'));
+    cleanup.push(crewHome);
+    const runId = 'run-check-in';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'running',
+      worktreePath: '/tmp/check-in-worktree',
+      prompts: [{ turn: 1 }],
+    });
+    const stdout: string[] = [];
+    const watcher = createManualWatchFactory();
+
+    await expect(waitForRunsTerminal({
+      runIds: [runId],
+      crewHome,
+      checkInMs: 10,
+      watch: watcher.watch,
+      writeStdout: (line) => stdout.push(line),
+    })).resolves.toEqual({
+      postTerminalRunIds: [],
+      checkInRunIds: [runId],
+    });
+    expect(stdout).toEqual([
+      'CREW_WAIT_CHECK_IN run_id=run-check-in agent=codex status=running worktree=/tmp/check-in-worktree',
+    ]);
+  });
+
   it('records unknown_run with exit outcome 3 when state never appears', async () => {
     const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-index-unknown-'));
     cleanup.push(crewHome);
@@ -330,7 +361,7 @@ describe('crew-wait', () => {
       process.stderr.write = originalWrite;
     }
     expect(writes.join('')).toContain(
-      'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>] [--run-generations-base64 <base64url>] <run_id...>',
+      'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>] [--run-generations-base64 <base64url>] [--check-in-ms <n> --check-in-action-id <id>] <run_id...>',
     );
   });
 
@@ -468,6 +499,59 @@ describe('crew-wait', () => {
     } finally {
       process.stdout.write = originalWrite;
     }
+    expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_QUEUED thread_id=${threadId}`);
+  });
+
+  it('queues a periodic Codex check-in through its distinct durable claim', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-codex-check-in-'));
+    cleanup.push(crewHome);
+    const runId = 'run-codex-check-in';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'running',
+      worktreePath: '/tmp/check-in',
+      prompts: [{ turn: 1 }],
+    });
+    const threadId = '019f5d0f-a60c-7d53-9f35-2036d92d71ec';
+    const writes: string[] = [];
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-queue-thread', threadId,
+        '--run-generations-base64', Buffer.from('[1]').toString('base64url'),
+        '--check-in-ms', '5',
+        '--check-in-action-id', 'check-in-1',
+        runId,
+      ], {
+        runClaimedCodexWake: async () => {
+          throw new Error('terminal claim must not handle a check-in');
+        },
+        runClaimedCodexCheckInWake: async (options) => {
+          expect(options.checkInActionId).toBe('check-in-1');
+          expect(options.runGenerations).toEqual([1]);
+          return { started: true, result: await options.startTurn() };
+        },
+        queueCodexThread: async (options) => {
+          expect(options).toMatchObject({
+            threadId,
+            runIds: [runId],
+            wakeKind: 'check_in',
+          });
+          return { queued: true };
+        },
+      })).resolves.toBe(0);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(writes.join('')).toContain(`CREW_WAIT_CHECK_IN run_id=${runId}`);
     expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_QUEUED thread_id=${threadId}`);
   });
 
@@ -1119,7 +1203,7 @@ describe('crew-wait', () => {
       process.stdout.write = originalWrite;
     }
     expect(writes.join('')).toMatch(
-      /Usage: crew-wait \[--crew-home-base64 <base64url>\] \[--codex-bridge-base64 <base64url> \| --codex-queue-thread <uuid>\] \[--run-generations-base64 <base64url>\] <run_id\.\.\.>/,
+      /Usage: crew-wait \[--crew-home-base64 <base64url>\] \[--codex-bridge-base64 <base64url> \| --codex-queue-thread <uuid>\] \[--run-generations-base64 <base64url>\] \[--check-in-ms <n> --check-in-action-id <id>\] <run_id\.\.\.>/,
     );
   });
 });

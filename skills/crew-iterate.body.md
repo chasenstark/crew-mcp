@@ -138,6 +138,21 @@ launch it after the Crew dispatch. Only then end the turn:
 On later user turns, recover unsurfaced runs with repo-scoped `list_runs`
 without `completedAfter`; filter terminal statuses and dedupe by `run_id`.
 
+**Periodic implementer check-ins.** A criteria-linked write implementer's
+`required_next_action` carries `check_in_interval_ms: 600000`; its exact
+command waits for terminal state or that 10-minute deadline, whichever comes
+first. A deadline wake is `CREW_WAIT_CHECK_IN`, not completion. On that turn:
+
+1. Call `get_run_status({run_id})` once and report a concise status update to
+   the user even when the status is still `running`.
+2. If still running, launch the new `required_next_action` returned by that
+   status response using the same host-specific recipe, then end the turn.
+3. Do not start review or increment the iteration round until the implementer
+   is terminal. If terminal won the race, follow the normal terminal path.
+
+This re-arm makes the check-in periodic without long-polling. Panel/reviewer
+watchers remain terminal-only.
+
 The server detects orphaned watchers, unsurfaced terminals, long-poll loops,
 GC-at-risk unmerged runs, and impossible confirmation latency, and returns
 them in `warnings`. Act on returned warnings; they are recovery, not a

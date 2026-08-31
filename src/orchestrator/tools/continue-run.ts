@@ -57,6 +57,7 @@ import {
   inFlightForRun,
   progressNotifierFrom,
   runDispatchAndRespond,
+  ITERATE_CHECK_IN_INTERVAL_MS,
 } from './shared.js';
 import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
 import {
@@ -399,6 +400,9 @@ export async function continueRunToolHandler(
       projectRoot: deps.projectRoot,
       runMode,
       modelSelection: modelSelection.record,
+      watcherCheckInIntervalMs: criteriaContract !== undefined && runMode === 'write'
+        ? ITERATE_CHECK_IN_INTERVAL_MS
+        : undefined,
       onStartFailure: rollbackContinuation,
     });
   } catch (err) {

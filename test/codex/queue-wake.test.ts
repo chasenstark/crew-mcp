@@ -96,6 +96,29 @@ describe('queueCodexThread', () => {
     })).rejects.toThrow('codex queue exited with code 7: unknown thread');
   });
 
+  it('queues a periodic check-in prompt that requires status reporting and re-arm', async () => {
+    const child = new FakeChild();
+    const calls: Array<{ args: readonly string[] }> = [];
+    const spawnProcess = ((_command: string, args: readonly string[]) => {
+      calls.push({ args });
+      queueMicrotask(() => child.finish(0));
+      return child;
+    }) as unknown as typeof spawn;
+
+    await queueCodexThread({
+      threadId,
+      runIds: ['run-check-in'],
+      wakeKind: 'check_in',
+      spawnProcess,
+    });
+
+    const prompt = calls[0].args.at(-1);
+    expect(prompt).toContain('periodic check-in event');
+    expect(prompt).toContain('report a concise status update to the user now');
+    expect(prompt).toContain('launch the returned required_next_action');
+    expect(prompt).toContain('Do not start review until the implementer is terminal');
+  });
+
   it('terminates a queue command that does not exit', async () => {
     const child = new FakeChild();
     const spawnProcess = (() => child) as unknown as typeof spawn;

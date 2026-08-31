@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import type { AdapterRegistry } from '../../adapters/registry.js';
@@ -30,6 +31,7 @@ import { goalTurnToWire, type WireGoalTurn } from '../goals.js';
  * Captains usually pass 30000; we clamp anything larger to this value.
  */
 export const MAX_LONG_POLL_MS = 60_000;
+export const ITERATE_CHECK_IN_INTERVAL_MS = 10 * 60 * 1_000;
 
 /**
  * Classification of the MCP host CLI that initialized this server, derived
@@ -170,6 +172,9 @@ export interface SpawnWatcherRequiredNextAction {
   readonly run_ids?: readonly string[];
   readonly run_generation?: number;
   readonly run_generations?: readonly number[];
+  /** Present for a one-shot terminal-or-periodic-check-in watcher. */
+  readonly check_in_interval_ms?: number;
+  readonly check_in_action_id?: string;
   readonly run_in_background: true;
   readonly per_run: boolean;
   readonly consequence_if_skipped: string;
@@ -285,6 +290,7 @@ interface DispatchAndRespondArgs {
   projectRoot: string;
   runMode: RunMode;
   modelSelection: ModelSelectionRecord;
+  watcherCheckInIntervalMs?: number;
 }
 
 export async function runDispatchAndRespond(
@@ -322,6 +328,7 @@ export async function runDispatchAndRespond(
     args.crewHome,
     args.projectRoot,
     args.runStateStore.read(args.runId)?.prompts.length,
+    args.watcherCheckInIntervalMs,
   );
   const latestGoal = args.runStateStore.read(args.runId)?.prompts.at(-1)?.goal;
   const env: FullRunEnvelope = {
@@ -492,6 +499,7 @@ export function requiredNextActionForRun(
   crewHome: string,
   projectRoot: string,
   runGeneration?: number,
+  checkInIntervalMs?: number,
 ): SpawnWatcherRequiredNextAction | undefined {
   if (
     (clientKind !== 'claude-code' && clientKind !== 'codex')
@@ -505,6 +513,9 @@ export function requiredNextActionForRun(
       )
     )
   ) return undefined;
+  const checkInActionId = validCheckInInterval(checkInIntervalMs)
+    ? periodicCheckInActionId(runId, runGeneration, checkInIntervalMs)
+    : undefined;
   const runGenerations = runGeneration === undefined ? [] : [runGeneration];
   const command = watcherCommand(
     clientKind,
@@ -512,6 +523,8 @@ export function requiredNextActionForRun(
     [runId],
     runGenerations,
     crewHome,
+    checkInIntervalMs,
+    checkInActionId,
   );
   const codexWakeMechanism = codexWakeMechanismForCommand(crewWaitCommand);
   return {
@@ -531,6 +544,12 @@ export function requiredNextActionForRun(
     run_id: runId,
     ...(clientKind === 'codex' && runGeneration !== undefined
       ? { run_generation: runGeneration }
+      : {}),
+    ...(checkInIntervalMs !== undefined && checkInActionId !== undefined
+      ? {
+          check_in_interval_ms: checkInIntervalMs,
+          check_in_action_id: checkInActionId,
+        }
       : {}),
     run_in_background: true,
     per_run: true,
@@ -621,12 +640,35 @@ function watcherCommand(
   runIds: readonly string[],
   runGenerations: readonly number[],
   crewHome: string,
+  checkInIntervalMs?: number,
+  checkInActionId?: string,
 ): string {
   const crewHomeArg = ` --crew-home-base64 ${Buffer.from(crewHome, 'utf-8').toString('base64url')}`;
   const generationArg = clientKind === 'codex'
     ? ` --run-generations-base64 ${encodeRunGenerations(runGenerations)}`
     : '';
-  return `${crewWaitCommand}${crewHomeArg}${generationArg} ${runIds.join(' ')}`;
+  const checkInArg = checkInIntervalMs !== undefined && checkInActionId !== undefined
+    ? ` --check-in-ms ${checkInIntervalMs} --check-in-action-id ${checkInActionId}`
+    : '';
+  return `${crewWaitCommand}${crewHomeArg}${generationArg}${checkInArg} ${runIds.join(' ')}`;
+}
+
+function validCheckInInterval(value: number | undefined): value is number {
+  return value !== undefined
+    && Number.isSafeInteger(value)
+    && value > 0;
+}
+
+function periodicCheckInActionId(
+  runId: string,
+  runGeneration: number | undefined,
+  checkInIntervalMs: number,
+): string {
+  const bucket = Math.floor(Date.now() / checkInIntervalMs);
+  return createHash('sha256')
+    .update(JSON.stringify({ runId, runGeneration, checkInIntervalMs, bucket }))
+    .digest('hex')
+    .slice(0, 32);
 }
 
 export function mergeEnvelopeWarnings(

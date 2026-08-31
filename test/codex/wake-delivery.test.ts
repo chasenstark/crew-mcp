@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   decodeRunGenerations,
   encodeRunGenerations,
+  runClaimedCodexCheckInWake,
   runClaimedCodexWake,
 } from '../../src/codex/wake-delivery.js';
 import { CodexWakeRpcError } from '../../src/codex/app-server-bridge.js';
@@ -162,6 +163,40 @@ describe('Codex wake delivery claims', () => {
     const encoded = encodeRunGenerations([1, 2, 9]);
     expect(decodeRunGenerations(encoded)).toEqual([1, 2, 9]);
     expect(() => decodeRunGenerations('not+base64')).toThrow(/encoding/);
+  });
+
+  it('claims each periodic check-in action once without consuming terminal wake', async () => {
+    const crewHome = await makeCrewHome(cleanup, 'run-check-in', 1, 'running');
+    const base = {
+      crewHome,
+      threadId: THREAD_ID,
+      runIds: ['run-check-in'],
+      runGenerations: [1],
+      checkInActionId: 'check-in-action-1',
+    };
+
+    await expect(runClaimedCodexCheckInWake({
+      ...base,
+      startTurn: async () => 'check-in-turn',
+    })).resolves.toEqual({ started: true, result: 'check-in-turn' });
+    await expect(runClaimedCodexCheckInWake({
+      ...base,
+      startTurn: async () => 'duplicate',
+    })).resolves.toEqual({ started: false, reason: 'already_claimed' });
+
+    writeFileSync(join(crewHome, 'runs', 'run-check-in', 'state.json'), JSON.stringify({
+      schemaVersion: 1,
+      runId: 'run-check-in',
+      status: 'success',
+      prompts: [{ turn: 1 }],
+    }));
+    await expect(runClaimedCodexWake({
+      crewHome,
+      threadId: THREAD_ID,
+      runIds: ['run-check-in'],
+      runGenerations: [1],
+      startTurn: async () => 'terminal-turn',
+    })).resolves.toEqual({ started: true, result: 'terminal-turn' });
   });
 });
 

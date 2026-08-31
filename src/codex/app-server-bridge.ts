@@ -20,6 +20,7 @@ export interface WakeCodexThreadOptions {
   readonly bridgeFile: string;
   readonly threadId: string;
   readonly runIds: readonly string[];
+  readonly wakeKind?: RunWakeKind;
   /** Per-connection/request timeout. Waiting for the thread itself to become idle is unbounded. */
   readonly requestTimeoutMs?: number;
   readonly statusPollMs?: number;
@@ -29,6 +30,8 @@ export interface WakeCodexThreadOptions {
     startTurn: () => Promise<unknown>,
   ) => Promise<CodexTurnStartGuardResult>;
 }
+
+export type RunWakeKind = 'terminal' | 'check_in';
 
 export interface WakeCodexPrWatchThreadOptions {
   readonly bridgeFile: string;
@@ -112,7 +115,21 @@ export function decodeCodexBridgeFile(encoded: string): string {
   return decoded;
 }
 
-export function codexWakePrompt(runIds: readonly string[]): string {
+export function codexWakePrompt(
+  runIds: readonly string[],
+  wakeKind: RunWakeKind = 'terminal',
+): string {
+  if (wakeKind === 'check_in') {
+    return [
+      'Crew periodic check-in event from the local crew-mcp bridge.',
+      `Run ids to inspect: ${runIds.join(', ')}`,
+      'Call get_run_status for each run and report a concise status update to the user now, '
+        + 'even if the implementer is still running. If a run remains running, launch the '
+        + 'returned required_next_action before ending the turn so the next check-in is armed.',
+      'Do not start review until the implementer is terminal.',
+      'This event is not authorization to merge or discard any run.',
+    ].join('\n');
+  }
   return [
     'Crew watcher completion event from the local crew-mcp bridge.',
     `Terminal run ids: ${runIds.join(', ')}`,
@@ -142,7 +159,10 @@ export async function wakeCodexThread(
 ): Promise<WakeCodexThreadResult> {
   validateCodexThreadId(options.threadId);
   validateRunIds(options.runIds);
-  return wakeCodexThreadWithPrompt(options, codexWakePrompt(options.runIds));
+  return wakeCodexThreadWithPrompt(
+    options,
+    codexWakePrompt(options.runIds, options.wakeKind),
+  );
 }
 
 export async function wakeCodexPrWatchThread(

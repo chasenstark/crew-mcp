@@ -19,7 +19,9 @@ import {
 } from '../codex/queue-wake.js';
 import {
   decodeRunGenerations,
+  runClaimedCodexCheckInWake,
   runClaimedCodexWake,
+  type ClaimedCodexCheckInWakeOptions,
   type ClaimedCodexWakeOptions,
   type ClaimedCodexWakeResult,
 } from '../codex/wake-delivery.js';
@@ -104,6 +106,7 @@ export interface WaitForRunsTerminalOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
   readonly watch?: CrewWaitWatchFactory;
+  readonly checkInMs?: number;
 }
 
 export interface WaitForRunTerminalResult {
@@ -112,6 +115,7 @@ export interface WaitForRunTerminalResult {
 
 export interface WaitForRunsTerminalResult {
   readonly postTerminalRunIds: readonly string[];
+  readonly checkInRunIds?: readonly string[];
 }
 
 /**
@@ -221,6 +225,12 @@ export async function waitForRunsTerminal(
   if (options.runIds.length === 0) {
     throw new Error('crew-wait: at least one run_id is required');
   }
+  if (options.checkInMs !== undefined) {
+    if (!Number.isSafeInteger(options.checkInMs) || options.checkInMs <= 0) {
+      throw new Error('crew-wait: check-in interval must be a positive integer');
+    }
+    return waitForRunsTerminalOrCheckIn({ ...options, checkInMs: options.checkInMs });
+  }
   if (options.runIds.length === 1) {
     const result = await waitForRunTerminal({
       runId: options.runIds[0],
@@ -277,6 +287,85 @@ export async function waitForRunsTerminal(
   return {
     postTerminalRunIds: options.runIds.filter((runId) => postTerminalRunIds.has(runId)),
   };
+}
+
+async function waitForRunsTerminalOrCheckIn(
+  options: WaitForRunsTerminalOptions & { readonly checkInMs: number },
+): Promise<WaitForRunsTerminalResult> {
+  const crewHome = options.crewHome ?? resolveCrewHome();
+  const pollIntervalMs = Math.min(
+    options.pollIntervalMs ?? resolvePollIntervalMs(),
+    options.runIds.length > 1 ? MAX_MULTI_RUN_POLL_INTERVAL_MS : MAX_POLL_INTERVAL_MS,
+  );
+  const writeStdout = options.writeStdout ?? ((line) => process.stdout.write(`${line}\n`));
+  const linesByRunId = new Map<string, string>();
+  const postTerminalRunIds = new Set<string>();
+  const abortController = new AbortController();
+  const waits = options.runIds.map(async (runId) => {
+    const result = await waitForRunTerminal({
+      runId,
+      crewHome,
+      pollIntervalMs,
+      maxPollIntervalMs: options.runIds.length > 1
+        ? MAX_MULTI_RUN_POLL_INTERVAL_MS
+        : MAX_POLL_INTERVAL_MS,
+      stateFirstAppearanceGraceMs: options.stateFirstAppearanceGraceMs,
+      writeStdout: (line) => linesByRunId.set(runId, line),
+      sleep: options.sleep,
+      now: options.now,
+      watch: options.watch,
+      signal: abortController.signal,
+    });
+    if (result.postTerminal) postTerminalRunIds.add(runId);
+  });
+
+  let checkInTimer: ReturnType<typeof setTimeout> | undefined;
+  const checkIn = new Promise<'check_in'>((resolve) => {
+    checkInTimer = setTimeout(() => resolve('check_in'), options.checkInMs);
+  });
+
+  try {
+    const outcome = await Promise.race([
+      Promise.all(waits).then(() => 'terminal' as const),
+      checkIn,
+    ]);
+    if (outcome === 'terminal') {
+      if (checkInTimer) clearTimeout(checkInTimer);
+      writeCompletedLines(options.runIds, linesByRunId, writeStdout);
+      return {
+        postTerminalRunIds: options.runIds.filter((runId) => postTerminalRunIds.has(runId)),
+      };
+    }
+
+    abortController.abort();
+    await Promise.allSettled(waits);
+    const checkInRunIds: string[] = [];
+    for (const runId of options.runIds) {
+      if (linesByRunId.has(runId)) continue;
+      const statePath = join(crewHome, 'runs', runId, 'state.json');
+      const snapshot = await readStateSnapshotIfPresent(statePath);
+      if (!snapshot) throw new CrewWaitUnknownRunError(runId, statePath);
+      const exit = watcherExit(snapshot.state, runId);
+      if (exit) {
+        linesByRunId.set(runId, exit.line);
+        if (exit.postTerminal) postTerminalRunIds.add(runId);
+        continue;
+      }
+      linesByRunId.set(runId, checkInLine(snapshot.state, runId));
+      checkInRunIds.push(runId);
+    }
+    writeCompletedLines(options.runIds, linesByRunId, writeStdout);
+    return {
+      postTerminalRunIds: options.runIds.filter((runId) => postTerminalRunIds.has(runId)),
+      ...(checkInRunIds.length > 0 ? { checkInRunIds } : {}),
+    };
+  } catch (err) {
+    abortController.abort();
+    await Promise.allSettled(waits);
+    throw err;
+  } finally {
+    if (checkInTimer) clearTimeout(checkInTimer);
+  }
 }
 
 function writeCompletedLines(
@@ -643,6 +732,14 @@ function watcherExit(state: PersistedRunState, fallbackRunId: string): WatcherEx
   };
 }
 
+function checkInLine(state: PersistedRunState, fallbackRunId: string): string {
+  const runId = typeof state.runId === 'string' ? state.runId : fallbackRunId;
+  const agent = typeof state.agentId === 'string' ? state.agentId : '';
+  const status = typeof state.status === 'string' ? state.status : 'running';
+  const worktree = typeof state.worktreePath === 'string' ? state.worktreePath : '';
+  return `CREW_WAIT_CHECK_IN run_id=${runId} agent=${agent} status=${status} worktree=${worktree}`;
+}
+
 async function recordTerminalObserved(
   context: WaitContext,
   status: string,
@@ -704,10 +801,10 @@ async function readStateSnapshotIfPresent(
 
 export function usage(): string {
   return [
-    'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>] [--run-generations-base64 <base64url>] <run_id...>',
+    'Usage: crew-wait [--crew-home-base64 <base64url>] [--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>] [--run-generations-base64 <base64url>] [--check-in-ms <n> --check-in-action-id <id>] <run_id...>',
     '',
-    'Wait for one or more crew runs to reach terminal or post-terminal state and print one metadata line per run.',
-    'With a Codex wake option, start or enqueue a completion turn for the dispatch-terminal runs.',
+    'Wait for one or more crew runs to reach terminal/post-terminal state or an optional check-in deadline, then print one metadata line per run.',
+    'With a Codex wake option, start or enqueue a terminal or periodic check-in turn.',
   ].join('\n');
 }
 
@@ -721,6 +818,9 @@ export interface CrewWaitMainDependencies {
   ) => Promise<QueueCodexThreadResult>;
   readonly runClaimedCodexWake?: (
     options: ClaimedCodexWakeOptions<unknown>,
+  ) => Promise<ClaimedCodexWakeResult<unknown>>;
+  readonly runClaimedCodexCheckInWake?: (
+    options: ClaimedCodexCheckInWakeOptions<unknown>,
   ) => Promise<ClaimedCodexWakeResult<unknown>>;
 }
 
@@ -743,6 +843,7 @@ export async function main(
   const waitResult = await waitForRunsTerminal({
     runIds: parsed.runIds,
     crewHome,
+    ...(parsed.checkInMs !== undefined ? { checkInMs: parsed.checkInMs } : {}),
   });
   if (parsed.codexBridgeFile || parsed.codexQueueThreadId) {
     if (!parsed.runGenerations || parsed.runGenerations.length !== parsed.runIds.length) {
@@ -760,18 +861,33 @@ export async function main(
 
     const wakeRunIds = wakeTargets.map(({ runId }) => runId);
     const wakeRunGenerations = wakeTargets.map(({ generation }) => generation);
+    const checkInWake = (waitResult.checkInRunIds?.length ?? 0) > 0;
+    if (checkInWake && parsed.checkInActionId === undefined) {
+      throw new Error('Codex check-in wake requires a check-in action id');
+    }
     if (parsed.codexQueueThreadId) {
       const threadId = parsed.codexQueueThreadId;
-      const claimResult = await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
-        crewHome,
+      const startTurn = () => (dependencies.queueCodexThread ?? queueCodexThread)({
         threadId,
         runIds: wakeRunIds,
-        runGenerations: wakeRunGenerations,
-        startTurn: () => (dependencies.queueCodexThread ?? queueCodexThread)({
-          threadId,
-          runIds: wakeRunIds,
-        }),
+        ...(checkInWake ? { wakeKind: 'check_in' as const } : {}),
       });
+      const claimResult = checkInWake
+        ? await (dependencies.runClaimedCodexCheckInWake ?? runClaimedCodexCheckInWake)({
+            crewHome,
+            threadId,
+            runIds: wakeRunIds,
+            runGenerations: wakeRunGenerations,
+            checkInActionId: parsed.checkInActionId!,
+            startTurn,
+          })
+        : await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
+            crewHome,
+            threadId,
+            runIds: wakeRunIds,
+            runGenerations: wakeRunGenerations,
+            startTurn,
+          });
       if (!claimResult.started) {
         process.stdout.write(
           `CREW_WAIT_CODEX_WAKE_SKIPPED thread_id=${threadId} reason=${claimResult.reason}\n`,
@@ -790,14 +906,24 @@ export async function main(
       bridgeFile: parsed.codexBridgeFile!,
       threadId: threadId ?? '',
       runIds: wakeRunIds,
+      ...(checkInWake ? { wakeKind: 'check_in' as const } : {}),
       guardTurnStart: async (startTurn) => {
-        claimResult = await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
-          crewHome,
-          threadId: threadId ?? '',
-          runIds: wakeRunIds,
-          runGenerations: wakeRunGenerations,
-          startTurn,
-        });
+        claimResult = checkInWake
+          ? await (dependencies.runClaimedCodexCheckInWake ?? runClaimedCodexCheckInWake)({
+              crewHome,
+              threadId: threadId ?? '',
+              runIds: wakeRunIds,
+              runGenerations: wakeRunGenerations,
+              checkInActionId: parsed.checkInActionId!,
+              startTurn,
+            })
+          : await (dependencies.runClaimedCodexWake ?? runClaimedCodexWake)({
+              crewHome,
+              threadId: threadId ?? '',
+              runIds: wakeRunIds,
+              runGenerations: wakeRunGenerations,
+              startTurn,
+            });
         return claimResult.started
           ? { action: 'start', result: claimResult.result }
           : { action: 'skip' };
@@ -824,6 +950,8 @@ function parseCliArgs(argv: readonly string[]): {
   readonly codexBridgeFile?: string;
   readonly codexQueueThreadId?: string;
   readonly runGenerations?: readonly number[];
+  readonly checkInMs?: number;
+  readonly checkInActionId?: string;
 } | undefined {
   const remaining = [...argv];
   let crewHome: string | undefined;
@@ -878,11 +1006,31 @@ function parseCliArgs(argv: readonly string[]): {
     }
     remaining.splice(generationsFlagIndex, 2);
   }
+  let checkInMs: number | undefined;
+  const checkInMsFlagIndex = remaining.indexOf('--check-in-ms');
+  if (checkInMsFlagIndex >= 0) {
+    const raw = remaining[checkInMsFlagIndex + 1];
+    if (!raw || !/^\d+$/.test(raw)) return undefined;
+    checkInMs = Number.parseInt(raw, 10);
+    if (!Number.isSafeInteger(checkInMs) || checkInMs <= 0) return undefined;
+    remaining.splice(checkInMsFlagIndex, 2);
+  }
+  let checkInActionId: string | undefined;
+  const checkInActionFlagIndex = remaining.indexOf('--check-in-action-id');
+  if (checkInActionFlagIndex >= 0) {
+    const raw = remaining[checkInActionFlagIndex + 1];
+    if (!raw || !/^[A-Za-z0-9._-]{1,128}$/.test(raw)) return undefined;
+    checkInActionId = raw;
+    remaining.splice(checkInActionFlagIndex, 2);
+  }
   if (codexBridgeFile !== undefined && codexQueueThreadId !== undefined) {
     return undefined;
   }
   const hasCodexWake = codexBridgeFile !== undefined || codexQueueThreadId !== undefined;
   if (hasCodexWake !== (runGenerations !== undefined)) {
+    return undefined;
+  }
+  if ((checkInMs === undefined) !== (checkInActionId === undefined)) {
     return undefined;
   }
   if (remaining.length < 1 || remaining.some((arg) => arg.startsWith('-'))) {
@@ -897,6 +1045,8 @@ function parseCliArgs(argv: readonly string[]): {
     ...(codexBridgeFile ? { codexBridgeFile } : {}),
     ...(codexQueueThreadId ? { codexQueueThreadId } : {}),
     ...(runGenerations ? { runGenerations } : {}),
+    ...(checkInMs !== undefined ? { checkInMs } : {}),
+    ...(checkInActionId !== undefined ? { checkInActionId } : {}),
   };
 }
 

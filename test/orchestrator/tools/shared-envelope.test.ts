@@ -68,6 +68,26 @@ describe('dispatch envelope JIT fields', () => {
     ]);
   });
 
+  it('adds a one-shot periodic check-in to an iterate watcher command', () => {
+    const action = requiredNextActionForRun(
+      'codex',
+      'crew-wait --codex-queue-thread thread-id',
+      'run-iterate',
+      '/crew',
+      '/repo',
+      2,
+      600_000,
+    );
+    expect(action).toMatchObject({
+      type: 'spawn_watcher',
+      run_generation: 2,
+      check_in_interval_ms: 600_000,
+      check_in_action_id: expect.any(String),
+    });
+    expect(action?.command).toContain(' --check-in-ms 600000 --check-in-action-id ');
+    expect(action?.command).toMatch(/ run-iterate$/);
+  });
+
   it.each<RunMode>(['write', 'read_only', 'ephemeral_review'])(
     'builds single-line, UTF-8-byte-capped relay fields for %s mode and keeps them after trimming',
     (runMode) => {

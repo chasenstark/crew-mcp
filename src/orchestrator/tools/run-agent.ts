@@ -72,6 +72,7 @@ import {
   dispatchRelayFields,
   progressNotifierFrom,
   requiredNextActionForRun,
+  ITERATE_CHECK_IN_INTERVAL_MS,
   renderDispatchMarkdown,
   structuredRunEnvelope,
 } from './shared.js';
@@ -272,6 +273,9 @@ export async function runAgentToolHandler(
     deps.crewHome,
     deps.projectRoot,
     1,
+    args.criteria_set_id !== undefined && dispatchResult.runMode === 'write'
+      ? ITERATE_CHECK_IN_INTERVAL_MS
+      : undefined,
   );
   const env: FullRunEnvelope = {
     run_id: dispatchResult.runId,

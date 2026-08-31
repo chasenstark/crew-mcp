@@ -6021,6 +6021,76 @@ describe('crew serve — progress notifications', () => {
 });
 
 describe('crew serve — async-first dispatch + on-demand get_run_status', () => {
+  it('uses terminal-or-10-minute watchers for iterate implementers and re-arms on status', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const adapter = makeMockAdapter({
+      name: 'mock-iterate',
+      execute: async () => {
+        await gate;
+        return {
+          output: 'done',
+          filesModified: [],
+          status: 'success',
+          metadata: {},
+        };
+      },
+    });
+    const h = await startHarness([adapter], { clientName: 'claude-code' });
+    try {
+      const proposed = await h.client.callTool({
+        name: 'create_criteria',
+        arguments: {
+          criteria: [
+            {
+              title: 'Behavior works',
+              type: 'behavioral',
+              detail: 'The implementation satisfies the requested behavior.',
+            },
+          ],
+        },
+      });
+      const criteriaSetId = (proposed.structuredContent as { criteria_set_id: string })
+        .criteria_set_id;
+      await h.client.callTool({
+        name: 'confirm_criteria',
+        arguments: { criteria_set_id: criteriaSetId },
+      });
+
+      const run = await h.client.callTool({
+        name: 'run_agent',
+        arguments: {
+          agent_id: 'mock-iterate',
+          prompt: 'go',
+          criteria_set_id: criteriaSetId,
+        },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.required_next_action).toMatchObject({
+        check_in_interval_ms: 600_000,
+        check_in_action_id: expect.any(String),
+      });
+      expect(env.required_next_action?.command).toContain(' --check-in-ms 600000 ');
+
+      const status = await h.client.callTool({
+        name: 'get_run_status',
+        arguments: { run_id: env.run_id },
+      });
+      expect(status.structuredContent).toMatchObject({
+        status: 'running',
+        required_next_action: {
+          check_in_interval_ms: 600_000,
+          check_in_action_id: expect.any(String),
+        },
+      });
+      release();
+      await pollUntilTerminal(h.client, env.run_id);
+    } finally {
+      release();
+      await h.close();
+    }
+  });
+
   it('run_agent returns status:running immediately even when adapter is fast', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-fast',

@@ -14,6 +14,7 @@ const MAX_OUTPUT_CHARS = 8_000;
 export interface QueueCodexThreadOptions {
   readonly threadId: string;
   readonly runIds: readonly string[];
+  readonly wakeKind?: 'terminal' | 'check_in';
   readonly codexBinary?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly timeoutMs?: number;
@@ -59,7 +60,10 @@ export async function queueCodexThread(
     throw new CodexQueueWakeError('Codex queue timeout must be positive');
   }
 
-  return queueCodexPrompt(options, codexWakePrompt(options.runIds));
+  return queueCodexPrompt(
+    options,
+    codexWakePrompt(options.runIds, options.wakeKind),
+  );
 }
 
 export async function queueCodexPrWatchThread(

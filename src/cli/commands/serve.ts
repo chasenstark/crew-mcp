@@ -1436,7 +1436,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: GET_RUN_STATUS_DESCRIPTION,
       inputSchema: getRunStatusInputSchema.shape,
     },
-    async (args) => getRunStatusToolHandler(args, toolDeps),
+    async (args, extra) => getRunStatusToolHandler(args, toolDeps, extra),
   );
 
   // ---- cancel_run ------------------------------------------------------

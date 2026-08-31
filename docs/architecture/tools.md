@@ -140,7 +140,17 @@ watcher. Captains launch that command without blocking the conversation. On a
 completion wake they read status once; they do not hold the original tool turn
 open with `get_run_status` long polling.
 
+Criteria-linked write runs use a one-shot terminal-or-check-in watcher. Its
+`required_next_action` includes `check_in_interval_ms: 600000`; when the
+10-minute deadline wins, `crew-wait` emits `CREW_WAIT_CHECK_IN` and wakes the
+captain. A running `get_run_status` snapshot returns a fresh watcher action so
+the captain can report status and re-arm the next interval. Review-panel
+watchers remain terminal-only.
+
 `get_run_status` returns a lean running payload and a richer terminal payload.
+For a running criteria-linked write run on a watcher-capable host, the lean
+payload also carries the fresh `required_next_action` used to re-arm periodic
+check-ins.
 Both include the latest recorded `model_selection`; terminal `prompts` include
 the selection and goal outcome for every turn, plus `goal_budget` when used. A
 terminal-only wait is accepted only with

@@ -127,6 +127,41 @@ describe('getRunStatusToolHandler', () => {
     expect(wait.structuredContent?.warnings).toBeUndefined();
   });
 
+  it('re-arms a 10-minute watcher from a running iterate implementer snapshot', async () => {
+    await store.create({
+      runId: 'r-iterate-check-in',
+      agentId: 'codex',
+      worktreePath: '/wt/r-iterate-check-in',
+      initialPrompt: 'go',
+      criteriaSetId: 'criteria-1',
+      criteriaEpoch: 0,
+      runMode: 'write',
+    });
+
+    const response = await getRunStatusToolHandler(
+      { run_id: 'r-iterate-check-in' },
+      {
+        dispatcher: new ToolDispatcher(),
+        runStateStore: store,
+        crewHome,
+        projectRoot: repoRoot,
+        getClientKind: () => 'codex',
+        getCrewWaitCommand: () => 'crew-wait --codex-queue-thread thread-id',
+      },
+    );
+
+    expect(response.structuredContent?.required_next_action).toMatchObject({
+      type: 'spawn_watcher',
+      check_in_interval_ms: 600_000,
+      check_in_action_id: expect.any(String),
+      run_id: 'r-iterate-check-in',
+      run_generation: 1,
+    });
+    expect(
+      (response.structuredContent?.required_next_action as { command?: string }).command,
+    ).toContain(' --check-in-ms 600000 --check-in-action-id ');
+  });
+
   it('surfaces the latest model selection in snapshots, timeouts, and terminal turns', async () => {
     await store.create({
       runId: 'r-model-status',

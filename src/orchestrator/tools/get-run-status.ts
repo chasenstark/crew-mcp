@@ -49,12 +49,19 @@ import { runModeFromState } from '../run-mode.js';
 import { isTerminalPersistPending } from '../run-lifecycle-listeners.js';
 import type { RunStateStore, RunStateV1 } from '../run-state.js';
 import type { ToolDispatcher } from '../tool-dispatcher.js';
-import type { RequiredNextAction, ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import type {
+  RequiredNextAction,
+  ToolCallReturn,
+  ToolHandlerDeps,
+  ToolRequestExtra,
+} from './shared.js';
 import {
   errorContent,
   getRunStatusContent,
+  ITERATE_CHECK_IN_INTERVAL_MS,
   isTerminalRunStatus,
   MAX_LONG_POLL_MS,
+  requiredNextActionForRun,
   singleLineUtf8Cap,
 } from './shared.js';
 import {
@@ -143,14 +150,18 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read run status by run_id. Omit wait inputs for an immediate turn-start/post-watcher snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit user request; otherwise use the crew-wait watcher. Criteria-linked waits warn against long-polling. since_event_line pages events; max_events_tail caps terminal tail (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include latest model_selection and goal; terminal prompts retain per-turn selections/outcomes and aggregate goal_budget. Terminal results also include summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
+  `Read run status by run_id; omit wait inputs for an immediate snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit request. Criteria-linked waits warn toward crew-wait; running iterate write snapshots include required_next_action for the next 10-minute check-in. since_event_line pages events and max_events_tail caps terminal output (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include latest model_selection and goal. Terminal results add per-turn records, goal_budget, summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
 
 type GetRunStatusDeps = Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>
-  & Partial<Pick<ToolHandlerDeps, 'crewHome'>>;
+  & Partial<Pick<
+    ToolHandlerDeps,
+    'crewHome' | 'projectRoot' | 'getClientKind' | 'getCrewWaitCommand'
+  >>;
 
 export async function getRunStatusToolHandler(
   args: GetRunStatusInput,
   deps: GetRunStatusDeps,
+  extra?: ToolRequestExtra,
 ): Promise<ToolCallReturn> {
   const state = deps.runStateStore.read(args.run_id);
   if (!state) {
@@ -186,6 +197,7 @@ export async function getRunStatusToolHandler(
       args.max_events_tail,
       deps.crewHome,
       waitWarnings,
+      periodicWatcherAction(state, deps, extra),
     );
   }
 
@@ -203,6 +215,7 @@ export async function getRunStatusToolHandler(
         args.max_events_tail,
         deps.crewHome,
         waitWarnings,
+        periodicWatcherAction(state, deps, extra),
       );
     }
   }
@@ -222,6 +235,7 @@ export async function getRunStatusToolHandler(
   if (terminalOnly && timedOut && !isTerminalRunStatus(fresh.status)) {
     const latestSelection = latestModelSelection(fresh.prompts);
     const latestGoal = fresh.prompts.at(-1)?.goal;
+    const requiredNextAction = periodicWatcherAction(fresh, deps, extra);
     return getRunStatusContent(args.run_id, {
       status: 'running',
       timed_out: true,
@@ -229,6 +243,9 @@ export async function getRunStatusToolHandler(
         ? { model_selection: modelSelectionToWire(latestSelection) }
         : {}),
       ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
+      ...(requiredNextAction !== undefined
+        ? { required_next_action: requiredNextAction }
+        : {}),
       ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
     });
   }
@@ -241,6 +258,7 @@ export async function getRunStatusToolHandler(
     args.max_events_tail,
     deps.crewHome,
     waitWarnings,
+    periodicWatcherAction(fresh, deps, extra),
   );
 }
 
@@ -286,6 +304,7 @@ function buildGetRunStatusResponse(
   maxEventsTail: number | undefined,
   crewHome: string | undefined,
   waitWarnings: readonly string[] = [],
+  runningRequiredNextAction?: RequiredNextAction,
 ): ToolCallReturn {
   const status = state.status;
   const terminal = isTerminalRunStatus(status);
@@ -328,6 +347,9 @@ function buildGetRunStatusResponse(
         ? { model_selection: modelSelectionToWire(latestSelection) }
         : {}),
       ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
+      ...(runningRequiredNextAction !== undefined
+        ? { required_next_action: runningRequiredNextAction }
+        : {}),
       ...(waitWarnings.length > 0 ? { warnings: waitWarnings } : {}),
       ...legacyLogTail,
     };
@@ -396,6 +418,33 @@ function buildGetRunStatusResponse(
     ...legacyLogTail,
   };
   return getRunStatusContent(runId, payload);
+}
+
+function periodicWatcherAction(
+  state: RunStateV1,
+  deps: GetRunStatusDeps,
+  extra: ToolRequestExtra | undefined,
+): RequiredNextAction | undefined {
+  if (
+    state.status !== 'running'
+    || state.criteriaSetId === undefined
+    || runModeFromState(state) !== 'write'
+    || deps.crewHome === undefined
+    || deps.projectRoot === undefined
+    || deps.getClientKind === undefined
+    || deps.getCrewWaitCommand === undefined
+  ) {
+    return undefined;
+  }
+  return requiredNextActionForRun(
+    deps.getClientKind(),
+    deps.getCrewWaitCommand(extra),
+    state.runId,
+    deps.crewHome,
+    deps.projectRoot,
+    state.prompts.length,
+    ITERATE_CHECK_IN_INTERVAL_MS,
+  );
 }
 
 export interface TerminalInboxBlock {
