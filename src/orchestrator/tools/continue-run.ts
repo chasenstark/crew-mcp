@@ -33,7 +33,7 @@ import { appendWorkerFooterForAdapter } from '../peer-messages/worker-footer.js'
 import type { PeerMessageInput } from '../peer-messages/schema.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
-import { readConfigFile } from '../../utils/config-store.js';
+import { readConfigFile, resolveCheckInIntervalMs } from '../../utils/config-store.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import {
   deleteWorkerReadyMarker,
@@ -57,7 +57,6 @@ import {
   inFlightForRun,
   progressNotifierFrom,
   runDispatchAndRespond,
-  ITERATE_CHECK_IN_INTERVAL_MS,
 } from './shared.js';
 import { assertNoBusyWorktreeBlockers } from './lifecycle-guards.js';
 import {
@@ -401,7 +400,7 @@ export async function continueRunToolHandler(
       runMode,
       modelSelection: modelSelection.record,
       watcherCheckInIntervalMs: criteriaContract !== undefined && runMode === 'write'
-        ? ITERATE_CHECK_IN_INTERVAL_MS
+        ? resolveCheckInIntervalMs(deps.crewHome)
         : undefined,
       onStartFailure: rollbackContinuation,
     });

@@ -148,7 +148,7 @@ export interface IterationContinuationBackstop {
  * criteria revision without letting a stale captain loop forever.
  */
 export function iterationContinuationBackstop(
-  limits: CrewIterateConfig,
+  limits: Pick<CrewIterateConfig, 'maxRoundsPerEpoch' | 'maxTotalRounds'>,
 ): IterationContinuationBackstop {
   return {
     warnPerEpoch: limits.maxRoundsPerEpoch + 1,

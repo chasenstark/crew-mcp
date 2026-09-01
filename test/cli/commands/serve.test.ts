@@ -6102,6 +6102,72 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
     }
   });
 
+  it('honors a configured check-in cadence and disables check-ins at -1', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const adapter = makeMockAdapter({
+      name: 'mock-cadence',
+      execute: async () => {
+        await gate;
+        return { output: 'done', filesModified: [], status: 'success', metadata: {} };
+      },
+    });
+    const h = await startHarness([adapter], { clientName: 'claude-code' });
+    try {
+      writeFileSync(
+        join(h.crewHome, 'config.json'),
+        JSON.stringify({ iterate: { checkInMinutes: 5 } }),
+      );
+      const dispatchWithCriteria = async () => {
+        const proposed = await h.client.callTool({
+          name: 'create_criteria',
+          arguments: {
+            criteria: [{
+              title: 'Behavior works',
+              type: 'behavioral',
+              detail: 'The implementation satisfies the requested behavior.',
+            }],
+          },
+        });
+        const criteriaSetId = (proposed.structuredContent as { criteria_set_id: string })
+          .criteria_set_id;
+        await h.client.callTool({
+          name: 'confirm_criteria',
+          arguments: { criteria_set_id: criteriaSetId },
+        });
+        const run = await h.client.callTool({
+          name: 'run_agent',
+          arguments: { agent_id: 'mock-cadence', prompt: 'go', criteria_set_id: criteriaSetId },
+        });
+        return run.structuredContent as FullRunEnvelope;
+      };
+
+      const tuned = await dispatchWithCriteria();
+      expect(tuned.required_next_action).toMatchObject({
+        check_in_interval_ms: 300_000,
+        check_in_action_id: expect.any(String),
+      });
+      expect(tuned.required_next_action?.command).toContain(' --check-in-ms 300000 ');
+
+      writeFileSync(
+        join(h.crewHome, 'config.json'),
+        JSON.stringify({ iterate: { checkInMinutes: -1 } }),
+      );
+      const disabled = await dispatchWithCriteria();
+      expect(disabled.required_next_action).toBeDefined();
+      expect(disabled.required_next_action).not.toHaveProperty('check_in_interval_ms');
+      expect(disabled.required_next_action).not.toHaveProperty('check_in_action_id');
+      expect(disabled.required_next_action?.command).not.toContain('--check-in-ms');
+
+      release();
+      await pollUntilTerminal(h.client, tuned.run_id);
+      await pollUntilTerminal(h.client, disabled.run_id);
+    } finally {
+      release();
+      await h.close();
+    }
+  });
+
   it('run_agent returns status:running immediately even when adapter is fast', async () => {
     const adapter = makeMockAdapter({
       name: 'mock-fast',

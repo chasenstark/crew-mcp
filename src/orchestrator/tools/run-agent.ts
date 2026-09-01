@@ -58,6 +58,7 @@ import type { DispatchTask } from '../tool-dispatcher.js';
 import type { EphemeralSnapshotSource, WorktreeManager } from '../../git/worktree.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
+import { resolveCheckInIntervalMs } from '../../utils/config-store.js';
 import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
 import { makeRunId } from '../run-id.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
@@ -72,7 +73,6 @@ import {
   dispatchRelayFields,
   progressNotifierFrom,
   requiredNextActionForRun,
-  ITERATE_CHECK_IN_INTERVAL_MS,
   renderDispatchMarkdown,
   structuredRunEnvelope,
 } from './shared.js';
@@ -274,7 +274,7 @@ export async function runAgentToolHandler(
     deps.projectRoot,
     1,
     args.criteria_set_id !== undefined && dispatchResult.runMode === 'write'
-      ? ITERATE_CHECK_IN_INTERVAL_MS
+      ? resolveCheckInIntervalMs(deps.crewHome)
       : undefined,
   );
   const env: FullRunEnvelope = {

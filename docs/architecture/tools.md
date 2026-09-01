@@ -143,7 +143,9 @@ open with `get_run_status` long polling.
 
 Criteria-linked write runs and `run_panel` panel-level watchers use a
 one-shot terminal-or-check-in watcher. Their `required_next_action` includes
-`check_in_interval_ms: 600000`; when the 10-minute deadline wins, `crew-wait`
+`check_in_interval_ms` (default 600000, from `iterate.checkInMinutes` in the
+per-machine config; `-1` disables check-ins and the watchers become
+terminal-only); when the deadline wins, `crew-wait`
 emits `CREW_WAIT_CHECK_IN` and wakes the captain. A running `get_run_status`
 snapshot — or `get_panel_status` while `running_count > 0` — returns a fresh
 watcher action so the captain can report status and re-arm the next interval

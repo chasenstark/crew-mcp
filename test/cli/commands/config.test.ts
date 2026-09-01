@@ -177,11 +177,18 @@ describe('crew-mcp config subcommands', () => {
       stdout: new CaptureStdout(),
     });
 
+    await configSetCommand('iterate.checkInMinutes', '5', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
+
     const shown = new CaptureStdout();
     await configShowCommand('iterate', { cwd, crewHome, stdout: shown });
     expect(JSON.parse(shown.text)).toEqual({
       maxRoundsPerEpoch: 5,
       maxTotalRounds: 15,
+      checkInMinutes: 5,
     });
 
     await expect(configSetCommand('iterate.maxTotalRounds', '4', {
@@ -194,9 +201,25 @@ describe('crew-mcp config subcommands', () => {
       crewHome,
       stdout: new CaptureStdout(),
     })).rejects.toThrow(/positive integer/);
+    await expect(configSetCommand('iterate.checkInMinutes', '0', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    })).rejects.toThrow(/positive integer/);
+    await expect(configSetCommand('iterate.checkInMinutes', '1441', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    })).rejects.toThrow(/-1 or 1\.\.1440/);
+    await configSetCommand('iterate.checkInMinutes', '-1', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
     expect(readConfigFile(crewHome).iterate).toEqual({
       maxRoundsPerEpoch: 5,
       maxTotalRounds: 15,
+      checkInMinutes: -1,
     });
 
     await configUnsetCommand('iterate.maxTotalRounds', {
@@ -209,9 +232,15 @@ describe('crew-mcp config subcommands', () => {
       crewHome,
       stdout: new CaptureStdout(),
     });
+    await configUnsetCommand('iterate.checkInMinutes', {
+      cwd,
+      crewHome,
+      stdout: new CaptureStdout(),
+    });
     expect(readConfigFile(crewHome).iterate).toEqual({
       maxRoundsPerEpoch: 3,
       maxTotalRounds: 9,
+      checkInMinutes: 10,
     });
   });
 
@@ -340,7 +369,7 @@ describe('crew-mcp config subcommands', () => {
       '      Agent defaults...       Configure default agents for iterate and panel workflows',
       '      Provider models...      Choose the default model for each provider',
       '      Agent strengths...      Tune per-agent routing prose and strength tags',
-      '      Iteration limits...     Set crew-iterate round limits per epoch and overall',
+      '      Iteration limits...     Set crew-iterate round limits and the watcher check-in cadence',
       '      Cleanup & retention...  Set GC retention windows and reclaim stale worktrees/run-dirs now',
     ]);
 

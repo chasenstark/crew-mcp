@@ -43,10 +43,18 @@ export interface CrewIterateConfig {
   readonly maxRoundsPerEpoch: number;
   /** Captain-enforced review/fix rounds allowed across all criteria epochs. */
   readonly maxTotalRounds: number;
+  /**
+   * Minutes between periodic watcher check-ins for criteria-linked write
+   * implementers and review-panel watchers. `-1` disables check-ins (the
+   * watchers become terminal-only).
+   */
+  readonly checkInMinutes: number;
 }
 
 export const DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH = 3;
 export const DEFAULT_ITERATE_MAX_TOTAL_ROUNDS = 9;
+export const DEFAULT_ITERATE_CHECK_IN_MINUTES = 10;
+export const MAX_ITERATE_CHECK_IN_MINUTES = 24 * 60;
 
 export const DEFAULT_PR_WATCH_MAX_ACTIONABLE_WAKES = 20;
 export const DEFAULT_PR_WATCH_MAX_ACTION_ROUNDS = 5;
@@ -119,6 +127,7 @@ export const DEFAULT_CONFIG: CrewConfig = {
   iterate: {
     maxRoundsPerEpoch: DEFAULT_ITERATE_MAX_ROUNDS_PER_EPOCH,
     maxTotalRounds: DEFAULT_ITERATE_MAX_TOTAL_ROUNDS,
+    checkInMinutes: DEFAULT_ITERATE_CHECK_IN_MINUTES,
   },
   prWatch: {
     maxActionableWakes: DEFAULT_PR_WATCH_MAX_ACTIONABLE_WAKES,
@@ -135,6 +144,16 @@ export const DEFAULT_CONFIG: CrewConfig = {
 
 export function resolveConfigPath(crewHome: string): string {
   return join(crewHome, CONFIG_FILENAME);
+}
+
+/**
+ * The periodic watcher check-in interval in milliseconds, or undefined when
+ * check-ins are disabled (`iterate.checkInMinutes: -1`), in which case
+ * dispatch envelopes hand out terminal-only watchers.
+ */
+export function resolveCheckInIntervalMs(crewHome: string): number | undefined {
+  const minutes = readConfigFile(crewHome).iterate.checkInMinutes;
+  return minutes === -1 ? undefined : minutes * 60_000;
 }
 
 /**
@@ -232,12 +251,22 @@ export function readConfigFile(crewHome: string): CrewConfig {
         DEFAULT_CONFIG.iterate.maxTotalRounds,
         path,
       );
+      out.iterate.checkInMinutes = iterate.checkInMinutes === undefined
+        ? DEFAULT_CONFIG.iterate.checkInMinutes
+        : readBoundedDays(
+            iterate.checkInMinutes,
+            'iterate.checkInMinutes',
+            DEFAULT_CONFIG.iterate.checkInMinutes,
+            path,
+            MAX_ITERATE_CHECK_IN_MINUTES,
+          );
       if (out.iterate.maxTotalRounds < out.iterate.maxRoundsPerEpoch) {
         logger.warn(
           `[config] ${path}: "iterate.maxTotalRounds" must be greater than or equal to `
-          + '"iterate.maxRoundsPerEpoch"; using iterate defaults',
+          + '"iterate.maxRoundsPerEpoch"; using iterate round defaults',
         );
-        out.iterate = { ...DEFAULT_CONFIG.iterate };
+        out.iterate.maxRoundsPerEpoch = DEFAULT_CONFIG.iterate.maxRoundsPerEpoch;
+        out.iterate.maxTotalRounds = DEFAULT_CONFIG.iterate.maxTotalRounds;
       }
     } else {
       logger.warn(`[config] ${path}: "iterate" must be an object; using defaults`);
@@ -344,6 +373,7 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
   merged.iterate = {
     maxRoundsPerEpoch: iterate.maxRoundsPerEpoch,
     maxTotalRounds: iterate.maxTotalRounds,
+    checkInMinutes: iterate.checkInMinutes ?? DEFAULT_CONFIG.iterate.checkInMinutes,
   };
   const prWatch = config.prWatch ?? DEFAULT_CONFIG.prWatch;
   merged.prWatch = {
@@ -445,6 +475,9 @@ const DEFAULT_README: readonly string[] = [
   '    captain pauses within one confirmed criteria epoch.',
   '  - iterate.maxTotalRounds (positive integer): rounds before the captain',
   '    pauses across all epochs; must be >= maxRoundsPerEpoch.',
+  '  - iterate.checkInMinutes (-1 or 1..1440): minutes between periodic',
+  '    watcher check-ins for criteria-linked implementers and review',
+  '    panels; -1 disables check-ins (terminal-only watchers).',
   '  - prWatch.maxActionableWakes (positive integer): actionable wake budget.',
   '  - prWatch.maxActionRounds (positive integer): maximum authorized action rounds.',
   '  - prWatch.maxWatchAgeDays (-1 or 1..365): age before explicit extension is required.',
@@ -470,6 +503,7 @@ function cloneConfig(config: CrewConfig): CrewConfig {
     iterate: {
       maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
       maxTotalRounds: config.iterate.maxTotalRounds,
+      checkInMinutes: config.iterate.checkInMinutes,
     },
     prWatch: {
       maxActionableWakes: config.prWatch.maxActionableWakes,
@@ -488,7 +522,7 @@ function cloneConfig(config: CrewConfig): CrewConfig {
 function mutableConfig(config: CrewConfig): {
   notifications: { success: boolean; error: boolean };
   confirmBeforeMerge: boolean;
-  iterate: { maxRoundsPerEpoch: number; maxTotalRounds: number };
+  iterate: { maxRoundsPerEpoch: number; maxTotalRounds: number; checkInMinutes: number };
   prWatch: { maxActionableWakes: number; maxActionRounds: number; maxWatchAgeDays: number };
   cleanup: {
     worktreeTtlDays: number;
@@ -506,6 +540,7 @@ function mutableConfig(config: CrewConfig): {
     iterate: {
       maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
       maxTotalRounds: config.iterate.maxTotalRounds,
+      checkInMinutes: config.iterate.checkInMinutes,
     },
     prWatch: {
       maxActionableWakes: config.prWatch.maxActionableWakes,

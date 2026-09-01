@@ -34,6 +34,7 @@ crew-mcp config set notifications.success false
 crew-mcp config set confirmBeforeMerge true
 crew-mcp config set iterate.maxRoundsPerEpoch 5
 crew-mcp config set iterate.maxTotalRounds 15
+crew-mcp config set iterate.checkInMinutes 5
 crew-mcp config set prWatch.maxActionableWakes 20
 crew-mcp config set prWatch.maxActionRounds 5
 crew-mcp config set prWatch.maxWatchAgeDays 14
@@ -45,6 +46,10 @@ Crew-iterate defaults to 3 rounds per criteria epoch and 9 rounds total.
 `maxTotalRounds` must be greater than or equal to `maxRoundsPerEpoch`. The
 captain pauses for a user choice at either limit; the server derives a higher
 runaway-loop backstop from the same settings.
+
+`iterate.checkInMinutes` sets the periodic watcher check-in cadence for
+criteria-linked implementers and review panels (default 10, range 1..1440;
+`-1` disables check-ins so those watchers become terminal-only).
 
 Agent-default paths are also scriptable:
 

@@ -43,7 +43,7 @@ describe('getCrewPreferencesHandler', () => {
     });
 
     expect(out).toEqual({
-      iterationLimits: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterationLimits: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       warnings: [],
     });
   });
@@ -66,7 +66,7 @@ describe('getCrewPreferencesHandler', () => {
         implementer: 'codex',
         reviewers: ['claude-code'],
       },
-      iterationLimits: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterationLimits: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       panel: {
         reviewers: ['codex', 'claude-code'],
       },

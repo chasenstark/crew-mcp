@@ -58,8 +58,9 @@ consent — nothing dispatches until you answer.
 
 **2. One implementer builds.** A single write run in an isolated git
 worktree. The captain reports the dispatch and hands the conversation back to
-you; a watcher wakes it when the run becomes terminal or when a 10-minute
-check-in is due. At each check-in the captain reads and reports current status,
+you; a watcher wakes it when the run becomes terminal or when a periodic
+check-in is due (default every 10 minutes; tune or disable with
+`crew-mcp config set iterate.checkInMinutes <minutes|-1>`). At each check-in the captain reads and reports current status,
 then re-arms the next interval if the implementer is still running. Crew never
 holds the turn open by polling, a check-in does not start review, and a wake by
 itself authorizes nothing — not continuation, not cleanup, not merge.
@@ -67,7 +68,7 @@ itself authorizes nothing — not continuation, not cleanup, not merge.
 **3. Reviewers score every criterion.** The confirmed Crew reviewers and the
 host-native reviewer each read the full diff and return a complete
 PASS/FAIL score with `file:line` evidence — a full review each, not a
-concern-sliced one. The panel watcher checks in on the same 10-minute
+concern-sliced one. The panel watcher checks in on the same configurable
 cadence as the implementer, so a long review round reports progress instead
 of going silent until the last reviewer lands.
 

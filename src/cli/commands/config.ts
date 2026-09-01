@@ -66,6 +66,7 @@ import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   type CrewConfig,
   DEFAULT_CONFIG,
+  MAX_ITERATE_CHECK_IN_MINUTES,
   readConfigFile,
   resolveConfigPath,
   writeConfigFile,
@@ -87,6 +88,7 @@ export type MutableCrewConfig = {
   iterate: {
     maxRoundsPerEpoch: number;
     maxTotalRounds: number;
+    checkInMinutes: number;
   };
   prWatch: {
     maxActionableWakes: number;
@@ -172,6 +174,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     stdout.write(`  cleanup.criteriaSetTtlDays: ${fmtTtlDays(current.cleanup.criteriaSetTtlDays)}\n`);
     stdout.write(`  iterate.maxRoundsPerEpoch: ${current.iterate.maxRoundsPerEpoch}\n`);
     stdout.write(`  iterate.maxTotalRounds: ${current.iterate.maxTotalRounds}\n`);
+    stdout.write(`  iterate.checkInMinutes: ${fmtTtlDays(current.iterate.checkInMinutes)}\n`);
     stdout.write(`  prWatch.maxActionableWakes: ${current.prWatch.maxActionableWakes}\n`);
     stdout.write(`  prWatch.maxActionRounds: ${current.prWatch.maxActionRounds}\n`);
     stdout.write(`  prWatch.maxWatchAgeDays: ${fmtTtlDays(current.prWatch.maxWatchAgeDays)}\n`);
@@ -194,6 +197,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     iterate: {
       maxRoundsPerEpoch: current.iterate.maxRoundsPerEpoch,
       maxTotalRounds: current.iterate.maxTotalRounds,
+      checkInMinutes: current.iterate.checkInMinutes,
     },
     prWatch: {
       maxActionableWakes: current.prWatch.maxActionableWakes,
@@ -257,7 +261,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       {
         kind: 'action',
         label: 'Iteration limits...',
-        description: 'Set crew-iterate round limits per epoch and overall',
+        description: 'Set crew-iterate round limits and the watcher check-in cadence',
         onActivate: () => ({ push: iterateLimitsScreen }),
       },
       {
@@ -300,6 +304,7 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     || current.cleanup.prWatchTtlDays !== state.cleanup.prWatchTtlDays
     || current.iterate.maxRoundsPerEpoch !== state.iterate.maxRoundsPerEpoch
     || current.iterate.maxTotalRounds !== state.iterate.maxTotalRounds
+    || current.iterate.checkInMinutes !== state.iterate.checkInMinutes
     || current.prWatch.maxActionableWakes !== state.prWatch.maxActionableWakes
     || current.prWatch.maxActionRounds !== state.prWatch.maxActionRounds
     || current.prWatch.maxWatchAgeDays !== state.prWatch.maxWatchAgeDays;
@@ -529,6 +534,7 @@ type CrewSettingPath =
   | 'confirmBeforeMerge'
   | 'iterate.maxRoundsPerEpoch'
   | 'iterate.maxTotalRounds'
+  | 'iterate.checkInMinutes'
   | 'prWatch.maxActionableWakes'
   | 'prWatch.maxActionRounds'
   | 'prWatch.maxWatchAgeDays'
@@ -540,6 +546,7 @@ function isCrewSettingPath(path: string): path is CrewSettingPath {
     || path === 'confirmBeforeMerge'
     || path === 'iterate.maxRoundsPerEpoch'
     || path === 'iterate.maxTotalRounds'
+    || path === 'iterate.checkInMinutes'
     || path === 'prWatch.maxActionableWakes'
     || path === 'prWatch.maxActionRounds'
     || path === 'prWatch.maxWatchAgeDays'
@@ -558,6 +565,8 @@ function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | n
       return config.iterate.maxRoundsPerEpoch;
     case 'iterate.maxTotalRounds':
       return config.iterate.maxTotalRounds;
+    case 'iterate.checkInMinutes':
+      return config.iterate.checkInMinutes;
     case 'prWatch.maxActionableWakes':
       return config.prWatch.maxActionableWakes;
     case 'prWatch.maxActionRounds':
@@ -592,6 +601,9 @@ function writeCrewSetting(
     case 'iterate.maxTotalRounds':
       config.iterate.maxTotalRounds = value as number;
       return;
+    case 'iterate.checkInMinutes':
+      config.iterate.checkInMinutes = value as number;
+      return;
     case 'prWatch.maxActionableWakes':
       config.prWatch.maxActionableWakes = value as number;
       return;
@@ -610,6 +622,9 @@ function writeCrewSetting(
 }
 
 function parseCrewSettingValue(path: CrewSettingPath, raw: string): boolean | number {
+  if (path === 'iterate.checkInMinutes') {
+    return parseBoundedOrDisabledDays(path, raw, MAX_ITERATE_CHECK_IN_MINUTES);
+  }
   if (
     path.startsWith('iterate.')
     || path === 'prWatch.maxActionableWakes'
@@ -680,6 +695,7 @@ function mutableConfig(config: CrewConfig): MutableCrewConfig {
     iterate: {
       maxRoundsPerEpoch: config.iterate.maxRoundsPerEpoch,
       maxTotalRounds: config.iterate.maxTotalRounds,
+      checkInMinutes: config.iterate.checkInMinutes,
     },
     prWatch: {
       maxActionableWakes: config.prWatch.maxActionableWakes,

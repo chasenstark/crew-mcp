@@ -7,6 +7,7 @@ import {
   CONFIG_FILENAME,
   DEFAULT_CONFIG,
   readConfigFile,
+  resolveCheckInIntervalMs,
   resolveConfigPath,
   writeConfigFile,
 } from '../../src/utils/config-store.js';
@@ -32,7 +33,7 @@ describe('config-store', () => {
     const config = {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
-      iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15 },
+      iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15, checkInMinutes: 20 },
       prWatch: { maxActionableWakes: 9, maxActionRounds: 4, maxWatchAgeDays: 21 },
       cleanup: {
         worktreeTtlDays: 3,
@@ -54,7 +55,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: false, error: false },
       confirmBeforeMerge: true,
-      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
     });
@@ -69,6 +70,7 @@ describe('config-store', () => {
     expect(readConfigFile(home).iterate).toEqual({
       maxRoundsPerEpoch: 5,
       maxTotalRounds: 15,
+      checkInMinutes: DEFAULT_CONFIG.iterate.checkInMinutes,
     });
 
     writeFileSync(
@@ -79,6 +81,51 @@ describe('config-store', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     expect(readConfigFile(home).iterate).toEqual(DEFAULT_CONFIG.iterate);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('must be greater than or equal'));
+  });
+
+  it('parses the check-in cadence, keeps it through a rounds reset, and drops bad values', () => {
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ iterate: { checkInMinutes: 5 } }),
+      'utf-8',
+    );
+    expect(readConfigFile(home).iterate.checkInMinutes).toBe(5);
+    expect(resolveCheckInIntervalMs(home)).toBe(5 * 60_000);
+
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ iterate: { checkInMinutes: -1 } }),
+      'utf-8',
+    );
+    expect(readConfigFile(home).iterate.checkInMinutes).toBe(-1);
+    expect(resolveCheckInIntervalMs(home)).toBeUndefined();
+
+    // An inconsistent rounds pair resets only the rounds, not the cadence.
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ iterate: { maxRoundsPerEpoch: 10, maxTotalRounds: 5, checkInMinutes: 30 } }),
+      'utf-8',
+    );
+    const warnRounds = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    expect(readConfigFile(home).iterate).toEqual({
+      maxRoundsPerEpoch: DEFAULT_CONFIG.iterate.maxRoundsPerEpoch,
+      maxTotalRounds: DEFAULT_CONFIG.iterate.maxTotalRounds,
+      checkInMinutes: 30,
+    });
+    warnRounds.mockRestore();
+
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    for (const bad of [0, 1441, 2.5, 'ten', false]) {
+      writeFileSync(
+        join(home, CONFIG_FILENAME),
+        JSON.stringify({ iterate: { checkInMinutes: bad } }),
+        'utf-8',
+      );
+      expect(readConfigFile(home).iterate.checkInMinutes)
+        .toBe(DEFAULT_CONFIG.iterate.checkInMinutes);
+    }
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('iterate.checkInMinutes'));
+    expect(resolveCheckInIntervalMs(home)).toBe(10 * 60_000);
   });
 
   it('parses cleanup TTLs, accepts -1 (off), and drops bad values', () => {
@@ -128,7 +175,7 @@ describe('config-store', () => {
     writeConfigFile(home, {
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
-      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
     });
@@ -152,7 +199,7 @@ describe('config-store', () => {
     writeConfigFile(home, {
       notifications: { success: false, error: true },
       confirmBeforeMerge: false,
-      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
     });
@@ -190,7 +237,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: true, error: false },
       confirmBeforeMerge: true,
-      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
     });
@@ -207,7 +254,7 @@ describe('config-store', () => {
     expect(readConfigFile(home)).toEqual({
       notifications: { success: true, error: true },
       confirmBeforeMerge: false,
-      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9 },
+      iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
     });

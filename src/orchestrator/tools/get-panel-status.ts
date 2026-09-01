@@ -10,6 +10,7 @@ import type { DispatchContext } from '../dispatch-run-agent-internal.js';
 import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
+import { resolveCheckInIntervalMs } from '../../utils/config-store.js';
 import type {
   ClientKind,
   SpawnWatcherRequiredNextAction,
@@ -20,7 +21,6 @@ import type {
 import {
   errorContent,
   isTerminalRunStatus,
-  ITERATE_CHECK_IN_INTERVAL_MS,
   markdownContent,
   mdInlineCode,
   requiredNextActionForRuns,
@@ -104,13 +104,14 @@ export function getPanelStatusToolHandler(
   try {
     const clientKind = deps.getClientKind?.();
     const crewWaitCommand = deps.getCrewWaitCommand?.(extra);
+    const checkInIntervalMs = resolveCheckInIntervalMs(deps.crewHome);
     const out = getPanelStatusHandler(args, {
       crewHome: deps.crewHome,
       runStateStore: deps.runStateStore,
       ...(clientKind !== undefined ? { clientKind } : {}),
       ...(crewWaitCommand !== undefined ? { crewWaitCommand } : {}),
       ...(deps.projectRoot !== undefined ? { projectRoot: deps.projectRoot } : {}),
-      checkInIntervalMs: ITERATE_CHECK_IN_INTERVAL_MS,
+      ...(checkInIntervalMs !== undefined ? { checkInIntervalMs } : {}),
     });
     return markdownContent(renderPanelStatusMarkdown(out), out);
   } catch (err) {

@@ -3,17 +3,33 @@ import type { KeyResult, Screen, TuiKey } from './screen.js';
 export interface IterateLimitsScreenState {
   maxRoundsPerEpoch: number;
   maxTotalRounds: number;
+  checkInMinutes: number;
 }
 
 const PRESETS: readonly number[] = [1, 2, 3, 5, 7, 9, 10, 12, 15, 20, 25, 30, 50];
-type Row = 'epoch' | 'total' | 'back';
-const ROWS: readonly Row[] = ['epoch', 'total', 'back'];
+/** -1 = check-ins off (terminal-only watchers). */
+const CHECK_IN_PRESETS: readonly number[] = [5, 10, 15, 20, 30, 60, -1];
+type Row = 'epoch' | 'total' | 'checkin' | 'back';
+const ROWS: readonly Row[] = ['epoch', 'total', 'checkin', 'back'];
 
 function nextPreset(current: number, minimum = 1): number {
   const eligible = PRESETS.filter((value) => value >= minimum);
   const index = eligible.indexOf(current);
   if (index < 0) return eligible.find((value) => value > current) ?? minimum;
   return eligible[(index + 1) % eligible.length];
+}
+
+function nextCheckInPreset(current: number): number {
+  const index = CHECK_IN_PRESETS.indexOf(current);
+  if (index < 0) {
+    return CHECK_IN_PRESETS.find((value) => value > current && value !== -1)
+      ?? CHECK_IN_PRESETS[0];
+  }
+  return CHECK_IN_PRESETS[(index + 1) % CHECK_IN_PRESETS.length];
+}
+
+function fmtCheckIn(minutes: number): string {
+  return minutes === -1 ? 'off' : `${minutes} min`;
 }
 
 /** Configure the captain-visible crew-iterate pause points. */
@@ -28,6 +44,7 @@ export class IterateLimitsScreen implements Screen {
       '',
       'Crew-iterate pauses for your choice when either limit is reached.',
       'The server keeps a separate derived runaway-loop backstop beyond them.',
+      'Check-in is the periodic status wake for implementer and panel watchers.',
       '',
     ];
     for (let index = 0; index < ROWS.length; index++) {
@@ -38,6 +55,9 @@ export class IterateLimitsScreen implements Screen {
           break;
         case 'total':
           lines.push(`${pointer} total rounds:     ${this.state.maxTotalRounds}   (space cycles)`);
+          break;
+        case 'checkin':
+          lines.push(`${pointer} check-in cadence: ${fmtCheckIn(this.state.checkInMinutes)}   (space cycles)`);
           break;
         case 'back':
           lines.push(`${pointer} back`);
@@ -91,6 +111,9 @@ export class IterateLimitsScreen implements Screen {
           this.state.maxTotalRounds,
           this.state.maxRoundsPerEpoch,
         );
+        return 'continue';
+      case 'checkin':
+        this.state.checkInMinutes = nextCheckInPreset(this.state.checkInMinutes);
         return 'continue';
       case 'back':
         return 'pop';

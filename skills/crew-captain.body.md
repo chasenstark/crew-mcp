@@ -374,8 +374,10 @@ A native `Agent` / `Task` subagent completion is host harness-tracked, not
 Crew-tracked, and tells you nothing about Crew runs.
 
 For a criteria-linked write run and for a `run_panel` panel-level watcher,
-`required_next_action` may include `check_in_interval_ms: 600000`. That
-command wakes on terminal state or after 10 minutes. Treat
+`required_next_action` may include `check_in_interval_ms` (default 600000;
+the user tunes or disables it with
+`crew-mcp config set iterate.checkInMinutes <minutes|-1>`). That command
+wakes on terminal state or at the check-in deadline. Treat
 `CREW_WAIT_CHECK_IN` as a status boundary: call `get_run_status` (or
 `get_panel_status({panel_id})` once for a panel), report the current status
 to the user, and—if anything is still `running`—launch the new

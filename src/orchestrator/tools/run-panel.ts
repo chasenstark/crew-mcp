@@ -44,6 +44,7 @@ import {
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import type { FullConfig } from '../../workflow/types.js';
 import { logBestEffortFailure } from '../../utils/best-effort.js';
+import { resolveCheckInIntervalMs } from '../../utils/config-store.js';
 import type {
   ClientKind,
   SpawnWatcherRequiredNextAction,
@@ -54,7 +55,6 @@ import type {
 import {
   agentIdForClientKind,
   errorContent,
-  ITERATE_CHECK_IN_INTERVAL_MS,
   markdownContent,
   mdInlineCode,
   nextStepSentence,
@@ -433,7 +433,7 @@ export async function runPanelHandler(
     ctx.crewHome,
     ctx.projectRoot,
     successfulReviewers.map(() => 1),
-    ITERATE_CHECK_IN_INTERVAL_MS,
+    resolveCheckInIntervalMs(ctx.crewHome),
   );
 
   return {

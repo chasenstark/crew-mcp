@@ -138,9 +138,11 @@ without `completedAfter`; filter terminal statuses and dedupe by `run_id`.
 
 **Periodic check-ins.** A criteria-linked write implementer's
 `required_next_action` and the panel-level watcher from `run_panel` both
-carry `check_in_interval_ms: 600000`; their exact commands wait for terminal
-state or that 10-minute deadline, whichever comes first. A deadline wake is
-`CREW_WAIT_CHECK_IN`, not completion. On that turn:
+carry `check_in_interval_ms` (default 600000; the user tunes or disables it
+with `crew-mcp config set iterate.checkInMinutes <minutes|-1>`, and a
+disabled cadence makes these watchers terminal-only); their exact commands
+wait for terminal state or that deadline, whichever comes first. A deadline
+wake is `CREW_WAIT_CHECK_IN`, not completion. On that turn:
 
 1. For an implementer, call `get_run_status({run_id})` once; for a panel,
    call `get_panel_status({panel_id})` once. Report a concise status update

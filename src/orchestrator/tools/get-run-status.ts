@@ -46,6 +46,7 @@ import { listMessages } from '../captain-inbox/store.js';
 import type { CaptainInboxMessage } from '../captain-inbox/schema.js';
 import { formatProgressLines } from '../progress.js';
 import { runModeFromState } from '../run-mode.js';
+import { resolveCheckInIntervalMs } from '../../utils/config-store.js';
 import { isTerminalPersistPending } from '../run-lifecycle-listeners.js';
 import type { RunStateStore, RunStateV1 } from '../run-state.js';
 import type { ToolDispatcher } from '../tool-dispatcher.js';
@@ -58,7 +59,6 @@ import type {
 import {
   errorContent,
   getRunStatusContent,
-  ITERATE_CHECK_IN_INTERVAL_MS,
   isTerminalRunStatus,
   MAX_LONG_POLL_MS,
   requiredNextActionForRun,
@@ -443,7 +443,7 @@ function periodicWatcherAction(
     deps.crewHome,
     deps.projectRoot,
     state.prompts.length,
-    ITERATE_CHECK_IN_INTERVAL_MS,
+    resolveCheckInIntervalMs(deps.crewHome),
   );
 }
 

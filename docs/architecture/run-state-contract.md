@@ -66,7 +66,8 @@ dispatch termination; post-terminal statuses are still never reported as
 `CREW_WAIT_TERMINAL`.
 
 Criteria-linked write runs and panel-level review watchers may invoke
-`crew-wait` with a 10-minute check-in deadline. If any watched run is still
+`crew-wait` with a periodic check-in deadline (default 10 minutes;
+`iterate.checkInMinutes`). If any watched run is still
 active when that deadline wins, the watcher prints
 `CREW_WAIT_CHECK_IN run_id=<id> agent=<agent> status=running worktree=<path>`
 for each still-running run (already-terminal peers keep their terminal
