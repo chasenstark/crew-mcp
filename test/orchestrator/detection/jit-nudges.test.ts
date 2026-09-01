@@ -89,6 +89,93 @@ describe('detectJitNudges', () => {
     }
   });
 
+  it('warns a Codex captain about a recent terminal write run with no watcher claim', () => {
+    const fixture = makeFixture();
+    writeState(fixture, stateFixture({
+      runId: 'codex-orphan-run',
+      status: 'success',
+      generationStartedAtMs: NOW_MS - 5 * MINUTE_MS,
+      completedAtMs: NOW_MS - 3 * MINUTE_MS,
+      runMode: 'write',
+    }));
+
+    const warnings = detect(fixture, { clientKind: 'codex' });
+    expect(warnings).toContainEqual(expect.stringContaining('orphan_recovery: run "codex-orphan-run"'));
+  });
+
+  it('warns a Codex captain about a running run whose current generation has no watcher', () => {
+    const fixture = makeFixture();
+    writeState(fixture, stateFixture({
+      runId: 'codex-unwatched-run',
+      status: 'running',
+      generationStartedAtMs: NOW_MS - 5 * MINUTE_MS,
+    }));
+
+    const warnings = detect(fixture, { clientKind: 'codex' });
+    expect(warnings).toContainEqual(
+      expect.stringContaining('missing_watcher: running run "codex-unwatched-run"'),
+    );
+    // Only a Codex captain depends on crew-wait for wakes of running runs;
+    // other hosts keep their existing terminal-side detections.
+    for (const clientKind of ['claude-code', 'codex-legacy', 'unknown'] as const) {
+      expect(detect(fixture, { clientKind }))
+        .not.toContainEqual(expect.stringContaining('missing_watcher'));
+    }
+  });
+
+  it('suppresses the missing-watcher nudge for watched, fresh, and stale running generations', () => {
+    const watched = makeFixture();
+    writeState(watched, stateFixture({
+      runId: 'codex-watched-run',
+      status: 'running',
+      generationStartedAtMs: NOW_MS - 5 * MINUTE_MS,
+    }));
+    writeWatch(watched, [{
+      event: 'start',
+      ts: iso(NOW_MS - 4 * MINUTE_MS),
+      run_id: 'codex-watched-run',
+      watcher_pid: 100,
+      watcher_instance: 'current-generation',
+    }]);
+    expect(detect(watched, { clientKind: 'codex' }))
+      .not.toContainEqual(expect.stringContaining('missing_watcher'));
+
+    const fresh = makeFixture();
+    writeState(fresh, stateFixture({
+      runId: 'codex-fresh-run',
+      status: 'running',
+      generationStartedAtMs: NOW_MS - 30_000,
+    }));
+    expect(detect(fresh, { clientKind: 'codex' }))
+      .not.toContainEqual(expect.stringContaining('missing_watcher'));
+
+    const stale = makeFixture();
+    writeState(stale, stateFixture({
+      runId: 'codex-stale-run',
+      status: 'running',
+      generationStartedAtMs: NOW_MS - TERMINAL_NUDGE_RECENCY_CEILING_MS - MINUTE_MS,
+    }));
+    expect(detect(stale, { clientKind: 'codex' }))
+      .not.toContainEqual(expect.stringContaining('missing_watcher'));
+
+    const priorGeneration = makeFixture();
+    writeState(priorGeneration, stateFixture({
+      runId: 'codex-continued-run',
+      status: 'running',
+      generationStartedAtMs: NOW_MS - 5 * MINUTE_MS,
+      promptCount: 2,
+    }));
+    writeWatch(priorGeneration, [{
+      event: 'start',
+      ts: iso(NOW_MS - 20 * MINUTE_MS),
+      run_id: 'codex-continued-run',
+      watcher_pid: 100,
+      watcher_instance: 'old-generation',
+    }]);
+    expect(detect(priorGeneration, { clientKind: 'codex' }))
+      .toContainEqual(expect.stringContaining('missing_watcher: running run "codex-continued-run"'));
+  });
+
   it('suppresses orphan recovery without watcher semantics, inside grace, and on continued running generations', () => {
     const nonWatcher = makeFixture();
     writeState(nonWatcher, stateFixture({
@@ -96,7 +183,7 @@ describe('detectJitNudges', () => {
       status: 'success',
       completedAtMs: NOW_MS - 3 * MINUTE_MS,
     }));
-    for (const clientKind of ['unknown', 'codex', 'codex-legacy'] as const) {
+    for (const clientKind of ['unknown', 'codex-legacy'] as const) {
       expect(detect(nonWatcher, { clientKind }))
         .not.toContainEqual(expect.stringContaining('orphan_recovery'));
     }

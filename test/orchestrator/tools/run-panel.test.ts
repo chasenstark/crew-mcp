@@ -266,6 +266,7 @@ describe('runPanelHandler', () => {
       ...out.reviewers.map((reviewer) => reviewer.required_next_action),
     ]) {
       expect(action).not.toHaveProperty('command_json');
+      expect(action).not.toHaveProperty('spawn_recipe_json');
       expect(action).not.toHaveProperty('run_ids_json');
       expect(action).not.toHaveProperty('working_directory_json');
     }
@@ -301,6 +302,14 @@ describe('runPanelHandler', () => {
       mechanism: 'codex_app_server',
       command: `${commandPrefix} ${runIds.join(' ')}`,
       command_json: JSON.stringify(`${commandPrefix} ${runIds.join(' ')}`),
+      spawn_recipe_json: JSON.stringify({
+        cmd: `${commandPrefix} ${runIds.join(' ')}`,
+        workdir: h.ctx.projectRoot,
+        sandbox_permissions: 'require_escalated',
+        justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.',
+        yield_time_ms: 1_000,
+        max_output_tokens: 1_000,
+      }),
       run_ids_json: JSON.stringify(runIds),
       working_directory: h.ctx.projectRoot,
       working_directory_json: JSON.stringify(h.ctx.projectRoot),

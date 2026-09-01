@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import {
   CrewWaitUnknownRunError,
   main,
   nextCrewWaitPollIntervalMs,
+  probeCodexWakeWritability,
   usage,
   waitForRunTerminal,
   waitForRunsTerminal,
@@ -553,6 +554,84 @@ describe('crew-wait', () => {
     }
     expect(writes.join('')).toContain(`CREW_WAIT_CHECK_IN run_id=${runId}`);
     expect(writes.join('')).toContain(`CREW_WAIT_CODEX_WAKE_QUEUED thread_id=${threadId}`);
+  });
+
+  it('probes wake writability before waiting and exits 4 from an unwritable Crew home', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-probe-denied-'));
+    cleanup.push(crewHome);
+    const runId = 'run-probe-denied';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+    writeStateAtomic(runDir, {
+      runId,
+      agentId: 'codex',
+      status: 'success',
+      worktreePath: '/tmp/worktree',
+      prompts: [{ turn: 1 }],
+    });
+    // Simulate the unescalated Codex sandbox: the Crew home is readable but
+    // nothing new can be created under it, so wake claims can never land.
+    chmodSync(crewHome, 0o555);
+    const stdoutWrites: string[] = [];
+    const stderrWrites: string[] = [];
+    const originalStdout = process.stdout.write;
+    const originalStderr = process.stderr.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      stdoutWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrWrites.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await expect(main([
+        '--crew-home-base64', Buffer.from(crewHome).toString('base64url'),
+        '--codex-queue-thread', '019f5d0f-a60c-7d53-9f35-2036d92d71ec',
+        '--run-generations-base64', Buffer.from('[1]').toString('base64url'),
+        runId,
+      ], {
+        runClaimedCodexWake: async () => {
+          throw new Error('an unwritable home must fail before any wake claim');
+        },
+        queueCodexThread: async () => {
+          throw new Error('an unwritable home must fail before queueing');
+        },
+      })).resolves.toBe(4);
+    } finally {
+      process.stdout.write = originalStdout;
+      process.stderr.write = originalStderr;
+      chmodSync(crewHome, 0o755);
+    }
+    expect(stdoutWrites.join('')).toContain('CREW_WAIT_WAKE_UNWRITABLE path=');
+    expect(stderrWrites.join('')).toContain('escalated permissions');
+  });
+
+  it('probeCodexWakeWritability passes a writable home, skips missing run dirs, and flags unwritable ones', async () => {
+    const crewHome = await mkdtemp(join(tmpdir(), 'crew-wait-probe-cases-'));
+    cleanup.push(crewHome);
+    const runId = 'run-probe-cases';
+    const runDir = join(crewHome, 'runs', runId);
+    mkdirSync(runDir, { recursive: true });
+
+    // Writable home: no failure, and the probe leaves no artifacts behind.
+    expect(probeCodexWakeWritability(crewHome, [runId])).toBeUndefined();
+    expect(readdirSync(runDir)).toEqual([]);
+    expect(readdirSync(join(crewHome, 'state-locks'))).toEqual([]);
+
+    // A run directory that does not exist yet is the unknown-run grace
+    // path's business, not a sandbox denial.
+    expect(probeCodexWakeWritability(crewHome, ['run-not-yet-created'])).toBeUndefined();
+
+    // An unwritable run directory blocks the wake claim itself.
+    chmodSync(runDir, 0o555);
+    try {
+      const failure = probeCodexWakeWritability(crewHome, [runId]);
+      expect(failure?.path).toContain(runDir);
+      expect(failure?.code).toBe('EACCES');
+    } finally {
+      chmodSync(runDir, 0o755);
+    }
   });
 
   it('wakes hosted Codex for every run in an all-terminal batch', async () => {

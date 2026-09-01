@@ -314,25 +314,18 @@ pinned Crew home, and the run id. Do not rebuild it from the rendered
 <!-- host:codex -->
 On Codex, immediately after `run_agent` / `continue_run` returns, call
 `functions.exec` once per independent run with this launch-only recipe. Paste
-`required_next_action.command_json` and
-`required_next_action.run_ids_json` and
-`required_next_action.working_directory_json` as JavaScript literals at
-the marked locations. Do not wrap any value in another quote or rebuild
-the command from memory. The working directory is load-bearing for
-project installs whose watcher executable is repository-relative.
+`required_next_action.spawn_recipe_json` and
+`required_next_action.run_ids_json` as JavaScript literals at the marked
+locations. The spawn recipe is the complete server-built `tools.exec_command`
+argument — command, working directory, and the escalated sandbox permission
+(`sandbox_permissions: 'require_escalated'`) with its justification. Do not
+wrap any value in another quote, rebuild the command from memory, or strip
+any field from the recipe.
 
 ```js
-const command = <required_next_action.command_json>;
+const recipe = <required_next_action.spawn_recipe_json>;
 const runIds = <required_next_action.run_ids_json>;
-const workdir = <required_next_action.working_directory_json>;
-const result = await tools.exec_command({
-  cmd: command,
-  workdir,
-  sandbox_permissions: 'require_escalated',
-  justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.',
-  yield_time_ms: 1000,
-  max_output_tokens: 1000,
-});
+const result = await tools.exec_command(recipe);
 if (result.exit_code !== undefined && result.exit_code !== 0) {
   throw new Error(`crew-wait failed to start: ${result.output}`);
 }
@@ -343,10 +336,13 @@ text(JSON.stringify({
 }));
 ```
 
-The escalation applies only to this exact server-returned watcher command. It
-is required because durable wake delivery locks and writes under the
-server-pinned Crew home outside the project workspace. Do not apply it to
-worker commands.
+The escalation inside the recipe applies only to this exact server-returned
+watcher command. It is required because durable wake delivery locks and
+writes under the server-pinned Crew home outside the project workspace. A
+watcher launched without it cannot deliver any wake: it exits immediately
+with `CREW_WAIT_WAKE_UNWRITABLE` (exit 4), which the recipe's exit-code
+check surfaces — relaunch with the exact recipe. Do not apply escalated
+permissions to worker commands.
 
 The nested command returns a background session after one second; do not poll
 it with `write_stdin`, `wait`, or another tool call. End the model turn. The

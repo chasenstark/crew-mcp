@@ -34,6 +34,7 @@ import {
 } from '../../utils/watch-index.js';
 
 export const ORPHAN_WATCHER_GRACE_MS = 2 * 60 * 1_000;
+export const MISSING_WATCHER_GRACE_MS = 2 * 60 * 1_000;
 export const UNSURFACED_TERMINAL_GRACE_MS = 2 * 60 * 1_000;
 // Covers an unusually long same-day captain session without excavating
 // day-old terminals that predate the watch index or no longer need attention.
@@ -133,7 +134,7 @@ export function detectJitNudges(input: DetectJitNudgesInput): string[] {
       const terminalMs = currentTerminalMs(state);
       const terminalAgeMs = terminalMs === undefined ? undefined : nowMs - terminalMs;
       if (
-        input.clientKind === 'claude-code'
+        (input.clientKind === 'claude-code' || input.clientKind === 'codex')
         && terminalAgeMs !== undefined
         && terminalAgeMs >= ORPHAN_WATCHER_GRACE_MS
         && terminalAgeMs <= TERMINAL_NUDGE_RECENCY_CEILING_MS
@@ -146,6 +147,26 @@ export function detectJitNudges(input: DetectJitNudgesInput): string[] {
       ) {
         warnings.push(
           `orphan_recovery: run "${state.runId}" became terminal without a watcher claim; recover it now with get_run_status({run_id:"${state.runId}"}).`,
+        );
+      }
+
+      // A Codex captain can only be woken by a live crew-wait watcher, so a
+      // running run whose current generation has no watcher `start` record is
+      // silently orphaned — a skipped launch or a sandboxed watcher that
+      // could not append. Nudge while the run is still in flight, when
+      // re-arming the watcher still delivers the terminal wake.
+      if (
+        input.clientKind === 'codex'
+        && state.status === 'running'
+        && nowMs - generationStartMs >= MISSING_WATCHER_GRACE_MS
+        && nowMs - generationStartMs <= TERMINAL_NUDGE_RECENCY_CEILING_MS
+        && !watch.some((record) => (
+          record.run_id === state.runId
+          && parseTimestamp(record.ts) >= generationStartMs
+        ))
+      ) {
+        warnings.push(
+          `missing_watcher: running run "${state.runId}" has no crew-wait watcher for its current generation; call get_run_status({run_id:"${state.runId}"}) and launch the returned required_next_action spawn recipe (escalated) now, or completion cannot wake this thread.`,
         );
       }
 

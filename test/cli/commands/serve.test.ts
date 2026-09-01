@@ -2598,6 +2598,7 @@ describe('crew serve — run_agent tool', () => {
         working_directory: h.root,
       });
       expect(env.required_next_action).not.toHaveProperty('command_json');
+      expect(env.required_next_action).not.toHaveProperty('spawn_recipe_json');
       expect(env.required_next_action).not.toHaveProperty('run_ids_json');
       expect(env.required_next_action).not.toHaveProperty('working_directory_json');
       expect(toolText(res)).toContain(
@@ -2656,6 +2657,7 @@ describe('crew serve — run_agent tool', () => {
       );
       expect(env.required_next_action?.working_directory).toBe(h.root);
       expect(env.required_next_action).not.toHaveProperty('command_json');
+      expect(env.required_next_action).not.toHaveProperty('spawn_recipe_json');
       expect(env.required_next_action).not.toHaveProperty('run_ids_json');
       expect(env.required_next_action).not.toHaveProperty('working_directory_json');
       expect(toolText(res)).toContain(
@@ -3518,6 +3520,7 @@ describe('crew serve — peer_messages integration', () => {
             'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
         });
         expect(reviewer.required_next_action).not.toHaveProperty('command_json');
+        expect(reviewer.required_next_action).not.toHaveProperty('spawn_recipe_json');
         expect(reviewer.required_next_action).not.toHaveProperty('run_ids_json');
         expect(reviewer.required_next_action).not.toHaveProperty('working_directory_json');
         expect(text).toContain(
@@ -3569,7 +3572,7 @@ describe('crew serve — peer_messages integration', () => {
       });
       const text = toolText(panel);
       expect(text).toContain('hosted background watcher');
-      expect(text).toContain('required_next_action.command_json');
+      expect(text).toContain('required_next_action.spawn_recipe_json');
       const reviewerCommandPrefix = hostedCodexWatcherPrefix('crew-wait', h);
       for (const reviewer of panelEnv.reviewers) {
         expect(reviewer.required_next_action).toMatchObject({
@@ -6133,6 +6136,7 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           'Skip it and the run is orphaned; no watcher-triggered terminal turn will surface completion.',
       });
       expect(env.required_next_action).not.toHaveProperty('command_json');
+      expect(env.required_next_action).not.toHaveProperty('spawn_recipe_json');
       expect(env.required_next_action).not.toHaveProperty('run_ids_json');
       expect(env.required_next_action).not.toHaveProperty('working_directory_json');
       const text = toolText(run);
@@ -6187,12 +6191,17 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
       expect(env.required_next_action?.command_json).toBe(
         JSON.stringify(env.required_next_action.command),
       );
+      expect(JSON.parse(env.required_next_action?.spawn_recipe_json ?? '{}')).toMatchObject({
+        cmd: env.required_next_action?.command,
+        workdir: h.root,
+        sandbox_permissions: 'require_escalated',
+      });
       expect(env.required_next_action?.run_ids_json).toBe(JSON.stringify([env.run_id]));
       expect(env.required_next_action?.working_directory).toBe(h.root);
       expect(env.required_next_action?.working_directory_json).toBe(JSON.stringify(h.root));
       const text = toolText(run);
       expect(text).toContain('hosted background watcher');
-      expect(text).toContain('required_next_action.command_json');
+      expect(text).toContain('required_next_action.spawn_recipe_json');
       expect(text).toContain('REQUIRED before you end this turn');
     } finally {
       await h.close();

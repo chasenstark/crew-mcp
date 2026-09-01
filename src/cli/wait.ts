@@ -1,4 +1,12 @@
-import { realpathSync, statSync, watch as fsWatch } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import {
+  mkdirSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  watch as fsWatch,
+  writeFileSync,
+} from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -805,7 +813,63 @@ export function usage(): string {
     '',
     'Wait for one or more crew runs to reach terminal/post-terminal state or an optional check-in deadline, then print one metadata line per run.',
     'With a Codex wake option, start or enqueue a terminal or periodic check-in turn.',
+    'Exits 4 (CREW_WAIT_WAKE_UNWRITABLE) immediately when a Codex wake is requested but wake claims cannot be written, e.g. launched inside an unescalated sandbox.',
   ].join('\n');
+}
+
+export interface CodexWakeWritabilityFailure {
+  readonly path: string;
+  readonly code: string;
+}
+
+/**
+ * Fail-fast writability check run before entering the wait loop whenever a
+ * Codex wake was requested. A sandboxed crew-wait can read run state, so
+ * without this probe it waits normally and only dies at wake-claim time —
+ * ten minutes later for a check-in, or exactly at terminal — which is the
+ * one moment it exists to survive. Probing up front surfaces the failure
+ * within the launch recipe's one-second yield window, while the captain can
+ * still relaunch escalated.
+ */
+export function probeCodexWakeWritability(
+  crewHome: string,
+  runIds: readonly string[],
+): CodexWakeWritabilityFailure | undefined {
+  const stateLockRoot = join(crewHome, 'state-locks');
+  try {
+    mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
+  } catch (err) {
+    return { path: stateLockRoot, code: errorCode(err) };
+  }
+  const probeName = `.crew-wait-probe-${process.pid}-${randomUUID()}`;
+  const lockProbe = probeWriteAndUnlink(join(stateLockRoot, probeName));
+  if (lockProbe) return lockProbe;
+  for (const runId of runIds) {
+    // Wake claims land inside the run directory. A directory that does not
+    // exist yet is the unknown-run grace path's business, not a sandbox
+    // denial, so only surface non-ENOENT failures.
+    const failure = probeWriteAndUnlink(join(crewHome, 'runs', runId, probeName));
+    if (failure && failure.code !== 'ENOENT') return failure;
+  }
+  return undefined;
+}
+
+function probeWriteAndUnlink(path: string): CodexWakeWritabilityFailure | undefined {
+  try {
+    writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+  } catch (err) {
+    return { path, code: errorCode(err) };
+  }
+  try {
+    unlinkSync(path);
+  } catch {
+    // The write proved writability; a leaked zero-byte dotfile is harmless.
+  }
+  return undefined;
+}
+
+function errorCode(err: unknown): string {
+  return isNodeError(err) && err.code !== undefined ? err.code : 'UNKNOWN';
 }
 
 export interface CrewWaitMainDependencies {
@@ -840,6 +904,21 @@ export async function main(
   }
 
   const crewHome = parsed.crewHome ?? resolveCrewHome();
+  if (parsed.codexBridgeFile || parsed.codexQueueThreadId) {
+    const probeFailure = probeCodexWakeWritability(crewHome, parsed.runIds);
+    if (probeFailure) {
+      process.stdout.write(
+        `CREW_WAIT_WAKE_UNWRITABLE path=${probeFailure.path} code=${probeFailure.code}\n`,
+      );
+      process.stderr.write(
+        'crew-wait: cannot write durable wake claims under the Crew home, so no '
+        + 'terminal or check-in wake could ever be delivered. Relaunch this exact '
+        + 'command with escalated permissions (the spawn recipe\'s '
+        + "sandbox_permissions: 'require_escalated').\n",
+      );
+      return 4;
+    }
+  }
   const waitResult = await waitForRunsTerminal({
     runIds: parsed.runIds,
     crewHome,

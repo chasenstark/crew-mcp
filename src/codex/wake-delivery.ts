@@ -79,9 +79,7 @@ export async function runClaimedCodexWake<T>(
   options: ClaimedCodexWakeOptions<T>,
 ): Promise<ClaimedCodexWakeResult<T>> {
   const pairs = normalizedPairs(options.runIds, options.runGenerations);
-  const stateLockRoot = join(options.crewHome, 'state-locks');
-  mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') chmodSync(stateLockRoot, 0o700);
+  ensureStateLockRoot(options.crewHome);
 
   const claim = await withRunLocks(
     options.crewHome,
@@ -143,9 +141,7 @@ export async function runClaimedCodexCheckInWake<T>(
     throw new Error('Invalid Codex check-in action id');
   }
   const pairs = normalizedPairs(options.runIds, options.runGenerations);
-  const stateLockRoot = join(options.crewHome, 'state-locks');
-  mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') chmodSync(stateLockRoot, 0o700);
+  ensureStateLockRoot(options.crewHome);
 
   const claim = await withRunLocks(
     options.crewHome,
@@ -241,6 +237,24 @@ export async function runClaimedCodexPrWatchWake<T>(
   } catch (error) {
     if (error instanceof CodexWakeRpcError) removeOwnedClaim(claim.claimPath, claim.ownerId);
     throw error;
+  }
+}
+
+/**
+ * The claim's lock root must exist; the permission tighten is hygiene only.
+ * A macOS-sandboxed process gets EPERM from chmod even on an already-0700
+ * directory it can read, and that must not abort wake delivery — the claim
+ * write itself is the correctness gate.
+ */
+function ensureStateLockRoot(crewHome: string): void {
+  const stateLockRoot = join(crewHome, 'state-locks');
+  mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(stateLockRoot, 0o700);
+    } catch {
+      // Hygiene only; claim writes below decide success.
+    }
   }
 }
 

@@ -474,7 +474,7 @@ function renderRunPanelMarkdown(out: RunPanelOutput, clientKind: ClientKind): st
       lines.push(`- \`Bash(${out.required_next_action.command}, run_in_background: true)\``);
     } else if (clientKind === 'codex') {
       lines.push(
-        `- Start the Crew skill's hosted background watcher using \`required_next_action.command_json\`, then end the turn. Command: ${mdInlineCode(out.required_next_action.command)}.`,
+        `- Start the Crew skill's hosted background watcher by passing \`required_next_action.spawn_recipe_json\` verbatim as the \`tools.exec_command\` argument (its \`require_escalated\` sandbox permission is load-bearing; an unescalated watcher exits as \`CREW_WAIT_WAKE_UNWRITABLE\`), then end the turn. Command: ${mdInlineCode(out.required_next_action.command)}.`,
       );
     }
     lines.push('Skip it and panel completion cannot automatically wake this thread.');

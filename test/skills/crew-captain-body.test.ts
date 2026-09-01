@@ -117,14 +117,16 @@ describe('crew-captain body — dispatch lifecycle', () => {
     const body = await loadBody();
     const recipe = sliceBetween(
       body,
-      'const command = <required_next_action.command_json>;',
+      'const recipe = <required_next_action.spawn_recipe_json>;',
       'if (result.exit_code !== undefined && result.exit_code !== 0)',
     );
 
-    expect(recipe).toContain("sandbox_permissions: 'require_escalated'");
-    expect(recipe).toContain(
-      "justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.'",
-    );
+    // The escalation travels inside the server-built spawn recipe; the body
+    // must launch it verbatim and keep naming the escalation plus the
+    // unescalated fail-fast marker in prose.
+    expect(recipe).toContain('tools.exec_command(recipe)');
+    expect(body).toContain("sandbox_permissions: 'require_escalated'");
+    expect(body).toContain('CREW_WAIT_WAKE_UNWRITABLE');
   });
 
   it('states async dispatch, scoped turn-start checks, watcher degradation, and timestamp-free recovery', async () => {
@@ -146,7 +148,7 @@ describe('crew-captain body — dispatch lifecycle', () => {
     expectContainsCI(flat, 'observed_model');
     expectContainsCI(flat, 'Complete this checklist before ending the turn');
     expectContainsCI(flat, 'Bash(<required_next_action.command>, run_in_background: true)');
-    expectContainsCI(flat, 'required_next_action.working_directory_json');
+    expectContainsCI(flat, 'required_next_action.spawn_recipe_json');
     expectContainsCI(flat, 'N crew runs means N watchers');
     expectContainsCI(flat, 'Agent');
     expectContainsCI(flat, 'Task');

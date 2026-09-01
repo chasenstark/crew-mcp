@@ -162,6 +162,14 @@ export interface SpawnWatcherRequiredNextAction {
   readonly command: string;
   /** JSON string literal safe to paste directly into the Codex launcher JavaScript. */
   readonly command_json?: string;
+  /**
+   * JSON object literal that is the complete Codex `tools.exec_command`
+   * argument for launching this watcher: command, workdir, and the escalated
+   * sandbox permission with its justification. Paste it verbatim; a watcher
+   * launched without the escalation cannot write durable wake claims and
+   * exits as `CREW_WAIT_WAKE_UNWRITABLE` instead of delivering wakes.
+   */
+  readonly spawn_recipe_json?: string;
   /** JSON array literal safe to paste directly into the Codex launcher JavaScript. */
   readonly run_ids_json?: string;
   /** Working directory used by the watcher command. */
@@ -410,7 +418,7 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
       );
     } else if (clientKind === 'codex') {
       lines.push(
-        `**REQUIRED before you end this turn:** start the Crew skill's ${env.required_next_action.mechanism === 'codex_queue' ? 'queue-backed' : 'hosted'} background watcher using \`required_next_action.command_json\`, then end the turn. Command: ${mdInlineCode(env.required_next_action.command)}. Skip it and completion cannot wake this thread.`,
+        `**REQUIRED before you end this turn:** start the Crew skill's ${env.required_next_action.mechanism === 'codex_queue' ? 'queue-backed' : 'hosted'} background watcher by passing \`required_next_action.spawn_recipe_json\` verbatim as the \`tools.exec_command\` argument, then end the turn. The recipe's \`require_escalated\` sandbox permission is load-bearing: an unescalated watcher exits as \`CREW_WAIT_WAKE_UNWRITABLE\` and completion cannot wake this thread. Command: ${mdInlineCode(env.required_next_action.command)}.`,
       );
     }
   } else {
@@ -534,6 +542,7 @@ export function requiredNextActionForRun(
     ...(clientKind === 'codex'
       ? {
           command_json: JSON.stringify(command),
+          spawn_recipe_json: codexSpawnRecipeJson(command, projectRoot),
           run_ids_json: JSON.stringify([runId]),
         }
       : {}),
@@ -607,6 +616,7 @@ export function requiredNextActionForRuns(
     ...(clientKind === 'codex'
       ? {
           command_json: JSON.stringify(command),
+          spawn_recipe_json: codexSpawnRecipeJson(command, projectRoot),
           run_ids_json: JSON.stringify(runIds),
         }
       : {}),
@@ -632,6 +642,27 @@ function codexWakeMechanismForCommand(command: string): CodexWakeMechanism {
   return command.includes('--codex-queue-thread ')
     ? 'codex_queue'
     : 'codex_app_server';
+}
+
+export const CODEX_WATCHER_ESCALATION_JUSTIFICATION =
+  'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.';
+
+/**
+ * The full `tools.exec_command` argument for the Codex watcher launch, so the
+ * captain pastes one server-built artifact instead of reassembling command,
+ * workdir, and escalation from skill prose. The escalation is load-bearing:
+ * durable wake claims live under the Crew home, outside the sandbox writable
+ * roots, and a sandboxed watcher dies at wake-delivery time.
+ */
+function codexSpawnRecipeJson(command: string, workdir: string): string {
+  return JSON.stringify({
+    cmd: command,
+    workdir,
+    sandbox_permissions: 'require_escalated',
+    justification: CODEX_WATCHER_ESCALATION_JUSTIFICATION,
+    yield_time_ms: 1_000,
+    max_output_tokens: 1_000,
+  });
 }
 
 function watcherCommand(

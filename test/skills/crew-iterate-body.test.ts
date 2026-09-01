@@ -84,14 +84,16 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     const body = await loadBody();
     const recipe = sliceBetween(
       body,
-      'const command = <required_next_action.command_json>;',
+      'const recipe = <required_next_action.spawn_recipe_json>;',
       'if (result.exit_code !== undefined && result.exit_code !== 0)',
     );
 
-    expect(recipe).toContain("sandbox_permissions: 'require_escalated'");
-    expect(recipe).toContain(
-      "justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.'",
-    );
+    // The escalation travels inside the server-built spawn recipe; the body
+    // must launch it verbatim and keep naming the escalation plus the
+    // unescalated fail-fast marker in prose.
+    expect(recipe).toContain('tools.exec_command(recipe)');
+    expect(body).toContain("sandbox_permissions: 'require_escalated'");
+    expect(body).toContain('CREW_WAIT_WAKE_UNWRITABLE');
   });
 
   it('carries the render-time crew version marker', async () => {
@@ -116,8 +118,7 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
       'CREW_WAIT_TERMINAL',
       'Codex App Server',
       'crew_wait_started',
-      'required_next_action.command_json',
-      'required_next_action.working_directory_json',
+      'required_next_action.spawn_recipe_json',
       'result.exit_code !== undefined',
       'poll it with',
       'Captain mechanical pass',

@@ -29,17 +29,27 @@ describe('dispatch envelope JIT fields', () => {
       per_run: true,
       consequence_if_skipped: expect.any(String),
     });
-    expect(requiredNextActionForRun(
+    expect(spawn).not.toHaveProperty('spawn_recipe_json');
+    const codexSpawn = requiredNextActionForRun(
       'codex',
       'crew-wait --codex-queue-thread thread-id',
       'run-1',
       '/crew',
       '/repo',
       1,
-    )).toMatchObject({
+    );
+    expect(codexSpawn).toMatchObject({
       type: 'spawn_watcher',
       mechanism: 'codex_queue',
       consequence_if_skipped: expect.stringContaining('cannot enqueue'),
+    });
+    expect(JSON.parse(codexSpawn!.spawn_recipe_json!)).toEqual({
+      cmd: codexSpawn!.command,
+      workdir: '/repo',
+      sandbox_permissions: 'require_escalated',
+      justification: expect.stringContaining('trusted Crew watcher'),
+      yield_time_ms: 1_000,
+      max_output_tokens: 1_000,
     });
 
     const variants: RequiredNextAction[] = [

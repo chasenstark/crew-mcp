@@ -581,14 +581,13 @@ describe('renderSkill (claude-code template)', () => {
     expect(out).toContain('Step 2 - background watcher overlay (Claude Code and Codex, mandatory)');
     expect(out).toContain('CREW_WAIT_TERMINAL run_id=');
     expect(out).toContain('Completion-event handling');
-    expect(out).toContain('tools.exec_command({');
+    expect(out).toContain('tools.exec_command(recipe)');
     expect(out).not.toContain('await yield_control()');
     expect(out).not.toContain('notify(JSON.stringify({');
     expect(out).not.toContain('tools.write_stdin({');
-    expect(out).toContain('required_next_action.command_json');
+    expect(out).toContain('required_next_action.spawn_recipe_json');
     expect(out).toContain('required_next_action.run_ids_json');
-    expect(out).toContain('required_next_action.working_directory_json');
-    expect(out).toContain('workdir,');
+    expect(out).toContain('CREW_WAIT_WAKE_UNWRITABLE');
     expect(out).toContain("type: 'crew_wait_started'");
     expect(out).toContain('result.exit_code !== undefined && result.exit_code !== 0');
     expect(out).toContain('do not poll');
@@ -637,14 +636,16 @@ describe('renderSkill (codex template)', () => {
       });
       const recipe = sliceBetween(
         out,
-        'const command = <required_next_action.command_json>;',
+        'const recipe = <required_next_action.spawn_recipe_json>;',
         'if (result.exit_code !== undefined && result.exit_code !== 0)',
       );
 
-      expect(recipe).toContain("sandbox_permissions: 'require_escalated'");
-      expect(recipe).toContain(
-        "justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.'",
-      );
+      // The escalation now travels inside the server-built spawn recipe;
+      // the rendered body must launch that recipe verbatim and still name
+      // the escalation and the unescalated failure mode in prose.
+      expect(recipe).toContain('tools.exec_command(recipe)');
+      expect(out).toContain("sandbox_permissions: 'require_escalated'");
+      expect(out).toContain('CREW_WAIT_WAKE_UNWRITABLE');
     },
   );
 
