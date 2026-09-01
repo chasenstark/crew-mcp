@@ -522,7 +522,7 @@ export function requiredNextActionForRun(
     )
   ) return undefined;
   const checkInActionId = validCheckInInterval(checkInIntervalMs)
-    ? periodicCheckInActionId(runId, runGeneration, checkInIntervalMs)
+    ? periodicCheckInActionId([runId], [runGeneration], checkInIntervalMs)
     : undefined;
   const runGenerations = runGeneration === undefined ? [] : [runGeneration];
   const command = watcherCommand(
@@ -577,6 +577,7 @@ export function requiredNextActionForRuns(
   crewHome: string,
   projectRoot: string,
   runGenerations: readonly number[] = [],
+  checkInIntervalMs?: number,
 ): SpawnWatcherRequiredNextAction | undefined {
   if (
     (clientKind !== 'claude-code' && clientKind !== 'codex')
@@ -599,14 +600,20 @@ export function requiredNextActionForRuns(
       crewHome,
       projectRoot,
       runGenerations[0],
+      checkInIntervalMs,
     );
   }
+  const checkInActionId = validCheckInInterval(checkInIntervalMs)
+    ? periodicCheckInActionId(runIds, runGenerations, checkInIntervalMs)
+    : undefined;
   const command = watcherCommand(
     clientKind,
     crewWaitCommand,
     runIds,
     runGenerations,
     crewHome,
+    checkInIntervalMs,
+    checkInActionId,
   );
   const codexWakeMechanism = codexWakeMechanismForCommand(crewWaitCommand);
   return {
@@ -627,6 +634,12 @@ export function requiredNextActionForRuns(
     run_ids: [...runIds],
     ...(clientKind === 'codex' && runGenerations.length > 0
       ? { run_generations: [...runGenerations] }
+      : {}),
+    ...(checkInIntervalMs !== undefined && checkInActionId !== undefined
+      ? {
+          check_in_interval_ms: checkInIntervalMs,
+          check_in_action_id: checkInActionId,
+        }
       : {}),
     run_in_background: true,
     per_run: false,
@@ -696,13 +709,13 @@ function validCheckInInterval(value: number | undefined): value is number {
 }
 
 function periodicCheckInActionId(
-  runId: string,
-  runGeneration: number | undefined,
+  runIds: readonly string[],
+  runGenerations: ReadonlyArray<number | undefined>,
   checkInIntervalMs: number,
 ): string {
   const bucket = Math.floor(Date.now() / checkInIntervalMs);
   return createHash('sha256')
-    .update(JSON.stringify({ runId, runGeneration, checkInIntervalMs, bucket }))
+    .update(JSON.stringify({ runIds, runGenerations, checkInIntervalMs, bucket }))
     .digest('hex')
     .slice(0, 32);
 }

@@ -373,12 +373,15 @@ duplicate completion turns.
 A native `Agent` / `Task` subagent completion is host harness-tracked, not
 Crew-tracked, and tells you nothing about Crew runs.
 
-For a criteria-linked write run, `required_next_action` may include
-`check_in_interval_ms: 600000`. That command wakes on terminal state or after
-10 minutes. Treat `CREW_WAIT_CHECK_IN` as a status boundary: call
-`get_run_status`, report the current status to the user, and—if still
-`running`—launch the new `required_next_action` returned by that status before
-ending the turn. Do not treat a check-in as completion or begin review.
+For a criteria-linked write run and for a `run_panel` panel-level watcher,
+`required_next_action` may include `check_in_interval_ms: 600000`. That
+command wakes on terminal state or after 10 minutes. Treat
+`CREW_WAIT_CHECK_IN` as a status boundary: call `get_run_status` (or
+`get_panel_status({panel_id})` once for a panel), report the current status
+to the user, and—if anything is still `running`—launch the new
+`required_next_action` returned by that status before ending the turn. Do
+not treat a check-in as completion, begin review, or `aggregate_panel`
+before every reviewer is terminal.
 
 **Spawn failure is user-visible.** If the watcher fails to start (missing
 binary, allowlist denial, or missing hosted bridge capability), tell the

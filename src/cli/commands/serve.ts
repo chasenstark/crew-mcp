@@ -1351,7 +1351,7 @@ export function buildCrewMcpServer(options: ServeOptions = {}): CrewMcpServerIns
       description: GET_PANEL_STATUS_DESCRIPTION,
       inputSchema: getPanelStatusInputSchema.shape,
     },
-    async (args) => getPanelStatusToolHandler(args, toolDeps),
+    async (args, extra) => getPanelStatusToolHandler(args, toolDeps, extra),
   );
 
   // ---- aggregate_panel -------------------------------------------------

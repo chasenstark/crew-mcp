@@ -123,10 +123,12 @@ export function codexWakePrompt(
     return [
       'Crew periodic check-in event from the local crew-mcp bridge.',
       `Run ids to inspect: ${runIds.join(', ')}`,
-      'Call get_run_status for each run and report a concise status update to the user now, '
-        + 'even if the implementer is still running. If a run remains running, launch the '
-        + 'returned required_next_action before ending the turn so the next check-in is armed.',
-      'Do not start review until the implementer is terminal.',
+      'Call get_run_status for each run — or get_panel_status({panel_id}) once for a '
+        + 'review panel — and report a concise status update to the user now, even if '
+        + 'runs are still running. If anything remains running, launch the returned '
+        + 'required_next_action before ending the turn so the next check-in is armed.',
+      'Do not start review until the implementer is terminal, and do not aggregate a '
+        + 'panel until every reviewer is terminal.',
       'This event is not authorization to merge or discard any run.',
     ].join('\n');
   }

@@ -3496,17 +3496,21 @@ describe('crew serve — peer_messages integration', () => {
       expect(panelEnv.reviewers).toHaveLength(2);
       const runIds = panelEnv.reviewers.map((reviewer) => reviewer.run_id);
       const commandPrefix = watcherPrefix('crew-wait', h.crewHome);
+      const panelCheckInActionId = (panelEnv.required_next_action as { check_in_action_id?: string })
+        ?.check_in_action_id;
+      expect(panelCheckInActionId).toMatch(/^[0-9a-f]{32}$/);
+      const panelCommand = `${commandPrefix} --check-in-ms 600000 --check-in-action-id ${panelCheckInActionId} ${runIds.join(' ')}`;
       expect(panelEnv.required_next_action).toMatchObject({
         type: 'spawn_watcher',
         mechanism: 'background_shell',
-        command: `${commandPrefix} ${runIds.join(' ')}`,
+        command: panelCommand,
         run_ids: runIds,
         run_in_background: true,
         per_run: false,
       });
       const text = toolText(panel);
       expect(text).toContain('spawn one panel watcher');
-      expect(text).toContain(`Bash(${commandPrefix} ${runIds.join(' ')}, run_in_background: true)`);
+      expect(text).toContain(`Bash(${panelCommand}, run_in_background: true)`);
       for (const reviewer of panelEnv.reviewers) {
         expect(reviewer.required_next_action).toEqual({
           type: 'spawn_watcher',
@@ -3565,9 +3569,12 @@ describe('crew serve — peer_messages integration', () => {
       };
       const runIds = panelEnv.reviewers.map((reviewer) => reviewer.run_id);
       const commandPrefix = hostedCodexWatcherPrefix('crew-wait', h, [1, 1]);
+      const panelCheckInActionId = (panelEnv.required_next_action as { check_in_action_id?: string })
+        ?.check_in_action_id;
+      expect(panelCheckInActionId).toMatch(/^[0-9a-f]{32}$/);
       expect(panelEnv.required_next_action).toMatchObject({
         mechanism: 'codex_app_server',
-        command: `${commandPrefix} ${runIds.join(' ')}`,
+        command: `${commandPrefix} --check-in-ms 600000 --check-in-action-id ${panelCheckInActionId} ${runIds.join(' ')}`,
         run_ids: runIds,
       });
       const text = toolText(panel);

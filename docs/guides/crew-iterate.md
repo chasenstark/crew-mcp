@@ -67,7 +67,9 @@ itself authorizes nothing — not continuation, not cleanup, not merge.
 **3. Reviewers score every criterion.** The confirmed Crew reviewers and the
 host-native reviewer each read the full diff and return a complete
 PASS/FAIL score with `file:line` evidence — a full review each, not a
-concern-sliced one.
+concern-sliced one. The panel watcher checks in on the same 10-minute
+cadence as the implementer, so a long review round reports progress instead
+of going silent until the last reviewer lands.
 
 **4. The captain re-runs the mechanics itself.** Every `[M]` command runs
 again in the implementer's worktree, and that result overrides any reviewer's

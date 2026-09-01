@@ -7,6 +7,7 @@ import {
   type FullRunEnvelope,
   type RequiredNextAction,
   requiredNextActionForRun,
+  requiredNextActionForRuns,
   structuredRunEnvelope,
 } from '../../../src/orchestrator/tools/shared.js';
 
@@ -76,6 +77,44 @@ describe('dispatch envelope JIT fields', () => {
       'confirm_with_user',
       'merge_or_discard',
     ]);
+  });
+
+  it('adds a one-shot periodic check-in to a multi-run panel watcher command', () => {
+    const action = requiredNextActionForRuns(
+      'codex',
+      'crew-wait --codex-queue-thread thread-id',
+      ['panel-run-a', 'panel-run-b'],
+      '/crew',
+      '/repo',
+      [1, 1],
+      600_000,
+    );
+    expect(action).toMatchObject({
+      type: 'spawn_watcher',
+      per_run: false,
+      run_ids: ['panel-run-a', 'panel-run-b'],
+      run_generations: [1, 1],
+      check_in_interval_ms: 600_000,
+      check_in_action_id: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+    expect(action?.command).toContain(' --check-in-ms 600000 --check-in-action-id ');
+    expect(action?.command).toMatch(/ panel-run-a panel-run-b$/);
+    expect(JSON.parse(action!.spawn_recipe_json!)).toMatchObject({ cmd: action!.command });
+    // A single-run panel delegates to the per-run builder and keeps the check-in.
+    const single = requiredNextActionForRuns(
+      'codex',
+      'crew-wait --codex-queue-thread thread-id',
+      ['panel-run-solo'],
+      '/crew',
+      '/repo',
+      [1],
+      600_000,
+    );
+    expect(single).toMatchObject({
+      per_run: true,
+      run_id: 'panel-run-solo',
+      check_in_interval_ms: 600_000,
+    });
   });
 
   it('adds a one-shot periodic check-in to an iterate watcher command', () => {

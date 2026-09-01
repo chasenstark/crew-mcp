@@ -10,12 +10,20 @@ import type { DispatchContext } from '../dispatch-run-agent-internal.js';
 import type { RunStateV1 } from '../run-state.js';
 import type { PanelReviewerRecord, PanelReviewerTerminalSnapshot } from '../panels/schema.js';
 import { panelDir, readPanelState } from '../panels/store.js';
-import type { ToolCallReturn, ToolHandlerDeps } from './shared.js';
+import type {
+  ClientKind,
+  SpawnWatcherRequiredNextAction,
+  ToolCallReturn,
+  ToolHandlerDeps,
+  ToolRequestExtra,
+} from './shared.js';
 import {
   errorContent,
   isTerminalRunStatus,
+  ITERATE_CHECK_IN_INTERVAL_MS,
   markdownContent,
   mdInlineCode,
+  requiredNextActionForRuns,
 } from './shared.js';
 import { goalTurnToWire, type WireGoalTurn } from '../goals.js';
 
@@ -67,21 +75,42 @@ export interface GetPanelStatusOutput {
     readonly dispatch_warnings: readonly string[];
     readonly requested_model?: string;
   }>;
+  /**
+   * Fresh panel watcher for a still-running panel, so a check-in turn can
+   * re-arm the next interval. Present only when the handler was given
+   * watcher context, at least one reviewer is running, and every dispatched
+   * reviewer's live state was readable (generations are part of the wake
+   * claim, so a partially-readable panel gets no re-arm action).
+   */
+  readonly required_next_action?: SpawnWatcherRequiredNextAction;
 }
 
-export interface GetPanelStatusHandlerContext extends Pick<DispatchContext, 'crewHome' | 'runStateStore'> {}
+export interface GetPanelStatusHandlerContext extends Pick<DispatchContext, 'crewHome' | 'runStateStore'> {
+  readonly clientKind?: ClientKind;
+  readonly crewWaitCommand?: string;
+  readonly projectRoot?: string;
+  readonly checkInIntervalMs?: number;
+}
 
 export const GET_PANEL_STATUS_DESCRIPTION =
   'Read a panel by panel_id. Returns dispatched reviewer statuses, failed_reviewers, durable dispatch_warnings, and counts for dispatched reviewers only. Rejects unknown, corrupted, unknown-schema, or cross-repo panels.';
 
 export function getPanelStatusToolHandler(
   args: GetPanelStatusInput,
-  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore'>,
+  deps: Pick<ToolHandlerDeps, 'crewHome' | 'runStateStore'>
+    & Partial<Pick<ToolHandlerDeps, 'projectRoot' | 'getClientKind' | 'getCrewWaitCommand'>>,
+  extra?: ToolRequestExtra,
 ): ToolCallReturn {
   try {
+    const clientKind = deps.getClientKind?.();
+    const crewWaitCommand = deps.getCrewWaitCommand?.(extra);
     const out = getPanelStatusHandler(args, {
       crewHome: deps.crewHome,
       runStateStore: deps.runStateStore,
+      ...(clientKind !== undefined ? { clientKind } : {}),
+      ...(crewWaitCommand !== undefined ? { crewWaitCommand } : {}),
+      ...(deps.projectRoot !== undefined ? { projectRoot: deps.projectRoot } : {}),
+      checkInIntervalMs: ITERATE_CHECK_IN_INTERVAL_MS,
     });
     return markdownContent(renderPanelStatusMarkdown(out), out);
   } catch (err) {
@@ -120,6 +149,15 @@ function renderPanelStatusMarkdown(out: GetPanelStatusOutput): string {
       `- ${mdInlineCode(reviewer.agent_id)}:${model} status=\`dispatch_failed\` files_changed=0 summary=${truncatePanelStatusText(reviewer.error)}`,
     );
   }
+  if (out.required_next_action !== undefined) {
+    lines.push(
+      '',
+      '**REQUIRED after a check-in wake (the one-shot watcher has exited):** re-arm the panel watcher before ending the turn. Skip only if a live watcher is already armed for this panel.',
+      out.required_next_action.mechanism === 'background_shell'
+        ? `- \`Bash(${out.required_next_action.command}, run_in_background: true)\``
+        : `- Pass \`required_next_action.spawn_recipe_json\` verbatim as the \`tools.exec_command\` argument (its \`require_escalated\` sandbox permission is load-bearing). Command: ${mdInlineCode(out.required_next_action.command)}.`,
+    );
+  }
   return lines.join('\n');
 }
 
@@ -152,6 +190,19 @@ export function getPanelStatusHandler(
     throw new Error(`run_panel.cross_repo: panel was created in repo ${panelState.panelRepoRoot}`);
   }
 
+  // Collected while mapping so a still-running panel can return a fresh
+  // check-in watcher. Generations are part of the durable wake claim, so a
+  // reviewer whose live state cannot be read (and has no terminal snapshot)
+  // disqualifies the re-arm action rather than risking a stale claim.
+  const watchTargets: Array<{ readonly runId: string; readonly generation: number }> = [];
+  let watcherEligible = true;
+  const recordWatchTarget = (state: RunStateV1): void => {
+    if (state.prompts.length >= 1) {
+      watchTargets.push({ runId: state.runId, generation: state.prompts.length });
+    } else {
+      watcherEligible = false;
+    }
+  };
   const reviewers = panelState.reviewers
     .filter((reviewer): reviewer is Extract<PanelReviewerRecord, { dispatched: true }> =>
       reviewer.dispatched)
@@ -160,11 +211,14 @@ export function getPanelStatusHandler(
       try {
         state = ctx.runStateStore.read(reviewer.runId);
       } catch (err) {
+        if (!reviewer.terminalSnapshot) watcherEligible = false;
         return snapshotStatus(reviewer, errorMessage(err));
       }
       if (!state) {
+        if (!reviewer.terminalSnapshot) watcherEligible = false;
         return snapshotStatus(reviewer, `missing state for run ${reviewer.runId}`);
       }
+      recordWatchTarget(state);
       if (!isTerminalRunStatus(state.status)) {
         const modelSelection = latestModelSelection(state.prompts) ?? reviewer.modelSelection;
         const goal = state.prompts.at(-1)?.goal;
@@ -200,6 +254,24 @@ export function getPanelStatusHandler(
       };
     });
 
+  const runningCount = reviewers.filter((reviewer) =>
+    !reviewer.state_unavailable && reviewer.status === 'running').length;
+  const requiredNextAction = watcherEligible
+    && runningCount > 0
+    && watchTargets.length > 0
+    && ctx.clientKind !== undefined
+    && ctx.projectRoot !== undefined
+    ? requiredNextActionForRuns(
+        ctx.clientKind,
+        ctx.crewWaitCommand,
+        watchTargets.map((target) => target.runId),
+        ctx.crewHome,
+        ctx.projectRoot,
+        watchTargets.map((target) => target.generation),
+        ctx.checkInIntervalMs,
+      )
+    : undefined;
+
   return {
     panel_id: panelState.panelId,
     ...(panelState.implementerRunId !== undefined
@@ -209,8 +281,7 @@ export function getPanelStatusHandler(
     total_count: reviewers.length,
     terminal_count: reviewers.filter((reviewer) =>
       !reviewer.state_unavailable && isTerminalRunStatus(reviewer.status)).length,
-    running_count: reviewers.filter((reviewer) =>
-      !reviewer.state_unavailable && reviewer.status === 'running').length,
+    running_count: runningCount,
     reviewers,
     failed_reviewers: panelState.reviewers
       .filter(isFailedReviewerRecord)
@@ -222,6 +293,9 @@ export function getPanelStatusHandler(
           ? { requested_model: reviewer.requestedModel }
           : {}),
       })),
+    ...(requiredNextAction !== undefined
+      ? { required_next_action: requiredNextAction }
+      : {}),
   };
 }
 

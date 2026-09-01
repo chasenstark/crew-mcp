@@ -54,6 +54,7 @@ import type {
 import {
   agentIdForClientKind,
   errorContent,
+  ITERATE_CHECK_IN_INTERVAL_MS,
   markdownContent,
   mdInlineCode,
   nextStepSentence,
@@ -421,6 +422,10 @@ export async function runPanelHandler(
   const successfulReviewers = dispatchEnvelopes.filter(
     (envelope): envelope is ReviewerDispatchEnvelope => envelope !== undefined,
   );
+  // The panel-level watcher carries the periodic check-in so long review
+  // rounds surface progress every interval instead of going silent until
+  // the last reviewer lands. Reviewer-level selective watchers stay
+  // terminal-only.
   const panelRequiredNextAction = requiredNextActionForRuns(
     clientKind,
     crewWaitCommand,
@@ -428,6 +433,7 @@ export async function runPanelHandler(
     ctx.crewHome,
     ctx.projectRoot,
     successfulReviewers.map(() => 1),
+    ITERATE_CHECK_IN_INTERVAL_MS,
   );
 
   return {

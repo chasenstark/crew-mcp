@@ -404,13 +404,14 @@ describe('crew-iterate body — criteria-store adoption', () => {
     expect(dispatchSteps).not.toContain('restating the criteria inline');
   });
 
-  it('requires periodic 10-minute implementer status reports and watcher re-arm', async () => {
+  it('requires periodic 10-minute implementer and panel status reports plus watcher re-arm', async () => {
     const body = await loadBody();
     expect(body).toContain('check_in_interval_ms: 600000');
     expect(body).toContain('CREW_WAIT_CHECK_IN');
-    expect(body).toContain('report a concise status update');
+    expect(body).toContain('the panel-level watcher from `run_panel` both');
+    expect(body).toContain('`get_panel_status({panel_id})` once');
     expect(body).toContain('launch the new `required_next_action`');
-    expect(body).toContain('Panel/reviewer\nwatchers remain terminal-only');
+    expect(body).toContain('Per-reviewer\nselective watchers remain terminal-only');
   });
 
   it('anchors host-native get_criteria and mid-loop revise_criteria handling', async () => {

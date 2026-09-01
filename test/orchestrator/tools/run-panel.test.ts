@@ -226,12 +226,16 @@ describe('runPanelHandler', () => {
 
     const commandPrefix = `/usr/local/bin/crew-wait --crew-home-base64 ${Buffer.from(h.ctx.crewHome).toString('base64url')}`;
     expect(out.reviewers).toHaveLength(2);
+    const panelCheckInActionId = out.required_next_action?.check_in_action_id;
+    expect(panelCheckInActionId).toMatch(/^[0-9a-f]{32}$/);
     expect(out.required_next_action).toEqual({
       type: 'spawn_watcher',
       mechanism: 'background_shell',
-      command: `${commandPrefix} codex-run-1 gemini-cli-run-2`,
+      command: `${commandPrefix} --check-in-ms 600000 --check-in-action-id ${panelCheckInActionId} codex-run-1 gemini-cli-run-2`,
       working_directory: h.ctx.projectRoot,
       run_ids: ['codex-run-1', 'gemini-cli-run-2'],
+      check_in_interval_ms: 600_000,
+      check_in_action_id: panelCheckInActionId,
       run_in_background: true,
       per_run: false,
       consequence_if_skipped:
@@ -297,13 +301,16 @@ describe('runPanelHandler', () => {
 
     const runIds = out.reviewers.map((reviewer) => reviewer.run_id);
     const commandPrefix = `.\\node_modules\\.bin\\crew-wait.cmd --crew-home-base64 ${Buffer.from(h.ctx.crewHome).toString('base64url')} --run-generations-base64 ${Buffer.from(JSON.stringify([1, 1])).toString('base64url')}`;
+    const panelCheckInActionId = out.required_next_action?.check_in_action_id;
+    expect(panelCheckInActionId).toMatch(/^[0-9a-f]{32}$/);
+    const panelCommand = `${commandPrefix} --check-in-ms 600000 --check-in-action-id ${panelCheckInActionId} ${runIds.join(' ')}`;
     expect(out.required_next_action).toEqual({
       type: 'spawn_watcher',
       mechanism: 'codex_app_server',
-      command: `${commandPrefix} ${runIds.join(' ')}`,
-      command_json: JSON.stringify(`${commandPrefix} ${runIds.join(' ')}`),
+      command: panelCommand,
+      command_json: JSON.stringify(panelCommand),
       spawn_recipe_json: JSON.stringify({
-        cmd: `${commandPrefix} ${runIds.join(' ')}`,
+        cmd: panelCommand,
         workdir: h.ctx.projectRoot,
         sandbox_permissions: 'require_escalated',
         justification: 'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.',
@@ -315,6 +322,8 @@ describe('runPanelHandler', () => {
       working_directory_json: JSON.stringify(h.ctx.projectRoot),
       run_ids: runIds,
       run_generations: [1, 1],
+      check_in_interval_ms: 600_000,
+      check_in_action_id: panelCheckInActionId,
       run_in_background: true,
       per_run: false,
       consequence_if_skipped:

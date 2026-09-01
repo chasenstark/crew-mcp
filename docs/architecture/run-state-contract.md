@@ -65,14 +65,16 @@ genuinely-terminal subset of the batch. This is a watcher-liveness exit, not a
 dispatch termination; post-terminal statuses are still never reported as
 `CREW_WAIT_TERMINAL`.
 
-Criteria-linked write runs may invoke `crew-wait` with a 10-minute check-in
-deadline. If the run is still active when that deadline wins, the watcher
-prints
+Criteria-linked write runs and panel-level review watchers may invoke
+`crew-wait` with a 10-minute check-in deadline. If any watched run is still
+active when that deadline wins, the watcher prints
 `CREW_WAIT_CHECK_IN run_id=<id> agent=<agent> status=running worktree=<path>`
-and exits successfully. This line is neither terminal nor post-terminal; the
-captain reads `get_run_status`, reports status, and launches the fresh watcher
-action returned by the running snapshot. The repeated one-shot re-arm keeps
-the conversation available and preserves the ordinary terminal race.
+for each still-running run (already-terminal peers keep their terminal
+lines) and exits successfully. This line is neither terminal nor
+post-terminal; the captain reads `get_run_status` (or `get_panel_status` for
+a panel), reports status, and launches the fresh watcher action returned by
+the running snapshot. The repeated one-shot re-arm keeps the conversation
+available and preserves the ordinary terminal race.
 
 ## Schema Stability
 

@@ -107,6 +107,102 @@ describe('getPanelStatusHandler', () => {
     });
   });
 
+  it('returns a fresh check-in watcher for a running panel and omits it when terminal or context-free', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    await createRunState(h, { runId: 'r-watch-running', status: 'running' });
+    await createRunState(h, { runId: 'r-watch-done', status: 'success', summary: 'done' });
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: 'r-watch-running',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:01.000Z',
+          dispatchWarnings: [],
+        },
+        {
+          runId: 'r-watch-done',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:02.000Z',
+          dispatchWarnings: [],
+        },
+      ],
+    }));
+
+    const watcherCtx = {
+      ...h.ctx,
+      clientKind: 'codex' as const,
+      crewWaitCommand: 'crew-wait --codex-queue-thread thread-1',
+      checkInIntervalMs: 600_000,
+    };
+    const out = getPanelStatusHandler({ panel_id: 'panel-1' }, watcherCtx);
+    expect(out.running_count).toBe(1);
+    expect(out.required_next_action).toMatchObject({
+      type: 'spawn_watcher',
+      mechanism: 'codex_queue',
+      run_ids: ['r-watch-running', 'r-watch-done'],
+      run_generations: [1, 1],
+      check_in_interval_ms: 600_000,
+      per_run: false,
+    });
+    expect(out.required_next_action?.command)
+      .toContain(' --check-in-ms 600000 --check-in-action-id ');
+    expect(out.required_next_action?.spawn_recipe_json).toBeDefined();
+
+    // Without watcher context the payload stays action-free.
+    expect(getPanelStatusHandler({ panel_id: 'panel-1' }, h.ctx).required_next_action)
+      .toBeUndefined();
+
+    // A fully terminal panel needs no re-arm.
+    await h.runStateStore.markTerminal('r-watch-running', {
+      status: 'success',
+      summary: 'done late',
+      filesChanged: [],
+    });
+    const terminalOut = getPanelStatusHandler({ panel_id: 'panel-1' }, watcherCtx);
+    expect(terminalOut.running_count).toBe(0);
+    expect(terminalOut.required_next_action).toBeUndefined();
+  });
+
+  it('omits the re-arm watcher when a reviewer state is unreadable without a snapshot', async () => {
+    const h = makeHarness([makeMockAdapter({ name: 'reviewer' })]);
+    cleanupHarness(h);
+    await createRunState(h, { runId: 'r-still-running', status: 'running' });
+    writePanel(h, panel({
+      panelRepoRoot: h.runStateStore.repoRoot,
+      reviewers: [
+        {
+          runId: 'r-still-running',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:01.000Z',
+          dispatchWarnings: [],
+        },
+        {
+          runId: 'r-state-gone',
+          agentId: 'reviewer',
+          dispatched: true,
+          dispatchedAt: '2026-05-14T00:00:02.000Z',
+          dispatchWarnings: [],
+        },
+      ],
+    }));
+
+    const out = getPanelStatusHandler({ panel_id: 'panel-1' }, {
+      ...h.ctx,
+      clientKind: 'codex' as const,
+      crewWaitCommand: 'crew-wait --codex-queue-thread thread-1',
+      checkInIntervalMs: 600_000,
+    });
+    expect(out.running_count).toBe(1);
+    // Generations feed the durable wake claim, so an unreadable reviewer
+    // disqualifies the re-arm rather than risking a stale claim.
+    expect(out.required_next_action).toBeUndefined();
+  });
+
   it('reports distinct same-provider models and preserves a failed requested model', async () => {
     const h = makeHarness([makeMockAdapter({ name: 'claude-code' })]);
     cleanupHarness(h);
