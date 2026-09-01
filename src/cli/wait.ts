@@ -1,12 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import {
-  mkdirSync,
-  realpathSync,
-  statSync,
-  unlinkSync,
-  watch as fsWatch,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, realpathSync, statSync, watch as fsWatch } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -35,6 +27,7 @@ import {
 } from '../codex/wake-delivery.js';
 import { resolveCrewHome } from '../utils/crew-home.js';
 import { appendWatchIndex } from '../utils/watch-index.js';
+import { probeDirWritability, type DirWritabilityFailure } from '../utils/writability-probe.js';
 
 const CREW_WAIT_POLL_INTERVAL_ENV = 'CREW_WAIT_POLL_INTERVAL_MS';
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -817,10 +810,7 @@ export function usage(): string {
   ].join('\n');
 }
 
-export interface CodexWakeWritabilityFailure {
-  readonly path: string;
-  readonly code: string;
-}
+export type CodexWakeWritabilityFailure = DirWritabilityFailure;
 
 /**
  * Fail-fast writability check run before entering the wait loop whenever a
@@ -839,37 +829,21 @@ export function probeCodexWakeWritability(
   try {
     mkdirSync(stateLockRoot, { recursive: true, mode: 0o700 });
   } catch (err) {
-    return { path: stateLockRoot, code: errorCode(err) };
+    return {
+      path: stateLockRoot,
+      code: isNodeError(err) && err.code !== undefined ? err.code : 'UNKNOWN',
+    };
   }
-  const probeName = `.crew-wait-probe-${process.pid}-${randomUUID()}`;
-  const lockProbe = probeWriteAndUnlink(join(stateLockRoot, probeName));
+  const lockProbe = probeDirWritability(stateLockRoot);
   if (lockProbe) return lockProbe;
   for (const runId of runIds) {
     // Wake claims land inside the run directory. A directory that does not
     // exist yet is the unknown-run grace path's business, not a sandbox
     // denial, so only surface non-ENOENT failures.
-    const failure = probeWriteAndUnlink(join(crewHome, 'runs', runId, probeName));
+    const failure = probeDirWritability(join(crewHome, 'runs', runId));
     if (failure && failure.code !== 'ENOENT') return failure;
   }
   return undefined;
-}
-
-function probeWriteAndUnlink(path: string): CodexWakeWritabilityFailure | undefined {
-  try {
-    writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
-  } catch (err) {
-    return { path, code: errorCode(err) };
-  }
-  try {
-    unlinkSync(path);
-  } catch {
-    // The write proved writability; a leaked zero-byte dotfile is harmless.
-  }
-  return undefined;
-}
-
-function errorCode(err: unknown): string {
-  return isNodeError(err) && err.code !== undefined ? err.code : 'UNKNOWN';
 }
 
 export interface CrewWaitMainDependencies {

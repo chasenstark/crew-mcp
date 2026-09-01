@@ -9,26 +9,32 @@ The waiter polls outside model turns. Do not poll `get_pr_watch_status` in a loo
 If `get_pr_watch_status` reports `waiter_health.state: "stale"`, the persisted waiter is no longer healthy even if its raw waiter state still says `running`. Rearm with the reported waiter identity and `reason: "stale_waiter"` for an expired lease, or `reason: "timeout"` for a timed-out exited waiter.
 
 <!-- host:codex -->
-On Codex, launch the waiter with `functions.exec` using the JSON-safe command and working directory returned by the server. The trusted waiter must write its execution lease and wake claim under the server-pinned Crew home, which may be outside the project sandbox.
+On Codex, launch the waiter with `functions.exec` by pasting
+`required_next_action.spawn_recipe_json` verbatim — it is the complete
+server-built `tools.exec_command` argument: command, working directory, and
+the escalated sandbox permission (`sandbox_permissions: 'require_escalated'`)
+with its justification. The trusted waiter must write its execution lease and
+wake claim under the server-pinned Crew home, which may be outside the
+project sandbox. Do not rebuild the command or strip any field from the
+recipe.
 
 ```js
-const command = <required_next_action.command_json>;
-const workdir = <required_next_action.working_directory_json>;
-const result = await tools.exec_command({
-  cmd: command,
-  workdir,
-  sandbox_permissions: 'require_escalated',
-  justification: 'Allow the trusted Crew PR-watch waiter to update its durable lease and enqueue the wake turn.',
-  yield_time_ms: 1000,
-  max_output_tokens: 1000,
-});
+const recipe = <required_next_action.spawn_recipe_json>;
+const result = await tools.exec_command(recipe);
 if (result.exit_code !== undefined && result.exit_code !== 0) {
   throw new Error(`crew-pr-watch-wait failed to start: ${result.output}`);
 }
 text(JSON.stringify({ type: 'crew_pr_watch_waiter_started', session_id: result.session_id }));
 ```
 
-The escalation applies only to the exact server-returned waiter command, never to provider, worker, git, or repository commands. If escalation is unavailable or launch still fails with `EPERM`, report that the durable watch exists but is not polling; recover it on a later turn through `get_pr_watch_status` and the exact reported rearm arguments.
+The escalation inside the recipe applies only to the exact server-returned
+waiter command, never to provider, worker, git, or repository commands. A
+waiter launched without it cannot write its lease or wake claim: it exits
+immediately with `CREW_PR_WATCH_WAKE_UNWRITABLE` (exit 4), which the
+exit-code check surfaces — relaunch with the exact recipe. If escalation is
+unavailable, report that the durable watch exists but is not polling;
+recover it on a later turn through `get_pr_watch_status` and the exact
+reported rearm arguments.
 <!-- /host -->
 
 For `actionable`, inspect the persisted batch. Default to monitor-only handling. Without a current grant, investigate through ordinary user-authorized workflows, record each disposition through the packaged `{{CREW_PR_WATCH_COMMAND}} ack` command, and call `rearm_pr_watch` with the exact batch and generation identities. For `blocked` or `expired`, explain the persisted remedy and obtain any required confirmation. An expiry extension can restore active, actionable, or blocked state: launch a waiter only when the returned receipt includes one.

@@ -48,8 +48,10 @@ describe('crew PR-watch skill body', () => {
     expect(Buffer.byteLength(rendered, 'utf-8')).toBeLessThanOrEqual(6 * 1024);
     expect(rendered).toContain('`./node_modules/.bin/crew-pr-watch ack`');
     expect(rendered).toContain('[ACTION.md](./ACTION.md)');
-    expect(rendered).toContain('required_next_action.working_directory_json');
+    expect(rendered).toContain('required_next_action.spawn_recipe_json');
+    expect(rendered).toContain('tools.exec_command(recipe)');
     expect(rendered).toContain("sandbox_permissions: 'require_escalated'");
+    expect(rendered).toContain('CREW_PR_WATCH_WAKE_UNWRITABLE');
     expect(rendered).toContain('crew-pr-watch-wait failed to start');
     expect(renderedClaude).not.toContain("sandbox_permissions: 'require_escalated'");
     expect(companion).toContain('`./node_modules/.bin/crew-pr-watch effect');

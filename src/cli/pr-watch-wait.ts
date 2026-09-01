@@ -16,6 +16,7 @@ import { PrWatchStartIndex } from '../pr-watch/start-index.js';
 import { PrWatchStore } from '../pr-watch/store.js';
 import { waitForPrWatch, type PrWatchWakeRequest } from '../pr-watch/waiter.js';
 import { resolveCrewHome } from '../utils/crew-home.js';
+import { probeDirWritability } from '../utils/writability-probe.js';
 
 interface ParsedArgs {
   readonly watchId: string;
@@ -30,7 +31,9 @@ interface ParsedArgs {
 export function usage(): string {
   return 'Usage: crew-pr-watch-wait --watch <watch_id> --generation <n> '
     + '--watcher-action <id> [--crew-home-base64 <base64url>] [--timeout-ms <n>] '
-    + '[--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>]';
+    + '[--codex-bridge-base64 <base64url> | --codex-queue-thread <uuid>]\n'
+    + 'Exits 4 (CREW_PR_WATCH_WAKE_UNWRITABLE) immediately when the durable lease and '
+    + 'wake claims cannot be written, e.g. launched inside an unescalated sandbox.';
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -48,6 +51,25 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (!store.exists(args.watchId)) {
     process.stderr.write(`crew-pr-watch-wait: unknown watch ${args.watchId}\n`);
     return 3;
+  }
+  // Every transport writes under the Crew home — the waiter lease claim,
+  // heartbeats, and Codex wake claims all land in the watch and lock dirs.
+  // A sandboxed (unescalated) launch gets EPERM on those writes, so fail
+  // fast with a typed marker inside the launch recipe's yield window
+  // instead of dying at lease-claim or wake-delivery time.
+  const probeFailure = probeDirWritability(store.watchDir(args.watchId))
+    ?? probeDirWritability(store.lockRoot);
+  if (probeFailure) {
+    process.stdout.write(
+      `CREW_PR_WATCH_WAKE_UNWRITABLE watch_id=${args.watchId} path=${probeFailure.path} code=${probeFailure.code}\n`,
+    );
+    process.stderr.write(
+      'crew-pr-watch-wait: cannot write the durable waiter lease or wake claim '
+      + 'under the Crew home, so this waiter could never poll or wake the thread. '
+      + 'Relaunch this exact command with escalated permissions (the spawn '
+      + "recipe's sandbox_permissions: 'require_escalated').\n",
+    );
+    return 4;
   }
   const controller = new PrWatchController(
     store,

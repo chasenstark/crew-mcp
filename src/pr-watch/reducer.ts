@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { sha256Canonical } from './canonical.js';
 import { makePrWatchSurfaceId, makePrWatchTransactionId } from './id.js';
 import { parsePrWatchState } from './codec.js';
+import { isPrWatchWaiterClaimOverdue } from './waiter-health.js';
 import {
   PR_WATCH_SCHEMA_VERSION,
   type PrWatchActionBatchV1,
@@ -601,6 +602,10 @@ export function rearmPrWatch(
           && state.waiter.leaseExpiresAt !== undefined
           && Date.parse(state.waiter.leaseExpiresAt) <= nowDate.getTime()
         )
+        // A pending waiter past the claim grace never launched (or exited 4
+        // on the sandbox writability probe); without this it is permanently
+        // irreplaceable and the watch is stuck active forever.
+        || isPrWatchWaiterClaimOverdue(state.waiter, nowDate)
       );
     if (!timeoutEligible && !staleEligible) {
       throw new Error('pr_watch.waiter_not_replaceable');

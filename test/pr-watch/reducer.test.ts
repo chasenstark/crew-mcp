@@ -21,6 +21,7 @@ import type {
   PrWatchStartInitializationV1,
   PrWatchStateV1,
 } from '../../src/pr-watch/types.js';
+import { PR_WATCH_PENDING_CLAIM_GRACE_MS } from '../../src/pr-watch/waiter-health.js';
 
 const T0 = new Date('2026-08-27T12:00:00.000Z');
 
@@ -92,6 +93,34 @@ describe('PR-watch lifecycle reducer', () => {
     if (restored.state.status !== 'actionable') throw new Error('expected actionable');
     expect(restored.state.batch.actionBatchId).toBe(batchId);
     expect(restored.state.batch.generation).toBe(2);
+  });
+
+  it('replaces a never-claimed pending waiter only after its claim grace expires', () => {
+    const state: PrWatchStateV1 = initialState();
+    expect(state.status).toBe('active');
+    if (state.status !== 'active') throw new Error('expected active');
+    expect(state.waiter.state).toBe('pending');
+    const priorWatcherActionId = state.waiter.watcherActionId;
+    const rearmArgs = {
+      reason: 'stale_waiter',
+      expectedGeneration: 1,
+      priorWatcherActionId,
+      receiptKey: 'replace-never-claimed',
+    } as const;
+
+    // Inside the grace window a fresh pending waiter is not replaceable —
+    // a healthy launch may simply not have claimed yet.
+    expect(() => rearmPrWatch(state, { ...rearmArgs, now: T0 }))
+      .toThrow('pr_watch.waiter_not_replaceable');
+
+    // Past the grace window the waiter never claimed (skipped launch or a
+    // sandbox-blocked exit-4 probe) and must be replaceable.
+    const afterGrace = new Date(T0.getTime() + PR_WATCH_PENDING_CLAIM_GRACE_MS);
+    const replaced = rearmPrWatch(state, { ...rearmArgs, now: afterGrace });
+    expect(replaced.state.status).toBe('active');
+    if (replaced.state.status !== 'active') throw new Error('expected active');
+    expect(replaced.state.waiter.watcherActionId).not.toBe(priorWatcherActionId);
+    expect(replaced.state.waiter.state).toBe('pending');
   });
 
   it('preserves and rebinds budget handoff proof through expiry, then consumes it once', () => {

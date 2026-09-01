@@ -908,7 +908,17 @@ function writeStateCache(
 
 function mkdirPrivate(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') chmodSync(path, 0o700);
+  // The permission tighten is hygiene only. A macOS-sandboxed process gets
+  // EPERM from chmod even on an already-0700 directory it can read, and the
+  // store must still construct there so the waiter's writability probe can
+  // report the denial as a typed failure instead of a construction crash.
+  if (process.platform !== 'win32') {
+    try {
+      chmodSync(path, 0o700);
+    } catch {
+      // Ledger and lease writes decide success.
+    }
+  }
 }
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {

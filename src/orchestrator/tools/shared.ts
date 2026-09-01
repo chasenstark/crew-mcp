@@ -542,7 +542,7 @@ export function requiredNextActionForRun(
     ...(clientKind === 'codex'
       ? {
           command_json: JSON.stringify(command),
-          spawn_recipe_json: codexSpawnRecipeJson(command, projectRoot),
+          spawn_recipe_json: codexSpawnRecipeJson(command, projectRoot, CODEX_WATCHER_ESCALATION_JUSTIFICATION),
           run_ids_json: JSON.stringify([runId]),
         }
       : {}),
@@ -616,7 +616,7 @@ export function requiredNextActionForRuns(
     ...(clientKind === 'codex'
       ? {
           command_json: JSON.stringify(command),
-          spawn_recipe_json: codexSpawnRecipeJson(command, projectRoot),
+          spawn_recipe_json: codexSpawnRecipeJson(command, projectRoot, CODEX_WATCHER_ESCALATION_JUSTIFICATION),
           run_ids_json: JSON.stringify(runIds),
         }
       : {}),
@@ -648,18 +648,23 @@ export const CODEX_WATCHER_ESCALATION_JUSTIFICATION =
   'Allow the trusted Crew watcher to update its global durable wake claim and enqueue the completion turn.';
 
 /**
- * The full `tools.exec_command` argument for the Codex watcher launch, so the
- * captain pastes one server-built artifact instead of reassembling command,
- * workdir, and escalation from skill prose. The escalation is load-bearing:
- * durable wake claims live under the Crew home, outside the sandbox writable
- * roots, and a sandboxed watcher dies at wake-delivery time.
+ * The full `tools.exec_command` argument for a Codex watcher/waiter launch,
+ * so the captain pastes one server-built artifact instead of reassembling
+ * command, workdir, and escalation from skill prose. The escalation is
+ * load-bearing: durable wake claims and leases live under the Crew home,
+ * outside the sandbox writable roots, and a sandboxed launch dies (or now
+ * fail-fast exits 4) instead of ever delivering a wake.
  */
-function codexSpawnRecipeJson(command: string, workdir: string): string {
+export function codexSpawnRecipeJson(
+  command: string,
+  workdir: string,
+  justification: string,
+): string {
   return JSON.stringify({
     cmd: command,
     workdir,
     sandbox_permissions: 'require_escalated',
-    justification: CODEX_WATCHER_ESCALATION_JUSTIFICATION,
+    justification,
     yield_time_ms: 1_000,
     max_output_tokens: 1_000,
   });

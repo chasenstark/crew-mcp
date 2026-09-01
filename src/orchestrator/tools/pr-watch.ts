@@ -18,7 +18,12 @@ import { cancelPrWatch, rearmPrWatch } from '../../pr-watch/reducer.js';
 import { PrWatchCorruptStateError, type PrWatchStore } from '../../pr-watch/store.js';
 import type { PrWatchEffectKind, PrWatchRearmReason, PrWatchStateV1 } from '../../pr-watch/types.js';
 import { derivePrWatchWaiterHealth } from '../../pr-watch/waiter-health.js';
-import type { ClientKind, ToolCallReturn, ToolRequestExtra } from './shared.js';
+import {
+  codexSpawnRecipeJson,
+  type ClientKind,
+  type ToolCallReturn,
+  type ToolRequestExtra,
+} from './shared.js';
 
 const watchIdSchema = z.string().regex(/^pw-[0-9a-f]{32}$/);
 const approvalGoalSchema = z.object({
@@ -309,7 +314,7 @@ export async function rearmPrWatchToolHandler(
     ...statusPayload(state, new Date()),
     receipt,
     ...(state.status === 'active' && waitCommand && (clientKind === 'claude-code' || clientKind === 'codex')
-      ? { required_next_action: requiredAction(state, context, waitCommand, clientKind) }
+      ? { required_next_action: prWatchRequiredAction(state, context, waitCommand, clientKind) }
       : {}),
   });
 }
@@ -366,7 +371,7 @@ function renderWatchResult(
   return {
     ...statusPayload(state, new Date()),
     ...(state.status === 'active'
-      ? { required_next_action: requiredAction(state, context, waitCommand, clientKind) }
+      ? { required_next_action: prWatchRequiredAction(state, context, waitCommand, clientKind) }
       : {}),
   };
 }
@@ -520,9 +525,12 @@ function corruptStatusPayload(
   };
 }
 
-function requiredAction(
+export const CODEX_PR_WATCH_ESCALATION_JUSTIFICATION =
+  'Allow the trusted Crew PR-watch waiter to update its durable lease and enqueue the wake turn.';
+
+export function prWatchRequiredAction(
   state: Extract<PrWatchStateV1, { readonly status: 'active' }>,
-  context: PrWatchToolContext,
+  context: Pick<PrWatchToolContext, 'crewHome' | 'projectRoot'>,
   waitCommand: string,
   clientKind: 'claude-code' | 'codex',
 ): Record<string, unknown> {
@@ -538,7 +546,16 @@ function requiredAction(
     type: 'spawn_pr_watch_watcher',
     mechanism,
     command,
-    ...(clientKind === 'codex' ? { command_json: JSON.stringify(command) } : {}),
+    ...(clientKind === 'codex'
+      ? {
+          command_json: JSON.stringify(command),
+          spawn_recipe_json: codexSpawnRecipeJson(
+            command,
+            context.projectRoot,
+            CODEX_PR_WATCH_ESCALATION_JUSTIFICATION,
+          ),
+        }
+      : {}),
     working_directory: context.projectRoot,
     ...(clientKind === 'codex'
       ? { working_directory_json: JSON.stringify(context.projectRoot) }

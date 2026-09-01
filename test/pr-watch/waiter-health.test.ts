@@ -7,7 +7,10 @@ const NOW = new Date('2026-08-28T18:30:00.000Z');
 
 describe('PR-watch waiter health', () => {
   it('distinguishes pending and live running waiters', () => {
-    expect(derivePrWatchWaiterHealth(waiter({ state: 'pending' }), NOW)).toMatchObject({
+    expect(derivePrWatchWaiterHealth(waiter({
+      state: 'pending',
+      createdAt: '2026-08-28T18:29:30.000Z',
+    }), NOW)).toMatchObject({
       state: 'pending',
       recoverable: false,
     });
@@ -21,6 +24,25 @@ describe('PR-watch waiter health', () => {
       recoverable: false,
       leaseExpiresAt: '2026-08-28T18:31:00.000Z',
     });
+  });
+
+  it('makes a pending waiter replaceable once its claim grace expires', () => {
+    // A skipped launch, or one that exited 4 on the sandbox writability
+    // probe, never claims a lease; the watch must not stay stuck.
+    expect(derivePrWatchWaiterHealth(waiter({
+      state: 'pending',
+      createdAt: '2026-08-28T18:27:00.000Z',
+    }), NOW)).toMatchObject({
+      state: 'stale',
+      recoverable: true,
+      rearmReason: 'stale_waiter',
+      reason: 'never_claimed',
+    });
+    // Corrupt timestamps fail toward the conservative non-replaceable state.
+    expect(derivePrWatchWaiterHealth(waiter({
+      state: 'pending',
+      createdAt: 'not-a-timestamp',
+    }), NOW)).toMatchObject({ state: 'pending', recoverable: false });
   });
 
   it('treats the exact lease deadline as stale and recoverable', () => {
