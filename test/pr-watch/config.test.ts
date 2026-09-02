@@ -35,6 +35,7 @@ ci:
     expect(loadPrWatchProfile(repo)).toEqual({
       schemaVersion: 1,
       limits: { maxPrs: 37 },
+      bots: { autoDetect: true, ignore: [] },
       ci: {
         githubChecks: { mode: 'explicit', requiredChecks: ['lint', 'unit'] },
         circleci: {
@@ -44,6 +45,22 @@ ci:
       },
     });
     writeFileSync(join(repo, '.crew/pr-watch.yaml'), 'schema_version: 1\nunknown: true\n');
+    expect(() => loadPrWatchProfile(repo)).toThrow();
+  });
+
+  it('normalizes the review-bot section and rejects duplicate or malformed logins', () => {
+    const repo = tempRepo();
+    mkdirSync(join(repo, '.crew'));
+    const profilePath = join(repo, '.crew/pr-watch.yaml');
+    writeFileSync(profilePath, 'schema_version: 1\nbots:\n  ignore: [Linear, "codecov[bot]"]\n');
+    expect(loadPrWatchProfile(repo).bots).toEqual({ autoDetect: true, ignore: ['codecov[bot]', 'linear'] });
+    writeFileSync(profilePath, 'schema_version: 1\nbots:\n  auto_detect: false\n');
+    expect(loadPrWatchProfile(repo).bots).toEqual({ autoDetect: false, ignore: [] });
+    writeFileSync(profilePath, 'schema_version: 1\nbots:\n  ignore: [linear, LINEAR]\n');
+    expect(() => loadPrWatchProfile(repo)).toThrow(/unique/);
+    writeFileSync(profilePath, 'schema_version: 1\nbots:\n  ignore: ["not a login"]\n');
+    expect(() => loadPrWatchProfile(repo)).toThrow();
+    writeFileSync(profilePath, 'schema_version: 1\nbots:\n  mute: [linear]\n');
     expect(() => loadPrWatchProfile(repo)).toThrow();
   });
 

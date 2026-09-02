@@ -33,6 +33,11 @@ mutation and every force form remain forbidden.
 - Event identity is `(PR number, head SHA, kind, provider source ID, attempt)`.
   Kinds are check failure, review thread, comment, review, and PR closure.
   Same-name CI reruns and allowlisted comment edits therefore remain distinct.
+- Amended 2026-09-02: top-level comments from GitHub-App (`Bot`) or `[bot]`
+  authors are review sources by default, subject to a repository ignore list;
+  a comment's attempt is its last edit time (else creation), and observing a
+  newer version supersedes older un-disposed versions of the same comment
+  without reviving disposed ones.
 - A new head supersedes old-head events without deleting history. Dispositions,
   notes, prior judgments, fix-attempt counts, heads, deferred work, rounds, and
   budgets survive process death and context compaction.

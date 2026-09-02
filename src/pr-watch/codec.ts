@@ -54,6 +54,7 @@ const eventRecordSchema = z.object({
   dispositionAt: isoTimestamp.optional(),
   fixAttemptCount: z.number().int().min(0).max(3),
   supersededByHead: nonEmpty.optional(),
+  supersededByEdit: isoTimestamp.optional(),
 }).strict();
 
 const actionBatchSchema = z.object({

@@ -562,14 +562,14 @@ async function makeActionableFixture(
       if (query.includes('CrewPrWatchDiscovery')) {
         const remoteHead = git(bareRepo, ['rev-parse', 'refs/heads/feature']);
         return jsonResult({ data: { repository: { pullRequests: {
-          pageInfo: { hasNextPage: false },
+          pageInfo: { hasNextPage: false, hasPreviousPage: false },
           nodes: [discoveryPr(remoteHead, topologyBaseRef.value)],
         } } } });
       }
       if (query.includes('CrewPrWatchRules')) {
         return jsonResult({ data: { repository: {
-          branchProtectionRules: { pageInfo: { hasNextPage: false }, nodes: [] },
-          rulesets: { pageInfo: { hasNextPage: false }, nodes: [] },
+          branchProtectionRules: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+          rulesets: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
         } } });
       }
       if (query.includes('CrewPrWatchSnapshot')) {
@@ -644,13 +644,13 @@ function snapshotPr(headSha: string, baseRefName = 'main') {
     ...discoveryPr(headSha, baseRefName),
     updatedAt: '2026-08-27T11:00:00.000Z',
     isDraft: false,
-    reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
-    reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
-    comments: { pageInfo: { hasNextPage: false }, nodes: [] },
+    reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+    reviews: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+    comments: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
     commits: { nodes: [{ commit: {
       oid: headSha,
       committedDate: '2026-08-27T11:00:00.000Z',
-      statusCheckRollup: { state: null, contexts: { pageInfo: { hasNextPage: false }, nodes: [] } },
+      statusCheckRollup: { state: null, contexts: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] } },
     } }] },
   };
 }

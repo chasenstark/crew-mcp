@@ -7,9 +7,11 @@ import { logBestEffortFailure } from '../utils/best-effort.js';
 import {
   changeSignalOf,
   changeSignalsEqual,
+  commentCanProduceEvent,
   type GitHubProbeObservation,
   type GitHubPullRequestObservation,
   type GitHubSnapshotObservation,
+  type PrWatchCommentSignalPolicy,
 } from './github-observation.js';
 import { parsePrWatchId } from './id.js';
 
@@ -83,6 +85,8 @@ const changeSignalSchema = z.object({
   reviewDecision,
   isDraft: z.boolean(),
   rollupState: z.enum(['EXPECTED', 'ERROR', 'FAILURE', 'PENDING', 'SUCCESS']).nullable(),
+  commentsDigest: z.string().min(1),
+  threadsDigest: z.string().min(1),
 }).strict();
 
 const observationSchema = z.object({
@@ -123,7 +127,10 @@ const observationSchema = z.object({
   comments: z.array(z.object({
     id: z.string(),
     author: z.string(),
+    authorType: z.string(),
+    createdAt: z.string(),
     updatedAt: z.string(),
+    lastEditedAt: z.string().nullable(),
     body: z.string(),
   }).strict()),
   paginationComplete: z.boolean(),
@@ -314,24 +321,32 @@ export function projectedSteadyStatePollCost(args: {
   return Math.ceil(args.probeCost + amortizedFull + averageDetail);
 }
 
+/** Three flat connections per PR (head commit, comments, threads) plus the root. */
 export function estimateProbeCost(prCount: number): number {
-  return Math.max(1, Math.ceil((1 + prCount) / 100));
+  return Math.max(1, Math.ceil((1 + 3 * prCount) / 100));
 }
 
 /**
- * Keep only the comment bodies evaluation can ever use. Everything else in
- * the observation is already bounded by the query shape (100 threads,
- * reviews, and check contexts per PR); comment bodies are the one unbounded
- * payload, and only verdict-source authors can produce a comment event.
+ * Keep only the comments evaluation can ever use. Everything else in the
+ * observation is already bounded by the query shape (100 threads, reviews,
+ * and check contexts per PR); comment bodies are the one unbounded payload.
+ * Verdict-source comments keep their body for marker matching; review-bot
+ * comments keep only their identity and edit time, which is all a bot
+ * comment event needs; every other comment is dropped.
  */
 export function compactObservationForCache(
   pr: GitHubPullRequestObservation,
-  keepCommentAuthors: readonly string[],
+  commentPolicy: PrWatchCommentSignalPolicy,
 ): GitHubPullRequestObservation {
   changeSignalOf(pr);
-  const keep = new Set(keepCommentAuthors.map((author) => author.toLowerCase()));
-  const comments = pr.comments.filter((comment) => keep.has(comment.author.toLowerCase()));
-  return comments.length === pr.comments.length ? pr : { ...pr, comments };
+  const comments = pr.comments.flatMap((comment) => {
+    if (!commentCanProduceEvent(comment, commentPolicy)) return [];
+    if (commentPolicy.verdictAuthors.has(comment.author.toLowerCase())) return [comment];
+    return [comment.body === '' ? comment : { ...comment, body: '' }];
+  });
+  const unchanged = comments.length === pr.comments.length
+    && comments.every((comment, index) => comment === pr.comments[index]);
+  return unchanged ? pr : { ...pr, comments };
 }
 
 export function cacheAfterFullRefresh(args: {
@@ -341,7 +356,7 @@ export function cacheAfterFullRefresh(args: {
   readonly reason: PrWatchFullRefreshReason;
   readonly cadenceSeconds: number;
   readonly fullRefreshIntervalMs?: number;
-  readonly keepCommentAuthors: readonly string[];
+  readonly commentPolicy: PrWatchCommentSignalPolicy;
   /**
    * Set when this refresh continues a poll that already spent on a probe
    * and detail fetch (a terminal-candidate re-read). The refresh cost then
@@ -367,7 +382,7 @@ export function cacheAfterFullRefresh(args: {
   });
   const prs: Record<string, GitHubPullRequestObservation> = {};
   for (const pr of args.snapshot.prs) {
-    prs[String(pr.number)] = compactObservationForCache(pr, args.keepCommentAuthors);
+    prs[String(pr.number)] = compactObservationForCache(pr, args.commentPolicy);
   }
   return {
     projectedPollCost,
@@ -409,7 +424,7 @@ export function mergeDeltaObservation(args: {
   readonly observedAt: string;
   readonly cadenceSeconds: number;
   readonly fullRefreshIntervalMs?: number;
-  readonly keepCommentAuthors: readonly string[];
+  readonly commentPolicy: PrWatchCommentSignalPolicy;
 }): {
   readonly snapshot: GitHubSnapshotObservation;
   readonly cache: PrWatchObservationCacheV1;
@@ -429,7 +444,7 @@ export function mergeDeltaObservation(args: {
     if (!pr) throw new Error(`pr_watch.cache_missing_pr: ${number}`);
     changeSignalOf(pr);
     prs.push(pr);
-    nextPrs[key] = compactObservationForCache(pr, args.keepCommentAuthors);
+    nextPrs[key] = compactObservationForCache(pr, args.commentPolicy);
   }
   const detailCost = args.details?.queryCost ?? 0;
   const recentDetailCosts = [...args.cache.recentDetailCosts, detailCost]

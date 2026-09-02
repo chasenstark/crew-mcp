@@ -14,6 +14,16 @@ export type PrWatchMaxPrsSource = 'tool' | 'repository_profile' | 'default';
 export interface PrWatchProfileV1 {
   readonly schemaVersion: 1;
   readonly limits: { readonly maxPrs: number };
+  /**
+   * Review-bot handling. With `autoDetect`, GitHub-App (`Bot`) and `[bot]`
+   * authors count as review sources and every edit of their top-level
+   * comment is a new event version. `ignore` mutes specific logins
+   * (lowercased, sorted) such as issue-tracker or coverage bots.
+   */
+  readonly bots: {
+    readonly autoDetect: boolean;
+    readonly ignore: readonly string[];
+  };
   readonly ci: {
     readonly githubChecks: {
       readonly mode: GitHubChecksMode;
@@ -61,11 +71,17 @@ export class PrWatchPolicyConfirmationRequired extends Error {
   }
 }
 
+const botLogin = z.string().trim().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$/);
+
 const profileSchema = z.object({
   schema_version: z.literal(1),
   limits: z.object({
     max_prs: z.number().int().min(1).max(100).default(DEFAULT_PR_WATCH_MAX_PRS),
   }).strict().default({ max_prs: DEFAULT_PR_WATCH_MAX_PRS }),
+  bots: z.object({
+    auto_detect: z.boolean().default(true),
+    ignore: z.array(botLogin).max(100).default([]),
+  }).strict().default({ auto_detect: true, ignore: [] }),
   ci: z.object({
     github_checks: z.object({
       mode: z.enum(['github_rules', 'explicit', 'none']).default('github_rules'),
@@ -82,6 +98,10 @@ const profileSchema = z.object({
   const checks = profile.ci.github_checks.required_checks;
   if (new Set(checks).size !== checks.length) {
     ctx.addIssue({ code: 'custom', message: 'required checks must be unique' });
+  }
+  const ignored = profile.bots.ignore.map((login) => login.toLowerCase());
+  if (new Set(ignored).size !== ignored.length) {
+    ctx.addIssue({ code: 'custom', message: 'ignored bot logins must be unique' });
   }
   if (profile.ci.github_checks.mode === 'explicit' && checks.length === 0) {
     ctx.addIssue({ code: 'custom', message: 'explicit check mode requires required_checks' });
@@ -222,6 +242,7 @@ export function defaultProfile(): PrWatchProfileV1 {
   return {
     schemaVersion: 1,
     limits: { maxPrs: DEFAULT_PR_WATCH_MAX_PRS },
+    bots: { autoDetect: true, ignore: [] },
     ci: {
       githubChecks: { mode: 'github_rules', requiredChecks: [] },
     },
@@ -232,6 +253,10 @@ function normalizeProfile(value: z.infer<typeof profileSchema> | PrWatchProfileV
   if ('schemaVersion' in value) {
     return {
       ...value,
+      bots: {
+        autoDetect: value.bots.autoDetect,
+        ignore: uniqueSorted(value.bots.ignore.map((login) => login.toLowerCase())),
+      },
       ci: {
         ...value.ci,
         githubChecks: {
@@ -250,6 +275,10 @@ function normalizeProfile(value: z.infer<typeof profileSchema> | PrWatchProfileV
   return {
     schemaVersion: 1,
     limits: { maxPrs: value.limits.max_prs },
+    bots: {
+      autoDetect: value.bots.auto_detect,
+      ignore: uniqueSorted(value.bots.ignore.map((login) => login.toLowerCase())),
+    },
     ci: {
       githubChecks: {
         mode: value.ci.github_checks.mode,

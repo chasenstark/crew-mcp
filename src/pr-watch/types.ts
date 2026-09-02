@@ -115,6 +115,8 @@ export interface PrWatchEventRecordV1 {
   readonly dispositionAt?: string;
   readonly fixAttemptCount: number;
   readonly supersededByHead?: string;
+  /** Version timestamp of the later edit that superseded this comment version. */
+  readonly supersededByEdit?: string;
 }
 
 export interface PrWatchActionBatchV1 {

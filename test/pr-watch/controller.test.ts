@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { PrWatchController, type PrWatchCircleCiReader } from '../../src/pr-watch/controller.js';
+import type { PrWatchApprovalPolicy } from '../../src/pr-watch/github-observation.js';
 import { hashPrWatchStartKey } from '../../src/pr-watch/id.js';
 import {
   PR_WATCH_OBSERVATION_CACHE_FILE,
@@ -11,7 +12,7 @@ import {
   readPrWatchObservationCache,
 } from '../../src/pr-watch/observation-cache.js';
 import { ProviderCommandError, type ProviderCommandRunner } from '../../src/pr-watch/provider-runner.js';
-import { transitionToBlocked } from '../../src/pr-watch/reducer.js';
+import { rearmPrWatch, recordEventDispositions, transitionToBlocked } from '../../src/pr-watch/reducer.js';
 import { PrWatchStartIndex } from '../../src/pr-watch/start-index.js';
 import { PrWatchStore } from '../../src/pr-watch/store.js';
 
@@ -307,25 +308,38 @@ describe('PrWatchController delta polling', () => {
   });
 
   it('never certifies a terminal outcome from cached detail', async () => {
+    // reviewer_head approval reads the reviewer's LATEST review, which the
+    // probe never fetches: a later non-approving review by the same reviewer
+    // leaves reviewDecision APPROVED and every other probe field untouched.
     const fixture = deltaFixture();
-    fixture.prs.set(1, stackPr(1, 'main', { reviewDecision: 'APPROVED' }));
-    fixture.prs.set(2, stackPr(2, 'branch-1', { reviewDecision: 'APPROVED' }));
-    const started = await startStack(fixture);
+    const approvedByLead = { id: 'PRR_lead_ok', login: 'lead', state: 'APPROVED' as const, submittedAt: '2026-09-02T11:30:00.000Z' };
+    fixture.prs.set(1, stackPr(1, 'main', { reviewDecision: 'APPROVED', reviews: [approvedByLead] }));
+    fixture.prs.set(2, stackPr(2, 'branch-1', { reviewDecision: 'APPROVED', reviews: [approvedByLead] }));
+    const started = await startStack(fixture, {
+      mode: 'github',
+      goals: [
+        { pr: 1, mode: 'reviewer_head', reviewer: 'lead' },
+        { pr: 2, mode: 'reviewer_head', reviewer: 'lead' },
+      ],
+    });
     fixture.advance(120_000);
     const first = await fixture.controller.pollOnce(started.watchId);
     expect(first.state.status).toBe('active');
     expect(first.state.terminalStability).toBeDefined();
 
-    // Unresolve a thread on PR 2 without moving any probe field: the kind of
-    // change the probe cannot see and the cache would happily reuse.
-    fixture.prs.set(2, stackPr(2, 'branch-1', { reviewDecision: 'APPROVED', unresolvedThread: true }));
+    fixture.prs.set(2, stackPr(2, 'branch-1', {
+      reviewDecision: 'APPROVED',
+      reviews: [approvedByLead, { id: 'PRR_lead_hmm', login: 'lead', state: 'COMMENTED', submittedAt: '2026-09-02T12:03:00.000Z' }],
+    }));
     fixture.advance(120_000);
     const second = await fixture.controller.pollOnce(started.watchId);
     expect(fixture.calls.slice(1)).toEqual([
       { kind: 'probe', numbers: [1, 2] },
       { kind: 'snapshot', numbers: [1, 2] },
     ]);
-    expect(second.state.status).toBe('actionable');
+    expect(second.state.status).toBe('active');
+    expect(second.state.lastObservation?.incompleteReasons).toEqual(['pr_2:approval_incomplete']);
+    expect(second.state.terminalStability).toBeUndefined();
     const watchDir = fixture.store.watchDir(started.watchId);
     expect(readPrWatchObservationCache(watchDir, started.watchId)?.lastPoll).toMatchObject({
       mode: 'full',
@@ -334,6 +348,43 @@ describe('PrWatchController delta polling', () => {
       probeCost: 1,
       detailCost: 1,
     });
+  });
+
+  it('reaches terminal green after an acknowledged bot comment instead of waking forever', async () => {
+    const fixture = deltaFixture();
+    fixture.prs.set(1, stackPr(1, 'main', { reviewDecision: 'APPROVED' }));
+    fixture.prs.set(2, stackPr(2, 'branch-1', {
+      reviewDecision: 'APPROVED',
+      botComments: [{ id: 'IC_bot_verdict', login: '143-dev', createdAt: '2026-09-02T11:00:00.000Z' }],
+    }));
+    const started = await startStack(fixture);
+    fixture.advance(120_000);
+    const first = await fixture.controller.pollOnce(started.watchId);
+    expect(first.state.status).toBe('actionable');
+    if (first.state.status !== 'actionable') throw new Error('expected actionable');
+    const [eventId] = first.state.batch.eventIds;
+    await fixture.store.mutate(started.watchId, (state) => {
+      const acked = recordEventDispositions(state, {
+        actionBatchId: first.state.batch.actionBatchId,
+        dispositions: { [eventId]: { disposition: 'acknowledged' } },
+      }).state;
+      return rearmPrWatch(acked, {
+        reason: 'disposed_batch',
+        expectedGeneration: acked.generation,
+        receiptKey: 'bot-ack-rearm',
+        actionBatchId: first.state.batch.actionBatchId,
+        now: new Date(Date.parse('2026-09-02T12:03:00.000Z')),
+      });
+    });
+
+    fixture.advance(120_000);
+    const second = await fixture.controller.pollOnce(started.watchId);
+    expect(second.state.status).toBe('active');
+    expect(second.state.terminalStability).toBeDefined();
+    fixture.advance(120_000);
+    const third = await fixture.controller.pollOnce(started.watchId);
+    expect(third.state).toMatchObject({ status: 'terminal', outcome: 'green' });
+    expect(third.state.events[eventId]?.disposition).toBe('acknowledged');
   });
 
   it('confirms a green stack from a fresh full read and accounts for both reads', async () => {
@@ -385,6 +436,71 @@ describe('PrWatchController delta polling', () => {
     });
   });
 
+  it('wakes on a review bot editing its comment in place, keyed on the edit time', async () => {
+    const fixture = deltaFixture();
+    const started = await startStack(fixture);
+    fixture.advance(120_000);
+    await fixture.controller.pollOnce(started.watchId);
+
+    // The bot's comment appears (created) without the PR's updatedAt moving:
+    // only the probe's comment digest can notice it.
+    fixture.prs.set(2, stackPr(2, 'branch-1', {
+      botComments: [{ id: 'IC_bot_verdict', login: '143-dev', createdAt: '2026-09-02T12:03:00.000Z' }],
+    }));
+    fixture.advance(120_000);
+    const created = await fixture.controller.pollOnce(started.watchId);
+    expect(fixture.calls.slice(1)).toEqual([
+      { kind: 'probe', numbers: [1, 2] },
+      { kind: 'snapshot', numbers: [2] },
+    ]);
+    expect(created.state.status).toBe('actionable');
+    if (created.state.status !== 'actionable') throw new Error('expected actionable');
+    const [firstId] = created.state.batch.eventIds;
+    expect(created.state.events[firstId]).toMatchObject({
+      identity: { prNumber: 2, kind: 'comment', providerSourceId: 'IC_bot_verdict', attempt: Date.parse('2026-09-02T12:03:00.000Z') },
+      versionTimestamp: '2026-09-02T12:03:00.000Z',
+    });
+
+    // Ack and rearm, then the bot edits the same comment.
+    const rearmed = await fixture.store.mutate(started.watchId, (state) => {
+      const acked = recordEventDispositions(state, {
+        actionBatchId: created.state.batch.actionBatchId,
+        dispositions: { [firstId]: { disposition: 'acknowledged' } },
+      }).state;
+      return rearmPrWatch(acked, {
+        reason: 'disposed_batch',
+        expectedGeneration: acked.generation,
+        receiptKey: 'bot-edit-rearm',
+        actionBatchId: created.state.batch.actionBatchId,
+        now: new Date(Date.parse('2026-09-02T12:04:30.000Z')),
+      });
+    });
+    expect(rearmed.state.status).toBe('active');
+    fixture.prs.set(2, stackPr(2, 'branch-1', {
+      botComments: [{
+        id: 'IC_bot_verdict',
+        login: '143-dev',
+        createdAt: '2026-09-02T12:03:00.000Z',
+        lastEditedAt: '2026-09-02T12:05:00.000Z',
+      }],
+    }));
+    fixture.advance(120_000);
+    const edited = await fixture.controller.pollOnce(started.watchId);
+    expect(fixture.calls.slice(3)).toEqual([
+      { kind: 'probe', numbers: [1, 2] },
+      { kind: 'snapshot', numbers: [2] },
+    ]);
+    expect(edited.state.status).toBe('actionable');
+    if (edited.state.status !== 'actionable') throw new Error('expected actionable');
+    const [secondId] = edited.state.batch.eventIds;
+    expect(secondId).not.toBe(firstId);
+    expect(edited.state.events[secondId]).toMatchObject({
+      identity: { providerSourceId: 'IC_bot_verdict', attempt: Date.parse('2026-09-02T12:05:00.000Z') },
+      versionTimestamp: '2026-09-02T12:05:00.000Z',
+    });
+    expect(edited.state.events[firstId]?.disposition).toBe('acknowledged');
+  });
+
   it('lets pending CircleCI evidence veto a terminal candidate before any forced re-read', async () => {
     const fixture = deltaFixture({
       circleci: {
@@ -421,8 +537,20 @@ interface StackPr {
   readonly headSha: string;
   readonly updatedAt: string;
   readonly reviewDecision: 'APPROVED' | 'REVIEW_REQUIRED';
-  /** Detail-only state the probe cannot observe. */
-  readonly unresolvedThread?: boolean;
+  /** Top-level comments from GitHub-App authors, visible to probe and snapshot alike. */
+  readonly botComments?: readonly {
+    readonly id: string;
+    readonly login: string;
+    readonly createdAt: string;
+    readonly lastEditedAt?: string;
+  }[];
+  /** Submitted reviews; the probe never reads reviews, so these are probe-invisible. */
+  readonly reviews?: readonly {
+    readonly id: string;
+    readonly login: string;
+    readonly state: 'APPROVED' | 'COMMENTED' | 'CHANGES_REQUESTED';
+    readonly submittedAt: string;
+  }[];
 }
 
 interface DeltaFixture {
@@ -483,13 +611,16 @@ function deltaFixture(options: {
   };
 }
 
-async function startStack(fixture: DeltaFixture) {
+async function startStack(
+  fixture: DeltaFixture,
+  approval: PrWatchApprovalPolicy = { mode: 'github' },
+) {
   const started = await fixture.controller.start({
     repoRoot: fixture.repo,
     repository: 'example/repo',
     anchorPrNumber: 1,
     idempotencyKey: 'delta-stack',
-    approval: { mode: 'github' },
+    approval,
   });
   expect(started.state.status).toBe('active');
   expect(Object.keys(started.state.expectedHeads)).toEqual(['1', '2']);
@@ -539,17 +670,17 @@ function stackRunner(args: {
       const query = spec.args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
       if (query.includes('CrewPrWatchDiscovery')) {
         return jsonResult({ data: { repository: { pullRequests: {
-          pageInfo: { hasNextPage: false },
+          pageInfo: { hasNextPage: false, hasPreviousPage: false },
           nodes: args.prs().map(stackDiscoveryPr),
         } } } });
       }
       if (query.includes('CrewPrWatchRules')) {
         return jsonResult({ data: { repository: {
           branchProtectionRules: {
-            pageInfo: { hasNextPage: false },
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
             nodes: [{ pattern: 'main', requiredStatusCheckContexts: ['unit'] }],
           },
-          rulesets: { pageInfo: { hasNextPage: false }, nodes: [] },
+          rulesets: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
         } } });
       }
       if (query.includes('CrewPrWatchProbe')) {
@@ -593,6 +724,8 @@ function stackDiscoveryPr(pr: StackPr) {
 }
 
 function stackProbePr(pr: StackPr) {
+  // Mirrors every field the production probe reads; `reviews` are absent by
+  // design, which is the blind spot the forced terminal re-read covers.
   return {
     number: pr.number,
     state: 'OPEN',
@@ -602,6 +735,16 @@ function stackProbePr(pr: StackPr) {
     reviewDecision: pr.reviewDecision,
     isDraft: false,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    comments: {
+      pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      nodes: (pr.botComments ?? []).map((comment) => ({
+        id: comment.id,
+        createdAt: comment.createdAt,
+        lastEditedAt: comment.lastEditedAt ?? null,
+        author: { __typename: 'Bot', login: comment.login },
+      })),
+    },
+    reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
   };
 }
 
@@ -610,24 +753,33 @@ function stackSnapshotPr(pr: StackPr) {
     ...stackDiscoveryPr(pr),
     updatedAt: pr.updatedAt,
     isDraft: false,
-    reviewThreads: {
-      pageInfo: { hasNextPage: false },
-      nodes: pr.unresolvedThread
-        ? [{
-            id: `thread-${pr.number}`,
-            isResolved: false,
-            isOutdated: false,
-            comments: { nodes: [{ databaseId: 500 + pr.number, updatedAt: pr.updatedAt }] },
-          }]
-        : [],
+    reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+    reviews: {
+      pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      nodes: (pr.reviews ?? []).map((review) => ({
+        id: review.id,
+        state: review.state,
+        submittedAt: review.submittedAt,
+        commit: { oid: pr.headSha },
+        author: { login: review.login },
+      })),
     },
-    reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
-    comments: { pageInfo: { hasNextPage: false }, nodes: [] },
+    comments: {
+      pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      nodes: (pr.botComments ?? []).map((comment) => ({
+        id: comment.id,
+        createdAt: comment.createdAt,
+        updatedAt: comment.lastEditedAt ?? comment.createdAt,
+        lastEditedAt: comment.lastEditedAt ?? null,
+        author: { __typename: 'Bot', login: comment.login },
+        body: `Verdict from ${comment.login}`,
+      })),
+    },
     commits: { nodes: [{ commit: {
       oid: pr.headSha,
       committedDate: '2026-09-02T10:00:00.000Z',
       statusCheckRollup: { state: 'SUCCESS', contexts: {
-        pageInfo: { hasNextPage: false },
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
         nodes: [{
           __typename: 'CheckRun',
           id: `check-${pr.number}`,
@@ -657,17 +809,17 @@ function successfulRunner(now: () => Date): ProviderCommandRunner {
       const query = spec.args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
       if (query.includes('CrewPrWatchDiscovery')) {
         return jsonResult({ data: { repository: { pullRequests: {
-          pageInfo: { hasNextPage: false },
+          pageInfo: { hasNextPage: false, hasPreviousPage: false },
           nodes: [discoveryPr()],
         } } } });
       }
       if (query.includes('CrewPrWatchRules')) {
         return jsonResult({ data: { repository: {
           branchProtectionRules: {
-            pageInfo: { hasNextPage: false },
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
             nodes: [{ pattern: 'main', requiredStatusCheckContexts: ['unit'] }],
           },
-          rulesets: { pageInfo: { hasNextPage: false }, nodes: [] },
+          rulesets: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
         } } });
       }
       if (query.includes('CrewPrWatchProbe')) {
@@ -707,6 +859,8 @@ function probePr() {
     reviewDecision: 'APPROVED',
     isDraft: false,
     commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+    comments: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+    reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
   };
 }
 
@@ -731,14 +885,14 @@ function snapshotPr() {
     ...discoveryPr(),
     updatedAt: '2026-08-27T11:30:00.000Z',
     isDraft: false,
-    reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
-    reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
-    comments: { pageInfo: { hasNextPage: false }, nodes: [] },
+    reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+    reviews: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+    comments: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
     commits: { nodes: [{ commit: {
       oid: 'abc123',
       committedDate: '2026-08-27T11:00:00.000Z',
       statusCheckRollup: { state: 'SUCCESS', contexts: {
-        pageInfo: { hasNextPage: false },
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
         nodes: [{
           __typename: 'CheckRun',
           id: 'check-node-1',

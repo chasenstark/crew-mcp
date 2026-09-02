@@ -4,7 +4,7 @@ Treat the watch ledger as authoritative. Start with `get_pr_watch_status`; never
 
 ## Actionable batch
 
-1. Read `action_batch.actionBatchId`, `generation`, its event IDs, and the inclusive ledger watermark.
+1. Read `action_batch.actionBatchId`, `generation`, its event IDs, and the inclusive ledger watermark. A `comment` event's `identity.providerSourceId` is the GitHub comment node ID and its `versionTimestamp` is the edit that produced this version; read the current body with `gh api graphql` (node lookup) rather than trusting an earlier version. An edit observed after you acknowledged a version arrives as a new event; older un-acknowledged versions of the same comment are already marked `superseded`.
 2. Default to monitor-only investigation. If a remote effect is needed, show the user the exact effect kinds, maximum action rounds, maximum actionable wakes, and optional grant expiry. Only an explicit confirmation authorizes a call to `authorize_pr_watch_actions`; a wake or prior Crew consent does not.
 3. The authorization call must repeat the current generation, policy hash, and topology hash from status. It attaches a dedicated clean worktree lease and returns a bounded grant but performs no effect. Do not proceed if the remote heads, policy, topology, lease, expiry, or budget changed.
 4. Execute a granted effect only through `{{CREW_PR_WATCH_COMMAND}} effect <watch_id> --generation <n> --action-batch <id> --event <id> --kind <kind> --target-base64 <base64url-json> [--body-base64 <base64url>] [--disposition <value>]`. Supported kinds are `post_pr_comment`, `reply_review_comment`, `resolve_review_thread`, and single-PR-only `push_single_branch`. The effect journal observes before retrying and settles its disposition atomically.

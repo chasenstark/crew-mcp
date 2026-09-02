@@ -7,6 +7,7 @@ import type {
   GitHubProbeObservation,
   GitHubPullRequestObservation,
   GitHubSnapshotObservation,
+  PrWatchCommentSignalPolicy,
 } from '../../src/pr-watch/github-observation.js';
 import { makePrWatchId } from '../../src/pr-watch/id.js';
 import {
@@ -23,6 +24,7 @@ import {
 } from '../../src/pr-watch/observation-cache.js';
 
 const OBSERVED_AT = '2026-09-02T12:00:00.000Z';
+const POLICY: PrWatchCommentSignalPolicy = { autoDetectBots: true, ignoredBots: new Set(), verdictAuthors: new Set() };
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -37,7 +39,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1), pr(2)]),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     const now = new Date(Date.parse(OBSERVED_AT) + 60_000);
     expect(planPrWatchObservation({ cache: undefined, repository: 'example/repo', now }))
@@ -60,7 +62,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1), pr(2)]),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     const unchanged = probe({ 1: pr(1), 2: pr(2) });
     expect(selectDirtyPrNumbers({ probe: unchanged, cache, prNumbers: [1, 2] })).toEqual([]);
@@ -68,6 +70,10 @@ describe('PR-watch delta-polling observation cache', () => {
     expect(selectDirtyPrNumbers({ probe: edited, cache, prNumbers: [1, 2] })).toEqual([2]);
     const checksFinished = probe({ 1: pr(1, { rollupState: 'FAILURE' }), 2: pr(2) });
     expect(selectDirtyPrNumbers({ probe: checksFinished, cache, prNumbers: [1, 2] })).toEqual([1]);
+    const commentEdited = probe({ 1: pr(1), 2: pr(2, { commentsDigest: 'comments-digest-v2' }) });
+    expect(selectDirtyPrNumbers({ probe: commentEdited, cache, prNumbers: [1, 2] })).toEqual([2]);
+    const threadResolved = probe({ 1: pr(1, { threadsDigest: 'threads-digest-v2' }), 2: pr(2) });
+    expect(selectDirtyPrNumbers({ probe: threadResolved, cache, prNumbers: [1, 2] })).toEqual([1]);
     const grown = probe({ 1: pr(1), 2: pr(2), 3: pr(3) });
     expect(selectDirtyPrNumbers({ probe: grown, cache, prNumbers: [1, 2, 3] })).toEqual([3]);
     expect(() => selectDirtyPrNumbers({ probe: unchanged, cache, prNumbers: [1, 2, 3] }))
@@ -123,7 +129,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1), pr(2)], { queryCost: 3 }),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     const refreshedTwo = pr(2, { updatedAt: '2026-09-02T12:05:00.000Z', reviewDecision: 'APPROVED' });
     const dirtyProbe = probe({ 1: pr(1), 2: refreshedTwo }, { queryCost: 1 });
@@ -135,7 +141,7 @@ describe('PR-watch delta-polling observation cache', () => {
       prNumbers: [1, 2],
       observedAt: '2026-09-02T12:06:00.000Z',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     expect(merged.snapshot.prs.map((entry) => entry.number)).toEqual([1, 2]);
     expect(merged.snapshot.prs[0]).toEqual(pr(1));
@@ -153,7 +159,7 @@ describe('PR-watch delta-polling observation cache', () => {
       prNumbers: [1, 2],
       observedAt: '2026-09-02T12:08:00.000Z',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     expect(quiet.snapshot).toMatchObject({ queryCost: 1, apiCalls: 1 });
     expect(quiet.snapshot.prs[1]).toEqual(refreshedTwo);
@@ -168,7 +174,7 @@ describe('PR-watch delta-polling observation cache', () => {
       prNumbers: [1, 2],
       observedAt: OBSERVED_AT,
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     })).toThrow('pr_watch.detail_missing_pr: 2');
   });
 
@@ -182,7 +188,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1)]),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     expect(readPrWatchObservationCache(root, watchId)).toBeUndefined();
     expect(writePrWatchObservationCache(root, cache, { detailsChanged: true })).toBe(true);
@@ -216,7 +222,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1)], { queryCost: 53 }),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     const quiet = mergeDeltaObservation({
       cache: seeded.cache,
@@ -226,7 +232,7 @@ describe('PR-watch delta-polling observation cache', () => {
       prNumbers: [1],
       observedAt: '2026-09-02T12:02:00.000Z',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     expect(quiet.cache.recentDetailCosts).toEqual([0]);
     const reread = cacheAfterFullRefresh({
@@ -235,7 +241,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1)], { queryCost: 53, observedAt: '2026-09-02T12:02:05.000Z' }),
       reason: 'terminal_candidate',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
       continuation: { queryCost: quiet.snapshot.queryCost, apiCalls: quiet.snapshot.apiCalls },
     });
     expect(reread.cache.recentDetailCosts).toEqual([53]);
@@ -249,13 +255,15 @@ describe('PR-watch delta-polling observation cache', () => {
     expect(reread.projectedPollCost).toBe(19);
   });
 
-  it('keeps only verdict-source comment bodies in the cache', () => {
+  it('keeps verdict-source bodies and bot identities in the cache, nothing else', () => {
     const noisy = pr(1);
+    const base = { authorType: 'User', createdAt: OBSERVED_AT, updatedAt: OBSERVED_AT, lastEditedAt: null };
     const withComments: GitHubPullRequestObservation = {
       ...noisy,
       comments: [
-        { id: 'c1', author: 'Review-Bot', updatedAt: OBSERVED_AT, body: 'Verdict: approve' },
-        { id: 'c2', author: 'human', updatedAt: OBSERVED_AT, body: 'x'.repeat(10_000) },
+        { ...base, id: 'c1', author: 'Review-Bot', body: 'Verdict: approve' },
+        { ...base, id: 'c2', author: 'human', body: 'x'.repeat(10_000) },
+        { ...base, id: 'c3', author: '143-dev', authorType: 'Bot', lastEditedAt: '2026-09-02T12:05:29.000Z', body: 'y'.repeat(3_000) },
       ],
     };
     const { cache } = cacheAfterFullRefresh({
@@ -264,9 +272,12 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([withComments]),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: ['review-bot'],
+      commentPolicy: { ...POLICY, verdictAuthors: new Set(['review-bot']) },
     });
-    expect(cache.prs['1']?.comments.map((comment) => comment.id)).toEqual(['c1']);
+    expect(cache.prs['1']?.comments).toEqual([
+      withComments.comments[0],
+      { ...withComments.comments[2], body: '' },
+    ]);
     const merged = mergeDeltaObservation({
       cache,
       probe: probe({ 1: withComments }),
@@ -275,11 +286,11 @@ describe('PR-watch delta-polling observation cache', () => {
       prNumbers: [1],
       observedAt: OBSERVED_AT,
       cadenceSeconds: 120,
-      keepCommentAuthors: ['review-bot'],
+      commentPolicy: { ...POLICY, verdictAuthors: new Set(['review-bot']) },
     });
     // The evaluator still sees the full fresh detail; only the cache is compacted.
-    expect(merged.snapshot.prs[0].comments).toHaveLength(2);
-    expect(merged.cache.prs['1']?.comments.map((comment) => comment.id)).toEqual(['c1']);
+    expect(merged.snapshot.prs[0].comments).toHaveLength(3);
+    expect(merged.cache.prs['1']?.comments.map((comment) => comment.id)).toEqual(['c1', 'c3']);
   });
 
   it('rewrites the detail file only when a detail fetch happened', () => {
@@ -292,7 +303,7 @@ describe('PR-watch delta-polling observation cache', () => {
       snapshot: snapshot([pr(1), pr(2)]),
       reason: 'no_cache',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     expect(writePrWatchObservationCache(root, cache, { detailsChanged: true })).toBe(true);
     const detailsPath = join(root, PR_WATCH_OBSERVATION_CACHE_FILE);
@@ -306,7 +317,7 @@ describe('PR-watch delta-polling observation cache', () => {
       prNumbers: [1, 2],
       observedAt: '2026-09-02T12:02:00.000Z',
       cadenceSeconds: 120,
-      keepCommentAuthors: [],
+      commentPolicy: POLICY,
     });
     expect(quiet.detailsChanged).toBe(false);
     writeFileSync(detailsPath, `${before}\n`);
@@ -328,6 +339,8 @@ function pr(
     reviewDecision: 'REVIEW_REQUIRED' as const,
     isDraft: false,
     rollupState: 'SUCCESS' as const,
+    commentsDigest: 'comments-digest',
+    threadsDigest: 'threads-digest',
     ...signal,
   };
   return {

@@ -8,6 +8,7 @@ import type { CircleCiWorkflowEvidence } from './circleci-evidence.js';
 import { evaluateCircleCiEvidence } from './circleci-evidence.js';
 import { CircleCiCliReader } from './circleci-provider.js';
 import {
+  defaultProfile,
   loadEffectivePrWatchProfile,
   loadPrWatchProfile,
   resolvePrWatchPolicy,
@@ -33,11 +34,13 @@ import {
   type PrWatchPollMode,
 } from './observation-cache.js';
 import {
+  commentSignalPolicyFor,
   discoverLinearPrStack,
   evaluateGitHubSnapshot,
   evaluateTerminalStability,
   type GitHubSnapshotObservation,
   type PrWatchApprovalPolicy,
+  type PrWatchCommentSignalPolicy,
   type PrWatchVerdictSource,
 } from './github-observation.js';
 import { detectGhCapability, type GhCapability } from './github-provider.js';
@@ -409,10 +412,13 @@ export class PrWatchController {
         causeId: 'unbound',
         version: 1,
         kind: 'policy_changed',
-        class: 'revalidate',
-        message: 'Repository PR-watch policy changed; explicitly revalidate before continuing.',
+        // A watch's policy is snapshotted at start. Revalidation compares the
+        // same changed profile and would refuse, so the honest remedy is to
+        // cancel this watch and start a new one under the new profile.
+        class: 'restart_required',
+        message: 'Repository PR-watch profile (.crew/pr-watch.yaml) changed since this watch started; cancel it and start a new watch under the current profile.',
         evidence: { expectedPolicyHash: policy?.profileHash, observedProfileHash: currentProfileHash },
-        allowedConsumingReasons: ['blocked_resolved'],
+        allowedConsumingReasons: [],
       });
       return { state: blocked, queried: false };
     }
@@ -429,6 +435,11 @@ export class PrWatchController {
     }
     // Fold every provider into one assessment so the terminal-candidate
     // decision below sees CircleCI's veto before paying for a full re-read.
+    const disposedEventIds = new Set(
+      Object.values(snapshotState.events)
+        .filter((event) => event.disposition !== undefined)
+        .map((event) => event.id),
+    );
     const assess = async (observation: GitHubObservationResult) => {
       let evaluation = evaluateGitHubSnapshot({
         snapshot: observation.snapshot,
@@ -437,6 +448,7 @@ export class PrWatchController {
         cadenceSeconds: NOMINAL_CADENCE_MS / 1000,
         verdictSources: evidence.verdictSources ?? [],
         projectedPollCost: observation.projectedPollCost,
+        disposedEventIds,
       });
       const allEvents: PrWatchEventRecordV1[] = [...evaluation.actionableEvents];
       const circleFingerprints: string[] = [];
@@ -499,8 +511,9 @@ export class PrWatchController {
     let assessed = await assess(observed);
     if (assessed.evaluation.terminalCandidate && observed.mode !== 'full') {
       // A terminal verdict is never certified from cached detail. The probe
-      // cannot see every change (a thread unresolved without a reply, for
-      // one), so any green or all-closed candidate re-reads every PR first.
+      // cannot see every change (it never reads submitted reviews, so a
+      // reviewer-goal approval can lapse while reviewDecision stays APPROVED),
+      // so any green or all-closed candidate re-reads every PR first.
       // Running after the CircleCI fold means a pending required workflow
       // vetoes the candidate without paying for that re-read every poll.
       try {
@@ -788,7 +801,7 @@ export class PrWatchController {
     const watchDir = this.store.watchDir(state.watchId);
     const cadenceSeconds = NOMINAL_CADENCE_MS / 1000;
     const fullRefreshIntervalMs = this.options.fullRefreshIntervalMs ?? PR_WATCH_FULL_REFRESH_INTERVAL_MS;
-    const keepCommentAuthors = verdictSourceAuthors(state);
+    const commentPolicy = commentSignalPolicyOf(state);
     const prior = options.continuation
       ? options.continuation.cache
       : readPrWatchObservationCache(watchDir, state.watchId);
@@ -807,6 +820,7 @@ export class PrWatchController {
         prNumbers,
         context,
         now: () => this.now(),
+        commentSignalPolicy: commentPolicy,
       });
       const refreshed = cacheAfterFullRefresh({
         prior,
@@ -815,7 +829,7 @@ export class PrWatchController {
         reason: plan.reason,
         cadenceSeconds,
         fullRefreshIntervalMs,
-        keepCommentAuthors,
+        commentPolicy,
         ...(options.continuation ? { continuation: options.continuation } : {}),
       });
       // An unpersisted cache means the next poll pays full price again, so
@@ -843,6 +857,7 @@ export class PrWatchController {
       prNumbers,
       context,
       now: () => this.now(),
+      commentSignalPolicy: commentPolicy,
     });
     const dirtyPrNumbers = selectDirtyPrNumbers({ probe, cache: plan.cache, prNumbers });
     const details = dirtyPrNumbers.length === 0
@@ -852,6 +867,7 @@ export class PrWatchController {
         prNumbers: dirtyPrNumbers,
         context,
         now: () => this.now(),
+        commentSignalPolicy: commentPolicy,
       });
     const merged = mergeDeltaObservation({
       cache: plan.cache,
@@ -862,7 +878,7 @@ export class PrWatchController {
       observedAt: (details ?? probe).observedAt,
       cadenceSeconds,
       fullRefreshIntervalMs,
-      keepCommentAuthors,
+      commentPolicy,
     });
     const persisted = writePrWatchObservationCache(watchDir, merged.cache, {
       detailsChanged: merged.detailsChanged,
@@ -1010,15 +1026,18 @@ function providerErrorCode(error: unknown): string {
 }
 
 /**
- * Only comments from configured verdict sources can ever produce an event, so
- * the observation cache keeps just those bodies. Verdict sources are immutable
- * for the life of a watch, which keeps a compacted cache evaluation-equivalent.
+ * The watch's comment policy: its immutable verdict sources plus the
+ * repository profile's review-bot settings, both persisted at start. The
+ * same policy shapes the probe digest, evaluation, and cache compaction, so
+ * a compacted cache stays evaluation-equivalent.
  */
-function verdictSourceAuthors(state: PrWatchStateV1): readonly string[] {
+function commentSignalPolicyOf(state: PrWatchStateV1): PrWatchCommentSignalPolicy {
   const evidence = state.policyEvidence as {
+    readonly resolvedPolicy?: ResolvedPrWatchPolicyV1;
     readonly verdictSources?: readonly PrWatchVerdictSource[];
   } | undefined;
-  return [...new Set((evidence?.verdictSources ?? []).map((source) => source.author.toLowerCase()))];
+  const bots = evidence?.resolvedPolicy?.profile.bots ?? defaultProfile().bots;
+  return commentSignalPolicyFor(bots, evidence?.verdictSources ?? []);
 }
 
 function persistedCapability(state: PrWatchStateV1): GhCapability {

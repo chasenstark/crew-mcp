@@ -40,8 +40,99 @@ export interface GitHubThreadObservation {
 export interface GitHubCommentObservation {
   readonly id: string;
   readonly author: string;
+  /** GraphQL actor `__typename`: `User`, `Bot`, `Mannequin`, ...; `Unknown` for a deleted author. */
+  readonly authorType: string;
+  readonly createdAt: string;
   readonly updatedAt: string;
+  /** Null until the body has been edited at least once. */
+  readonly lastEditedAt: string | null;
   readonly body: string;
+}
+
+/** The version identity of a comment: its last body edit, else its creation. */
+export function commentVersionTimestamp(comment: {
+  readonly createdAt: string;
+  readonly lastEditedAt: string | null;
+}): string {
+  return comment.lastEditedAt ?? comment.createdAt;
+}
+
+/**
+ * Review bots edit their verdict comment in place rather than posting a new
+ * one, so GitHub-App (`Bot`) authors and legacy `[bot]` logins count as
+ * review sources without per-watch configuration.
+ */
+export function isReviewBotAuthor(comment: {
+  readonly author: string;
+  readonly authorType: string;
+}): boolean {
+  return comment.authorType === 'Bot' || comment.author.toLowerCase().endsWith('[bot]');
+}
+
+/**
+ * Which top-level comments can produce a `comment` event for a watch. The
+ * same predicate drives evaluation, the change-signal digest, and cache
+ * compaction, so a muted bot neither wakes the captain nor dirties its PR.
+ */
+export interface PrWatchCommentSignalPolicy {
+  readonly autoDetectBots: boolean;
+  readonly ignoredBots: ReadonlySet<string>;
+  readonly verdictAuthors: ReadonlySet<string>;
+}
+
+export const DEFAULT_COMMENT_SIGNAL_POLICY: PrWatchCommentSignalPolicy = {
+  autoDetectBots: true,
+  ignoredBots: new Set(),
+  verdictAuthors: new Set(),
+};
+
+export function commentCanProduceEvent(
+  comment: { readonly author: string; readonly authorType: string },
+  policy: PrWatchCommentSignalPolicy,
+): boolean {
+  const login = comment.author.toLowerCase();
+  if (policy.verdictAuthors.has(login)) return true;
+  return policy.autoDetectBots && isReviewBotAuthor(comment) && !policy.ignoredBots.has(login);
+}
+
+/**
+ * Change-signal digests shared by the probe and the snapshot parser. Both
+ * must hash exactly the same shape or every PR would look permanently dirty.
+ * Only event-capable comments are hashed, so edits by muted or irrelevant
+ * authors cost nothing. `truncated` is the connection's own completeness
+ * flag for the direction it was read in (`hasPreviousPage` for `last:`,
+ * `hasNextPage` for `first:`).
+ */
+export function commentsSignalDigest(
+  comments: readonly {
+    readonly id: string;
+    readonly createdAt: string;
+    readonly lastEditedAt: string | null;
+    readonly author: string;
+    readonly authorType: string;
+  }[],
+  truncated: boolean,
+  policy: PrWatchCommentSignalPolicy,
+): string {
+  return sha256Canonical({
+    truncated,
+    comments: comments
+      .filter((comment) => commentCanProduceEvent(comment, policy))
+      .map((comment) => [comment.id, commentVersionTimestamp(comment)] as const)
+      .sort((left, right) => left[0].localeCompare(right[0])),
+  });
+}
+
+export function threadsSignalDigest(
+  threads: readonly { readonly id: string; readonly isResolved: boolean; readonly isOutdated: boolean }[],
+  truncated: boolean,
+): string {
+  return sha256Canonical({
+    truncated,
+    threads: threads
+      .map((thread) => [thread.id, thread.isResolved, thread.isOutdated] as const)
+      .sort((left, right) => left[0].localeCompare(right[0])),
+  });
 }
 
 export interface PrWatchVerdictSource {
@@ -64,6 +155,10 @@ export interface GitHubPrChangeSignal {
   readonly reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
   readonly isDraft: boolean;
   readonly rollupState: GitHubRollupState | null;
+  /** Digest of every top-level comment's id and edit time; edits do not move `updatedAt`. */
+  readonly commentsDigest: string;
+  /** Digest of every review thread's id and resolved/outdated flags. */
+  readonly threadsDigest: string;
 }
 
 export interface GitHubPullRequestObservation {
@@ -217,8 +312,8 @@ export function buildGitHubSnapshotQuery(
         reviewDecision
         commits(last: 1) { nodes { commit { committedDate } } }
         reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { id isResolved isOutdated comments(last: 1) { nodes { databaseId updatedAt } } } }
-        reviews(last: 100) { pageInfo { hasNextPage } nodes { id state submittedAt commit { oid } author { login } } }
-        comments(last: 100) { pageInfo { hasNextPage } nodes { id updatedAt author { login } body } }
+        reviews(last: 100) { pageInfo { hasPreviousPage } nodes { id state submittedAt commit { oid } author { login } } }
+        comments(last: 100) { pageInfo { hasPreviousPage } nodes { id createdAt updatedAt lastEditedAt author { __typename login } body } }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes {
           __typename
           ... on CheckRun { id name status conclusion databaseId }
@@ -236,11 +331,13 @@ export function buildGitHubSnapshotQuery(
 }
 
 /**
- * Scalar-only change probe. GitHub prices GraphQL by requested connection
- * nodes, so this query costs about one point for a 50-PR stack regardless of
- * how many threads or comments those PRs carry. The single `commits(last: 1)`
- * connection mirrors the snapshot query's head-commit rollup so both produce
- * identical change signals for the same PR state.
+ * Cheap change probe. GitHub prices GraphQL by requested connection calls,
+ * so the three flat per-PR connections here (head commit, comment metadata,
+ * thread flags) cost about two points for a 50-PR stack, against ~53 for the
+ * detail query whose 100 threads each nest a comment lookup. Comment and
+ * thread metadata are digested because a comment edit or a thread being
+ * unresolved does not move the PR's `updatedAt`. Every field mirrors the
+ * snapshot query so both produce identical change signals for the same state.
  */
 export function buildGitHubProbeQuery(
   owner: string,
@@ -261,6 +358,8 @@ export function buildGitHubProbeQuery(
       pr${index}: pullRequest(number: ${number}) {
         number state updatedAt headRefOid baseRefName reviewDecision isDraft
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        comments(last: 100) { pageInfo { hasPreviousPage } nodes { id createdAt lastEditedAt author { __typename login } } }
+        reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { id isResolved isOutdated } }
       }`).join('\n');
   const query = `query CrewPrWatchProbe {
     viewer { login }
@@ -284,7 +383,9 @@ export function changeSignalsEqual(left: GitHubPrChangeSignal, right: GitHubPrCh
     && left.baseRefName === right.baseRefName
     && left.reviewDecision === right.reviewDecision
     && left.isDraft === right.isDraft
-    && left.rollupState === right.rollupState;
+    && left.rollupState === right.rollupState
+    && left.commentsDigest === right.commentsDigest
+    && left.threadsDigest === right.threadsDigest;
 }
 
 export function evaluateGitHubSnapshot(args: {
@@ -300,6 +401,13 @@ export function evaluateGitHubSnapshot(args: {
    * the snapshot's own query cost.
    */
   readonly projectedPollCost?: number;
+  /**
+   * Event ids the ledger has already disposed. A persistent comment (a
+   * review bot's verdict, say) is re-observed on every poll; once acked it
+   * must not hold the watch out of terminal green forever. A fresh edit is
+   * a new id and still blocks until it is disposed.
+   */
+  readonly disposedEventIds?: ReadonlySet<string>;
 }): GitHubEvaluation {
   const incomplete = new Set<string>();
   const events: PrWatchEventRecordV1[] = [];
@@ -310,6 +418,7 @@ export function evaluateGitHubSnapshot(args: {
     author: source.author.toLowerCase(),
     marker: source.marker,
   }));
+  const commentPolicy = commentSignalPolicyFor(args.policy.profile.bots, args.verdictSources ?? []);
 
   if (args.snapshot.prs.length === 0) incomplete.add('stack_empty');
   if (args.snapshot.apiCalls > 3 && args.snapshot.prs.length <= 50) incomplete.add('steady_state_call_budget_exceeded');
@@ -377,17 +486,23 @@ export function evaluateGitHubSnapshot(args: {
       }
     }
     for (const comment of pr.comments) {
-      if (verdictSources.some((source) => (
+      if (!commentCanProduceEvent(comment, commentPolicy)) continue;
+      const verdictMatch = verdictSources.some((source) => (
         source.author === comment.author.toLowerCase()
         && comment.body.includes(source.marker)
-      ))) {
+      ));
+      const botMatch = commentPolicy.autoDetectBots
+        && isReviewBotAuthor(comment)
+        && !commentPolicy.ignoredBots.has(comment.author.toLowerCase());
+      if (verdictMatch || botMatch) {
+        const version = commentVersionTimestamp(comment);
         events.push(eventFromIdentity({
           prNumber: pr.number,
           headSha: pr.headSha,
           kind: 'comment',
           providerSourceId: comment.id,
-          attempt: commentVersionAttempt(comment.updatedAt),
-        }, args.snapshot.observedAt, comment.updatedAt));
+          attempt: commentVersionAttempt(version),
+        }, args.snapshot.observedAt, version));
       }
     }
     if (pr.state === 'OPEN' && !isApproved(pr, args.approval)) {
@@ -419,7 +534,10 @@ export function evaluateGitHubSnapshot(args: {
   }
 
   const complete = incomplete.size === 0;
-  const terminalCandidate = complete && (allClosed || (allGreen && events.length === 0));
+  const actionableEvents = dedupeEvents(events);
+  const disposed = args.disposedEventIds ?? new Set<string>();
+  const undisposedEvents = actionableEvents.filter((event) => !disposed.has(event.id));
+  const terminalCandidate = complete && (allClosed || (allGreen && undisposedEvents.length === 0));
   const terminalFingerprint = terminalCandidate
     ? sha256Canonical({
       repository: args.snapshot.repository,
@@ -432,11 +550,22 @@ export function evaluateGitHubSnapshot(args: {
   return {
     complete,
     incompleteReasons: [...incomplete].sort(),
-    actionableEvents: dedupeEvents(events),
+    actionableEvents,
     terminalCandidate,
     allClosed,
     ...(terminalFingerprint ? { terminalFingerprint } : {}),
     projectedPointSpend,
+  };
+}
+
+export function commentSignalPolicyFor(
+  bots: { readonly autoDetect: boolean; readonly ignore: readonly string[] },
+  verdictSources: readonly PrWatchVerdictSource[],
+): PrWatchCommentSignalPolicy {
+  return {
+    autoDetectBots: bots.autoDetect,
+    ignoredBots: new Set(bots.ignore.map((login) => login.toLowerCase())),
+    verdictAuthors: new Set(verdictSources.map((source) => source.author.toLowerCase())),
   };
 }
 

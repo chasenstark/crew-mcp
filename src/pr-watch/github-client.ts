@@ -1,8 +1,12 @@
 import type { GitHubRulesBaseline } from './config.js';
 import {
+  DEFAULT_COMMENT_SIGNAL_POLICY,
   buildGitHubProbeQuery,
   buildGitHubSnapshotQuery,
+  commentsSignalDigest,
+  threadsSignalDigest,
   type GitHubCheckConclusion,
+  type PrWatchCommentSignalPolicy,
   type GitHubPrChangeSignal,
   type GitHubProbeObservation,
   type GitHubPullRequestObservation,
@@ -73,6 +77,8 @@ export async function fetchGitHubSnapshot(args: {
   readonly prNumbers: readonly number[];
   readonly context: GitHubClientContext;
   readonly now?: () => Date;
+  /** Shapes each PR's change signal; only the delta-polling path relies on it. */
+  readonly commentSignalPolicy?: PrWatchCommentSignalPolicy;
 }): Promise<GitHubSnapshotObservation> {
   const [owner, repo] = splitRepository(args.repository);
   const query = buildGitHubSnapshotQuery(owner, repo, args.prNumbers);
@@ -95,6 +101,7 @@ export async function fetchGitHubSnapshot(args: {
     repository[`pr${index}`],
     args.repository,
     number,
+    args.commentSignalPolicy ?? DEFAULT_COMMENT_SIGNAL_POLICY,
   ));
   return {
     repository: args.repository,
@@ -117,6 +124,7 @@ export async function fetchGitHubProbe(args: {
   readonly prNumbers: readonly number[];
   readonly context: GitHubClientContext;
   readonly now?: () => Date;
+  readonly commentSignalPolicy: PrWatchCommentSignalPolicy;
 }): Promise<GitHubProbeObservation> {
   const [owner, repo] = splitRepository(args.repository);
   const query = buildGitHubProbeQuery(owner, repo, args.prNumbers);
@@ -136,6 +144,8 @@ export async function fetchGitHubProbe(args: {
     if (numberField(pr, 'number') !== number) throw new Error('pr_watch.probe_pr_identity_mismatch');
     const commits = objectField(pr, 'commits');
     const commit = objectField(asRecord(arrayField(commits, 'nodes')[0], 'probe commit node'), 'commit');
+    const probeComments = objectField(pr, 'comments');
+    const probeThreads = objectField(pr, 'reviewThreads');
     signals[String(number)] = {
       state: enumField(pr, 'state', ['OPEN', 'CLOSED', 'MERGED']),
       updatedAt: stringField(pr, 'updatedAt'),
@@ -145,6 +155,31 @@ export async function fetchGitHubProbe(args: {
       isDraft: booleanField(pr, 'isDraft'),
       rollupState: parseRollupState(
         'statusCheckRollup' in commit ? commit.statusCheckRollup : undefined,
+      ),
+      commentsDigest: commentsSignalDigest(
+        arrayField(probeComments, 'nodes').map((raw) => {
+          const comment = asRecord(raw, 'probe comment');
+          return {
+            id: stringField(comment, 'id'),
+            createdAt: stringField(comment, 'createdAt'),
+            lastEditedAt: nullableStringField(comment, 'lastEditedAt'),
+            author: optionalLogin(comment.author),
+            authorType: optionalActorType(comment.author),
+          };
+        }),
+        connectionTruncated(probeComments, 'backward'),
+        args.commentSignalPolicy,
+      ),
+      threadsDigest: threadsSignalDigest(
+        arrayField(probeThreads, 'nodes').map((raw) => {
+          const thread = asRecord(raw, 'probe review thread');
+          return {
+            id: stringField(thread, 'id'),
+            isResolved: booleanField(thread, 'isResolved'),
+            isOutdated: booleanField(thread, 'isOutdated'),
+          };
+        }),
+        connectionTruncated(probeThreads, 'forward'),
       ),
     };
   });
@@ -302,7 +337,12 @@ function parseDiscoveryPr(value: unknown, repository: string): GitHubPullRequest
   };
 }
 
-function parseSnapshotPr(value: unknown, repository: string, expectedNumber: number): GitHubPullRequestObservation {
+function parseSnapshotPr(
+  value: unknown,
+  repository: string,
+  expectedNumber: number,
+  commentSignalPolicy: PrWatchCommentSignalPolicy,
+): GitHubPullRequestObservation {
   const pr = asRecord(value, `pull request ${expectedNumber}`);
   const number = numberField(pr, 'number');
   if (number !== expectedNumber) throw new Error('pr_watch.snapshot_pr_identity_mismatch');
@@ -321,12 +361,44 @@ function parseSnapshotPr(value: unknown, repository: string, expectedNumber: num
   const reviewThreads = objectField(pr, 'reviewThreads');
   const reviews = objectField(pr, 'reviews');
   const comments = objectField(pr, 'comments');
-  const paginationComplete = [...(contexts ? [contexts] : []), reviewThreads, reviews, comments]
-    .every((connection) => objectField(connection, 'pageInfo').hasNextPage === false);
+  const commentsTruncated = connectionTruncated(comments, 'backward');
+  const threadsTruncated = connectionTruncated(reviewThreads, 'forward');
+  const paginationComplete = !commentsTruncated
+    && !threadsTruncated
+    && !connectionTruncated(reviews, 'backward')
+    && (contexts === undefined || !connectionTruncated(contexts, 'forward'));
   const state = enumField(pr, 'state', ['OPEN', 'CLOSED', 'MERGED']);
   const baseRefName = stringField(pr, 'baseRefName');
   const headSha = stringField(pr, 'headRefOid');
   const reviewDecision = nullableEnumField(pr, 'reviewDecision', ['APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED']);
+  const parsedComments = arrayField(comments, 'nodes').map((raw) => {
+    const comment = asRecord(raw, 'comment');
+    return {
+      id: stringField(comment, 'id'),
+      author: optionalLogin(comment.author),
+      authorType: optionalActorType(comment.author),
+      createdAt: stringField(comment, 'createdAt'),
+      updatedAt: stringField(comment, 'updatedAt'),
+      lastEditedAt: nullableStringField(comment, 'lastEditedAt'),
+      body: stringField(comment, 'body'),
+    };
+  });
+  const parsedThreads = arrayField(reviewThreads, 'nodes').map((raw) => {
+    const thread = asRecord(raw, 'review thread');
+    const threadComments = objectField(thread, 'comments');
+    const last = arrayField(threadComments, 'nodes').at(-1);
+    const lastComment = last ? asRecord(last, 'thread comment') : undefined;
+    const databaseId = lastComment?.databaseId;
+    return {
+      id: stringField(thread, 'id'),
+      isResolved: booleanField(thread, 'isResolved'),
+      isOutdated: booleanField(thread, 'isOutdated'),
+      updatedAt: lastComment ? stringField(lastComment, 'updatedAt') : '1970-01-01T00:00:00.000Z',
+      ...(typeof databaseId === 'number' && Number.isSafeInteger(databaseId) && databaseId > 0
+        ? { lastCommentDatabaseId: databaseId }
+        : {}),
+    };
+  });
   return {
     number,
     url: stringField(pr, 'url'),
@@ -347,6 +419,8 @@ function parseSnapshotPr(value: unknown, repository: string, expectedNumber: num
       reviewDecision,
       isDraft: booleanField(pr, 'isDraft'),
       rollupState: parseRollupState(rollup ?? null),
+      commentsDigest: commentsSignalDigest(parsedComments, commentsTruncated, commentSignalPolicy),
+      threadsDigest: threadsSignalDigest(parsedThreads, threadsTruncated),
     },
     checks: contexts ? arrayField(contexts, 'nodes').map(parseCheck) : [],
     reviews: arrayField(reviews, 'nodes').map((raw) => {
@@ -360,31 +434,8 @@ function parseSnapshotPr(value: unknown, repository: string, expectedNumber: num
         ...(commitValue ? { commitSha: stringField(commitValue, 'oid') } : {}),
       };
     }),
-    threads: arrayField(reviewThreads, 'nodes').map((raw) => {
-      const thread = asRecord(raw, 'review thread');
-      const threadComments = objectField(thread, 'comments');
-      const last = arrayField(threadComments, 'nodes').at(-1);
-      const lastComment = last ? asRecord(last, 'thread comment') : undefined;
-      const databaseId = lastComment?.databaseId;
-      return {
-        id: stringField(thread, 'id'),
-        isResolved: booleanField(thread, 'isResolved'),
-        isOutdated: booleanField(thread, 'isOutdated'),
-        updatedAt: lastComment ? stringField(lastComment, 'updatedAt') : '1970-01-01T00:00:00.000Z',
-        ...(typeof databaseId === 'number' && Number.isSafeInteger(databaseId) && databaseId > 0
-          ? { lastCommentDatabaseId: databaseId }
-          : {}),
-      };
-    }),
-    comments: arrayField(comments, 'nodes').map((raw) => {
-      const comment = asRecord(raw, 'comment');
-      return {
-        id: stringField(comment, 'id'),
-        author: optionalLogin(comment.author),
-        updatedAt: stringField(comment, 'updatedAt'),
-        body: stringField(comment, 'body'),
-      };
-    }),
+    threads: parsedThreads,
+    comments: parsedComments,
     paginationComplete,
     detailsComplete: paginationComplete,
   };
@@ -491,6 +542,32 @@ function nullableEnumField<const T extends string>(
 function optionalLogin(value: unknown): string {
   if (value === null) return 'ghost';
   return stringField(asRecord(value, 'actor'), 'login');
+}
+
+/**
+ * A connection read with `first:` reports omitted items through
+ * `hasNextPage`; one read with `last:` reports them through
+ * `hasPreviousPage`. Reading the wrong flag silently reports a truncated
+ * page as complete, so the flag for the read direction is mandatory.
+ */
+function connectionTruncated(
+  connection: Record<string, unknown>,
+  direction: 'forward' | 'backward',
+): boolean {
+  return booleanField(
+    objectField(connection, 'pageInfo'),
+    direction === 'forward' ? 'hasNextPage' : 'hasPreviousPage',
+  );
+}
+
+function optionalActorType(value: unknown): string {
+  if (value === null) return 'Unknown';
+  return stringField(asRecord(value, 'actor'), '__typename');
+}
+
+function nullableStringField(record: Record<string, unknown>, field: string): string | null {
+  if (record[field] === null) return null;
+  return stringField(record, field);
 }
 
 function optionalNameWithOwner(value: unknown): string | undefined {
