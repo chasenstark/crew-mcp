@@ -12,6 +12,7 @@ import {
 import type { PrWatchController } from '../../pr-watch/controller.js';
 import { sha256Canonical } from '../../pr-watch/canonical.js';
 import { parsePrWatchId } from '../../pr-watch/id.js';
+import { readPrWatchObservationCache } from '../../pr-watch/observation-cache.js';
 import { runGitHubReadCommand } from '../../pr-watch/github-provider.js';
 import type { ProviderCommandRunner } from '../../pr-watch/provider-runner.js';
 import { cancelPrWatch, rearmPrWatch } from '../../pr-watch/reducer.js';
@@ -263,11 +264,45 @@ export function getPrWatchStatusToolHandler(
 ): ToolCallReturn {
   const watchId = parsePrWatchId(input.watch_id);
   try {
-    return envelope(statusPayload(context.store.read(watchId).state, new Date()));
+    const state = context.store.read(watchId).state;
+    return envelope({
+      ...statusPayload(state, new Date()),
+      delta_polling: deltaPollingPayload(context.store, watchId),
+    });
   } catch (error) {
     if (!(error instanceof PrWatchCorruptStateError)) throw error;
     return envelope(corruptStatusPayload(context.store, watchId, error));
   }
+}
+
+/**
+ * Read-only view of the delta-polling sidecar. Null when no poll has run yet
+ * or the cache was discarded; the next poll then takes a full snapshot.
+ */
+function deltaPollingPayload(store: PrWatchStore, watchId: string): Record<string, unknown> | null {
+  const cache = readPrWatchObservationCache(store.watchDir(watchId), watchId);
+  if (!cache) return null;
+  return {
+    cached_pr_count: Object.keys(cache.prs).length,
+    last_full_refresh_at: cache.lastFullRefreshAt,
+    last_full_refresh_cost: cache.lastFullRefreshCost,
+    ...(cache.lastProbeCost !== undefined ? { last_probe_cost: cache.lastProbeCost } : {}),
+    recent_detail_costs: cache.recentDetailCosts,
+    last_poll: cache.lastPoll
+      ? {
+          observed_at: cache.lastPoll.observedAt,
+          mode: cache.lastPoll.mode,
+          api_calls: cache.lastPoll.apiCalls,
+          probe_cost: cache.lastPoll.probeCost,
+          detail_cost: cache.lastPoll.detailCost,
+          dirty_pr_numbers: cache.lastPoll.dirtyPrNumbers,
+          projected_poll_cost: cache.lastPoll.projectedPollCost,
+          ...(cache.lastPoll.fullRefreshReason
+            ? { full_refresh_reason: cache.lastPoll.fullRefreshReason }
+            : {}),
+        }
+      : null,
+  };
 }
 
 export async function rearmPrWatchToolHandler(

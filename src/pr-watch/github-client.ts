@@ -1,8 +1,12 @@
 import type { GitHubRulesBaseline } from './config.js';
 import {
+  buildGitHubProbeQuery,
   buildGitHubSnapshotQuery,
   type GitHubCheckConclusion,
+  type GitHubPrChangeSignal,
+  type GitHubProbeObservation,
   type GitHubPullRequestObservation,
+  type GitHubRollupState,
   type GitHubSnapshotObservation,
 } from './github-observation.js';
 import { runGitHubReadCommand } from './github-provider.js';
@@ -102,6 +106,66 @@ export async function fetchGitHubSnapshot(args: {
     rateResetAt: stringField(rateLimit, 'resetAt'),
     apiCalls: 1,
   };
+}
+
+/**
+ * Read only the change signals for every watched PR. See
+ * `buildGitHubProbeQuery` for why this is cheap enough to run every poll.
+ */
+export async function fetchGitHubProbe(args: {
+  readonly repository: string;
+  readonly prNumbers: readonly number[];
+  readonly context: GitHubClientContext;
+  readonly now?: () => Date;
+}): Promise<GitHubProbeObservation> {
+  const [owner, repo] = splitRepository(args.repository);
+  const query = buildGitHubProbeQuery(owner, repo, args.prNumbers);
+  const result = await runGitHubReadCommand({
+    kind: 'graphql',
+    hostname: args.context.hostname ?? 'github.com',
+    document: query,
+  }, args.context);
+  const data = parseGraphqlEnvelope(result.stdout);
+  const repository = objectField(data, 'repository');
+  const viewer = stringField(objectField(data, 'viewer'), 'login');
+  const rateLimit = objectField(data, 'rateLimit');
+  const observedAt = (args.now?.() ?? new Date()).toISOString();
+  const signals: Record<string, GitHubPrChangeSignal> = {};
+  args.prNumbers.forEach((number, index) => {
+    const pr = asRecord(repository[`pr${index}`], `probe pull request ${number}`);
+    if (numberField(pr, 'number') !== number) throw new Error('pr_watch.probe_pr_identity_mismatch');
+    const commits = objectField(pr, 'commits');
+    const commit = objectField(asRecord(arrayField(commits, 'nodes')[0], 'probe commit node'), 'commit');
+    signals[String(number)] = {
+      state: enumField(pr, 'state', ['OPEN', 'CLOSED', 'MERGED']),
+      updatedAt: stringField(pr, 'updatedAt'),
+      headSha: stringField(pr, 'headRefOid'),
+      baseRefName: stringField(pr, 'baseRefName'),
+      reviewDecision: nullableEnumField(pr, 'reviewDecision', ['APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED']),
+      isDraft: booleanField(pr, 'isDraft'),
+      rollupState: parseRollupState(
+        'statusCheckRollup' in commit ? commit.statusCheckRollup : undefined,
+      ),
+    };
+  });
+  return {
+    repository: args.repository,
+    viewer,
+    observedAt,
+    signals,
+    queryCost: numberField(rateLimit, 'cost'),
+    rateRemaining: numberField(rateLimit, 'remaining'),
+    rateResetAt: stringField(rateLimit, 'resetAt'),
+  };
+}
+
+/** Explicit `null` is "no checks"; an absent rollup or state fails closed. */
+function parseRollupState(rollup: unknown): GitHubRollupState | null {
+  if (rollup === undefined) throw new Error('pr_watch.invalid_github_response: statusCheckRollup');
+  if (rollup === null) return null;
+  const record = asRecord(rollup, 'status check rollup');
+  if (record.state === null) return null;
+  return enumField(record, 'state', ['EXPECTED', 'ERROR', 'FAILURE', 'PENDING', 'SUCCESS']);
 }
 
 /**
@@ -244,26 +308,47 @@ function parseSnapshotPr(value: unknown, repository: string, expectedNumber: num
   if (number !== expectedNumber) throw new Error('pr_watch.snapshot_pr_identity_mismatch');
   const commits = objectField(pr, 'commits');
   const commit = objectField(asRecord(arrayField(commits, 'nodes')[0], 'commit node'), 'commit');
-  const rollup = objectField(commit, 'statusCheckRollup');
-  const contexts = objectField(rollup, 'contexts');
+  // GitHub returns an explicit `statusCheckRollup: null` for a head commit
+  // with no checks at all; that is an empty, complete check set. A missing
+  // key is malformed evidence and fails closed like any other absent field.
+  if (!('statusCheckRollup' in commit)) {
+    throw new Error('pr_watch.invalid_github_response: statusCheckRollup');
+  }
+  const rollup = commit.statusCheckRollup === null
+    ? undefined
+    : asRecord(commit.statusCheckRollup, 'status check rollup');
+  const contexts = rollup ? objectField(rollup, 'contexts') : undefined;
   const reviewThreads = objectField(pr, 'reviewThreads');
   const reviews = objectField(pr, 'reviews');
   const comments = objectField(pr, 'comments');
-  const paginationComplete = [contexts, reviewThreads, reviews, comments]
+  const paginationComplete = [...(contexts ? [contexts] : []), reviewThreads, reviews, comments]
     .every((connection) => objectField(connection, 'pageInfo').hasNextPage === false);
+  const state = enumField(pr, 'state', ['OPEN', 'CLOSED', 'MERGED']);
+  const baseRefName = stringField(pr, 'baseRefName');
+  const headSha = stringField(pr, 'headRefOid');
+  const reviewDecision = nullableEnumField(pr, 'reviewDecision', ['APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED']);
   return {
     number,
     url: stringField(pr, 'url'),
-    state: enumField(pr, 'state', ['OPEN', 'CLOSED', 'MERGED']),
+    state,
     headRefName: stringField(pr, 'headRefName'),
-    baseRefName: stringField(pr, 'baseRefName'),
+    baseRefName,
     headRepository: optionalNameWithOwner(pr.headRepository) ?? repository,
     baseRepository: optionalNameWithOwner(pr.baseRepository) ?? repository,
-    headSha: stringField(pr, 'headRefOid'),
+    headSha,
     headCommittedAt: stringField(commit, 'committedDate'),
     author: optionalLogin(pr.author),
-    reviewDecision: nullableEnumField(pr, 'reviewDecision', ['APPROVED', 'CHANGES_REQUESTED', 'REVIEW_REQUIRED']),
-    checks: arrayField(contexts, 'nodes').map(parseCheck),
+    reviewDecision,
+    changeSignal: {
+      state,
+      updatedAt: stringField(pr, 'updatedAt'),
+      headSha,
+      baseRefName,
+      reviewDecision,
+      isDraft: booleanField(pr, 'isDraft'),
+      rollupState: parseRollupState(rollup ?? null),
+    },
+    checks: contexts ? arrayField(contexts, 'nodes').map(parseCheck) : [],
     reviews: arrayField(reviews, 'nodes').map((raw) => {
       const review = asRecord(raw, 'review');
       const commitValue = review.commit === null ? undefined : asRecord(review.commit, 'review commit');

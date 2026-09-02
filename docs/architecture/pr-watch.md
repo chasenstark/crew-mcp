@@ -1,4 +1,4 @@
-> **Current as of 2026-08-28.**
+> **Current as of 2026-09-02.**
 
 # Durable PR watch
 
@@ -18,6 +18,8 @@ leases, and effect settlement. Each watch lives at:
   events.jsonl       digest-chained authoritative state transitions
   state.json         monotonic cache, replayed from the ledger on pure reads
   effects.jsonl      digest-chained remote-effect phases when authorized
+  observation-cache.json  delta-polling sidecar: last detail per PR + change signal
+  observation-poll.json   delta-polling per-poll costs and diagnostics
   worktree/          dedicated attached action worktree when authorized
 ```
 
@@ -36,6 +38,42 @@ rearm performs the generation compare-and-set.
 GitHub access is a typed read-only CLI command union. CircleCI is optional and
 admits only typed run/workflow reads. Start and blocker revalidation own bounded
 capability/provider work; ordinary `crew-mcp verify` never probes the network.
+
+Polling is delta-based. GitHub prices GraphQL by requested connection nodes,
+so the full per-PR detail query (100 threads, each with a nested last comment,
+plus reviews, comments, and check contexts) costs about 105 node-units per PR:
+53 points for a 50-PR stack, which the 25% projection gate rejects outright.
+Each poll therefore starts with a scalar change probe over every watched PR
+(state, `updatedAt`, head, base, review decision, draft flag, and the head
+commit's check rollup state; about 1 point for 50 PRs), compares each signal
+with the one stored beside that PR's cached detail in `observation-cache.json`,
+and fetches the full query only for PRs whose signal moved. A full refresh
+runs anyway once the cache is older than `PR_WATCH_FULL_REFRESH_INTERVAL_MS`
+(15 minutes) or is missing, foreign, or corrupt, so the design never depends
+on the probe seeing every kind of change. The merged result is shaped exactly
+like a full snapshot; evaluation and the reducer never learn which PRs came
+from cache, and the sidecar is never authoritative.
+
+Two guards keep the cache from weakening evidence. A terminal verdict is never
+certified from cached detail: when a probe-served evaluation is still a green
+or all-closed candidate after every provider (including CircleCI) has been
+folded in, the controller re-reads every PR in full before that observation
+can start or complete the terminal dwell, because a thread can be unresolved,
+or a review dismissed, without moving any probe field. A pending required
+CircleCI workflow vetoes the candidate first, so it never pays for that
+re-read on every poll. The re-read is charged to the same poll (its cost and
+call count accumulate in `lastObservation` and fold into the detail-cost
+window) rather than counting as the periodic refresh. And the ledger's
+projected point spend uses the amortized steady-state poll cost (probe,
+refresh spread over the polls between refreshes, and the detail-cost window
+averaged over at least five polls) only when the sidecar was actually
+persisted; a failed write projects the poll's real cost, so an unwritable
+cache directory trips the 25% gate instead of silently bypassing it.
+
+The detail file is rewritten only when a detail fetch happened and stores
+only comment bodies from the watch's immutable verdict sources, since no other
+comment can produce an event; the small per-poll record is rewritten every
+poll. `get_pr_watch_status` reports both read-only as `delta_polling`.
 
 Missing, incomplete, paginated, stale, progressively registered, or unavailable
 evidence fails closed. Green/approved requires two identical complete terminal

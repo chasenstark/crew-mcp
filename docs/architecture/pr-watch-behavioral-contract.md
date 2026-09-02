@@ -45,6 +45,14 @@ mutation and every force form remain forbidden.
   provider policy, pagination completeness, and PR state are fingerprinted.
 - At the default 50-PR limit, an unchanged steady-state snapshot uses at most
   three GitHub requests and respects the persisted projected point budget.
+- Amended 2026-09-02: steady-state polling is a scalar change probe over every
+  watched PR plus a detail fetch only for PRs whose probe signal moved, with a
+  bounded periodic full refresh. The cached detail is a non-authoritative
+  sidecar; losing it costs one full refresh and never changes evaluation. A
+  terminal green or all-closed verdict is never certified from cached detail:
+  every terminal candidate is re-read in full first. The projected point
+  budget is computed from the amortized steady-state poll cost only while the
+  sidecar persists; an unpersisted poll projects its actual cost.
 
 ## Durable state and crash behavior
 

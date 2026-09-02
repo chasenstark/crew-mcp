@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { defaultProfile, resolvePrWatchPolicy } from '../../src/pr-watch/config.js';
 import {
+  buildGitHubProbeQuery,
   buildGitHubSnapshotQuery,
   discoverLinearPrStack,
   evaluateGitHubSnapshot,
@@ -52,7 +53,51 @@ describe('GitHub PR-watch observation', () => {
     const query = buildGitHubSnapshotQuery('example', 'repo', [10, 11, 12]);
     expect(query).toContain('pr0: pullRequest(number: 10)');
     expect(query).toContain('pr2: pullRequest(number: 12)');
+    expect(query).toContain('updatedAt isDraft');
+    expect(query).toContain('statusCheckRollup { state contexts(first: 100)');
     expect(query).not.toMatch(/\bmutation\b/i);
+  });
+
+  it('builds a scalar-only change probe that carries no per-PR list connections', () => {
+    const query = buildGitHubProbeQuery('example', 'repo', [10, 11]);
+    expect(query).toContain('query CrewPrWatchProbe');
+    expect(query).toContain('pr1: pullRequest(number: 11)');
+    expect(query).toContain('number state updatedAt headRefOid baseRefName reviewDecision isDraft');
+    expect(query).toContain('commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }');
+    for (const connection of ['reviewThreads', 'reviews(', 'comments(', 'contexts(']) {
+      expect(query).not.toContain(connection);
+    }
+    expect(query).not.toMatch(/\bmutation\b/i);
+    expect(() => buildGitHubProbeQuery('example', 'repo', [])).toThrow('invalid_probe_pr_numbers');
+    expect(() => buildGitHubProbeQuery('example', 'repo', [1, 1])).toThrow('invalid_probe_pr_numbers');
+  });
+
+  it('projects rate spend from the steady-state poll cost rather than one expensive refresh', () => {
+    const expensive = { ...snapshot([pr()]), queryCost: 53, rateRemaining: 5000 };
+    const naive = evaluateGitHubSnapshot({
+      snapshot: expensive,
+      policy: resolvedPolicy(['unit']),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+    });
+    expect(naive.incompleteReasons).toContain('github_rate_projection_exceeded');
+    expect(naive.projectedPointSpend).toBe(53 * 30);
+    const amortized = evaluateGitHubSnapshot({
+      snapshot: expensive,
+      policy: resolvedPolicy(['unit']),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+      projectedPollCost: 9,
+    });
+    expect(amortized.incompleteReasons).not.toContain('github_rate_projection_exceeded');
+    expect(amortized.projectedPointSpend).toBe(9 * 30);
+    expect(() => evaluateGitHubSnapshot({
+      snapshot: expensive,
+      policy: resolvedPolicy(['unit']),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+      projectedPollCost: -1,
+    })).toThrow('invalid_projected_poll_cost');
   });
 
   it('fails closed for missing or progressively registered checks', () => {

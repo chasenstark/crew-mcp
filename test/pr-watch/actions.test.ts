@@ -642,13 +642,15 @@ function effectInput(fixture: Fixture) {
 function snapshotPr(headSha: string, baseRefName = 'main') {
   return {
     ...discoveryPr(headSha, baseRefName),
+    updatedAt: '2026-08-27T11:00:00.000Z',
+    isDraft: false,
     reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
     reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
     comments: { pageInfo: { hasNextPage: false }, nodes: [] },
     commits: { nodes: [{ commit: {
       oid: headSha,
       committedDate: '2026-08-27T11:00:00.000Z',
-      statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: [] } },
+      statusCheckRollup: { state: null, contexts: { pageInfo: { hasNextPage: false }, nodes: [] } },
     } }] },
   };
 }

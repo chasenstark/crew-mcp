@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   discoverOpenGitHubPullRequests,
+  fetchGitHubProbe,
   fetchGitHubRulesBaseline,
+  fetchGitHubSnapshot,
 } from '../../src/pr-watch/github-client.js';
 import type { ProviderCommandRunner } from '../../src/pr-watch/provider-runner.js';
 
@@ -88,6 +90,163 @@ describe('GitHub PR-watch discovery client', () => {
     });
   });
 });
+
+describe('GitHub PR-watch snapshot client', () => {
+  it('treats a null status check rollup as an empty, complete check set', async () => {
+    const snapshot = await fetchGitHubSnapshot({
+      repository: 'example/repo',
+      prNumbers: [5],
+      context: { runner: snapshotRunner({ statusCheckRollup: null }) },
+    });
+
+    expect(snapshot.prs[0]).toMatchObject({
+      number: 5,
+      checks: [],
+      paginationComplete: true,
+      detailsComplete: true,
+      changeSignal: {
+        state: 'OPEN',
+        updatedAt: '2026-09-02T11:30:00.000Z',
+        headSha: '5'.repeat(40),
+        baseRefName: 'main',
+        reviewDecision: null,
+        isDraft: true,
+        rollupState: null,
+      },
+    });
+  });
+
+  it('fails closed when the status check rollup key is missing', async () => {
+    await expect(fetchGitHubSnapshot({
+      repository: 'example/repo',
+      prNumbers: [5],
+      context: { runner: snapshotRunner({}) },
+    })).rejects.toThrow('pr_watch.invalid_github_response: statusCheckRollup');
+  });
+});
+
+function snapshotRunner(commitExtras: Record<string, unknown>): ProviderCommandRunner {
+  return {
+    run: async () => jsonResult({ data: {
+      viewer: { login: 'watch-bot' },
+      rateLimit: { cost: 2, remaining: 4990, resetAt: '2026-09-02T13:00:00.000Z' },
+      repository: { pr0: {
+        number: 5,
+        url: 'https://github.com/example/repo/pull/5',
+        state: 'OPEN',
+        headRefName: 'five',
+        baseRefName: 'main',
+        headRefOid: '5'.repeat(40),
+        updatedAt: '2026-09-02T11:30:00.000Z',
+        isDraft: true,
+        headRepository: { nameWithOwner: 'example/repo' },
+        baseRepository: { nameWithOwner: 'example/repo' },
+        author: { login: 'author' },
+        reviewDecision: null,
+        reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
+        reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
+        comments: { pageInfo: { hasNextPage: false }, nodes: [] },
+        commits: { nodes: [{ commit: {
+          oid: '5'.repeat(40),
+          committedDate: '2026-09-02T11:00:00.000Z',
+          ...commitExtras,
+        } }] },
+      } },
+    } }),
+  };
+}
+
+describe('GitHub PR-watch change probe client', () => {
+  it('parses one change signal per requested PR, tolerating absent rollups', async () => {
+    let document = '';
+    const runner: ProviderCommandRunner = {
+      run: async (spec) => {
+        document = spec.args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
+        return jsonResult({ data: {
+          viewer: { login: 'watch-bot' },
+          rateLimit: { cost: 1, remaining: 4990, resetAt: '2026-09-02T13:00:00.000Z' },
+          repository: {
+            pr0: probePr(7, { statusCheckRollup: { state: 'PENDING' } }),
+            pr1: probePr(9, { statusCheckRollup: null, state: 'MERGED', reviewDecision: null }),
+          },
+        } });
+      },
+    };
+
+    const probe = await fetchGitHubProbe({
+      repository: 'example/repo',
+      prNumbers: [7, 9],
+      context: { runner },
+      now: () => new Date('2026-09-02T12:00:00.000Z'),
+    });
+
+    expect(document).toContain('query CrewPrWatchProbe');
+    expect(probe).toMatchObject({
+      repository: 'example/repo',
+      viewer: 'watch-bot',
+      observedAt: '2026-09-02T12:00:00.000Z',
+      queryCost: 1,
+      rateRemaining: 4990,
+    });
+    expect(probe.signals['7']).toEqual({
+      state: 'OPEN',
+      updatedAt: '2026-09-02T11:30:00.000Z',
+      headSha: '7'.repeat(40),
+      baseRefName: 'main',
+      reviewDecision: 'REVIEW_REQUIRED',
+      isDraft: false,
+      rollupState: 'PENDING',
+    });
+    expect(probe.signals['9']).toMatchObject({ state: 'MERGED', reviewDecision: null, rollupState: null });
+  });
+
+  it('fails closed when a probe omits the status check rollup entirely', async () => {
+    const runner: ProviderCommandRunner = {
+      run: async () => jsonResult({ data: {
+        viewer: { login: 'watch-bot' },
+        rateLimit: { cost: 1, remaining: 4990, resetAt: '2026-09-02T13:00:00.000Z' },
+        repository: { pr0: { ...probePr(7), commits: { nodes: [{ commit: {} }] } } },
+      } }),
+    };
+    await expect(fetchGitHubProbe({
+      repository: 'example/repo',
+      prNumbers: [7],
+      context: { runner },
+    })).rejects.toThrow('pr_watch.invalid_github_response: statusCheckRollup');
+  });
+
+  it('fails closed when the probe response identifies a different PR', async () => {
+    const runner: ProviderCommandRunner = {
+      run: async () => jsonResult({ data: {
+        viewer: { login: 'watch-bot' },
+        rateLimit: { cost: 1, remaining: 4990, resetAt: '2026-09-02T13:00:00.000Z' },
+        repository: { pr0: probePr(8) },
+      } }),
+    };
+    await expect(fetchGitHubProbe({
+      repository: 'example/repo',
+      prNumbers: [7],
+      context: { runner },
+    })).rejects.toThrow('pr_watch.probe_pr_identity_mismatch');
+  });
+});
+
+function probePr(number: number, overrides: Record<string, unknown> = {}) {
+  const { statusCheckRollup, ...rest } = overrides;
+  return {
+    number,
+    state: 'OPEN',
+    updatedAt: '2026-09-02T11:30:00.000Z',
+    headRefOid: String(number).repeat(40),
+    baseRefName: 'main',
+    reviewDecision: 'REVIEW_REQUIRED',
+    isDraft: false,
+    commits: { nodes: [{ commit: {
+      statusCheckRollup: statusCheckRollup === undefined ? { state: 'SUCCESS' } : statusCheckRollup,
+    } }] },
+    ...rest,
+  };
+}
 
 function discoveryPr(number: number, headRefName: string, baseRefName: string) {
   return {

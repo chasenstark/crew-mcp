@@ -49,6 +49,23 @@ export interface PrWatchVerdictSource {
   readonly marker: string;
 }
 
+export type GitHubRollupState = 'EXPECTED' | 'ERROR' | 'FAILURE' | 'PENDING' | 'SUCCESS';
+
+/**
+ * The scalar fields a cheap probe can read for every watched PR without any
+ * connection cost. Two equal signals mean the PR's detailed observation can be
+ * reused; any difference marks the PR dirty for a detail fetch.
+ */
+export interface GitHubPrChangeSignal {
+  readonly state: 'OPEN' | 'CLOSED' | 'MERGED';
+  readonly updatedAt: string;
+  readonly headSha: string;
+  readonly baseRefName: string;
+  readonly reviewDecision: 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
+  readonly isDraft: boolean;
+  readonly rollupState: GitHubRollupState | null;
+}
+
 export interface GitHubPullRequestObservation {
   readonly number: number;
   readonly url: string;
@@ -67,6 +84,8 @@ export interface GitHubPullRequestObservation {
   readonly comments: readonly GitHubCommentObservation[];
   readonly paginationComplete: boolean;
   readonly detailsComplete: boolean;
+  /** Present on every detail-fetched PR; absent on discovery-only rows. */
+  readonly changeSignal?: GitHubPrChangeSignal;
 }
 
 export interface GitHubSnapshotObservation {
@@ -78,6 +97,16 @@ export interface GitHubSnapshotObservation {
   readonly rateRemaining: number;
   readonly rateResetAt: string;
   readonly apiCalls: number;
+}
+
+export interface GitHubProbeObservation {
+  readonly repository: string;
+  readonly viewer: string;
+  readonly observedAt: string;
+  readonly signals: Readonly<Record<string, GitHubPrChangeSignal>>;
+  readonly queryCost: number;
+  readonly rateRemaining: number;
+  readonly rateResetAt: string;
 }
 
 export interface PrWatchApprovalPolicy {
@@ -181,7 +210,7 @@ export function buildGitHubSnapshotQuery(
   }
   const aliases = prNumbers.map((number, index) => `
       pr${index}: pullRequest(number: ${number}) {
-        number url state headRefName baseRefName headRefOid
+        number url state headRefName baseRefName headRefOid updatedAt isDraft
         headRepository { nameWithOwner }
         baseRepository { nameWithOwner }
         author { login }
@@ -190,7 +219,7 @@ export function buildGitHubSnapshotQuery(
         reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { id isResolved isOutdated comments(last: 1) { nodes { databaseId updatedAt } } } }
         reviews(last: 100) { pageInfo { hasNextPage } nodes { id state submittedAt commit { oid } author { login } } }
         comments(last: 100) { pageInfo { hasNextPage } nodes { id updatedAt author { login } body } }
-        commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
+        commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { pageInfo { hasNextPage } nodes {
           __typename
           ... on CheckRun { id name status conclusion databaseId }
           ... on StatusContext { id context state }
@@ -206,12 +235,71 @@ export function buildGitHubSnapshotQuery(
   return query;
 }
 
+/**
+ * Scalar-only change probe. GitHub prices GraphQL by requested connection
+ * nodes, so this query costs about one point for a 50-PR stack regardless of
+ * how many threads or comments those PRs carry. The single `commits(last: 1)`
+ * connection mirrors the snapshot query's head-commit rollup so both produce
+ * identical change signals for the same PR state.
+ */
+export function buildGitHubProbeQuery(
+  owner: string,
+  repo: string,
+  prNumbers: readonly number[],
+): string {
+  validateRepoPart(owner);
+  validateRepoPart(repo);
+  if (
+    prNumbers.length === 0
+    || prNumbers.length > 100
+    || new Set(prNumbers).size !== prNumbers.length
+    || prNumbers.some((number) => !Number.isSafeInteger(number) || number < 1)
+  ) {
+    throw new Error('pr_watch.invalid_probe_pr_numbers');
+  }
+  const aliases = prNumbers.map((number, index) => `
+      pr${index}: pullRequest(number: ${number}) {
+        number state updatedAt headRefOid baseRefName reviewDecision isDraft
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      }`).join('\n');
+  const query = `query CrewPrWatchProbe {
+    viewer { login }
+    rateLimit { cost remaining resetAt }
+    repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(repo)}) {${aliases}
+    }
+  }`;
+  assertReadOnlyGraphql(query);
+  return query;
+}
+
+export function changeSignalOf(pr: GitHubPullRequestObservation): GitHubPrChangeSignal {
+  if (!pr.changeSignal) throw new Error(`pr_watch.change_signal_missing: ${pr.number}`);
+  return pr.changeSignal;
+}
+
+export function changeSignalsEqual(left: GitHubPrChangeSignal, right: GitHubPrChangeSignal): boolean {
+  return left.state === right.state
+    && left.updatedAt === right.updatedAt
+    && left.headSha === right.headSha
+    && left.baseRefName === right.baseRefName
+    && left.reviewDecision === right.reviewDecision
+    && left.isDraft === right.isDraft
+    && left.rollupState === right.rollupState;
+}
+
 export function evaluateGitHubSnapshot(args: {
   readonly snapshot: GitHubSnapshotObservation;
   readonly policy: ResolvedPrWatchPolicyV1;
   readonly approval: PrWatchApprovalPolicy;
   readonly cadenceSeconds: number;
   readonly verdictSources?: readonly PrWatchVerdictSource[];
+  /**
+   * Expected steady-state cost of one poll. Delta polling passes the
+   * amortized probe + refresh + recent-detail figure so a single expensive
+   * full refresh never projects as if every poll cost that much. Defaults to
+   * the snapshot's own query cost.
+   */
+  readonly projectedPollCost?: number;
 }): GitHubEvaluation {
   const incomplete = new Set<string>();
   const events: PrWatchEventRecordV1[] = [];
@@ -320,7 +408,11 @@ export function evaluateGitHubSnapshot(args: {
     0,
     Math.ceil((Date.parse(args.snapshot.rateResetAt) - Date.parse(args.snapshot.observedAt)) / 1000),
   );
-  const projectedPointSpend = args.snapshot.queryCost
+  const pollCost = args.projectedPollCost ?? args.snapshot.queryCost;
+  if (!Number.isSafeInteger(pollCost) || pollCost < 0) {
+    throw new Error('pr_watch.invalid_projected_poll_cost');
+  }
+  const projectedPointSpend = pollCost
     * Math.ceil(resetSeconds / Math.max(1, args.cadenceSeconds));
   if (projectedPointSpend > Math.floor(args.snapshot.rateRemaining * 0.25)) {
     incomplete.add('github_rate_projection_exceeded');
