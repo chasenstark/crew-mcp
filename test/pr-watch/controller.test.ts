@@ -11,6 +11,7 @@ import {
   PR_WATCH_OBSERVATION_POLL_FILE,
   readPrWatchObservationCache,
 } from '../../src/pr-watch/observation-cache.js';
+import { readPrWatchPollLog } from '../../src/pr-watch/poll-log.js';
 import { ProviderCommandError, type ProviderCommandRunner } from '../../src/pr-watch/provider-runner.js';
 import { rearmPrWatch, recordEventDispositions, transitionToBlocked } from '../../src/pr-watch/reducer.js';
 import { PrWatchStartIndex } from '../../src/pr-watch/start-index.js';
@@ -501,6 +502,68 @@ describe('PrWatchController delta polling', () => {
     expect(edited.state.events[firstId]?.disposition).toBe('acknowledged');
   });
 
+  it('writes one poll-log record per poll with mode, spend, dirtiness, timing, and outcome', async () => {
+    const fixture = deltaFixture({ snapshotCost: 53 });
+    const started = await startStack(fixture);
+    fixture.advance(120_000);
+    await fixture.controller.pollOnce(started.watchId);
+    fixture.advance(120_000);
+    await fixture.controller.pollOnce(started.watchId);
+    fixture.prs.set(2, stackPr(2, 'branch-1', { updatedAt: '2026-09-02T12:05:00.000Z' }));
+    fixture.advance(120_000);
+    await fixture.controller.pollOnce(started.watchId);
+
+    const records = readPrWatchPollLog(fixture.store.watchDir(started.watchId));
+    expect(records.map((record) => record.mode)).toEqual(['full', 'probe', 'partial']);
+    expect(records[0]).toMatchObject({
+      v: 1,
+      watchId: started.watchId,
+      generation: started.state.generation,
+      prCount: 2,
+      fullRefreshReason: 'no_cache',
+      forcedRefresh: false,
+      apiCalls: 1,
+      queryCost: 53,
+      probeCost: 0,
+      detailCost: 53,
+      dirtyCount: 2,
+      cachePersisted: true,
+      projectedPollCost: 9,
+      projectedPointSpend: 270,
+      rateRemaining: 5000,
+      complete: false,
+      incompleteReasons: ['pr_1:approval_incomplete', 'pr_2:approval_incomplete'],
+      eventsObserved: 0,
+      eventsPending: 0,
+      terminalCandidate: false,
+      status: 'active',
+    });
+    expect(records[1]).toMatchObject({ mode: 'probe', apiCalls: 1, queryCost: 1, dirtyCount: 0 });
+    expect(records[2]).toMatchObject({ mode: 'partial', apiCalls: 2, queryCost: 54, dirtyCount: 1, dirtyPrNumbers: [2] });
+    for (const record of records) {
+      expect(record.observeMs).toBeGreaterThanOrEqual(0);
+      expect(record.totalMs).toBeGreaterThanOrEqual(record.observeMs);
+    }
+  });
+
+  it('logs a failed poll with its error and blocker kind', async () => {
+    const fixture = deltaFixture();
+    const started = await startStack(fixture);
+    fixture.failNextSnapshot = new Error('boom timeout');
+    fixture.advance(120_000);
+    const polled = await fixture.controller.pollOnce(started.watchId);
+    expect(polled.state.status).toBe('blocked');
+    const [record] = readPrWatchPollLog(fixture.store.watchDir(started.watchId));
+    expect(record?.mode).toBeUndefined();
+    expect(record).toMatchObject({
+      status: 'blocked',
+      blockerKind: 'provider_timeout',
+      error: 'boom timeout',
+      apiCalls: 0,
+      queryCost: 0,
+    });
+  });
+
   it('lets pending CircleCI evidence veto a terminal candidate before any forced re-read', async () => {
     const fixture = deltaFixture({
       circleci: {
@@ -561,6 +624,8 @@ interface DeltaFixture {
   readonly prs: Map<number, StackPr>;
   /** Runs inside the fake provider just before it answers a snapshot query. */
   beforeSnapshot?: (numbers: readonly number[]) => void;
+  /** Makes the next snapshot query reject with this error. */
+  failNextSnapshot?: Error;
   advance(ms: number): void;
 }
 
@@ -579,7 +644,7 @@ function deltaFixture(options: {
     [2, stackPr(2, 'branch-1')],
   ]);
   const store = new PrWatchStore(root);
-  const hooks: { beforeSnapshot?: (numbers: readonly number[]) => void } = {};
+  const hooks: { beforeSnapshot?: (numbers: readonly number[]) => void; failNextSnapshot?: Error } = {};
   const controller = new PrWatchController(
     store,
     new PrWatchStartIndex(root),
@@ -588,7 +653,14 @@ function deltaFixture(options: {
       prs: () => [...prs.values()],
       calls,
       snapshotCost: options.snapshotCost ?? 1,
-      beforeSnapshot: (numbers) => hooks.beforeSnapshot?.(numbers),
+      beforeSnapshot: (numbers) => {
+        hooks.beforeSnapshot?.(numbers);
+        if (hooks.failNextSnapshot) {
+          const error = hooks.failNextSnapshot;
+          hooks.failNextSnapshot = undefined;
+          throw error;
+        }
+      },
     }),
     {
       now: () => new Date(nowMs),
@@ -606,6 +678,9 @@ function deltaFixture(options: {
     prs,
     set beforeSnapshot(hook: ((numbers: readonly number[]) => void) | undefined) {
       hooks.beforeSnapshot = hook;
+    },
+    set failNextSnapshot(error: Error | undefined) {
+      hooks.failNextSnapshot = error;
     },
     advance: (ms) => { nowMs += ms; },
   };

@@ -57,6 +57,11 @@ import {
   transitionToBlocked,
   tryExpirePrWatch,
 } from './reducer.js';
+import {
+  PR_WATCH_POLL_LOG_DIRTY_LIST_CAP,
+  PR_WATCH_POLL_LOG_REASON_CAP,
+  appendPrWatchPollLog,
+} from './poll-log.js';
 import { PrWatchStartIndex } from './start-index.js';
 import { PrWatchStore, type AuthoritativePrWatchRead } from './store.js';
 import { withPrWatchTransitionDeadline } from './transition-deadline.js';
@@ -423,14 +428,44 @@ export class PrWatchController {
       return { state: blocked, queried: false };
     }
 
+    const pollStartedMs = Date.now();
+    let observeMs = 0;
+    let forcedRefresh = false;
+    const logFailedPoll = (state: PrWatchStateV1, error: unknown): void => {
+      appendPrWatchPollLog(this.store.watchDir(watchId), {
+        v: 1,
+        ts: this.now().toISOString(),
+        watchId,
+        generation: snapshotState.generation,
+        prCount: Object.keys(snapshotState.expectedHeads).length,
+        forcedRefresh,
+        apiCalls: 0,
+        queryCost: 0,
+        probeCost: 0,
+        detailCost: 0,
+        dirtyCount: 0,
+        dirtyPrNumbers: [],
+        cachePersisted: false,
+        projectedPollCost: 0,
+        observeMs,
+        totalMs: Date.now() - pollStartedMs,
+        status: state.status,
+        ...(state.status === 'blocked' ? { blockerKind: state.blocker.kind } : {}),
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      });
+    };
     let observed: GitHubObservationResult;
     try {
+      const observeStartedMs = Date.now();
       observed = await withPrWatchTransitionDeadline(
         (signal) => this.observeGitHub(snapshotState, signal),
         { signal: options.signal },
       );
+      observeMs += Date.now() - observeStartedMs;
     } catch (error) {
+      observeMs = Date.now() - pollStartedMs;
       const blocked = await this.blockIfCurrent(snapshotRead, providerPollBlocker(error));
+      logFailedPoll(blocked, error);
       return { state: blocked, queried: true };
     }
     // Fold every provider into one assessment so the terminal-candidate
@@ -516,7 +551,9 @@ export class PrWatchController {
       // so any green or all-closed candidate re-reads every PR first.
       // Running after the CircleCI fold means a pending required workflow
       // vetoes the candidate without paying for that re-read every poll.
+      forcedRefresh = true;
       try {
+        const rereadStartedMs = Date.now();
         observed = await withPrWatchTransitionDeadline(
           (signal) => this.observeGitHub(snapshotState, signal, {
             forceFull: 'terminal_candidate',
@@ -529,8 +566,10 @@ export class PrWatchController {
           }),
           { signal: options.signal },
         );
+        observeMs += Date.now() - rereadStartedMs;
       } catch (error) {
         const blocked = await this.blockIfCurrent(snapshotRead, providerPollBlocker(error));
+        logFailedPoll(blocked, error);
         return { state: blocked, queried: true };
       }
       assessed = await assess(observed);
@@ -631,6 +670,39 @@ export class PrWatchController {
         return { state: current, transactionId: randomUUID() };
       }
       return { state: next, transactionId: randomUUID() };
+    });
+    const lastPoll = observed.cache.lastPoll;
+    const dirtyPrNumbers = lastPoll?.dirtyPrNumbers ?? [];
+    appendPrWatchPollLog(this.store.watchDir(watchId), {
+      v: 1,
+      ts: githubSnapshot.observedAt,
+      watchId,
+      generation: snapshotState.generation,
+      prCount: githubSnapshot.prs.length,
+      mode: observed.mode,
+      ...(lastPoll?.fullRefreshReason !== undefined ? { fullRefreshReason: lastPoll.fullRefreshReason } : {}),
+      forcedRefresh,
+      apiCalls: githubSnapshot.apiCalls,
+      queryCost: githubSnapshot.queryCost,
+      probeCost: lastPoll?.probeCost ?? 0,
+      detailCost: lastPoll?.detailCost ?? githubSnapshot.queryCost,
+      dirtyCount: dirtyPrNumbers.length,
+      dirtyPrNumbers: dirtyPrNumbers.slice(0, PR_WATCH_POLL_LOG_DIRTY_LIST_CAP),
+      cachePersisted: observed.persisted,
+      projectedPollCost: observed.projectedPollCost,
+      projectedPointSpend: evaluation.projectedPointSpend,
+      rateRemaining: githubSnapshot.rateRemaining,
+      rateResetAt: githubSnapshot.rateResetAt,
+      observeMs,
+      totalMs: Date.now() - pollStartedMs,
+      complete: evaluation.complete,
+      incompleteReasons: evaluation.incompleteReasons.slice(0, PR_WATCH_POLL_LOG_REASON_CAP),
+      eventsObserved: dedupeEvents(allEvents).length,
+      eventsPending: Object.values(committed.state.events)
+        .filter((event) => event.disposition === undefined).length,
+      terminalCandidate: evaluation.terminalCandidate,
+      status: committed.state.status,
+      ...(committed.state.status === 'blocked' ? { blockerKind: committed.state.blocker.kind } : {}),
     });
     return { state: committed.state, queried: true, evaluation };
   }

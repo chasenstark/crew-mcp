@@ -1,1 +1,1 @@
-export const CREW_MCP_VERSION = '0.23.0';
+export const CREW_MCP_VERSION = '0.24.0';

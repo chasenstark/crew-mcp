@@ -3,6 +3,12 @@ import { fileURLToPath } from 'node:url';
 
 import { parsePrWatchId } from '../pr-watch/id.js';
 import { PrWatchEffectController } from '../pr-watch/effect-controller.js';
+import {
+  readPrWatchPollLog,
+  renderPrWatchPollSummary,
+  renderPrWatchPollTable,
+  summarizePrWatchPolls,
+} from '../pr-watch/poll-log.js';
 import { SubprocessProviderCommandRunner } from '../pr-watch/provider-runner.js';
 import { cancelPrWatch, recordEventDispositions } from '../pr-watch/reducer.js';
 import { PrWatchStore } from '../pr-watch/store.js';
@@ -11,7 +17,8 @@ import { resolveCrewHome } from '../utils/crew-home.js';
 
 export function usage(): string {
   return [
-    'Usage: crew-pr-watch <status|history|ack|cancel|effect> <watch_id> [options]',
+    'Usage: crew-pr-watch <status|history|polls|ack|cancel|effect> <watch_id> [options]',
+    '  polls options: [--tail <n>] [--json]  (per-poll delta-polling log; default last 30)',
     '  ack options: --action-batch <id> --dispositions-base64 <base64url-json>',
     '  effect options: --generation <n> --action-batch <id> --event <id>',
     '    --kind <effect-kind> --target-base64 <base64url-json> [--body-base64 <base64url>]',
@@ -40,6 +47,31 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === 'history') {
     if (rest.length > 0) return 2;
     process.stdout.write(`${JSON.stringify(store.readHistory(watchId), null, 2)}\n`);
+    return 0;
+  }
+  if (command === 'polls') {
+    let tail = 30;
+    let json = false;
+    for (let index = 0; index < rest.length; index += 1) {
+      const arg = rest[index];
+      if (arg === '--json') {
+        json = true;
+      } else if (arg === '--tail') {
+        const value = Number(rest[index + 1]);
+        if (!Number.isSafeInteger(value) || value < 1 || value > 10_000) return 2;
+        tail = value;
+        index += 1;
+      } else {
+        return 2;
+      }
+    }
+    const records = readPrWatchPollLog(store.watchDir(watchId), { tail, maxBytes: 4 * 1024 * 1024 });
+    if (json) {
+      process.stdout.write(`${JSON.stringify(records, null, 2)}\n`);
+      return 0;
+    }
+    const summary = summarizePrWatchPolls(records, { now: new Date() });
+    process.stdout.write(`${renderPrWatchPollSummary(summary)}\n\n${renderPrWatchPollTable(records)}\n`);
     return 0;
   }
   if (command === 'cancel') {

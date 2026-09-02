@@ -20,8 +20,23 @@ leases, and effect settlement. Each watch lives at:
   effects.jsonl      digest-chained remote-effect phases when authorized
   observation-cache.json  delta-polling sidecar: last detail per PR + change signal
   observation-poll.json   delta-polling per-poll costs and diagnostics
+  polls.jsonl        one diagnostic line per poll (mode, spend, dirty PRs, timing, outcome)
   worktree/          dedicated attached action worktree when authorized
 ```
+
+`polls.jsonl` is the record to read when judging how a large stack behaves
+over time. Every `pollOnce` appends one line: mode (`full`, `probe`,
+`partial`) and refresh reason, whether a terminal candidate forced a second
+full read, API calls and points (probe and detail separately), dirty PR count
+and numbers (capped), whether the sidecar persisted, the projected poll cost
+and window spend, remaining rate points, GitHub observation time and total
+poll time, completeness reasons, events observed and still pending, and the
+watch status after the commit; a poll that failed before observing logs its
+error and blocker kind instead. The file rotates once at 8 MiB. Read it with
+`crew-pr-watch polls <watch_id> [--tail N] [--json]`, which prints a one-hour
+summary and a fixed-width table, or through `get_pr_watch_status`, whose
+`delta_polling` block carries the last-hour summary and the last ten polls.
+Appending is best-effort and never changes monitor behavior.
 
 Watch IDs are server-issued `pw-` plus 32 lowercase hex characters and are
 validated before every path or lock use. Fresh-call idempotency uses a separate

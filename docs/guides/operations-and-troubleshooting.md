@@ -99,6 +99,30 @@ configured, verify its CLI authentication too. Ordinary `crew-mcp verify` is
 intentionally offline. Use `crew-mcp verify --scope project` to validate the
 project waiter/companion and shared git lock after a project install.
 
+### See how a large stack is polling
+
+Every poll appends one line to `<crew home>/pr-watches/<watch_id>/polls.jsonl`.
+To watch a 40-50 PR stack over time:
+
+```sh
+crew-pr-watch polls <watch_id>              # last-hour summary + last 30 polls
+crew-pr-watch polls <watch_id> --tail 200   # longer history
+crew-pr-watch polls <watch_id> --json       # raw records for scripting
+tail -F ~/.crew/pr-watches/<watch_id>/polls.jsonl
+```
+
+Read the table left to right: `mode` is `probe` when nothing changed (about
+2 points for 50 PRs), `partial` when only the dirty PRs were re-read, and
+`full` on the 15-minute refresh or the first poll; `forced` marks a terminal
+candidate that was re-read in full before dwelling; `pts` is the poll's total
+GitHub spend and `remain` the points left in the hour; `obs_ms` is time spent
+waiting on GitHub; `events` is pending/observed. A healthy quiet stack shows
+long runs of `probe` rows costing a couple of points each with `obs_ms` in the
+single-digit seconds. Rows with `note: incomplete: ...` name why the stack is
+not yet green; `error:` rows show provider failures that blocked the watch.
+`get_pr_watch_status` returns the same last-hour summary and the last ten
+polls under `delta_polling`.
+
 ## A run is stuck or no longer wanted
 
 Ask the captain to:
