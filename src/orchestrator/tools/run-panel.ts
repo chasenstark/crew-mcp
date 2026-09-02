@@ -13,6 +13,7 @@ import {
   type WireModelSelection,
 } from '../../adapters/model-selection.js';
 import type { EphemeralSnapshotSource } from '../../git/worktree.js';
+import { depsToWire, type WireDepsProvision } from './shared.js';
 import {
   DispatchError,
   dispatchRunAgentInternal,
@@ -79,6 +80,13 @@ const runPanelReviewerInputSchema = z.object({
   working_directory: z.string().optional(),
   read_only: z.boolean().optional(),
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
+  /**
+   * Explicit worktree deps provisioning for a worktree-owning reviewer
+   * (write or ephemeral_review placement; ephemeral reviews stay
+   * clone-only). Ignored-with-rejection for read_only placements, same as
+   * run_agent.
+   */
+  provision_deps: z.boolean().optional(),
   dispatch_anyway: z.boolean().optional(),
 }).strict();
 
@@ -103,6 +111,8 @@ export interface ReviewerDispatchEnvelope {
   readonly worktree_path: string;
   readonly warnings: readonly string[];
   readonly model_selection: WireModelSelection;
+  /** Worktree deps provisioning outcome, when the reviewer's placement recorded one. */
+  readonly deps?: WireDepsProvision;
   readonly required_next_action?: SpawnWatcherRequiredNextAction;
 }
 
@@ -132,7 +142,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers as one panel. Reviewers are canonicalized, and each explicit model is resolved exactly or that reviewer fails without fallback. Same-provider reviewers with different models remain independently labeled. ban_override and health/quota dispatch_anyway require user approval, while current-host reviewers stay refused. dispatch_anyway may be top-level or per reviewer. agy auto-routes to ephemeral_review. Returns panel_id, reviewer model_selection records/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available for recovery.';
+  'Dispatch parallel reviewers as one panel. Reviewers are canonicalized; each explicit model resolves exactly or that reviewer fails without fallback. Same-provider reviewers with different models stay independently labeled. ban_override and health/quota dispatch_anyway require user approval; current-host reviewers stay refused. dispatch_anyway may be top-level or per reviewer. agy auto-routes to ephemeral_review. Reviewer provision_deps provisions a worktree-owning placement (rejected read_only). Returns panel_id, reviewer model_selection/deps/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -348,6 +358,9 @@ export async function runPanelHandler(
                 read_only: effectiveReadOnly,
               }),
           ...(composed.length > 0 ? { peer_messages: composed } : {}),
+          ...(reviewer.provision_deps !== undefined
+            ? { provision_deps: reviewer.provision_deps }
+            : {}),
         },
         ctx,
         ...(ephemeralReviewer && implementerState !== undefined
@@ -387,6 +400,7 @@ export async function runPanelHandler(
         ctx.projectRoot,
         1,
       );
+      const reviewerDeps = ctx.runStateStore.read(result.runId)?.deps;
       envelope = {
         run_id: result.runId,
         agent_id: reviewer.agent_id,
@@ -394,6 +408,7 @@ export async function runPanelHandler(
         worktree_path: result.worktreePath,
         warnings: [...result.warnings, ...reviewerPolicyWarnings],
         model_selection: modelSelectionToWire(dispatchResultModelSelection(result)),
+        ...(reviewerDeps !== undefined ? { deps: depsToWire(reviewerDeps) } : {}),
         ...(requiredNextAction !== undefined
           ? { required_next_action: requiredNextAction }
           : {}),

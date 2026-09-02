@@ -9,6 +9,7 @@ import {
 } from '../../adapters/model-selection.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import type { WorktreeManager } from '../../git/worktree.js';
+import type { DepsProvisionRecord } from '../../git/deps-provision.js';
 import { crewTailUrl } from '../../cli/commands/tail-url.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -139,12 +140,36 @@ export interface RunEnvelope {
   readonly warnings?: readonly string[];
   readonly model_selection?: WireModelSelection;
   readonly goal?: WireGoalTurn;
+  readonly deps?: WireDepsProvision;
   readonly status?: RunStatus;
   readonly agent_id?: string;
   readonly worktree_path?: string;
   readonly events_log_path?: string;
   readonly tail_command_path?: string;
   readonly tail_command_url?: string;
+}
+
+/** Snake-cased wire form of DepsProvisionRecord (run-state / plan layer). */
+export interface WireDepsProvision {
+  readonly method: 'clonefile' | 'install' | 'skipped' | 'failed';
+  readonly ms: number;
+  readonly policy: 'skip' | 'clone-only' | 'clone-or-install';
+  readonly requested_policy?: 'skip' | 'clone-only' | 'clone-or-install';
+  readonly fingerprint?: string;
+  readonly scripts_skipped?: boolean;
+  readonly detail?: string;
+}
+
+export function depsToWire(record: DepsProvisionRecord): WireDepsProvision {
+  return {
+    method: record.method,
+    ms: record.ms,
+    policy: record.policy,
+    ...(record.requestedPolicy !== undefined ? { requested_policy: record.requestedPolicy } : {}),
+    ...(record.fingerprint !== undefined ? { fingerprint: record.fingerprint } : {}),
+    ...(record.scriptsSkipped !== undefined ? { scripts_skipped: record.scriptsSkipped } : {}),
+    ...(record.detail !== undefined ? { detail: record.detail } : {}),
+  };
 }
 
 export interface FullRunEnvelope extends RunEnvelope {
@@ -338,7 +363,8 @@ export async function runDispatchAndRespond(
     args.runStateStore.read(args.runId)?.prompts.length,
     args.watcherCheckInIntervalMs,
   );
-  const latestGoal = args.runStateStore.read(args.runId)?.prompts.at(-1)?.goal;
+  const latestState = args.runStateStore.read(args.runId);
+  const latestGoal = latestState?.prompts.at(-1)?.goal;
   const env: FullRunEnvelope = {
     run_id: args.runId,
     agent_id: args.agentName,
@@ -352,6 +378,7 @@ export async function runDispatchAndRespond(
     files_changed: [],
     model_selection: modelSelectionToWire(args.modelSelection),
     ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
+    ...(latestState?.deps !== undefined ? { deps: depsToWire(latestState.deps) } : {}),
     ...dispatchRelayFields({
       agentId: args.agentName,
       runId: args.runId,
@@ -388,6 +415,7 @@ export function structuredRunEnvelope(env: FullRunEnvelope): RunEnvelope {
     ...(env.warnings !== undefined ? { warnings: env.warnings } : {}),
     ...(env.model_selection !== undefined ? { model_selection: env.model_selection } : {}),
     ...(env.goal !== undefined ? { goal: env.goal } : {}),
+    ...(env.deps !== undefined ? { deps: env.deps } : {}),
   };
 }
 
@@ -404,6 +432,9 @@ export function renderDispatchMarkdown(env: FullRunEnvelope, clientKind: ClientK
       ? [`- Goal: \`${env.goal.outcome ?? 'running'}\` (${env.goal.policy})`]
       : []),
     `- Worktree: ${mdInlineCode(env.worktree_path)}`,
+    ...(env.deps !== undefined
+      ? [`- Deps: \`${env.deps.method}\` (${env.deps.ms}ms${env.deps.detail !== undefined ? `; ${env.deps.detail}` : ''})`]
+      : []),
   ];
   if (process.platform === 'darwin') {
     lines.push(

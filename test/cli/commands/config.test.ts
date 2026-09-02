@@ -360,12 +360,13 @@ describe('crew-mcp config subcommands', () => {
     });
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
-    expect(stdout.text.split('\n').slice(0, 10)).toEqual([
+    expect(stdout.text.split('\n').slice(0, 11)).toEqual([
       'crew-mcp config — toggle settings',
       '',
       '> [x] notifications.success   OS toast on successful runs',
       '  [x] notifications.error     OS toast on failed or partial runs',
       '  [x] confirmBeforeMerge      Ask before merging dispatched runs (off = auto-merge)',
+      '  [x] deps.provision          Clonefile node_modules into write-run worktrees on dispatch (on = auto)',
       '      Agent defaults...       Configure default agents for iterate and panel workflows',
       '      Provider models...      Choose the default model for each provider',
       '      Agent strengths...      Tune per-agent routing prose and strength tags',
@@ -407,6 +408,7 @@ describe('crew-mcp config subcommands', () => {
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
     stdin.press('down'); // notifications.error
     stdin.press('down'); // confirmBeforeMerge
+    stdin.press('down'); // deps.provision
     stdin.press('down'); // Agent defaults
     stdin.press('down'); // Provider models
     stdin.press('down'); // Agent strengths
@@ -451,6 +453,7 @@ describe('crew-mcp config subcommands', () => {
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
     stdin.press('down');
     stdin.press('down');
+    stdin.press('down'); // deps.provision
     stdin.press('down'); // Agent defaults
     stdin.press('down'); // Provider models
     stdin.press('space');
@@ -495,7 +498,8 @@ describe('crew-mcp config subcommands', () => {
     stdin.press('space'); // also toggle notifications.success off
     stdin.press('down');
     stdin.press('down');
-    stdin.press('down');
+    stdin.press('down'); // deps.provision
+    stdin.press('down'); // Agent defaults
     stdin.press('down'); // Provider models
     stdin.press('space');
     stdin.press('space'); // open Codex picker
@@ -523,8 +527,9 @@ describe('crew-mcp config subcommands', () => {
 
     await waitForOutput(stdout, 'crew-mcp config — toggle settings');
     // Root rows: notifications.success(0), notifications.error(1),
-    // confirmBeforeMerge(2), Agent defaults(3), Provider models(4),
-    // Agent strengths(5), Iteration limits(6), Cleanup(7).
+    // confirmBeforeMerge(2), deps.provision(3), Agent defaults(4),
+    // Provider models(5), Agent strengths(6), Iteration limits(7), Cleanup(8).
+    stdin.press('down');
     stdin.press('down');
     stdin.press('down');
     stdin.press('down');

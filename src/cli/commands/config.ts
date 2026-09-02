@@ -66,6 +66,8 @@ import { resolveCrewHome } from '../../utils/crew-home.js';
 import {
   type CrewConfig,
   DEFAULT_CONFIG,
+  DEPS_PROVISION_MODES,
+  type DepsProvisionMode,
   MAX_ITERATE_CHECK_IN_MINUTES,
   readConfigFile,
   resolveConfigPath,
@@ -100,6 +102,9 @@ export type MutableCrewConfig = {
     runDirTtlDays: number;
     criteriaSetTtlDays: number;
     prWatchTtlDays: number;
+  };
+  deps: {
+    provision: DepsProvisionMode;
   };
 };
 
@@ -137,6 +142,14 @@ function buildEntries(): readonly ConfigEntry[] {
       get: (state) => state.confirmBeforeMerge,
       set: (state, value) => {
         state.confirmBeforeMerge = value;
+      },
+    },
+    {
+      label: 'deps.provision',
+      description: 'Clonefile node_modules into write-run worktrees on dispatch (on = auto)',
+      get: (state) => state.deps.provision === 'auto',
+      set: (state, value) => {
+        state.deps.provision = value ? 'auto' : 'off';
       },
     },
   ];
@@ -209,6 +222,9 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
       runDirTtlDays: current.cleanup.runDirTtlDays,
       criteriaSetTtlDays: current.cleanup.criteriaSetTtlDays,
       prWatchTtlDays: current.cleanup.prWatchTtlDays,
+    },
+    deps: {
+      provision: current.deps.provision,
     },
   };
   const agentInventory = await loadAgentInventory({
@@ -307,7 +323,8 @@ export async function configCommand(opts: ConfigCommandOptions = {}): Promise<nu
     || current.iterate.checkInMinutes !== state.iterate.checkInMinutes
     || current.prWatch.maxActionableWakes !== state.prWatch.maxActionableWakes
     || current.prWatch.maxActionRounds !== state.prWatch.maxActionRounds
-    || current.prWatch.maxWatchAgeDays !== state.prWatch.maxWatchAgeDays;
+    || current.prWatch.maxWatchAgeDays !== state.prWatch.maxWatchAgeDays
+    || current.deps.provision !== state.deps.provision;
   const agentDefaultsChanged = agentDefaultsState.hasChanges();
   const providerModelsChanged = providerModelDefaultsState.hasChanges();
   const agentStrengthsChanged = agentStrengthsState.hasChanges();
@@ -474,6 +491,7 @@ function buildShowPayload(opts: ConfigSubcommandOptions): Record<string, unknown
     iterate: crewConfig.iterate,
     prWatch: crewConfig.prWatch,
     cleanup: crewConfig.cleanup,
+    deps: crewConfig.deps,
     providerModels: configuredProviderModels(readAgentPrefsFile(crewHome)),
     ...workflow.effectiveConfig,
   };
@@ -538,7 +556,8 @@ type CrewSettingPath =
   | 'prWatch.maxActionableWakes'
   | 'prWatch.maxActionRounds'
   | 'prWatch.maxWatchAgeDays'
-  | 'cleanup.prWatchTtlDays';
+  | 'cleanup.prWatchTtlDays'
+  | 'deps.provision';
 
 function isCrewSettingPath(path: string): path is CrewSettingPath {
   return path === 'notifications.success'
@@ -550,10 +569,14 @@ function isCrewSettingPath(path: string): path is CrewSettingPath {
     || path === 'prWatch.maxActionableWakes'
     || path === 'prWatch.maxActionRounds'
     || path === 'prWatch.maxWatchAgeDays'
-    || path === 'cleanup.prWatchTtlDays';
+    || path === 'cleanup.prWatchTtlDays'
+    || path === 'deps.provision';
 }
 
-function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | number {
+function readCrewSetting(
+  config: CrewConfig,
+  path: CrewSettingPath,
+): boolean | number | string {
   switch (path) {
     case 'notifications.success':
       return config.notifications.success;
@@ -575,6 +598,8 @@ function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | n
       return config.prWatch.maxWatchAgeDays;
     case 'cleanup.prWatchTtlDays':
       return config.cleanup.prWatchTtlDays;
+    case 'deps.provision':
+      return config.deps.provision;
     default:
       throw new Error(`Unsupported config path "${path}".`);
   }
@@ -583,7 +608,7 @@ function readCrewSetting(config: CrewConfig, path: CrewSettingPath): boolean | n
 function writeCrewSetting(
   config: MutableCrewConfig,
   path: CrewSettingPath,
-  value: boolean | number,
+  value: boolean | number | string,
 ): void {
   switch (path) {
     case 'notifications.success':
@@ -616,12 +641,27 @@ function writeCrewSetting(
     case 'cleanup.prWatchTtlDays':
       config.cleanup.prWatchTtlDays = value as number;
       return;
+    case 'deps.provision':
+      config.deps.provision = value as DepsProvisionMode;
+      return;
     default:
       throw new Error(`Unsupported config path "${path}".`);
   }
 }
 
-function parseCrewSettingValue(path: CrewSettingPath, raw: string): boolean | number {
+function parseCrewSettingValue(
+  path: CrewSettingPath,
+  raw: string,
+): boolean | number | string {
+  if (path === 'deps.provision') {
+    const normalized = raw.trim().toLowerCase();
+    if ((DEPS_PROVISION_MODES as readonly string[]).includes(normalized)) {
+      return normalized;
+    }
+    throw new Error(
+      `Invalid value for ${path}: expected ${DEPS_PROVISION_MODES.join(' | ')}, received "${raw}".`,
+    );
+  }
   if (path === 'iterate.checkInMinutes') {
     return parseBoundedOrDisabledDays(path, raw, MAX_ITERATE_CHECK_IN_MINUTES);
   }
@@ -707,6 +747,9 @@ function mutableConfig(config: CrewConfig): MutableCrewConfig {
       runDirTtlDays: config.cleanup.runDirTtlDays,
       criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
       prWatchTtlDays: config.cleanup.prWatchTtlDays,
+    },
+    deps: {
+      provision: config.deps.provision,
     },
   };
 }

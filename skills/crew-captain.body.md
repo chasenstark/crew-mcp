@@ -610,6 +610,32 @@ Use `run_mode: "ephemeral_review"` or put agy on a `run_panel`.
 task clearly needs a different level. When overriding, pass `effort` and
 state it briefly in the prompt.
 
+### Worktree deps provisioning
+
+Run worktrees contain no `node_modules`. `run_agent` accepts
+`provision_deps` for worktree-owning runs (write / ephemeral_review);
+`read_only` rejects it:
+
+- **Omitted (default):** the server's `deps.provision` config decides.
+  `auto` gives write runs a free APFS-clone of the host's `node_modules`
+  when it is provably current — and otherwise does nothing. It never runs
+  an install.
+- **Pass `provision_deps: true`** when the task will run builds or tests
+  (e.g. criteria demand mechanical `npm test` evidence): clone when
+  possible, else `npm ci --ignore-scripts`. A `deps.scripts_skipped`
+  warning means native packages may need a worker-side `npm rebuild` —
+  put that hint in the prompt when the repo has native deps.
+- **Pass `provision_deps: false`** for doc/spec/prototype runs where an
+  accidental provision would be waste.
+
+The dispatch envelope and `get_run_status` carry a `deps` field
+(`method: clonefile | install | skipped | failed`, `ms`, `detail`). A
+`deps.provision_failed` warning means the worker starts without deps and
+may need to install them itself. On `continue_run`, a `deps_stale`
+warning means the manifests changed after provisioning; relay the
+implication (the worker may need to reinstall) into the continuation
+prompt if the task still needs builds/tests.
+
 ### Bounded worker goals
 
 `list_agents.goal_support` is authoritative. Native goals are an explicit

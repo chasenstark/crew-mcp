@@ -151,6 +151,7 @@ export async function dispatchRunAgentInternal(
       goal: plan.goal,
       goalBudget: plan.goalBudget,
       workerReady: { status: 'pending' },
+      ...(plan.deps !== undefined ? { deps: plan.deps } : {}),
     });
     if (criteriaContract !== undefined && args.linkCriteriaImplementerRun !== false) {
       await linkCriteriaSetImplementerRun({

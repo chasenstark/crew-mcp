@@ -48,6 +48,7 @@ import type {
   ModelSelectionRecord,
   TaskFailure,
 } from '../adapters/types.js';
+import type { DepsProvisionRecord } from '../git/deps-provision.js';
 import { filterEventsTailNoise, isEventsTailNoiseLine } from './events-filter.js';
 import { notifyTerminal } from './notifications.js';
 import { writeRunReceipt } from './receipts.js';
@@ -177,6 +178,14 @@ export interface RunStateV1 {
   readonly prompts: readonly PromptRecord[];
   /** Aggregate bound/usage; provider resume must never reset these counters. */
   readonly goalBudget?: GoalBudgetRecord;
+  /**
+   * node_modules provisioning outcome for this run's worktree (write /
+   * ephemeral_review runs only; see src/git/deps-provision.ts). The
+   * fingerprint is re-checked after every continue_run dirty-sync so a
+   * lockfile swap under an already-provisioned tree surfaces as a
+   * `deps_stale` warning instead of silently mismatched deps.
+   */
+  readonly deps?: DepsProvisionRecord;
   readonly filesChanged: readonly string[];
   /**
    * Provider conversation/session id from the latest terminal turn's
@@ -389,6 +398,8 @@ export interface CreateRunStateInit {
    */
   readonly readOnly?: boolean;
   readonly workerReady?: WorkerReadyStatus;
+  /** Worktree dependency-provisioning outcome recorded at dispatch. */
+  readonly deps?: DepsProvisionRecord;
 }
 
 export interface RunStateStoreOptions {
@@ -548,6 +559,7 @@ export class RunStateStore {
           ? { criteriaSetId: init.criteriaSetId, criteriaEpoch: init.criteriaEpoch }
           : {}),
         ...(init.workerReady !== undefined ? { workerReady: init.workerReady } : {}),
+        ...(init.deps !== undefined ? { deps: init.deps } : {}),
         prompts: [
           {
             turn: 1,

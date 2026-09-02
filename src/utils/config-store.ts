@@ -69,6 +69,20 @@ export interface CrewPrWatchConfig {
   readonly maxWatchAgeDays: number;
 }
 
+export const DEPS_PROVISION_MODES = ['auto', 'off'] as const;
+export type DepsProvisionMode = (typeof DEPS_PROVISION_MODES)[number];
+export const DEFAULT_DEPS_PROVISION: DepsProvisionMode = 'auto';
+
+export interface CrewDepsConfig {
+  /**
+   * Default worktree dependency-provisioning behavior when run_agent's
+   * `provision_deps` input is omitted: `auto` gives write runs the
+   * clonefile fast path only (never an uninvited install); `off` skips
+   * provisioning entirely. An explicit `provision_deps` always wins.
+   */
+  readonly provision: DepsProvisionMode;
+}
+
 /** Default retention windows for the terminal-run garbage collector. */
 export const DEFAULT_WORKTREE_TTL_DAYS = 7;
 export const DEFAULT_RUNDIR_TTL_DAYS = 30;
@@ -116,6 +130,8 @@ export interface CrewConfig {
   readonly prWatch: CrewPrWatchConfig;
   /** Terminal-run garbage-collection retention windows. */
   readonly cleanup: CrewCleanupConfig;
+  /** Worktree dependency-provisioning defaults. */
+  readonly deps: CrewDepsConfig;
 }
 
 export const DEFAULT_CONFIG: CrewConfig = {
@@ -139,6 +155,9 @@ export const DEFAULT_CONFIG: CrewConfig = {
     runDirTtlDays: DEFAULT_RUNDIR_TTL_DAYS,
     criteriaSetTtlDays: DEFAULT_CRITERIA_SET_TTL_DAYS,
     prWatchTtlDays: DEFAULT_PR_WATCH_TTL_DAYS,
+  },
+  deps: {
+    provision: DEFAULT_DEPS_PROVISION,
   },
 };
 
@@ -341,6 +360,30 @@ export function readConfigFile(crewHome: string): CrewConfig {
       logger.warn(`[config] ${path}: "cleanup" must be an object; using defaults`);
     }
   }
+  if ('deps' in record) {
+    if (
+      record.deps
+      && typeof record.deps === 'object'
+      && !Array.isArray(record.deps)
+    ) {
+      const deps = record.deps as Record<string, unknown>;
+      if (deps.provision === undefined) {
+        out.deps.provision = DEFAULT_CONFIG.deps.provision;
+      } else if (
+        typeof deps.provision === 'string'
+        && (DEPS_PROVISION_MODES as readonly string[]).includes(deps.provision)
+      ) {
+        out.deps.provision = deps.provision as DepsProvisionMode;
+      } else {
+        logger.warn(
+          `[config] ${path}: "deps.provision" must be one of ${DEPS_PROVISION_MODES.join(' | ')}; `
+          + `using default (${DEFAULT_CONFIG.deps.provision})`,
+        );
+      }
+    } else {
+      logger.warn(`[config] ${path}: "deps" must be an object; using defaults`);
+    }
+  }
   return cloneConfig(out);
 }
 
@@ -389,6 +432,10 @@ export function writeConfigFile(crewHome: string, config: CrewConfig): void {
     runDirTtlDays: cleanup.runDirTtlDays,
     criteriaSetTtlDays: cleanup.criteriaSetTtlDays ?? DEFAULT_CONFIG.cleanup.criteriaSetTtlDays,
     prWatchTtlDays: cleanup.prWatchTtlDays ?? DEFAULT_CONFIG.cleanup.prWatchTtlDays,
+  };
+  const deps = config.deps ?? DEFAULT_CONFIG.deps;
+  merged.deps = {
+    provision: deps.provision ?? DEFAULT_CONFIG.deps.provision,
   };
   const serialized = JSON.stringify(merged, null, 2) + '\n';
   atomicWrite(path, serialized);
@@ -490,6 +537,9 @@ const DEFAULT_README: readonly string[] = [
   '    is deleted by the GC (-1 = off). Env var CREW_CRITERIA_SET_TTL_DAYS overrides.',
   '  - cleanup.prWatchTtlDays (number): days before a terminal/cancelled',
   '    PR watch is reclaimed (-1 = off).',
+  '  - deps.provision ("auto" | "off"): default node_modules provisioning',
+  '    for write-run worktrees when run_agent omits provision_deps.',
+  '    "auto" = clonefile fast path only, never an install; "off" = skip.',
   'Delete this file to reset to defaults.',
 ];
 
@@ -516,6 +566,9 @@ function cloneConfig(config: CrewConfig): CrewConfig {
       criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
       prWatchTtlDays: config.cleanup.prWatchTtlDays,
     },
+    deps: {
+      provision: config.deps.provision,
+    },
   };
 }
 
@@ -530,6 +583,7 @@ function mutableConfig(config: CrewConfig): {
     criteriaSetTtlDays: number;
     prWatchTtlDays: number;
   };
+  deps: { provision: DepsProvisionMode };
 } {
   return {
     notifications: {
@@ -553,5 +607,6 @@ function mutableConfig(config: CrewConfig): {
       criteriaSetTtlDays: config.cleanup.criteriaSetTtlDays,
       prWatchTtlDays: config.cleanup.prWatchTtlDays,
     },
+    deps: { provision: config.deps.provision },
   };
 }

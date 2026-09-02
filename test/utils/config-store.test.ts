@@ -35,6 +35,7 @@ describe('config-store', () => {
       confirmBeforeMerge: false,
       iterate: { maxRoundsPerEpoch: 5, maxTotalRounds: 15, checkInMinutes: 20 },
       prWatch: { maxActionableWakes: 9, maxActionRounds: 4, maxWatchAgeDays: 21 },
+      deps: { provision: 'off' as const },
       cleanup: {
         worktreeTtlDays: 3,
         runDirTtlDays: 60,
@@ -58,6 +59,7 @@ describe('config-store', () => {
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
+      deps: DEFAULT_CONFIG.deps,
     });
   });
 
@@ -165,6 +167,24 @@ describe('config-store', () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it('parses deps.provision and drops invalid modes with a warning', () => {
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ deps: { provision: 'off' } }),
+      'utf-8',
+    );
+    expect(readConfigFile(home).deps).toEqual({ provision: 'off' });
+
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    writeFileSync(
+      join(home, CONFIG_FILENAME),
+      JSON.stringify({ deps: { provision: 'always' } }),
+      'utf-8',
+    );
+    expect(readConfigFile(home).deps).toEqual({ provision: 'auto' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deps.provision'));
+  });
+
   it('first write migrates legacy notification shape in place', () => {
     const path = resolveConfigPath(home);
     writeFileSync(
@@ -178,6 +198,7 @@ describe('config-store', () => {
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
+      deps: DEFAULT_CONFIG.deps,
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('legacy');
@@ -202,6 +223,7 @@ describe('config-store', () => {
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
+      deps: DEFAULT_CONFIG.deps,
     });
     const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     expect(raw._note).toBe('hand-edited');
@@ -240,6 +262,7 @@ describe('config-store', () => {
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
+      deps: DEFAULT_CONFIG.deps,
     });
     expect(warn).toHaveBeenCalled();
   });
@@ -257,6 +280,7 @@ describe('config-store', () => {
       iterate: { maxRoundsPerEpoch: 3, maxTotalRounds: 9, checkInMinutes: 10 },
       prWatch: DEFAULT_CONFIG.prWatch,
       cleanup: DEFAULT_CONFIG.cleanup,
+      deps: DEFAULT_CONFIG.deps,
     });
     expect(warn).toHaveBeenCalled();
   });

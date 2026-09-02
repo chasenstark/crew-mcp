@@ -2516,6 +2516,7 @@ describe('crew serve — run_agent tool', () => {
       });
       const env = res.structuredContent as RunEnvelope;
       expect(Object.keys(env).sort()).toEqual([
+        'deps',
         'files_changed',
         'goal',
         'ledger_line',
@@ -2525,6 +2526,9 @@ describe('crew serve — run_agent tool', () => {
         'summary',
         'tail_url',
       ]);
+      // The harness repo has no package.json, so auto provisioning records
+      // an honest skip.
+      expect(env.deps).toMatchObject({ method: 'skipped', policy: 'clone-only' });
       expect(env.run_id).toMatch(/^mock-coder-go-[0-9a-f]{8}$/);
       expect(env.tail_url).toBe(crewTailUrl(join(h.crewHome, 'runs', env.run_id, 'events.log')));
       expect(env.summary).toContain(`Dispatched as "${env.run_id}"`);
@@ -2578,6 +2582,7 @@ describe('crew serve — run_agent tool', () => {
       });
       const env = res.structuredContent as RunEnvelope;
       expect(Object.keys(env).sort()).toEqual([
+        'deps',
         'files_changed',
         'goal',
         'ledger_line',
@@ -5517,6 +5522,7 @@ describe('crew serve — get_run_status tool', () => {
           turns_used: 0,
           wall_clock_ms_used: 0,
         },
+        deps: s.deps,
         commits: [],
         commit_count: 0,
         summary: 'all done',
@@ -5528,6 +5534,7 @@ describe('crew serve — get_run_status tool', () => {
         },
         ...(s.worker_ready !== undefined ? { worker_ready: s.worker_ready } : {}),
       });
+      expect(s.deps).toMatchObject({ method: 'skipped', policy: 'clone-only' });
       // Verbatim prompt text AND per-turn summary are intentionally
       // elided from the wire payload — captains have what they sent
       // (in their own conversation history), and the latest summary
@@ -7246,7 +7253,9 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
           turns_used: 0,
           wall_clock_ms_used: 0,
         },
+        deps: s.deps,
       });
+      expect(s.deps).toMatchObject({ method: 'skipped', policy: 'clone-only' });
 
       // Cleanup: complete the dispatch and verify the terminal
       // poll-return DOES surface the chunk via events_tail.

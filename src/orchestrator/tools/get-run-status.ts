@@ -57,6 +57,7 @@ import type {
   ToolRequestExtra,
 } from './shared.js';
 import {
+  depsToWire,
   errorContent,
   getRunStatusContent,
   isTerminalRunStatus,
@@ -150,7 +151,7 @@ export const getRunStatusInputSchema = z.object({
 export type GetRunStatusInput = z.infer<typeof getRunStatusInputSchema>;
 
 export const GET_RUN_STATUS_DESCRIPTION =
-  `Read run status by run_id; omit wait inputs for an immediate snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit request. Criteria-linked waits warn toward crew-wait; running iterate write snapshots include required_next_action for the next 10-minute check-in. since_event_line pages events and max_events_tail caps terminal output (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include latest model_selection and goal. Terminal results add per-turn records, goal_budget, summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
+  `Read run status by run_id; omit wait inputs for an immediate snapshot. wait_for_terminal_only requires user_requested_wait:true after an explicit request. Criteria-linked waits warn toward crew-wait; running iterate write snapshots include required_next_action for the next 10-minute check-in. since_event_line pages events and max_events_tail caps terminal output (default ${DEFAULT_MAX_EVENTS_TAIL}, max ${MAX_EVENTS_TAIL_CAP}). Responses include latest model_selection, goal, and deps. Terminal results add per-turn records, goal_budget, summary/filesChanged/warnings, commits, inbox previews, and required_next_action. Timeouts return running with timed_out:true.`;
 
 type GetRunStatusDeps = Pick<ToolHandlerDeps, 'dispatcher' | 'runStateStore'>
   & Partial<Pick<
@@ -347,6 +348,7 @@ function buildGetRunStatusResponse(
         ? { model_selection: modelSelectionToWire(latestSelection) }
         : {}),
       ...(latestGoal !== undefined ? { goal: goalTurnToWire(latestGoal) } : {}),
+      ...(state.deps !== undefined ? { deps: depsToWire(state.deps) } : {}),
       ...(runningRequiredNextAction !== undefined
         ? { required_next_action: runningRequiredNextAction }
         : {}),
@@ -395,6 +397,7 @@ function buildGetRunStatusResponse(
           },
         }
       : {}),
+    ...(state.deps !== undefined ? { deps: depsToWire(state.deps) } : {}),
     commits: commitSummary.commits,
     commit_count: commitSummary.commit_count,
     ...(lastSummary !== undefined ? { summary: lastSummary } : {}),

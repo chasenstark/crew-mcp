@@ -176,6 +176,27 @@ describe('dispatch envelope JIT fields', () => {
     },
   );
 
+  it('keeps deps in the compact structured envelope', () => {
+    const full: FullRunEnvelope = {
+      run_id: 'run-deps',
+      tail_url: 'crew-tail://run-deps',
+      summary: 'dispatched',
+      files_changed: [],
+      status: 'running',
+      worktree_path: '/repo/worktree',
+      events_log_path: '/crew/events.log',
+      tail_command_path: '/crew/tail.command',
+      tail_command_url: 'file:///crew/tail.command',
+      deps: { method: 'clonefile', ms: 42, policy: 'clone-only', fingerprint: 'ab'.repeat(32) },
+    };
+    expect(structuredRunEnvelope(full).deps).toEqual({
+      method: 'clonefile',
+      ms: 42,
+      policy: 'clone-only',
+      fingerprint: 'ab'.repeat(32),
+    });
+  });
+
   it('prefers the exact compact model argument so the relay retains its tail URL', () => {
     const runId = 'claude-code-review-provider-model-12345678';
     const tailUrl = `crew-tail:///Users/chasen/.crew/runs/${runId}/events.log`;
