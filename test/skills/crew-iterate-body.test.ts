@@ -197,13 +197,27 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
 
     expectContainsCI(reviewLoop, 'Codex native completion is not a Crew run');
     expectContainsCI(reviewLoop, 'host `agent_id`, not a Crew `run_id`');
+    expectContainsCI(reviewLoop, 'register exactly one identity returned by the current native host');
     expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "register", agent_id, panel_id})`');
+    expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "register", task_name, panel_id})`');
+    expectContainsCI(reviewLoop, '`task_name` is register-only');
+    expectContainsCI(reviewLoop, 'stable public host metadata');
+    expectContainsCI(reviewLoop, 'one unique reviewer UUID under the same parent and repository');
+    expectContainsCI(reviewLoop, 'Save that returned UUID for `status` and `resolve`');
+    expectContainsCI(reviewLoop, 'retain the original native handle for waiting and result collection');
+    expectContainsCI(reviewLoop, 'Never derive, hash, or fabricate a UUID');
+    expectContainsCI(reviewLoop, 'private files or transcripts');
+    expectContainsCI(reviewLoop, 'missing, ambiguous, or unsupported identity error, do not call `status` or `resolve`');
     expectContainsCI(reviewLoop, '`SubagentStop` hook is trusted');
     expectContainsCI(reviewLoop, '`running_count` covers only Crew reviewers');
     expectContainsCI(reviewLoop, 'do not end the turn while the required native Codex reviewer is outstanding');
     expectContainsCI(reviewLoop, 'long native `wait_agent` call');
+    expectContainsCI(reviewLoop, 'If `wait_agent` accepts no target, ignore unrelated completions');
+    expectContainsCI(reviewLoop, 'until this reviewer is terminal');
     expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "status", agent_id})` first');
     expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "resolve", agent_id})`');
+    expectContainsCI(reviewLoop, 'Resolve only after successful registration and result collection');
+    expectContainsCI(reviewLoop, 'If registration failed, use native tools only');
   });
 
   it('keeps timestamp-free list_runs recovery in shared host prose', async () => {

@@ -428,12 +428,21 @@ describe('host-conditional real skill bodies', () => {
       expect(flatCodex).toContain('not a Crew `run_id`');
       expect(flatCodex).toContain('long native `wait_agent` call');
       expect(flatCodex).toContain('manage_native_reviewer({operation: "register"');
+      expect(flatCodex).toContain('manage_native_reviewer({operation: "register", agent_id, panel_id})');
+      expect(flatCodex).toContain('manage_native_reviewer({operation: "register", task_name, panel_id})');
+      expect(flatCodex).toContain('`task_name` is register-only');
+      expect(flatCodex).toContain('Save that returned UUID for `status` and `resolve`');
+      expect(flatCodex).toContain('original native handle');
+      expect(flatCodex).toContain('ignore unrelated completions');
+      expect(flatCodex).toContain('do not call `status` or `resolve`');
+      expect(flatCodex).toContain('Resolve only after successful registration and result collection');
       expect(flatCodex).toContain('`SubagentStop` hook is trusted');
       expect(codex).not.toContain('Agent "<label>" finished');
 
       expect(claude).toContain('run_in_background');
       expect(claude).not.toContain('long native `wait_agent` call');
       expect(claude).not.toContain('not a Crew `run_id`');
+      expect(claude).not.toContain('`task_name` is register-only');
     }
 
     const claudeCaptain = await renderForHost(SKILL_MANIFEST[0], 'claude-code');

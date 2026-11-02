@@ -3,16 +3,21 @@
 These entries describe repository versions. Registry publication is a separate
 step; check npm dist-tags for the version available through `latest`.
 
-## Unreleased
+## 0.25.0 — 2026-11-02
 
-- Add Linux and macOS CI on Node 20 and 22 for tests, type checking, builds,
-  and a packed-package install/verify smoke using temporary host configuration.
+- Accept canonical Codex task names when registering native reviewer wake
+  claims, resolving them through bounded public parent/repository metadata.
+- Keep reviewer collection on the native wait path when identity cannot be
+  verified; use the returned UUID for successful registration lifecycles.
 
 ## 0.24.0 — 2026-09-02
 
 - Record bounded per-poll diagnostics for PR watches, including polling mode,
   API cost, changed PRs, timing, and incomplete-evidence reasons.
 - Add `crew-pr-watch polls` and expose recent diagnostics in watch status.
+- Add Linux and macOS CI on Node 20 and 22 for tests, type checking, builds,
+  and a packed-package install/verify smoke using temporary host configuration.
+  Published 2026-11-02.
 
 ## 0.23.0 — 2026-09-02
 

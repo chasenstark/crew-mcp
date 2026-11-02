@@ -10,7 +10,7 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -25,6 +25,7 @@ import { CONTINUE_RUN_DESCRIPTION } from '../../src/orchestrator/tools/continue-
 import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run-status.js';
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
 import { RUN_PANEL_DESCRIPTION } from '../../src/orchestrator/tools/run-panel.js';
+import { MANAGE_NATIVE_REVIEWER_DESCRIPTION } from '../../src/orchestrator/tools/manage-native-reviewer.js';
 import {
   AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
   CANCEL_PR_WATCH_DESCRIPTION,
@@ -105,6 +106,13 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
         'dispatch_anyway',
       ]));
       expect(Object.keys(propertiesFor('get_run_status'))).toContain('user_requested_wait');
+      expect(Object.keys(propertiesFor('manage_native_reviewer')).sort()).toEqual([
+        'agent_id', 'operation', 'panel_id', 'task_name',
+      ]);
+      expect(result.tools.find((tool) => tool.name === 'manage_native_reviewer')?.description)
+        .toBe(MANAGE_NATIVE_REVIEWER_DESCRIPTION);
+      expect(CATALOG_TOOLS.find((tool) => tool.name === 'manage_native_reviewer')?.description)
+        .toBe(MANAGE_NATIVE_REVIEWER_DESCRIPTION);
       expect(Object.keys(propertiesFor('discard_run'))).toContain('confirmed');
       expect(Object.keys(propertiesFor('merge_run'))).toEqual(expect.arrayContaining([
         'confirmed',
@@ -122,6 +130,35 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
         'confirmed',
         'same_host_ok',
       ]);
+    } finally {
+      await client.close();
+      rmSync(crewHome, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces native reviewer identity rules through the actual MCP handler', async () => {
+    const crewHome = mkdtempSync(join(tmpdir(), 'crew-native-catalog-home-'));
+    const { server } = buildCrewMcpServer({ crewHome });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'codex', version: '0.162.1' });
+    await client.connect(clientTransport);
+    const agentId = '019f5d0f-a60c-7d53-9f35-2036d92d71ed';
+    try {
+      for (const args of [
+        { operation: 'register' },
+        { operation: 'register', agent_id: agentId, task_name: '/root/reviewer' },
+        { operation: 'status', task_name: '/root/reviewer' },
+        { operation: 'resolve', task_name: '/root/reviewer' },
+      ]) {
+        const result = await client.callTool({
+          name: 'manage_native_reviewer', arguments: args,
+          _meta: { threadId: '019f5d0f-a60c-7d53-9f35-2036d92d71ec' },
+        });
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain('Invalid native reviewer identity');
+      }
+      expect(existsSync(join(crewHome, 'native-reviewers'))).toBe(false);
     } finally {
       await client.close();
       rmSync(crewHome, { recursive: true, force: true });

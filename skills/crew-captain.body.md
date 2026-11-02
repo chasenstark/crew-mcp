@@ -854,28 +854,46 @@ from what you folded in, and then re-open that round's consolidation.
 
 <!-- host:codex -->
 A native Codex reviewer has a host `agent_id`, not a Crew `run_id`. Its
-completion is not covered by `crew-wait`, the panel watcher, or `list_runs`,
-so register the exact native `agent_id` immediately after spawning it:
-`manage_native_reviewer({operation: "register", agent_id, panel_id})` (omit
-`panel_id` outside a Crew panel). The server derives the parent thread from
-trusted MCP request metadata; never supply or reconstruct a thread id.
+completion is not covered by `crew-wait`, the panel watcher, or `list_runs`.
+Immediately after spawning it, register exactly one identity returned by the
+current native host: its exact UUID with
+`manage_native_reviewer({operation: "register", agent_id, panel_id})`, or its
+canonical task path (for example `/root/reviewer`) with
+`manage_native_reviewer({operation: "register", task_name, panel_id})`. Omit
+`panel_id` outside a Crew panel. `task_name` is register-only: the server uses
+stable public host metadata to resolve one unique reviewer UUID under the
+same parent and repository, then returns `agent_id`. Save that returned UUID
+for `status` and `resolve`. Retain the original native handle for waiting and
+result collection; a task path is not a UUID. Never derive, hash, or fabricate
+a UUID, or look it up through private files or transcripts. The server derives
+the parent thread from trusted MCP request metadata; never supply or
+reconstruct a thread id.
+
+If registration is unavailable or returns a missing, ambiguous, or unsupported
+identity error, do not call `status` or `resolve`. Keep the native handle and
+collect that review through the host's native tools.
 
 You may rely on the selective native wake only when the Crew-installed
 `SubagentStop` hook is trusted in the current Codex session and registration
 succeeds. Otherwise, while at least one Crew reviewer is still running and its
 valid panel watcher is active, you may end the turn because that Crew event
 guarantees collection. Once `get_panel_status` reports `running_count == 0`,
-keep the turn open and join the exact native `agent_id` with a long native
-`wait_agent` call. If there is no Crew reviewer/watcher, join from the outset.
+keep the turn open and join the required reviewer using its original native
+handle with a long native `wait_agent` call. If `wait_agent` accepts no target,
+ignore unrelated completions and continue joining until this reviewer is
+terminal. If there is no Crew reviewer/watcher, join from the outset.
 Do not give up after a fixed retry count or arbitrary time limit.
 
-On a native-reviewer synthetic turn, call `manage_native_reviewer` with
-`operation: "status"` first. If it reports `resolved`, end silently because a
-user or Crew turn already consumed the result. Otherwise collect the exact
-native result, then call `operation: "resolve"` before aggregation or visible
-reporting. On any non-synthetic collection turn, resolve after collecting too;
-this suppresses a queued late duplicate. If the user interrupts, answer them
-and continue collecting unless they explicitly drop the host reviewer.
+For a successfully registered reviewer, on a native-reviewer synthetic turn
+call `manage_native_reviewer({operation: "status", agent_id})` first, using
+the saved UUID. If it reports `resolved`, end silently because a user or Crew
+turn already consumed the result. Otherwise collect the exact native result
+using the original handle, then call
+`manage_native_reviewer({operation: "resolve", agent_id})` before aggregation
+or visible reporting. Resolve only after successful registration and result
+collection, including on non-synthetic turns; this suppresses a queued late
+duplicate. If the user interrupts, answer them and continue collecting unless
+they explicitly drop the host reviewer.
 <!-- /host -->
 
 ### `run_panel` shape

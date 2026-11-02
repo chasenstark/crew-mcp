@@ -172,10 +172,28 @@ its agent and model.
 ### Codex host-native reviewer wake
 
 A Codex native reviewer is not a Crew run and has no `run_id`.
-`manage_native_reviewer` accepts only `register`, `status`, and `resolve` plus
-the host `agent_id`; callers cannot provide a parent thread id. The server
-derives that identity from duplicated Codex MCP request metadata and refuses
-missing or conflicting values.
+`manage_native_reviewer` accepts `register`, `status`, and `resolve`.
+Registration requires exactly one host-returned `agent_id` UUID or canonical
+`task_name` such as `/root/reviewer`. Callers cannot provide a parent thread
+id: the server derives it from trusted Codex MCP request metadata and refuses
+missing or conflicting values. `status` and `resolve` require the UUID
+returned by successful registration; task names are never durable wake keys.
+
+For task names, a short-lived Codex App Server connection reads public thread
+metadata scoped to the exact repository and subagent source. It checks both
+active and archived inventories, requires complete bounded pagination and one
+unique child UUID with matching source parent/path, then verifies the child's
+metadata again. Missing visibility, unsupported metadata, conflicting identity,
+ambiguity, or a lookup bound prevents registration. The lookup never starts or
+resumes a model turn, reads transcript turns, infers identity from names or
+previews, or saves a task-path cache. The UUID route and wake storage contract
+remain unchanged.
+
+If registration fails, retain the native task handle and collect that reviewer
+through the host's wait/status/result tools. A wait notification for another
+agent does not complete this review. Keep the turn open unless a valid Crew
+watcher guarantees a later collection turn; call lifecycle `status`/`resolve`
+only after successful registration.
 
 Codex install merges a selective `SubagentStop` command into `hooks.json`.
 The callback resolves the event's git root, records only session/agent/repo

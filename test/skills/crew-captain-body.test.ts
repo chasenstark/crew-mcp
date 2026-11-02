@@ -184,14 +184,27 @@ describe('crew-captain body — native reviewer terminal gate', () => {
 
     expectContainsCI(flat, 'host `agent_id`, not a Crew `run_id`');
     expectContainsCI(flat, 'not covered by `crew-wait`, the panel watcher, or `list_runs`');
+    expectContainsCI(flat, 'register exactly one identity returned by the current native host');
     expectContainsCI(flat, '`manage_native_reviewer({operation: "register", agent_id, panel_id})`');
+    expectContainsCI(flat, '`manage_native_reviewer({operation: "register", task_name, panel_id})`');
+    expectContainsCI(flat, '`task_name` is register-only');
+    expectContainsCI(flat, 'stable public host metadata');
+    expectContainsCI(flat, 'one unique reviewer UUID under the same parent and repository');
+    expectContainsCI(flat, 'Save that returned UUID for `status` and `resolve`');
+    expectContainsCI(flat, 'Retain the original native handle for waiting and result collection');
+    expectContainsCI(flat, 'Never derive, hash, or fabricate a UUID');
+    expectContainsCI(flat, 'private files or transcripts');
+    expectContainsCI(flat, 'missing, ambiguous, or unsupported identity error, do not call `status` or `resolve`');
     expectContainsCI(flat, '`SubagentStop` hook is trusted');
     expectContainsCI(flat, 'Once `get_panel_status` reports `running_count == 0`');
-    expectContainsCI(flat, 'keep the turn open and join the exact native `agent_id`');
+    expectContainsCI(flat, 'keep the turn open and join the required reviewer using its original native handle');
     expectContainsCI(flat, 'long native `wait_agent` call');
+    expectContainsCI(flat, 'If `wait_agent` accepts no target, ignore unrelated completions');
+    expectContainsCI(flat, 'until this reviewer is terminal');
     expectContainsCI(flat, 'Do not give up after a fixed retry count');
-    expectContainsCI(flat, '`operation: "status"` first');
-    expectContainsCI(flat, '`operation: "resolve"` before aggregation');
+    expectContainsCI(flat, '`manage_native_reviewer({operation: "status", agent_id})` first');
+    expectContainsCI(flat, '`manage_native_reviewer({operation: "resolve", agent_id})` before aggregation');
+    expectContainsCI(flat, 'Resolve only after successful registration and result collection');
   });
 
   it('joins the host vote before panel aggregation', async () => {

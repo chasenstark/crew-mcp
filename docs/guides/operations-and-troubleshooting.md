@@ -49,6 +49,16 @@ parent thread which registered the exact native reviewer `agent_id`. The hook
 stores no prompt, transcript, or reviewer result and its completion event does
 not authorize merge, discard, or any remote mutation.
 
+When Codex returns only a canonical task name (for example `/root/reviewer`),
+register it with `manage_native_reviewer` using `task_name`. Crew uses public
+metadata to find one matching child in this parent and repository, then returns
+its UUID. Save that `agent_id` for later `status` and `resolve` calls. This
+lookup needs persistent thread metadata; older hosts, ephemeral children, or
+reused task paths may not provide an unambiguous match. Do not invent an ID or
+substitute a relative task name. On registration failure, retain the native
+handle and wait for that reviewer's result through the host tools. Without a
+valid Crew watcher to provide a later collection turn, keep the turn open.
+
 After installing or refreshing Codex support, open `/hooks` in Codex and trust
 the exact `crew-native-reviewer-hook` command. `crew-mcp verify` checks whether
 the hook definition and recorded command are present, but Codex exposes trust

@@ -577,12 +577,25 @@ review-only. Never reconstruct criteria from memory.
 <!-- host:codex -->
 - **Codex native completion is not a Crew run.** The reviewer has a host
   `agent_id`, not a Crew `run_id`, so `crew-wait`, the panel watcher, and
-  `list_runs` cannot observe it. Immediately after spawning it, call
-  `manage_native_reviewer({operation: "register", agent_id, panel_id})`. Rely
+  `list_runs` cannot observe it. Immediately after spawning it, register
+  exactly one identity returned by the current native host: its exact UUID
+  with `manage_native_reviewer({operation: "register", agent_id, panel_id})`,
+  or its canonical task path (for example `/root/reviewer`) with
+  `manage_native_reviewer({operation: "register", task_name, panel_id})`.
+  Omit `panel_id` outside a Crew panel. `task_name` is register-only: the server
+  uses stable public host metadata to resolve one unique reviewer UUID under
+  the same parent and repository, then returns `agent_id`. Save that returned
+  UUID for `status` and `resolve`; retain the original native handle for
+  waiting and result collection. Never derive, hash, or fabricate a UUID, or
+  look it up through private files or transcripts. The server derives the
+  parent thread from trusted MCP request metadata; never supply or reconstruct
+  a thread id. If registration is unavailable or returns a missing, ambiguous,
+  or unsupported identity error, do not call `status` or `resolve`; keep the
+  native handle and collect the review through the host's native tools. Rely
   on its selective wake only when the Crew-installed `SubagentStop` hook is
-  trusted in this Codex session and registration succeeds. Otherwise
-  background it only while a valid Crew watcher guarantees a later collection
-  turn; with no Crew reviewer, join the native reviewer from the outset.
+  trusted in this Codex session and registration succeeds. Otherwise background
+  it only while a valid Crew watcher guarantees a later collection turn; with
+  no Crew reviewer/watcher, keep the turn open and join from the outset.
 <!-- /host -->
 - **If the native subagent is synchronous,** run it in the **foreground**
   after crew starts and keep it bounded.
@@ -816,15 +829,19 @@ Join both review channels before scoring:
 <!-- host:codex -->
 `running_count` covers only Crew reviewers. If the trusted native wake was not
 armed, once it reaches 0 do not end the turn while the required native Codex
-reviewer is outstanding: join its exact `agent_id` with a long native
-`wait_agent` call and continue until terminal. Do not stop after a fixed retry
-count or arbitrary time limit. On a native-reviewer synthetic turn, call
-`manage_native_reviewer({operation: "status", agent_id})` first; if it reports
-`resolved`, end silently. After collecting the vote on any turn, call
+reviewer is outstanding: join using its original native handle with a long
+native `wait_agent` call and continue until terminal. If `wait_agent` accepts
+no target, ignore unrelated completions and continue joining until this
+reviewer is terminal. Do not stop after a fixed retry count or arbitrary time
+limit. For a successfully registered reviewer, on a native-reviewer synthetic
+turn, call `manage_native_reviewer({operation: "status", agent_id})` first
+using the saved UUID; if it reports `resolved`, end silently. After collecting
+the vote using the original handle, call
 `manage_native_reviewer({operation: "resolve", agent_id})` before
-`aggregate_panel` so a queued late duplicate becomes a no-op. If the user
-interrupts, answer them and continue collecting unless they explicitly drop
-the host reviewer.
+`aggregate_panel` so a queued late duplicate becomes a no-op. Resolve only
+after successful registration and result collection, on any collection turn.
+If registration failed, use native tools only. If the user interrupts, answer
+them and continue collecting unless they explicitly drop the host reviewer.
 <!-- /host -->
 
 Terminal `required_next_action` is a single precedence-resolved slot:
