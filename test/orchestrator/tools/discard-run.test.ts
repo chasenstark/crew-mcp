@@ -11,7 +11,7 @@ import {
   type PanelHarness,
 } from './panel-test-harness.js';
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 const worktreeDeltaCases: ReadonlyArray<readonly [
   string,
   (worktreePath: string) => void,
@@ -29,12 +29,16 @@ const worktreeDeltaCases: ReadonlyArray<readonly [
 ];
 
 afterEach(async () => {
-  while (cleanups.length > 0) cleanups.pop()?.();
+  while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
 function harness(): PanelHarness {
   const h = makeHarness([makeMockAdapter()]);
-  cleanups.push(h.cleanup);
+  cleanups.push(async () => {
+    // Keep Git fixtures alive until discard cleanup finishes, even after failed assertions.
+    await h.worktreeManager.drainBackgroundCleanups();
+    h.cleanup();
+  });
   return h;
 }
 
@@ -155,5 +159,8 @@ describe('discard_run deliverable confirmation gate', () => {
       confirmed: true,
     }, depsFor(h));
     expect(accepted.isError).not.toBe(true);
+    expect(h.runStateStore.read('conflict-run')?.status).toBe('discarded');
+    await h.worktreeManager.drainBackgroundCleanups();
+    expect(existsSync(worktreePath)).toBe(false);
   });
 });
