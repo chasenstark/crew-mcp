@@ -2919,16 +2919,20 @@ describe('crew serve — run_agent tool', () => {
       expect(text).toContain('user is free to chat');
       expect(text).toContain(`get_run_status({ run_id: "${env.run_id}" })`);
       expect(text).not.toContain('wait_for_change_ms: 30000');
+      expect(env.relay_verbatim).toBeDefined();
+      expect(text).toContain(env.relay_verbatim);
       // Clickable link only shows on macOS (Terminal.app handles
       // crew-tail:// when the optional handler is installed). On other
-      // platforms the manual tail line remains the portable path.
+      // platforms the manual tail line remains the portable path; the
+      // verbatim relay still includes its plain URI recovery reference.
       if (process.platform === 'darwin') {
         expect(text).toContain(env.tail_url);
         expect(text).not.toContain(fileUrlHref(env.tail_command_path));
         expect(text).toContain('Tail in Terminal');
       } else {
         expect(text).not.toContain('file://');
-        expect(text).not.toContain('crew-tail://');
+        expect(text).not.toContain('**Tail in Terminal**');
+        expect(text).not.toMatch(/\]\(crew-tail:\/\//);
       }
       // Wait so the lifecycle terminates before harness teardown — otherwise
       // the dispatcher's listeners outlive the test.

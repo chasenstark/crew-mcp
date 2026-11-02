@@ -81,6 +81,8 @@ describe('renderAndWriteSkills — Phase 2 rollback', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      isCrewWaitOnPath: () => true,
+      resolveCrewWaitBinary: () => '/usr/local/bin/crew-wait',
     };
 
     // Seed install — both skills land with their canonical content.
