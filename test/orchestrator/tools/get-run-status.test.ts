@@ -483,10 +483,11 @@ describe('getRunStatusToolHandler', () => {
       initialPrompt: 'go',
     });
     const dispatcher = new ToolDispatcher();
-    const releasePersist = Promise.withResolvers<void>();
+    let releasePersist!: () => void;
+    const persistGate = new Promise<void>((resolve) => { releasePersist = resolve; });
     const originalMarkTerminal = store.markTerminal.bind(store);
     vi.spyOn(store, 'markTerminal').mockImplementation(async (...args) => {
-      await releasePersist.promise;
+      await persistGate;
       return originalMarkTerminal(...args);
     });
     void installRunLifecycleListeners({
@@ -521,7 +522,7 @@ describe('getRunStatusToolHandler', () => {
     ]);
 
     expect(response.structuredContent).toMatchObject({ status: 'running' });
-    releasePersist.resolve();
+    releasePersist();
   });
 
   it('surfaces peer message counts and worker_ready', async () => {
