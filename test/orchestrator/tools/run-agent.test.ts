@@ -9,11 +9,13 @@ import {
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
   crewWorktreeRejectMessage,
+  resolveDepsProvisionPolicy,
   resolveEffectiveEffort,
   resolveFreshModelSelection,
   resolveRequestedModelSelection,
   type RunAgentHandlerContext,
 } from '../../../src/orchestrator/tools/run-agent.js';
+import { DEFAULT_CONFIG, writeConfigFile } from '../../../src/utils/config-store.js';
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
@@ -1396,5 +1398,168 @@ describe('planRunAgent — exact model selection', () => {
       kind: 'error',
       message: expect.stringContaining('Stale Label'),
     });
+  });
+});
+
+describe('planRunAgent — worktree deps provisioning', () => {
+  let root: string;
+  let crewHome: string;
+  let worktreeManager: WorktreeManager;
+
+  const PKG = JSON.stringify({ name: 'fixture', version: '1.0.0' });
+  const LOCK = JSON.stringify({
+    name: 'fixture',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'fixture', version: '1.0.0' },
+      'node_modules/a': { version: '1.2.3' },
+    },
+  });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'crew-run-agent-deps-'));
+    crewHome = mkdtempSync(join(tmpdir(), 'crew-run-agent-deps-home-'));
+    execSync('git init -q', { cwd: root });
+    execSync('git config user.email test@crew.local', { cwd: root });
+    execSync('git config user.name test', { cwd: root });
+    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
+    execSync('git add README.md', { cwd: root });
+    execSync('git commit -q -m init', { cwd: root });
+    worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(crewHome, { recursive: true, force: true });
+  });
+
+  function makeCtx(): RunAgentHandlerContext {
+    return {
+      registry: makeRegistry([makeMockAdapter({ name: 'codex' })]),
+      worktreeManager,
+      crewHome,
+    };
+  }
+
+  function commitCloneReadyManifests(): void {
+    writeFileSync(join(root, 'package.json'), PKG);
+    writeFileSync(join(root, 'package-lock.json'), LOCK);
+    writeFileSync(join(root, '.gitignore'), 'node_modules/\n');
+    execSync('git add package.json package-lock.json .gitignore', { cwd: root });
+    execSync('git commit -q -m manifests', { cwd: root });
+    mkdirSync(join(root, 'node_modules', 'a'), { recursive: true });
+    writeFileSync(join(root, 'node_modules', '.package-lock.json'), LOCK);
+    writeFileSync(join(root, 'node_modules', 'a', 'index.js'), 'module.exports = 1;\n');
+  }
+
+  it('resolveDepsProvisionPolicy maps input + config onto policies', () => {
+    const cases: Array<{
+      runMode: 'write' | 'ephemeral_review';
+      provisionDeps: boolean | undefined;
+      configMode: 'auto' | 'off';
+      expected: string;
+    }> = [
+      { runMode: 'write', provisionDeps: true, configMode: 'auto', expected: 'clone-or-install' },
+      { runMode: 'write', provisionDeps: true, configMode: 'off', expected: 'clone-or-install' },
+      { runMode: 'write', provisionDeps: undefined, configMode: 'auto', expected: 'clone-only' },
+      { runMode: 'write', provisionDeps: undefined, configMode: 'off', expected: 'skip' },
+      { runMode: 'write', provisionDeps: false, configMode: 'auto', expected: 'skip' },
+      { runMode: 'ephemeral_review', provisionDeps: true, configMode: 'auto', expected: 'clone-only' },
+      { runMode: 'ephemeral_review', provisionDeps: undefined, configMode: 'auto', expected: 'skip' },
+      { runMode: 'ephemeral_review', provisionDeps: false, configMode: 'off', expected: 'skip' },
+    ];
+    for (const c of cases) {
+      expect(
+        resolveDepsProvisionPolicy({
+          runMode: c.runMode,
+          provisionDeps: c.provisionDeps,
+          configMode: c.configMode,
+        }),
+      ).toBe(c.expected);
+    }
+  });
+
+  it('rejects provision_deps on read_only runs with a typed remedy', async () => {
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'review', read_only: true, provision_deps: true },
+      makeCtx(),
+    );
+    expect(plan.kind).toBe('error');
+    if (plan.kind === 'error') {
+      expect(plan.message).toMatch(/^provision_deps\.read_only:/);
+    }
+  });
+
+  it('records a skipped deps outcome for auto mode in a non-npm repo', async () => {
+    const plan = await planRunAgent({ agent_id: 'codex', prompt: 'work' }, makeCtx());
+    expect(plan.kind).toBe('dispatched');
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.deps?.method).toBe('skipped');
+    expect(plan.deps?.policy).toBe('clone-only');
+    expect(plan.deps?.detail).toMatch(/package\.json/);
+  });
+
+  it('records nothing when provision_deps is false', async () => {
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'work', provision_deps: false },
+      makeCtx(),
+    );
+    expect(plan.kind).toBe('dispatched');
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.deps).toBeUndefined();
+  });
+
+  it('records nothing when the config default is off', async () => {
+    writeConfigFile(crewHome, {
+      ...DEFAULT_CONFIG,
+      deps: { provision: 'off' },
+    });
+    const plan = await planRunAgent({ agent_id: 'codex', prompt: 'work' }, makeCtx());
+    expect(plan.kind).toBe('dispatched');
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.deps).toBeUndefined();
+  });
+
+  it.runIf(process.platform === 'darwin')(
+    'clones the host node_modules into the run worktree in auto mode',
+    async () => {
+      commitCloneReadyManifests();
+      const plan = await planRunAgent({ agent_id: 'codex', prompt: 'work' }, makeCtx());
+      expect(plan.kind).toBe('dispatched');
+      if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+      expect(plan.deps?.method).toBe('clonefile');
+      expect(
+        readFileSync(join(plan.worktreePath, 'node_modules', 'a', 'index.js'), 'utf-8'),
+      ).toBe('module.exports = 1;\n');
+      // Divergence: worktree edits never reach the host tree.
+      writeFileSync(join(plan.worktreePath, 'node_modules', 'a', 'index.js'), 'mutated\n');
+      expect(
+        readFileSync(join(root, 'node_modules', 'a', 'index.js'), 'utf-8'),
+      ).toBe('module.exports = 1;\n');
+    },
+  );
+
+  it('warns (not fails) when provisioning throws', async () => {
+    const throwingManager = new Proxy(worktreeManager, {
+      get(target, prop, receiver) {
+        if (prop === 'provisionRunDeps') {
+          return async () => {
+            throw new Error('boom');
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const plan = await planRunAgent(
+      { agent_id: 'codex', prompt: 'work', provision_deps: true },
+      { ...makeCtx(), worktreeManager: throwingManager },
+    );
+    expect(plan.kind).toBe('dispatched');
+    if (plan.kind !== 'dispatched') throw new Error('expected dispatched');
+    expect(plan.deps?.method).toBe('failed');
+    expect(plan.dispatchWarnings).toEqual(
+      expect.arrayContaining([expect.stringContaining('deps.provision_failed')]),
+    );
   });
 });

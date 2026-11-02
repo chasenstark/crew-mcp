@@ -18,12 +18,19 @@ import {
   lstat,
   mkdir,
   readlink,
+  rename,
   rm,
   symlink,
 } from 'fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { promisify } from 'util';
 import { atomicWrite } from '../utils/atomic-write.js';
+import {
+  attemptClonePhase,
+  attemptInstallPhase,
+  type DepsProvisionPolicy,
+  type DepsProvisionRecord,
+} from './deps-provision.js';
 import { logBestEffortFailure } from '../utils/best-effort.js';
 import {
   FileLockTimeoutError,
@@ -487,6 +494,118 @@ export class WorktreeManager {
 
   async withRunWorktreeLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
     return this.withRunLock(runId, operation);
+  }
+
+  /**
+   * Provision `node_modules` into a run's worktree (see
+   * src/git/deps-provision.ts). Two lock phases, both in the established
+   * snapshot→run order so this can never invert against
+   * createRunWorktree/cleanup: the clone attempt (host reads + copy,
+   * sub-second) runs under the host snapshot read lock + run lock; the
+   * explicit install phase holds ONLY the run lock — a minutes-long
+   * `npm ci` must not block merges or cleanup of other runs. Between the
+   * phases a cancel/discard can win the run lock; the install then fails
+   * against the removed worktree and reports `failed`, which is benign.
+   */
+  async provisionRunDeps(
+    runId: string,
+    policy: DepsProvisionPolicy,
+  ): Promise<DepsProvisionRecord> {
+    const startedAt = Date.now();
+    if (policy === 'skip') {
+      return { method: 'skipped', ms: 0, policy, detail: 'provisioning disabled by policy' };
+    }
+    const cloneOutcome = await this.withHostSnapshotReadLock(async () =>
+      this.withRunLock(runId, async () => {
+        const record = this.requireRunWorktreeRecord(runId);
+        return attemptClonePhase({
+          worktreeRoot: record.worktreePath,
+          hostRoot: this.projectRoot,
+          policy,
+          startedAt,
+        });
+      }));
+    if (cloneOutcome !== undefined) return cloneOutcome;
+    return this.withRunLock(runId, async () => {
+      const record = this.requireRunWorktreeRecord(runId);
+      return attemptInstallPhase({ worktreeRoot: record.worktreePath, startedAt });
+    });
+  }
+
+  /**
+   * Replace a run worktree's stale `node_modules` with a fresh clone-only
+   * provision, as ONE lock-held operation (snapshot-read → run lock, same
+   * order as the provisionRunDeps clone phase). The existing tree is
+   * renamed aside into the run dir (outside the git worktree, so an
+   * interruption never pollutes the diff; the run-dir GC sweeps
+   * leftovers), and restored on ANY non-clonefile outcome — including an
+   * exception — because stale deps beat no deps at all. Outcomes:
+   * - `recloned`: fresh tree published; `record` carries the new state.
+   * - `restored`: clone unavailable/failed; the original tree is back.
+   * - `restore_failed`: clone failed AND the aside could not be renamed
+   *   back — the worktree currently has NO node_modules; callers must
+   *   surface that honestly.
+   * - `no_tree`: there was no node_modules to set aside and the clone
+   *   did not succeed.
+   */
+  async reprovisionRunDepsCloneOnly(runId: string): Promise<{
+    readonly outcome: 'recloned' | 'restored' | 'restore_failed' | 'no_tree';
+    readonly record?: DepsProvisionRecord;
+    readonly detail?: string;
+  }> {
+    const startedAt = Date.now();
+    return this.withHostSnapshotReadLock(async () =>
+      this.withRunLock(runId, async () => {
+        const record = this.requireRunWorktreeRecord(runId);
+        const nodeModulesPath = join(record.worktreePath, 'node_modules');
+        const stalePath = join(
+          dirname(record.worktreePath),
+          `node_modules.stale-${randomUUID().slice(0, 8)}`,
+        );
+        let asideDone = false;
+        try {
+          await rename(nodeModulesPath, stalePath);
+          asideDone = true;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        }
+
+        const restore = async (
+          detail: string | undefined,
+        ): Promise<{ outcome: 'restored' | 'restore_failed' | 'no_tree'; detail?: string }> => {
+          if (!asideDone) return { outcome: 'no_tree', ...(detail !== undefined ? { detail } : {}) };
+          try {
+            await rename(stalePath, nodeModulesPath);
+            return { outcome: 'restored', ...(detail !== undefined ? { detail } : {}) };
+          } catch (restoreErr) {
+            const restoreMsg = restoreErr instanceof Error ? restoreErr.message : String(restoreErr);
+            return {
+              outcome: 'restore_failed',
+              detail: `${detail ?? 'clone did not complete'}; restore failed: ${restoreMsg}`,
+            };
+          }
+        };
+
+        try {
+          const cloneRecord = await attemptClonePhase({
+            worktreeRoot: record.worktreePath,
+            hostRoot: this.projectRoot,
+            policy: 'clone-only',
+            startedAt,
+          });
+          if (cloneRecord?.method === 'clonefile') {
+            if (asideDone) {
+              await rm(stalePath, { recursive: true, force: true }).catch((err: unknown) => {
+                logBestEffortFailure('reprovision stale-tree cleanup', err);
+              });
+            }
+            return { outcome: 'recloned', record: cloneRecord };
+          }
+          return restore(cloneRecord?.detail);
+        } catch (err) {
+          return restore(err instanceof Error ? err.message : String(err));
+        }
+      }));
   }
 
   /**

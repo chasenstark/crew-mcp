@@ -82,10 +82,43 @@ the effective result.
 ~/.crew/agents.json    agents, useWhen, strengths, provider model defaults, effort
 ~/.crew/workflow.yaml  surviving agent-default compatibility surface
 .crew/workflow.yaml    optional project-level agent defaults
+.crew/pr-watch.yaml    optional per-repository PR-watch profile (below)
 ```
 
 Prefer the CLI over manual file edits. `CREW_HOME` relocates the global Crew
 state root for diagnostics or isolated test environments.
+
+## Repository PR-watch profile
+
+`.crew/pr-watch.yaml` is an optional, committed profile that shapes how PR
+watches in that repository read evidence. Every key has a default, so the file
+is only needed to change one:
+
+```yaml
+schema_version: 1
+limits:
+  max_prs: 50            # 1..100; the stack size a single watch may cover
+bots:
+  auto_detect: true      # GitHub-App (Bot) and "[bot]" authors are review sources
+  ignore: [linear, "codecov[bot]"]   # logins whose comments never wake the captain; quote "[bot]" logins
+ci:
+  github_checks:
+    mode: github_rules   # github_rules | explicit | none
+    required_checks: []  # only with mode: explicit
+  circleci:              # optional typed CircleCI evidence
+    project_slug: gh/owner/repo
+    required_workflows: [build]
+```
+
+Review bots such as a GitHub App reviewer post one top-level comment and edit
+it in place on every re-review. With `auto_detect` on, each edit of such a
+comment is a distinct event version; list issue-tracker, coverage, or deploy
+bots under `ignore` so their comments neither wake the captain nor count as a
+change worth re-reading. Only the newest 100 top-level comments on a PR are
+observed. A watch snapshots the profile when it starts, so changing the file
+while a watch is active blocks that watch with a restart-required
+`policy_changed` blocker: cancel it and start a new watch. Upgrading from a
+release that lacked a profile key has the same effect on in-flight watches.
 
 ## Cleanup and retention
 

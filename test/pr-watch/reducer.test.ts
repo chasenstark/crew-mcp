@@ -64,6 +64,44 @@ describe('PR-watch lifecycle reducer', () => {
     expect(retry.state).toEqual(first.state);
   });
 
+  it('supersedes older un-acked versions of an edited comment and never revives a late old version', () => {
+    const version = (attempt: string, id: string): PrWatchEventRecordV1 => ({
+      ...event(id),
+      identity: { ...event(id).identity, kind: 'comment', providerSourceId: 'IC_bot', attempt: Date.parse(attempt) },
+      versionTimestamp: attempt,
+    });
+    const v1 = version('2026-08-27T11:00:00.000Z', 'v1');
+    const v2 = version('2026-08-27T11:30:00.000Z', 'v2');
+    const v3 = version('2026-08-27T12:00:00.000Z', 'v3');
+    const other = { ...version('2026-08-27T11:00:00.000Z', 'other'), identity: { ...v1.identity, providerSourceId: 'IC_other' } };
+
+    const dispose = (current: PrWatchStateV1, id: string, disposition: 'deferred' | 'acknowledged'): PrWatchStateV1 => ({
+      ...current,
+      events: { ...current.events, [id]: { ...current.events[id], disposition, dispositionAt: T0.toISOString() } },
+    });
+    let state = recordObservedEvents(initialState(), [v1, other], T0).state;
+    state = dispose(state, 'other', 'deferred');
+    state = recordObservedEvents(state, [v2, other], T0).state;
+    expect(state.events.v1).toMatchObject({
+      disposition: 'superseded',
+      dispositionNote: 'superseded_by_edit',
+      supersededByEdit: '2026-08-27T11:30:00.000Z',
+    });
+    expect(state.events.v2.disposition).toBeUndefined();
+    expect(state.events.other.disposition).toBe('deferred');
+
+    // An already-acked version is left alone; a version older than one on
+    // record arrives already superseded.
+    state = dispose(state, 'v2', 'acknowledged');
+    state = recordObservedEvents(state, [v3], T0).state;
+    expect(state.events.v2.disposition).toBe('acknowledged');
+    expect(state.events.v3.disposition).toBeUndefined();
+    state = recordObservedEvents(state, [{ ...v1, id: 'v1-late' }], T0).state;
+    expect(state.events['v1-late']).toMatchObject({ disposition: 'superseded', supersededByEdit: '2026-08-27T12:00:00.000Z' });
+    expect(state.events.v3.disposition).toBeUndefined();
+    expect(parsePrWatchState(state)).toEqual(state);
+  });
+
   it('expires waiter-less actionable state and restores its exact handoff without a waiter', () => {
     let state: PrWatchStateV1 = initialState({ expiresAt: T0 });
     state = recordObservedEvents(state, [event('review-1')], new Date(T0.getTime() - 1000)).state;

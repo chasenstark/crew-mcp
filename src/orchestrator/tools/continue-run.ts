@@ -15,6 +15,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {
+  computeDepsFingerprint,
+  resolveDepsStalenessAction,
+} from '../../git/deps-provision.js';
 import type { AgentAdapter, ModelSelectionRecord } from '../../adapters/types.js';
 
 import {
@@ -336,6 +340,66 @@ export async function continueRunToolHandler(
     ...appendResult.warnings,
     ...criteriaWarnings,
   ];
+  // Deps staleness: the continuation dirty-sync can replace
+  // package.json / package-lock.json under an already-provisioned
+  // node_modules. Re-check the persisted fingerprint; a mismatch warns,
+  // and a run originally provisioned with the install-capable policy gets
+  // a clone-only re-provision attempt (never an implicit mid-run install).
+  if (runMode === 'write' && preState.deps !== undefined) {
+    try {
+      const freshFingerprint = await computeDepsFingerprint(state.worktreePath);
+      const action = resolveDepsStalenessAction(preState.deps, freshFingerprint);
+      if (action === 'reprovision') {
+        // Atomic aside → clone-only → restore-on-failure, owned by the
+        // worktree manager under one lock scope (stale deps beat no deps
+        // at all; the old record is kept on every non-recloned outcome so
+        // its old fingerprint re-triggers this check next continuation).
+        const reprovision = await deps.worktreeManager.reprovisionRunDepsCloneOnly(args.run_id);
+        if (reprovision.outcome === 'recloned' && reprovision.record !== undefined) {
+          // Preserve the dispatch's install-capable intent for the next
+          // staleness decision.
+          const updated = {
+            ...reprovision.record,
+            requestedPolicy: preState.deps.requestedPolicy ?? preState.deps.policy,
+          };
+          await deps.runStateStore.update(args.run_id, (current) => ({
+            ...current,
+            deps: updated,
+          }));
+          warnings.push(
+            'deps_stale: manifests changed since provisioning; node_modules re-cloned from the host.',
+          );
+        } else if (reprovision.outcome === 'restored') {
+          warnings.push(
+            'deps_stale: manifests changed but a clone-only re-provision was unavailable'
+            + `${reprovision.detail !== undefined ? ` (${reprovision.detail})` : ''}; the original `
+            + '(stale) node_modules was restored — the worker may need to reinstall deps itself.',
+          );
+        } else if (reprovision.outcome === 'restore_failed') {
+          warnings.push(
+            'deps_stale: manifests changed, the clone-only re-provision failed, AND the original '
+            + `node_modules could not be restored (${reprovision.detail ?? 'unknown'}); the worktree `
+            + 'currently has NO node_modules — tell the worker to reinstall deps.',
+          );
+        } else {
+          warnings.push(
+            'deps_stale: manifests changed since provisioning and no node_modules was present'
+            + `${reprovision.detail !== undefined ? ` (${reprovision.detail})` : ''}; the worker may `
+            + 'need to install deps itself.',
+          );
+        }
+      } else if (action === 'warn') {
+        warnings.push(
+          'deps_stale: package.json/package-lock.json changed since node_modules was provisioned; '
+          + 'the worker may need to reinstall deps itself.',
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        `continue_run deps staleness check failed for ${args.run_id}: ${errorMessage(err)}`,
+      );
+    }
+  }
   let dispatchMcpEnv: DispatchMcpEnv;
   try {
     const issued = await issueRunAuthSidecar({

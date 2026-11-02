@@ -517,6 +517,7 @@ run_agent({
     "Before you finish: run every [M] criterion's command and report
      the command + exit code in your summary.">,
   effort: <one level higher than for raw implementation, clamped at "max">,
+  provision_deps: <true when any [M] criterion runs a build/test command>,
   peer_messages: [
     { body: <loop-state block, verbatim from Step 0.5>,
       kind: "note", from_label: "agent picks" }
@@ -525,6 +526,12 @@ run_agent({
 ```
 
 - Do not restate criteria inline; `criteria_set_id` injects the contract.
+- `provision_deps: true` whenever an `[M]` criterion needs installed deps
+  (test/build/lint commands) — the worktree starts without `node_modules`
+  and this saves the implementer an `npm ci`. Relay a
+  `deps.scripts_skipped` or `deps.provision_failed` warning into the
+  prompt expectation (the worker may need `npm rebuild` or a manual
+  install). Omit it for doc/spec-only criteria.
 - Use the confirmed implementer. For heuristic picks only, match mechanical
   work to fast iteration and behavioral work to deeper reasoning.
 - Set effort one level above raw implementation, **clamped at `max`**.

@@ -4,6 +4,8 @@ Use Crew's durable PR-watch lifecycle when the user asks to watch or babysit a p
 
 The public surface is the five monitor tools—`start_pr_watch`, `list_pr_watches`, `get_pr_watch_status`, `rearm_pr_watch`, and `cancel_pr_watch`—plus `authorize_pr_watch_actions`. Authorization is captain-only and performs no remote effect.
 
+Review bots that post as a GitHub App (for example `143-dev`) or a `[bot]` login are detected automatically: their top-level PR comment, and every later edit of it while it is among the PR's newest 100 comments, arrives as a `comment` event whose `versionTimestamp` is the edit time. Do not add them as `verdict_sources`; reserve `verdict_sources` for human or marker-gated authors. Noisy bots are muted per repository under `bots.ignore` in `.crew/pr-watch.yaml`. A `policy_changed` blocker is restart-required: cancel the watch and start a new one.
+
 The waiter polls outside model turns. Do not poll `get_pr_watch_status` in a loop. On a wake or the next user turn, read status once. Status is pure; only `rearm_pr_watch` advances or replaces observation.
 
 If `get_pr_watch_status` reports `waiter_health.state: "stale"`, the persisted waiter is no longer healthy even if its raw waiter state still says `running`. Rearm with the reported waiter identity and `reason: "stale_waiter"` for an expired lease, or `reason: "timeout"` for a timed-out exited waiter.

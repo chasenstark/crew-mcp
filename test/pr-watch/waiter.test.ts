@@ -157,7 +157,10 @@ describe('PR-watch waiter wake delivery', () => {
 
     expect(result.state).toMatchObject({ status: 'terminal', outcome: 'green' });
     expect(result.outcome).toBe('terminal');
-    expect(snapshotCount).toBe(4);
+    // start (1), first poll full refresh (2), then two polls that each take
+    // the dirty detail path (3, 5) and, being terminal candidates served
+    // partly from cache, re-read the stack in full before dwelling (4, 6).
+    expect(snapshotCount).toBe(6);
     expect(sleepCount).toBe(2);
     expect(queuedWakeCount).toBe(1);
     const trace = readProcessTrace(crewHome);
@@ -288,18 +291,42 @@ function approvalRunner(now: () => Date, nextApprovalState: () => boolean): Prov
       const query = spec.args.find((arg) => arg.startsWith('query='))?.slice('query='.length) ?? '';
       if (query.includes('CrewPrWatchDiscovery')) {
         return jsonResult({ data: { repository: { pullRequests: {
-          pageInfo: { hasNextPage: false },
+          pageInfo: { hasNextPage: false, hasPreviousPage: false },
           nodes: [discoveryPr()],
         } } } });
       }
       if (query.includes('CrewPrWatchRules')) {
         return jsonResult({ data: { repository: {
           branchProtectionRules: {
-            pageInfo: { hasNextPage: false },
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
             nodes: [{ pattern: 'main', requiredStatusCheckContexts: ['unit'] }],
           },
-          rulesets: { pageInfo: { hasNextPage: false }, nodes: [] },
+          rulesets: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
         } } });
+      }
+      if (query.includes('CrewPrWatchProbe')) {
+        // Report a fresh updatedAt every probe so each poll still takes the
+        // detail path and the snapshot counter below keeps its meaning.
+        return jsonResult({ data: {
+          viewer: { login: 'watch-bot' },
+          rateLimit: {
+            cost: 1,
+            remaining: 5000,
+            resetAt: new Date(now().getTime() + 3_600_000).toISOString(),
+          },
+          repository: { pr0: {
+            number: 42,
+            state: 'OPEN',
+            updatedAt: now().toISOString(),
+            headRefOid: 'abc123',
+            baseRefName: 'main',
+            reviewDecision: 'REVIEW_REQUIRED',
+            isDraft: false,
+            commits: { nodes: [{ commit: { statusCheckRollup: { state: 'SUCCESS' } } }] },
+            comments: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+            reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
+          } },
+        } });
       }
       if (query.includes('CrewPrWatchSnapshot')) {
         const approved = nextApprovalState();
@@ -338,9 +365,11 @@ function snapshotPr(approved: boolean, observedAt: Date) {
   return {
     ...discoveryPr(),
     reviewDecision: approved ? 'APPROVED' : 'REVIEW_REQUIRED',
-    reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] },
+    updatedAt: observedAt.toISOString(),
+    isDraft: false,
+    reviewThreads: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
     reviews: {
-      pageInfo: { hasNextPage: false },
+      pageInfo: { hasNextPage: false, hasPreviousPage: false },
       nodes: approved ? [{
         id: 'review-143-dev',
         author: { login: '143-dev' },
@@ -349,12 +378,12 @@ function snapshotPr(approved: boolean, observedAt: Date) {
         commit: { oid: 'abc123' },
       }] : [],
     },
-    comments: { pageInfo: { hasNextPage: false }, nodes: [] },
+    comments: { pageInfo: { hasNextPage: false, hasPreviousPage: false }, nodes: [] },
     commits: { nodes: [{ commit: {
       oid: 'abc123',
       committedDate: '2026-08-28T17:00:00.000Z',
-      statusCheckRollup: { contexts: {
-        pageInfo: { hasNextPage: false },
+      statusCheckRollup: { state: 'SUCCESS', contexts: {
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
         nodes: [{
           __typename: 'CheckRun',
           id: 'check-unit-1',

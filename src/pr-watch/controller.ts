@@ -8,6 +8,7 @@ import type { CircleCiWorkflowEvidence } from './circleci-evidence.js';
 import { evaluateCircleCiEvidence } from './circleci-evidence.js';
 import { CircleCiCliReader } from './circleci-provider.js';
 import {
+  defaultProfile,
   loadEffectivePrWatchProfile,
   loadPrWatchProfile,
   resolvePrWatchPolicy,
@@ -15,16 +16,31 @@ import {
 } from './config.js';
 import {
   discoverOpenGitHubPullRequests,
+  fetchGitHubProbe,
   fetchGitHubRulesBaseline,
   fetchGitHubSnapshot,
   type GitHubClientContext,
 } from './github-client.js';
 import {
+  PR_WATCH_FULL_REFRESH_INTERVAL_MS,
+  cacheAfterFullRefresh,
+  mergeDeltaObservation,
+  planPrWatchObservation,
+  readPrWatchObservationCache,
+  selectDirtyPrNumbers,
+  writePrWatchObservationCache,
+  type PrWatchFullRefreshReason,
+  type PrWatchObservationCacheV1,
+  type PrWatchPollMode,
+} from './observation-cache.js';
+import {
+  commentSignalPolicyFor,
   discoverLinearPrStack,
   evaluateGitHubSnapshot,
   evaluateTerminalStability,
   type GitHubSnapshotObservation,
   type PrWatchApprovalPolicy,
+  type PrWatchCommentSignalPolicy,
   type PrWatchVerdictSource,
 } from './github-observation.js';
 import { detectGhCapability, type GhCapability } from './github-provider.js';
@@ -41,6 +57,11 @@ import {
   transitionToBlocked,
   tryExpirePrWatch,
 } from './reducer.js';
+import {
+  PR_WATCH_POLL_LOG_DIRTY_LIST_CAP,
+  PR_WATCH_POLL_LOG_REASON_CAP,
+  appendPrWatchPollLog,
+} from './poll-log.js';
 import { PrWatchStartIndex } from './start-index.js';
 import { PrWatchStore, type AuthoritativePrWatchRead } from './store.js';
 import { withPrWatchTransitionDeadline } from './transition-deadline.js';
@@ -92,6 +113,23 @@ export interface PollPrWatchResult {
   readonly evaluation?: ReturnType<typeof evaluateGitHubSnapshot>;
 }
 
+interface GitHubObservationResult {
+  readonly snapshot: GitHubSnapshotObservation;
+  readonly mode: PrWatchPollMode;
+  readonly projectedPollCost: number;
+  /** In-memory cache after this observation, whether or not it persisted. */
+  readonly cache: PrWatchObservationCacheV1;
+  /** False when any sidecar write in this poll failed. */
+  readonly persisted: boolean;
+}
+
+interface GitHubObservationContinuation {
+  readonly queryCost: number;
+  readonly apiCalls: number;
+  readonly cache: PrWatchObservationCacheV1;
+  readonly persisted: boolean;
+}
+
 export interface RevalidateBlockedPrWatchResult {
   readonly state: PrWatchStateV1;
   readonly receipt: PrWatchRearmReceiptV1;
@@ -107,6 +145,8 @@ export class PrWatchController {
     private readonly options: {
       readonly circleci?: PrWatchCircleCiReader;
       readonly now?: () => Date;
+      /** Delta-polling full-refresh ceiling; tests shorten it. */
+      readonly fullRefreshIntervalMs?: number;
     } = {},
   ) {
     this.circleci = this.options.circleci ?? new CircleCiCliReader(this.runner);
@@ -377,38 +417,79 @@ export class PrWatchController {
         causeId: 'unbound',
         version: 1,
         kind: 'policy_changed',
-        class: 'revalidate',
-        message: 'Repository PR-watch policy changed; explicitly revalidate before continuing.',
+        // A watch's policy is snapshotted at start. Revalidation compares the
+        // same changed profile and would refuse, so the honest remedy is to
+        // cancel this watch and start a new one under the new profile.
+        class: 'restart_required',
+        message: 'Repository PR-watch profile (.crew/pr-watch.yaml) changed since this watch started; cancel it and start a new watch under the current profile.',
         evidence: { expectedPolicyHash: policy?.profileHash, observedProfileHash: currentProfileHash },
-        allowedConsumingReasons: ['blocked_resolved'],
+        allowedConsumingReasons: [],
       });
       return { state: blocked, queried: false };
     }
 
-    let githubSnapshot: GitHubSnapshotObservation;
+    const pollStartedMs = Date.now();
+    let observeMs = 0;
+    let forcedRefresh = false;
+    const logFailedPoll = (state: PrWatchStateV1, error: unknown): void => {
+      appendPrWatchPollLog(this.store.watchDir(watchId), {
+        v: 1,
+        ts: this.now().toISOString(),
+        watchId,
+        generation: snapshotState.generation,
+        prCount: Object.keys(snapshotState.expectedHeads).length,
+        forcedRefresh,
+        apiCalls: 0,
+        queryCost: 0,
+        probeCost: 0,
+        detailCost: 0,
+        dirtyCount: 0,
+        dirtyPrNumbers: [],
+        cachePersisted: false,
+        projectedPollCost: 0,
+        observeMs,
+        totalMs: Date.now() - pollStartedMs,
+        status: state.status,
+        ...(state.status === 'blocked' ? { blockerKind: state.blocker.kind } : {}),
+        error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      });
+    };
+    let observed: GitHubObservationResult;
     try {
-      githubSnapshot = await withPrWatchTransitionDeadline((signal) => fetchGitHubSnapshot({
-        repository: snapshotState.repository,
-        prNumbers: Object.keys(snapshotState.expectedHeads).map(Number).sort((a, b) => a - b),
-        context: { runner: this.runner, signal },
-        now: () => this.now(),
-      }), { signal: options.signal });
+      const observeStartedMs = Date.now();
+      observed = await withPrWatchTransitionDeadline(
+        (signal) => this.observeGitHub(snapshotState, signal),
+        { signal: options.signal },
+      );
+      observeMs += Date.now() - observeStartedMs;
     } catch (error) {
+      observeMs = Date.now() - pollStartedMs;
       const blocked = await this.blockIfCurrent(snapshotRead, providerPollBlocker(error));
+      logFailedPoll(blocked, error);
       return { state: blocked, queried: true };
     }
-    let evaluation = evaluateGitHubSnapshot({
-      snapshot: githubSnapshot,
-      policy,
-      approval,
-      cadenceSeconds: NOMINAL_CADENCE_MS / 1000,
-      verdictSources: evidence.verdictSources ?? [],
-    });
-    const allEvents: PrWatchEventRecordV1[] = [...evaluation.actionableEvents];
-    const circleFingerprints: string[] = [];
-    if (policy.profile.ci.circleci) {
-      {
-        for (const pr of githubSnapshot.prs) {
+    // Fold every provider into one assessment so the terminal-candidate
+    // decision below sees CircleCI's veto before paying for a full re-read.
+    const disposedEventIds = new Set(
+      Object.values(snapshotState.events)
+        .filter((event) => event.disposition !== undefined)
+        .map((event) => event.id),
+    );
+    const assess = async (observation: GitHubObservationResult) => {
+      let evaluation = evaluateGitHubSnapshot({
+        snapshot: observation.snapshot,
+        policy,
+        approval,
+        cadenceSeconds: NOMINAL_CADENCE_MS / 1000,
+        verdictSources: evidence.verdictSources ?? [],
+        projectedPollCost: observation.projectedPollCost,
+        disposedEventIds,
+      });
+      const allEvents: PrWatchEventRecordV1[] = [...evaluation.actionableEvents];
+      const circleFingerprints: string[] = [];
+      const circleci = policy.profile.ci.circleci;
+      if (circleci) {
+        for (const pr of observation.snapshot.prs) {
           let circleEvidence: readonly CircleCiWorkflowEvidence[];
           try {
             circleEvidence = await withPrWatchTransitionDeadline((signal) =>
@@ -416,9 +497,8 @@ export class PrWatchController {
                 repository: snapshotState.repository,
                 branch: pr.headRefName,
                 headSha: pr.headSha,
-                projectSlug: policy.profile.ci.circleci?.projectSlug
-                  ?? `gh/${snapshotState.repository}`,
-                requiredWorkflows: policy.profile.ci.circleci!.requiredWorkflows,
+                projectSlug: circleci.projectSlug ?? `gh/${snapshotState.repository}`,
+                requiredWorkflows: circleci.requiredWorkflows,
                 signal,
               }), { signal: options.signal });
           } catch (error) {
@@ -436,9 +516,9 @@ export class PrWatchController {
           const circle = evaluateCircleCiEvidence({
             prNumber: pr.number,
             headSha: pr.headSha,
-            requiredWorkflows: policy.profile.ci.circleci.requiredWorkflows,
+            requiredWorkflows: circleci.requiredWorkflows,
             evidence: circleEvidence,
-            observedAt: githubSnapshot.observedAt,
+            observedAt: observation.snapshot.observedAt,
           });
           allEvents.push(...circle.actionableEvents);
           circleFingerprints.push(circle.fingerprint);
@@ -452,16 +532,51 @@ export class PrWatchController {
           }
         }
       }
+      if (evaluation.terminalCandidate && evaluation.terminalFingerprint && circleFingerprints.length > 0) {
+        evaluation = {
+          ...evaluation,
+          terminalFingerprint: sha256Canonical({
+            github: evaluation.terminalFingerprint,
+            circleci: circleFingerprints,
+          }),
+        };
+      }
+      return { evaluation, allEvents };
+    };
+    let assessed = await assess(observed);
+    if (assessed.evaluation.terminalCandidate && observed.mode !== 'full') {
+      // A terminal verdict is never certified from cached detail. The probe
+      // cannot see every change (it never reads submitted reviews, so a
+      // reviewer-goal approval can lapse while reviewDecision stays APPROVED),
+      // so any green or all-closed candidate re-reads every PR first.
+      // Running after the CircleCI fold means a pending required workflow
+      // vetoes the candidate without paying for that re-read every poll.
+      forcedRefresh = true;
+      try {
+        const rereadStartedMs = Date.now();
+        observed = await withPrWatchTransitionDeadline(
+          (signal) => this.observeGitHub(snapshotState, signal, {
+            forceFull: 'terminal_candidate',
+            continuation: {
+              queryCost: observed.snapshot.queryCost,
+              apiCalls: observed.snapshot.apiCalls,
+              cache: observed.cache,
+              persisted: observed.persisted,
+            },
+          }),
+          { signal: options.signal },
+        );
+        observeMs += Date.now() - rereadStartedMs;
+      } catch (error) {
+        const blocked = await this.blockIfCurrent(snapshotRead, providerPollBlocker(error));
+        logFailedPoll(blocked, error);
+        return { state: blocked, queried: true };
+      }
+      assessed = await assess(observed);
     }
-    if (evaluation.terminalCandidate && evaluation.terminalFingerprint && circleFingerprints.length > 0) {
-      evaluation = {
-        ...evaluation,
-        terminalFingerprint: sha256Canonical({
-          github: evaluation.terminalFingerprint,
-          circleci: circleFingerprints,
-        }),
-      };
-    }
+    let { evaluation } = assessed;
+    const { allEvents } = assessed;
+    const githubSnapshot = observed.snapshot;
 
     const committed = await this.store.mutate(watchId, (current, authoritative) => {
       if (
@@ -555,6 +670,39 @@ export class PrWatchController {
         return { state: current, transactionId: randomUUID() };
       }
       return { state: next, transactionId: randomUUID() };
+    });
+    const lastPoll = observed.cache.lastPoll;
+    const dirtyPrNumbers = lastPoll?.dirtyPrNumbers ?? [];
+    appendPrWatchPollLog(this.store.watchDir(watchId), {
+      v: 1,
+      ts: githubSnapshot.observedAt,
+      watchId,
+      generation: snapshotState.generation,
+      prCount: githubSnapshot.prs.length,
+      mode: observed.mode,
+      ...(lastPoll?.fullRefreshReason !== undefined ? { fullRefreshReason: lastPoll.fullRefreshReason } : {}),
+      forcedRefresh,
+      apiCalls: githubSnapshot.apiCalls,
+      queryCost: githubSnapshot.queryCost,
+      probeCost: lastPoll?.probeCost ?? 0,
+      detailCost: lastPoll?.detailCost ?? githubSnapshot.queryCost,
+      dirtyCount: dirtyPrNumbers.length,
+      dirtyPrNumbers: dirtyPrNumbers.slice(0, PR_WATCH_POLL_LOG_DIRTY_LIST_CAP),
+      cachePersisted: observed.persisted,
+      projectedPollCost: observed.projectedPollCost,
+      projectedPointSpend: evaluation.projectedPointSpend,
+      rateRemaining: githubSnapshot.rateRemaining,
+      rateResetAt: githubSnapshot.rateResetAt,
+      observeMs,
+      totalMs: Date.now() - pollStartedMs,
+      complete: evaluation.complete,
+      incompleteReasons: evaluation.incompleteReasons.slice(0, PR_WATCH_POLL_LOG_REASON_CAP),
+      eventsObserved: dedupeEvents(allEvents).length,
+      eventsPending: Object.values(committed.state.events)
+        .filter((event) => event.disposition === undefined).length,
+      terminalCandidate: evaluation.terminalCandidate,
+      status: committed.state.status,
+      ...(committed.state.status === 'blocked' ? { blockerKind: committed.state.blocker.kind } : {}),
     });
     return { state: committed.state, queried: true, evaluation };
   }
@@ -700,6 +848,122 @@ export class PrWatchController {
     return { state: committed.state, receipt };
   }
 
+  /**
+   * Delta polling. A scalar probe over every watched PR decides which PRs
+   * changed since their cached detail observation; only those pay for the
+   * full per-PR query. A periodic full refresh bounds anything the probe
+   * cannot see. The merged result is shaped exactly like a full snapshot, so
+   * evaluation and the reducer are unaware of the cache.
+   */
+  private async observeGitHub(
+    state: PrWatchStateV1,
+    signal: AbortSignal,
+    options: {
+      readonly forceFull?: PrWatchFullRefreshReason;
+      /**
+       * Spend and cache state from earlier in this same poll. The in-memory
+       * cache is authoritative over disk here: a sidecar write that failed
+       * moments ago must not be forgotten by re-reading the stale file.
+       */
+      readonly continuation?: GitHubObservationContinuation;
+    } = {},
+  ): Promise<GitHubObservationResult> {
+    const prNumbers = Object.keys(state.expectedHeads).map(Number).sort((a, b) => a - b);
+    const context: GitHubClientContext = { runner: this.runner, signal };
+    const watchDir = this.store.watchDir(state.watchId);
+    const cadenceSeconds = NOMINAL_CADENCE_MS / 1000;
+    const fullRefreshIntervalMs = this.options.fullRefreshIntervalMs ?? PR_WATCH_FULL_REFRESH_INTERVAL_MS;
+    const commentPolicy = commentSignalPolicyOf(state);
+    const prior = options.continuation
+      ? options.continuation.cache
+      : readPrWatchObservationCache(watchDir, state.watchId);
+    const previouslyPersisted = options.continuation?.persisted ?? true;
+    const plan = options.forceFull
+      ? { mode: 'full' as const, reason: options.forceFull }
+      : planPrWatchObservation({
+        cache: prior,
+        repository: state.repository,
+        now: this.now(),
+        fullRefreshIntervalMs,
+      });
+    if (plan.mode === 'full') {
+      const fresh = await fetchGitHubSnapshot({
+        repository: state.repository,
+        prNumbers,
+        context,
+        now: () => this.now(),
+        commentSignalPolicy: commentPolicy,
+      });
+      const refreshed = cacheAfterFullRefresh({
+        prior,
+        watchId: state.watchId,
+        snapshot: fresh,
+        reason: plan.reason,
+        cadenceSeconds,
+        fullRefreshIntervalMs,
+        commentPolicy,
+        ...(options.continuation ? { continuation: options.continuation } : {}),
+      });
+      // An unpersisted cache means the next poll pays full price again, so
+      // the amortized projection would understate spend. Project the actual
+      // cost instead; a persistently unwritable cache then trips the gate.
+      const persisted = writePrWatchObservationCache(watchDir, refreshed.cache, { detailsChanged: true })
+        && previouslyPersisted;
+      const snapshot: GitHubSnapshotObservation = options.continuation
+        ? {
+            ...fresh,
+            queryCost: fresh.queryCost + options.continuation.queryCost,
+            apiCalls: fresh.apiCalls + options.continuation.apiCalls,
+          }
+        : fresh;
+      return {
+        snapshot,
+        mode: 'full',
+        projectedPollCost: persisted ? refreshed.projectedPollCost : snapshot.queryCost,
+        cache: refreshed.cache,
+        persisted,
+      };
+    }
+    const probe = await fetchGitHubProbe({
+      repository: state.repository,
+      prNumbers,
+      context,
+      now: () => this.now(),
+      commentSignalPolicy: commentPolicy,
+    });
+    const dirtyPrNumbers = selectDirtyPrNumbers({ probe, cache: plan.cache, prNumbers });
+    const details = dirtyPrNumbers.length === 0
+      ? undefined
+      : await fetchGitHubSnapshot({
+        repository: state.repository,
+        prNumbers: dirtyPrNumbers,
+        context,
+        now: () => this.now(),
+        commentSignalPolicy: commentPolicy,
+      });
+    const merged = mergeDeltaObservation({
+      cache: plan.cache,
+      probe,
+      details,
+      dirtyPrNumbers,
+      prNumbers,
+      observedAt: (details ?? probe).observedAt,
+      cadenceSeconds,
+      fullRefreshIntervalMs,
+      commentPolicy,
+    });
+    const persisted = writePrWatchObservationCache(watchDir, merged.cache, {
+      detailsChanged: merged.detailsChanged,
+    }) && previouslyPersisted;
+    return {
+      snapshot: merged.snapshot,
+      mode: merged.detailsChanged ? 'partial' : 'probe',
+      projectedPollCost: persisted ? merged.projectedPollCost : merged.snapshot.queryCost,
+      cache: merged.cache,
+      persisted,
+    };
+  }
+
   private async blockIfCurrent(
     snapshot: AuthoritativePrWatchRead,
     blocker: PrWatchBlockerCauseV1,
@@ -831,6 +1095,21 @@ function providerErrorCode(error: unknown): string {
   if (message.includes('scope') || message.includes('forbidden')) return 'scope';
   if (message.includes('json') || message.includes('shape')) return 'malformed';
   return 'unavailable';
+}
+
+/**
+ * The watch's comment policy: its immutable verdict sources plus the
+ * repository profile's review-bot settings, both persisted at start. The
+ * same policy shapes the probe digest, evaluation, and cache compaction, so
+ * a compacted cache stays evaluation-equivalent.
+ */
+function commentSignalPolicyOf(state: PrWatchStateV1): PrWatchCommentSignalPolicy {
+  const evidence = state.policyEvidence as {
+    readonly resolvedPolicy?: ResolvedPrWatchPolicyV1;
+    readonly verdictSources?: readonly PrWatchVerdictSource[];
+  } | undefined;
+  const bots = evidence?.resolvedPolicy?.profile.bots ?? defaultProfile().bots;
+  return commentSignalPolicyFor(bots, evidence?.verdictSources ?? []);
 }
 
 function persistedCapability(state: PrWatchStateV1): GhCapability {

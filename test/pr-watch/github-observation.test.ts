@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { defaultProfile, resolvePrWatchPolicy } from '../../src/pr-watch/config.js';
 import {
+  buildGitHubProbeQuery,
   buildGitHubSnapshotQuery,
   discoverLinearPrStack,
   evaluateGitHubSnapshot,
   evaluateTerminalStability,
+  type GitHubCommentObservation,
   type GitHubPullRequestObservation,
   type GitHubSnapshotObservation,
 } from '../../src/pr-watch/github-observation.js';
@@ -52,7 +54,55 @@ describe('GitHub PR-watch observation', () => {
     const query = buildGitHubSnapshotQuery('example', 'repo', [10, 11, 12]);
     expect(query).toContain('pr0: pullRequest(number: 10)');
     expect(query).toContain('pr2: pullRequest(number: 12)');
+    expect(query).toContain('updatedAt isDraft');
+    expect(query).toContain('statusCheckRollup { state contexts(first: 100)');
     expect(query).not.toMatch(/\bmutation\b/i);
+  });
+
+  it('builds a flat change probe with no nested per-thread connections', () => {
+    const query = buildGitHubProbeQuery('example', 'repo', [10, 11]);
+    expect(query).toContain('query CrewPrWatchProbe');
+    expect(query).toContain('pr1: pullRequest(number: 11)');
+    expect(query).toContain('number state updatedAt headRefOid baseRefName reviewDecision isDraft');
+    expect(query).toContain('commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }');
+    // Backward-paginated connections must ask for hasPreviousPage, forward ones for hasNextPage.
+    expect(query).toContain('comments(last: 100) { pageInfo { hasPreviousPage } nodes { id createdAt lastEditedAt author { __typename login } } }');
+    expect(query).toContain('reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { id isResolved isOutdated } }');
+    // The expensive shapes stay out: no nested thread comments, review bodies, or check contexts.
+    for (const connection of ['comments(last: 1)', 'reviews(', 'contexts(', 'body']) {
+      expect(query).not.toContain(connection);
+    }
+    expect(query).not.toMatch(/\bmutation\b/i);
+    expect(() => buildGitHubProbeQuery('example', 'repo', [])).toThrow('invalid_probe_pr_numbers');
+    expect(() => buildGitHubProbeQuery('example', 'repo', [1, 1])).toThrow('invalid_probe_pr_numbers');
+  });
+
+  it('projects rate spend from the steady-state poll cost rather than one expensive refresh', () => {
+    const expensive = { ...snapshot([pr()]), queryCost: 53, rateRemaining: 5000 };
+    const naive = evaluateGitHubSnapshot({
+      snapshot: expensive,
+      policy: resolvedPolicy(['unit']),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+    });
+    expect(naive.incompleteReasons).toContain('github_rate_projection_exceeded');
+    expect(naive.projectedPointSpend).toBe(53 * 30);
+    const amortized = evaluateGitHubSnapshot({
+      snapshot: expensive,
+      policy: resolvedPolicy(['unit']),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+      projectedPollCost: 9,
+    });
+    expect(amortized.incompleteReasons).not.toContain('github_rate_projection_exceeded');
+    expect(amortized.projectedPointSpend).toBe(9 * 30);
+    expect(() => evaluateGitHubSnapshot({
+      snapshot: expensive,
+      policy: resolvedPolicy(['unit']),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+      projectedPollCost: -1,
+    })).toThrow('invalid_projected_poll_cost');
   });
 
   it('fails closed for missing or progressively registered checks', () => {
@@ -131,15 +181,10 @@ describe('GitHub PR-watch observation', () => {
     expect(evaluation.terminalCandidate).toBe(true);
   });
 
-  it('emits only configured verdict markers and gives edits a new identity', () => {
-    const evaluateComment = (updatedAt: string, body: string, author = 'review-bot') => (
+  it('emits only configured verdict markers and keys edits on the last edit time', () => {
+    const evaluateComment = (lastEditedAt: string | null, body: string, author = 'review-bot') => (
       evaluateGitHubSnapshot({
-        snapshot: snapshot([pr({ comments: [{
-          id: 'comment-10',
-          author,
-          updatedAt,
-          body,
-        }] })]),
+        snapshot: snapshot([pr({ comments: [comment({ id: 'comment-10', author, lastEditedAt, body })] })]),
         policy: resolvedPolicy(['unit']),
         approval: { mode: 'github' },
         cadenceSeconds: 120,
@@ -147,13 +192,52 @@ describe('GitHub PR-watch observation', () => {
       })
     );
 
-    expect(evaluateComment(OBSERVED_AT, 'ordinary progress note').actionableEvents).toEqual([]);
-    expect(evaluateComment(OBSERVED_AT, 'Verdict: changes requested', 'other-bot').actionableEvents).toEqual([]);
-    const initial = evaluateComment(OBSERVED_AT, 'Verdict: changes requested');
+    expect(evaluateComment(null, 'ordinary progress note').actionableEvents).toEqual([]);
+    expect(evaluateComment(null, 'Verdict: changes requested', 'other-user').actionableEvents).toEqual([]);
+    const initial = evaluateComment(null, 'Verdict: changes requested');
     const edited = evaluateComment('2026-08-27T12:01:00.000Z', 'Verdict: changes requested\nupdated');
     expect(initial.actionableEvents).toHaveLength(1);
+    expect(initial.actionableEvents[0]).toMatchObject({
+      identity: { attempt: Date.parse('2026-08-27T11:00:00.000Z') },
+      versionTimestamp: '2026-08-27T11:00:00.000Z',
+    });
     expect(edited.actionableEvents).toHaveLength(1);
+    expect(edited.actionableEvents[0]).toMatchObject({
+      identity: { attempt: Date.parse('2026-08-27T12:01:00.000Z') },
+      versionTimestamp: '2026-08-27T12:01:00.000Z',
+    });
     expect(initial.actionableEvents[0].id).not.toBe(edited.actionableEvents[0].id);
+  });
+
+  it('treats GitHub-App and [bot] authors as review sources unless ignored', () => {
+    const evaluateBots = (
+      comments: readonly GitHubCommentObservation[],
+      profile = defaultProfile(),
+    ) => evaluateGitHubSnapshot({
+      snapshot: snapshot([pr({ comments })]),
+      policy: resolvePrWatchPolicy({
+        profile,
+        rulesBaseline: { status: 'resolved', requiredChecks: ['unit'], provenance: {} },
+      }),
+      approval: { mode: 'github' },
+      cadenceSeconds: 120,
+    }).actionableEvents;
+
+    const appBot = comment({ id: 'IC_app', author: '143-dev', authorType: 'Bot', body: '✅ approved' });
+    const legacyBot = comment({ id: 'IC_legacy', author: 'github-actions[bot]', authorType: 'User', body: 'deployed' });
+    const human = comment({ id: 'IC_human', author: 'reviewer', authorType: 'User', body: 'looks good' });
+    const events = evaluateBots([appBot, legacyBot, human]);
+    expect(events.map((event) => event.identity.providerSourceId).sort()).toEqual(['IC_app', 'IC_legacy']);
+    expect(events.every((event) => event.identity.kind === 'comment')).toBe(true);
+
+    const ignoring = {
+      ...defaultProfile(),
+      bots: { autoDetect: true, ignore: ['GitHub-Actions[bot]'] },
+    };
+    expect(evaluateBots([appBot, legacyBot, human], ignoring).map((event) => event.identity.providerSourceId))
+      .toEqual(['IC_app']);
+    const disabled = { ...defaultProfile(), bots: { autoDetect: false, ignore: [] } };
+    expect(evaluateBots([appBot, legacyBot, human], disabled)).toEqual([]);
   });
 
   it('validates bounded unique verdict-source inputs', () => {
@@ -219,6 +303,20 @@ function snapshot(prs: readonly GitHubPullRequestObservation[]): GitHubSnapshotO
     rateRemaining: 5000,
     rateResetAt: '2026-08-27T13:00:00.000Z',
     apiCalls: 1,
+  };
+}
+
+function comment(overrides: Partial<GitHubCommentObservation> & { readonly id: string }): GitHubCommentObservation {
+  const createdAt = overrides.createdAt ?? '2026-08-27T11:00:00.000Z';
+  const lastEditedAt = overrides.lastEditedAt ?? null;
+  return {
+    author: 'review-bot',
+    authorType: 'User',
+    createdAt,
+    updatedAt: lastEditedAt ?? createdAt,
+    lastEditedAt,
+    body: '',
+    ...overrides,
   };
 }
 

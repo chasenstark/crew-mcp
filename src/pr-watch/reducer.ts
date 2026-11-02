@@ -229,6 +229,7 @@ export function recordObservedEvents(
 ): PrWatchReducerResult {
   assertMutable(state);
   const updatedEvents = { ...state.events };
+  const nowIso = now.toISOString();
   for (const event of events) {
     const existing = updatedEvents[event.id];
     if (existing) {
@@ -238,11 +239,47 @@ export function recordObservedEvents(
       ) {
         updatedEvents[event.id] = { ...existing, versionTimestamp: event.versionTimestamp };
       }
-    } else {
-      updatedEvents[event.id] = event;
+      continue;
     }
+    if (event.identity.kind !== 'comment') {
+      updatedEvents[event.id] = event;
+      continue;
+    }
+    // A comment edit is a new version of the same source. Older un-disposed
+    // versions are superseded so a burst of edits wakes once, and a version
+    // observed late (older than one already recorded) never becomes pending.
+    let newest: PrWatchEventRecordV1 | undefined;
+    for (const [id, prior] of Object.entries(updatedEvents)) {
+      if (
+        id === event.id
+        || prior.disposition !== undefined
+        || prior.identity.kind !== 'comment'
+        || prior.identity.prNumber !== event.identity.prNumber
+        || prior.identity.providerSourceId !== event.identity.providerSourceId
+      ) continue;
+      if (prior.identity.attempt < event.identity.attempt) {
+        updatedEvents[id] = {
+          ...prior,
+          disposition: 'superseded',
+          dispositionNote: 'superseded_by_edit',
+          dispositionAt: nowIso,
+          ...(event.versionTimestamp !== undefined ? { supersededByEdit: event.versionTimestamp } : {}),
+        };
+      } else if (newest === undefined || prior.identity.attempt > newest.identity.attempt) {
+        newest = prior;
+      }
+    }
+    updatedEvents[event.id] = newest === undefined
+      ? event
+      : {
+          ...event,
+          disposition: 'superseded',
+          dispositionNote: 'superseded_by_edit',
+          dispositionAt: nowIso,
+          ...(newest.versionTimestamp !== undefined ? { supersededByEdit: newest.versionTimestamp } : {}),
+        };
   }
-  return transition({ ...state, events: updatedEvents, updatedAt: now.toISOString() });
+  return transition({ ...state, events: updatedEvents, updatedAt: nowIso });
 }
 
 export function supersedeEventsForNewHead(

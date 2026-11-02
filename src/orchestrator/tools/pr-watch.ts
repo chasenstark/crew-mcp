@@ -12,6 +12,8 @@ import {
 import type { PrWatchController } from '../../pr-watch/controller.js';
 import { sha256Canonical } from '../../pr-watch/canonical.js';
 import { parsePrWatchId } from '../../pr-watch/id.js';
+import { readPrWatchObservationCache } from '../../pr-watch/observation-cache.js';
+import { readPrWatchPollLog, summarizePrWatchPolls } from '../../pr-watch/poll-log.js';
 import { runGitHubReadCommand } from '../../pr-watch/github-provider.js';
 import type { ProviderCommandRunner } from '../../pr-watch/provider-runner.js';
 import { cancelPrWatch, rearmPrWatch } from '../../pr-watch/reducer.js';
@@ -263,11 +265,82 @@ export function getPrWatchStatusToolHandler(
 ): ToolCallReturn {
   const watchId = parsePrWatchId(input.watch_id);
   try {
-    return envelope(statusPayload(context.store.read(watchId).state, new Date()));
+    const state = context.store.read(watchId).state;
+    return envelope({
+      ...statusPayload(state, new Date()),
+      delta_polling: deltaPollingPayload(context.store, watchId),
+    });
   } catch (error) {
     if (!(error instanceof PrWatchCorruptStateError)) throw error;
     return envelope(corruptStatusPayload(context.store, watchId, error));
   }
+}
+
+/**
+ * Read-only view of the delta-polling sidecar. Null when no poll has run yet
+ * or the cache was discarded; the next poll then takes a full snapshot.
+ */
+function deltaPollingPayload(store: PrWatchStore, watchId: string): Record<string, unknown> | null {
+  const watchDir = store.watchDir(watchId);
+  const cache = readPrWatchObservationCache(watchDir, watchId);
+  const polls = readPrWatchPollLog(watchDir, { tail: 200, maxBytes: 512 * 1024 });
+  if (!cache && polls.length === 0) return null;
+  const summary = summarizePrWatchPolls(polls, { now: new Date() });
+  const pollWindow = {
+    last_hour: {
+      polls: summary.polls,
+      points: summary.points,
+      api_calls: summary.apiCalls,
+      by_mode: summary.byMode,
+      forced_refreshes: summary.forcedRefreshes,
+      dirty_pr_total: summary.dirtyPrTotal,
+      avg_observe_ms: summary.avgObserveMs,
+      max_observe_ms: summary.maxObserveMs,
+      avg_poll_ms: summary.avgTotalMs,
+      actionable: summary.actionable,
+      blocked: summary.blocked,
+      errors: summary.errors,
+      ...(summary.lastRateRemaining !== undefined ? { last_rate_remaining: summary.lastRateRemaining } : {}),
+    },
+    recent_polls: polls.slice(-10).map((record) => ({
+      ts: record.ts,
+      mode: record.mode ?? null,
+      ...(record.fullRefreshReason ? { full_refresh_reason: record.fullRefreshReason } : {}),
+      forced_refresh: record.forcedRefresh,
+      api_calls: record.apiCalls,
+      query_cost: record.queryCost,
+      dirty_count: record.dirtyCount,
+      observe_ms: record.observeMs,
+      total_ms: record.totalMs,
+      status: record.status,
+      ...(record.eventsPending !== undefined ? { events_pending: record.eventsPending } : {}),
+      ...(record.error ? { error: record.error } : {}),
+    })),
+    poll_log_command: `crew-pr-watch polls ${watchId} --tail 50`,
+  };
+  if (!cache) return pollWindow;
+  return {
+    ...pollWindow,
+    cached_pr_count: Object.keys(cache.prs).length,
+    last_full_refresh_at: cache.lastFullRefreshAt,
+    last_full_refresh_cost: cache.lastFullRefreshCost,
+    ...(cache.lastProbeCost !== undefined ? { last_probe_cost: cache.lastProbeCost } : {}),
+    recent_detail_costs: cache.recentDetailCosts,
+    last_poll: cache.lastPoll
+      ? {
+          observed_at: cache.lastPoll.observedAt,
+          mode: cache.lastPoll.mode,
+          api_calls: cache.lastPoll.apiCalls,
+          probe_cost: cache.lastPoll.probeCost,
+          detail_cost: cache.lastPoll.detailCost,
+          dirty_pr_numbers: cache.lastPoll.dirtyPrNumbers,
+          projected_poll_cost: cache.lastPoll.projectedPollCost,
+          ...(cache.lastPoll.fullRefreshReason
+            ? { full_refresh_reason: cache.lastPoll.fullRefreshReason }
+            : {}),
+        }
+      : null,
+  };
 }
 
 export async function rearmPrWatchToolHandler(

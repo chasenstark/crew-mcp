@@ -33,6 +33,11 @@ mutation and every force form remain forbidden.
 - Event identity is `(PR number, head SHA, kind, provider source ID, attempt)`.
   Kinds are check failure, review thread, comment, review, and PR closure.
   Same-name CI reruns and allowlisted comment edits therefore remain distinct.
+- Amended 2026-09-02: top-level comments from GitHub-App (`Bot`) or `[bot]`
+  authors are review sources by default, subject to a repository ignore list;
+  a comment's attempt is its last edit time (else creation), and observing a
+  newer version supersedes older un-disposed versions of the same comment
+  without reviving disposed ones.
 - A new head supersedes old-head events without deleting history. Dispositions,
   notes, prior judgments, fix-attempt counts, heads, deferred work, rounds, and
   budgets survive process death and context compaction.
@@ -45,6 +50,14 @@ mutation and every force form remain forbidden.
   provider policy, pagination completeness, and PR state are fingerprinted.
 - At the default 50-PR limit, an unchanged steady-state snapshot uses at most
   three GitHub requests and respects the persisted projected point budget.
+- Amended 2026-09-02: steady-state polling is a scalar change probe over every
+  watched PR plus a detail fetch only for PRs whose probe signal moved, with a
+  bounded periodic full refresh. The cached detail is a non-authoritative
+  sidecar; losing it costs one full refresh and never changes evaluation. A
+  terminal green or all-closed verdict is never certified from cached detail:
+  every terminal candidate is re-read in full first. The projected point
+  budget is computed from the amortized steady-state poll cost only while the
+  sidecar persists; an unpersisted poll projects its actual cost.
 
 ## Durable state and crash behavior
 

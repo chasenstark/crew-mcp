@@ -58,13 +58,22 @@ import type { DispatchTask } from '../tool-dispatcher.js';
 import type { EphemeralSnapshotSource, WorktreeManager } from '../../git/worktree.js';
 import { peerMessageInputSchema } from '../peer-messages/schema.js';
 import { logger } from '../../utils/logger.js';
-import { resolveCheckInIntervalMs } from '../../utils/config-store.js';
+import {
+  readConfigFile,
+  resolveCheckInIntervalMs,
+  type DepsProvisionMode,
+} from '../../utils/config-store.js';
+import type {
+  DepsProvisionPolicy,
+  DepsProvisionRecord,
+} from '../../git/deps-provision.js';
 import { dispatchRunAgentInternal } from '../dispatch-run-agent-internal.js';
 import { makeRunId } from '../run-id.js';
 import { loadWorkflowConfig } from '../../workflow/loader.js';
 import type { DispatchMcpEnv } from '../auth/sidecar-schema.js';
 import type { ToolCallReturn, ToolHandlerDeps, ToolRequestExtra, FullRunEnvelope } from './shared.js';
 import {
+  depsToWire,
   errorContent,
   agentIdForClientKind,
   fileUrlHref,
@@ -155,6 +164,16 @@ export const runAgentInputSchema = z.object({
    * caller-supplied `working_directory` (the worktree is crew-allocated).
    */
   run_mode: z.enum(RUN_MODES).optional(),
+  /**
+   * Worktree dependency provisioning (write / ephemeral_review only —
+   * read_only has no owned worktree and rejects the field). `true`:
+   * clonefile the host's node_modules when provably current, else
+   * `npm ci --ignore-scripts` (write runs; ephemeral reviews stay
+   * clone-only). `false`: skip. Omitted: the per-machine
+   * `deps.provision` config decides — `auto` gives write runs the
+   * clonefile fast path only, never an uninvited install.
+   */
+  provision_deps: z.boolean().optional(),
   ban_override: z.boolean().optional(),
   same_host_ok: z.boolean().optional(),
   dispatch_anyway: z.boolean().optional(),
@@ -163,7 +182,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. Explicit model selection is exact-or-refuse. Optional goal accepts a repeat-safe validation command plus aggregate turn/wall bounds; it is native only for Claude write implementers and reports unsupported elsewhere. peer_messages prepend untrusted context; criteria_set_id marks iterate policy. ban_override, same_host_ok, and health/quota dispatch_anyway require user approval. run_mode is write, read_only, or ephemeral_review. Returns async with model_selection, goal, relay fields, warnings, and a crew-wait required_next_action when available.';
+  'Start a bounded subagent run. Explicit model selection is exact-or-refuse. goal takes a repeat-safe validation command plus aggregate turn/wall bounds; native only for Claude write implementers. peer_messages prepend untrusted context; criteria_set_id marks iterate policy. ban_override, same_host_ok, and health/quota dispatch_anyway require user approval. run_mode is write, read_only, or ephemeral_review. provision_deps provisions worktree node_modules (true = clone else install; omitted = config auto clone-only; rejected read_only). Returns async with model_selection, goal, deps, relay fields, warnings, and a crew-wait required_next_action.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -277,6 +296,7 @@ export async function runAgentToolHandler(
       ? resolveCheckInIntervalMs(deps.crewHome)
       : undefined,
   );
+  const depsState = deps.runStateStore.read(dispatchResult.runId)?.deps;
   const env: FullRunEnvelope = {
     run_id: dispatchResult.runId,
     agent_id: canonicalId,
@@ -290,6 +310,7 @@ export async function runAgentToolHandler(
     files_changed: [],
     model_selection: modelSelectionToWire(dispatchResult.modelSelection),
     goal: goalTurnToWire(dispatchResult.goal),
+    ...(depsState !== undefined ? { deps: depsToWire(depsState) } : {}),
     ...dispatchRelayFields({
       agentId: canonicalId,
       runId: dispatchResult.runId,
@@ -338,6 +359,11 @@ export interface RunAgentHandlerContext {
    * source-mutation guard semantics.
    */
   readonly ephemeralReviewSnapshot?: EphemeralSnapshotSource;
+  /**
+   * Per-user crew home, used to read the `deps.provision` config default.
+   * Optional so plan-level tests can omit it (built-in default applies).
+   */
+  readonly crewHome?: string;
 }
 
 export interface RunAgentDispatchPlan {
@@ -376,6 +402,8 @@ export interface RunAgentDispatchPlan {
    */
   readonly readOnly: boolean;
   readonly dispatchWarnings: readonly string[];
+  /** Worktree dependency-provisioning outcome; persisted onto RunStateV1. */
+  readonly deps?: DepsProvisionRecord;
   readonly modelSelection: ModelSelectionRecord;
   readonly goal: GoalTurnRecord;
   readonly goalBudget?: GoalBudgetRecord;
@@ -431,6 +459,14 @@ export async function planRunAgent(
   }
   const runMode = modeResolution.mode;
   const readOnly = runMode === 'read_only';
+  if (readOnly && input.provision_deps !== undefined) {
+    return {
+      kind: 'error',
+      message:
+        'provision_deps.read_only: read_only runs have no owned worktree to provision. '
+        + 'Drop provision_deps, or dispatch with run_mode:"write".',
+    };
+  }
   const goalPlan = initialGoalPlan({
     adapter,
     runMode,
@@ -545,6 +581,46 @@ export async function planRunAgent(
     }
   }
 
+  // Worktree dependency provisioning — after allocation, before the
+  // adapter task is built, so the worker's first command already sees a
+  // ready node_modules. Best-effort: a failed provision warns and the
+  // dispatch proceeds (mirrors the dirty-sync contract); a 'skip' policy
+  // records nothing at all.
+  let depsRecord: DepsProvisionRecord | undefined;
+  if (ownsWorktree(runMode)) {
+    const configMode: DepsProvisionMode = ctx.crewHome !== undefined
+      ? readConfigFile(ctx.crewHome).deps.provision
+      : 'auto';
+    const depsPolicy = resolveDepsProvisionPolicy({
+      runMode,
+      provisionDeps: input.provision_deps,
+      configMode,
+    });
+    if (depsPolicy !== 'skip') {
+      try {
+        depsRecord = await ctx.worktreeManager.provisionRunDeps(runId, depsPolicy);
+      } catch (err) {
+        depsRecord = {
+          method: 'failed',
+          ms: 0,
+          policy: depsPolicy,
+          detail: err instanceof Error ? err.message : String(err),
+        };
+      }
+      if (depsRecord.method === 'failed') {
+        dispatchWarnings.push(
+          `deps.provision_failed: ${depsRecord.detail ?? 'unknown failure'} — the worker starts `
+          + 'without node_modules and may need to install deps itself.',
+        );
+      } else if (depsRecord.scriptsSkipped === true) {
+        dispatchWarnings.push(
+          'deps.scripts_skipped: dependencies installed with --ignore-scripts; native packages '
+          + 'may need a worker-side `npm rebuild`.',
+        );
+      }
+    }
+  }
+
   const effectiveWorkingDirectory = input.working_directory ?? worktreePath;
 
   const effectiveEffort = resolveEffectiveEffort(adapter, input.effort, ctx.agentPrefs);
@@ -578,6 +654,7 @@ export async function planRunAgent(
     runMode,
     readOnly,
     dispatchWarnings,
+    ...(depsRecord !== undefined ? { deps: depsRecord } : {}),
     modelSelection: modelSelection.record,
     goal: goalPlan.record,
     ...(goalPlan.budget !== undefined ? { goalBudget: goalPlan.budget } : {}),
@@ -586,6 +663,26 @@ export async function planRunAgent(
     toolCallId,
     buildTask,
   };
+}
+
+/**
+ * Map the run_agent `provision_deps` input + per-machine config default
+ * onto a provisioning policy. read_only never reaches here (rejected at
+ * plan time). Ephemeral reviews never install — a reviewer worktree is
+ * disposable and reviews rarely execute code; an explicit `true` still
+ * grants the free clone path.
+ */
+export function resolveDepsProvisionPolicy(args: {
+  readonly runMode: RunMode;
+  readonly provisionDeps: boolean | undefined;
+  readonly configMode: DepsProvisionMode;
+}): DepsProvisionPolicy {
+  if (args.runMode === 'ephemeral_review') {
+    return args.provisionDeps === true ? 'clone-only' : 'skip';
+  }
+  if (args.provisionDeps === true) return 'clone-or-install';
+  if (args.provisionDeps === false) return 'skip';
+  return args.configMode === 'auto' ? 'clone-only' : 'skip';
 }
 
 async function getRegistryAdapter(

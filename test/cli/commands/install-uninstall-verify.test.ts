@@ -5,8 +5,8 @@
  * commands against it: skill files written, host configs merged,
  * manifest updated, then verify checks parity, uninstall reverses.
  *
- * Uses a stub `resolveCrewBinary` so tests don't depend on
- * process.argv[1] (which under vitest points at vitest itself).
+ * Uses explicit Crew binary and watcher resolvers so tests do not depend on
+ * process.argv[1] or locally installed Crew executables.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -184,6 +184,7 @@ describe('install / verify / uninstall — happy path', () => {
         skipRunningCheck: true,
         forceWithoutBinary: true,
         resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+        ...CLAUDE_CREW_WAIT_ON_PATH,
       });
       const prefsPath = join(crewHome, 'agents.json');
       expect(existsSync(prefsPath)).toBe(true);
@@ -221,6 +222,7 @@ describe('install / verify / uninstall — happy path', () => {
         skipRunningCheck: true,
         forceWithoutBinary: true,
         resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+        ...CLAUDE_CREW_WAIT_ON_PATH,
       });
       const parsed = JSON.parse(readFileSync(join(crewHome, 'agents.json'), 'utf-8'));
       expect(parsed.codex.strengths).toEqual(['user-edit']);
@@ -239,6 +241,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     };
     await installCommand(args);
     const skill1 = readFileSync(HOST_ADAPTERS.codex.skillPath(home), 'utf-8');
@@ -274,6 +277,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(readFileSync(hooksPath, 'utf-8')).toContain('crew-native-reviewer-hook');
 
@@ -334,6 +338,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const hooksPath = join(home, '.codex', 'hooks.json');
     rmSync(hooksPath, { force: true });
@@ -348,6 +353,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     writeFileSync(
       hooksPath,
@@ -370,6 +376,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const configPath = HOST_ADAPTERS.codex.configPath(home);
     const config = readFileSync(configPath, 'utf-8').replace(
@@ -671,6 +678,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const first = await uninstallCommand({ target: 'codex', home });
     const second = await uninstallCommand({ target: 'codex', home });
@@ -696,6 +704,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     // Move the just-installed skill file to the legacy location and
     // rewrite the manifest entry to match — this is what a v0.2.0-dev
@@ -727,6 +736,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
     // The full catalog gets pre-approval blocks, including worker-only tools
@@ -749,6 +759,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
     expect(config).toContain('[mcp_servers.crew]'); // parent still installed
@@ -767,6 +778,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8')).toContain(
       '[mcp_servers.crew.tools.run_agent]',
@@ -779,6 +791,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const config = readFileSync(HOST_ADAPTERS.codex.configPath(home), 'utf-8');
     expect(config).not.toContain('[mcp_servers.crew.tools.');
@@ -999,6 +1012,10 @@ describe('install / verify / uninstall — happy path', () => {
   });
 
   it('install without --target dispatches to the interactive selector (TTY path)', async () => {
+    vi.spyOn(HOST_ADAPTERS['claude-code'], 'detectInstalled')
+      .mockResolvedValue({ installed: true, version: 'fixture' });
+    vi.spyOn(HOST_ADAPTERS.codex, 'detectInstalled')
+      .mockResolvedValue({ installed: false });
     let receivedHosts: ReadonlyArray<{ id: string; installed: boolean }> = [];
     const result = await installCommand({
       // target omitted → interactive fallback
@@ -1009,14 +1026,14 @@ describe('install / verify / uninstall — happy path', () => {
       ...CLAUDE_CREW_WAIT_ON_PATH,
       selectTargets: async (hosts) => {
         receivedHosts = hosts;
-        // Stub: pick claude-code regardless of detection.
+        // Pick the fixture's detected host.
         return ['claude-code'];
       },
     });
     expect(result.installed).toEqual(['claude-code']);
     // Selector saw all registered global hosts with detection results.
     expect(receivedHosts.map((h) => h.id).sort()).toEqual(['claude-code', 'codex']);
-    // The forced install path should still write even if the host wasn't on PATH.
+    // Detection is injected, so no provider CLI needs to be installed.
     expect(existsSync(HOST_ADAPTERS['claude-code'].skillPath(home))).toBe(true);
   });
 
@@ -1031,6 +1048,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       isInteractive: false,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
       selectTargets: async () => {
         selectorCalled = true;
         return [];
@@ -1040,13 +1058,18 @@ describe('install / verify / uninstall — happy path', () => {
   });
 
   it('install without --target and selector returning [] exits cleanly (cancel)', async () => {
+    vi.spyOn(HOST_ADAPTERS['claude-code'], 'detectInstalled')
+      .mockResolvedValue({ installed: true, version: 'fixture' });
+    const selectTargets = vi.fn(async () => []);
     const result = await installCommand({
       home,
       skipRunningCheck: true,
       isInteractive: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
-      selectTargets: async () => [],
+      ...CLAUDE_CREW_WAIT_ON_PATH,
+      selectTargets,
     });
+    expect(selectTargets).toHaveBeenCalledOnce();
     expect(result.installed).toEqual([]);
     expect(result.skipped).toEqual([]);
   });
@@ -1066,6 +1089,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     expect(result.installed).toEqual([]);
     expect(result.skipped).toHaveLength(1);
@@ -1085,6 +1109,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     };
     await installCommand(args);
 
@@ -1138,6 +1163,7 @@ describe('install / verify / uninstall — happy path', () => {
         skipRunningCheck: true,
         forceWithoutBinary: true,
         resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+        ...CLAUDE_CREW_WAIT_ON_PATH,
       });
       expect(result.installed).toEqual([]);
       expect(result.skipped).toHaveLength(1);
@@ -1170,6 +1196,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     });
     const adapter = HOST_ADAPTERS.codex;
     const umbrellaBefore = readFileSync(adapter.skillPath(home), 'utf-8');
@@ -1203,6 +1230,7 @@ describe('install / verify / uninstall — happy path', () => {
         skipRunningCheck: true,
         forceWithoutBinary: true,
         resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+        ...CLAUDE_CREW_WAIT_ON_PATH,
       });
       expect(result.installed).toEqual([]);
 
@@ -1224,6 +1252,7 @@ describe('install / verify / uninstall — happy path', () => {
       skipRunningCheck: true,
       forceWithoutBinary: true,
       resolveCrewBinary: () => ({ ...STUB_BIN, args: [...STUB_BIN.args] }),
+      ...CLAUDE_CREW_WAIT_ON_PATH,
     };
     await installCommand(args);
     const result = await installCommand(args);
