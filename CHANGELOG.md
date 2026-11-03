@@ -3,6 +3,12 @@
 These entries describe repository versions. Registry publication is a separate
 step; check npm dist-tags for the version available through `latest`.
 
+## 0.26.1 — 2026-11-03
+
+- Find active native reviewers with Codex's public parent-scoped thread lookup,
+  retaining strict identity checks and native collection when unsupported.
+- Wait for dispatches and terminal writes before removing server test fixtures.
+
 ## 0.26.0 — 2026-11-03
 
 - Expose repository-context capabilities in agent inventory: workspace access,

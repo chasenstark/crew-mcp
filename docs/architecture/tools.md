@@ -187,7 +187,10 @@ missing or conflicting values. `status` and `resolve` require the UUID
 returned by successful registration; task names are never durable wake keys.
 
 For task names, a short-lived Codex App Server connection reads public thread
-metadata scoped to the exact repository and subagent source. It checks both
+metadata scoped to the trusted parent, exact repository and subagent source.
+The connection opts into the public experimental relationship API and supplies
+`parentThreadId` on every list page; ordinary history lists can omit active
+children. Rejected API requests fail registration safely. It checks both
 active and archived inventories, requires complete bounded pagination and one
 unique child UUID with matching source parent/path, then verifies the child's
 metadata again. Missing visibility, unsupported metadata, conflicting identity,

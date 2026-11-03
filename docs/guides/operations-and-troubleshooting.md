@@ -53,7 +53,8 @@ When Codex returns only a canonical task name (for example `/root/reviewer`),
 register it with `manage_native_reviewer` using `task_name`. Crew uses public
 metadata to find one matching child in this parent and repository, then returns
 its UUID. Save that `agent_id` for later `status` and `resolve` calls. This
-lookup needs persistent thread metadata; older hosts, ephemeral children, or
+lookup needs persistent thread metadata and the public parent-scoped lookup
+API; older hosts, ephemeral children, or
 reused task paths may not provide an unambiguous match. Do not invent an ID or
 substitute a relative task name. On registration failure, retain the native
 handle and wait for that reviewer's result through the host tools. Without a

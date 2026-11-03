@@ -201,7 +201,7 @@ describe('crew-iterate body — load-bearing phrases (plan §Phase 2 testing)', 
     expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "register", agent_id, panel_id})`');
     expectContainsCI(reviewLoop, '`manage_native_reviewer({operation: "register", task_name, panel_id})`');
     expectContainsCI(reviewLoop, '`task_name` is register-only');
-    expectContainsCI(reviewLoop, 'stable public host metadata');
+    expectContainsCI(reviewLoop, 'public parent-scoped host metadata');
     expectContainsCI(reviewLoop, 'one unique reviewer UUID under the same parent and repository');
     expectContainsCI(reviewLoop, 'Save that returned UUID for `status` and `resolve`');
     expectContainsCI(reviewLoop, 'retain the original native handle for waiting and result collection');

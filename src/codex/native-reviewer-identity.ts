@@ -152,6 +152,8 @@ export async function resolveNativeReviewerTaskIdentity(
         title: 'Crew native reviewer identity',
         version: CREW_MCP_VERSION,
       },
+      // Active child threads require the experimental relationship filter.
+      capabilities: { experimentalApi: true },
     });
     session.notify('initialized', {});
 
@@ -174,6 +176,7 @@ export async function resolveNativeReviewerTaskIdentity(
         if (++pages > MAX_PAGES) fail();
         const page = object(await request('thread/list', {
           cwd: repoRoot,
+          parentThreadId: input.threadId,
           archived,
           sourceKinds: ['subAgentThreadSpawn'],
           modelProviders: [],
@@ -193,7 +196,7 @@ export async function resolveNativeReviewerTaskIdentity(
           // Treat a provider filter mismatch as an incomplete/untrusted view,
           // even if that row would not otherwise match the requested child.
           if (await canonicalCwd(child.cwd) !== repoRoot) fail();
-          if (child.sourceParentId !== input.threadId) continue;
+          if (child.sourceParentId !== input.threadId) fail();
           // Missing path on a child of this parent prevents proving uniqueness.
           if (child.taskName === undefined || child.ephemeral) fail();
           if (child.taskName !== input.taskName) continue;

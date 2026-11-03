@@ -593,13 +593,14 @@ review-only. Never reconstruct criteria from memory.
   or its canonical task path (for example `/root/reviewer`) with
   `manage_native_reviewer({operation: "register", task_name, panel_id})`.
   Omit `panel_id` outside a Crew panel. `task_name` is register-only: the server
-  uses stable public host metadata to resolve one unique reviewer UUID under
+  uses public parent-scoped host metadata to resolve one unique reviewer UUID under
   the same parent and repository, then returns `agent_id`. Save that returned
   UUID for `status` and `resolve`; retain the original native handle for
   waiting and result collection. Never derive, hash, or fabricate a UUID, or
   look it up through private files or transcripts. The server derives the
   parent thread from trusted MCP request metadata; never supply or reconstruct
-  a thread id. If registration is unavailable or returns a missing, ambiguous,
+  a thread id. If the host rejects this lookup, collect the reviewer through
+  its native tools. If registration is unavailable or returns a missing, ambiguous,
   or unsupported identity error, do not call `status` or `resolve`; keep the
   native handle and collect the review through the host's native tools. Rely
   on its selective wake only when the Crew-installed `SubagentStop` hook is

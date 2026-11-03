@@ -70,10 +70,10 @@ describe('native reviewer task identity', () => {
   function harness(options: {
     list?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
     read?: (id: string) => unknown | Promise<unknown>;
-    initialize?: () => unknown | Promise<unknown>;
+    initialize?: (params: Record<string, unknown>) => unknown | Promise<unknown>;
   } = {}) {
     const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
-      if (method === 'initialize') return options.initialize?.() ?? {};
+      if (method === 'initialize') return options.initialize?.(params) ?? {};
       if (method === 'thread/list') {
         return options.list?.(params) ?? { data: params.archived ? [] : [child()], nextCursor: null };
       }
@@ -97,6 +97,7 @@ describe('native reviewer task identity', () => {
     expect(h.notify).toHaveBeenCalledWith('initialized', {});
     expect(h.request).toHaveBeenCalledWith('initialize', {
       clientInfo: expect.objectContaining({ name: 'crew_mcp_native_reviewer_identity' }),
+      capabilities: { experimentalApi: true },
     });
     expect(h.request.mock.calls.map(([method]) => method)).toEqual([
       'initialize', 'thread/read', 'thread/list', 'thread/list', 'thread/read',
@@ -104,6 +105,7 @@ describe('native reviewer task identity', () => {
     for (const state of [false, true]) {
       expect(h.request).toHaveBeenCalledWith('thread/list', {
         cwd: repoRoot,
+        parentThreadId: PARENT,
         archived: state,
         sourceKinds: ['subAgentThreadSpawn'],
         modelProviders: [],
@@ -114,6 +116,22 @@ describe('native reviewer task identity', () => {
     for (const id of [PARENT, CHILD]) {
       expect(h.request).toHaveBeenCalledWith('thread/read', { threadId: id, includeTurns: false });
     }
+    expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it('discovers an active child that ordinary thread inventory does not expose', async () => {
+    let relationshipApiEnabled = false;
+    const h = harness({
+      initialize: (params) => {
+        relationshipApiEnabled = (params.capabilities as { experimentalApi?: boolean } | undefined)?.experimentalApi === true;
+        return {};
+      },
+      list: (params) => ({
+        data: relationshipApiEnabled && params.parentThreadId === PARENT && !params.archived ? [child()] : [],
+        nextCursor: null,
+      }),
+    });
+    await expect(h.lookup()).resolves.toBe(CHILD);
     expect(h.close).toHaveBeenCalledOnce();
   });
 
@@ -153,12 +171,24 @@ describe('native reviewer task identity', () => {
     expect(h.close).toHaveBeenCalledOnce();
   });
 
-  it('ignores well-formed unrelated children without using nicknames, previews or titles', async () => {
+  it('matches the canonical path without using nicknames, previews or titles', async () => {
     const h = harness({ list: (params) => ({ data: params.archived ? [] : [
-      child({ id: OTHER, source: source(OTHER), name: TASK, agentNickname: TASK, preview: SECRET }),
+      child({ id: OTHER, source: source(PARENT, '/root/other'), name: TASK, agentNickname: TASK, preview: SECRET }),
       child({ preview: SECRET }),
     ] }) });
     await expect(h.lookup()).resolves.toBe(CHILD);
+  });
+
+  it.each(['before-candidate', 'after-candidate', 'archived'])('rejects a foreign-parent row %s despite a valid candidate', async (position) => {
+    const foreign = child({ id: OTHER, source: source(OTHER) });
+    const h = harness({ list: (params) => ({ data: params.archived
+      ? position === 'archived' ? [foreign] : []
+      : position === 'before-candidate' ? [foreign, child()]
+        : position === 'after-candidate' ? [child(), foreign] : [child()],
+    }) });
+    await expect(h.lookup()).rejects.toBeInstanceOf(NativeReviewerIdentityError);
+    expect(h.request).not.toHaveBeenCalledWith('thread/read', { threadId: CHILD, includeTurns: false });
+    expect(h.close).toHaveBeenCalledOnce();
   });
 
   it('rejects a mis-scoped repository row even when its parent is unrelated', async () => {
@@ -175,15 +205,21 @@ describe('native reviewer task identity', () => {
     expect(h.request).not.toHaveBeenCalledWith('thread/read', { threadId: CHILD, includeTurns: false });
   });
 
-  it('exhausts pagination even after finding a candidate', async () => {
+  it.each([false, true])('keeps parent scope across both paginated partitions with a %s-archived candidate', async (archived) => {
     const h = harness({ list: (params) => {
-      if (params.archived) return { data: [] };
       return params.cursor === undefined
-        ? { data: [child()], nextCursor: 'next' }
-        : { data: [child({ id: OTHER, source: source(PARENT, '/root/another') })], nextCursor: null };
+        ? { data: params.archived === archived ? [child()] : [], nextCursor: 'next' }
+        : { data: params.archived === archived ? [child({ id: OTHER, source: source(PARENT, '/root/another') })] : [], nextCursor: null };
     } });
     await expect(h.lookup()).resolves.toBe(CHILD);
-    expect(h.request).toHaveBeenCalledWith('thread/list', expect.objectContaining({ cursor: 'next', archived: false }));
+    const listCalls = h.request.mock.calls.filter(([method]) => method === 'thread/list');
+    expect(listCalls).toHaveLength(4);
+    for (const [, params] of listCalls) {
+      expect(params).toMatchObject({ parentThreadId: PARENT, cwd: repoRoot, modelProviders: [], useStateDbOnly: true });
+    }
+    for (const state of [false, true]) {
+      expect(h.request).toHaveBeenCalledWith('thread/list', expect.objectContaining({ parentThreadId: PARENT, cursor: 'next', archived: state }));
+    }
   });
 
   it('rejects repeated cursors before looping', async () => {
@@ -251,6 +287,20 @@ describe('native reviewer task identity', () => {
     expect(String(error)).toContain('join the native reviewer directly');
     expect(String(error)).not.toContain(SECRET);
     expect((error as Error).cause).toBeUndefined();
+    expect(h.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(['initialize', 'thread/list'])('fails closed without retry when %s rejects the experimental relationship API', async (method) => {
+    const unsupported = () => { throw new Error(`Unsupported experimental relationship API: ${SECRET}`); };
+    const h = harness(method === 'initialize' ? { initialize: unsupported } : { list: unsupported });
+    const error = await h.lookup().catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(NativeReviewerIdentityError);
+    expect(String(error)).toContain('join the native reviewer directly');
+    expect(String(error)).not.toContain(SECRET);
+    expect((error as Error).cause).toBeUndefined();
+    expect(h.openSession).toHaveBeenCalledOnce();
+    expect(h.request.mock.calls.map(([name]) => name)).toEqual(method === 'initialize'
+      ? ['initialize'] : ['initialize', 'thread/read', 'thread/list']);
     expect(h.close).toHaveBeenCalledOnce();
   });
 

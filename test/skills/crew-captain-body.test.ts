@@ -188,7 +188,7 @@ describe('crew-captain body — native reviewer terminal gate', () => {
     expectContainsCI(flat, '`manage_native_reviewer({operation: "register", agent_id, panel_id})`');
     expectContainsCI(flat, '`manage_native_reviewer({operation: "register", task_name, panel_id})`');
     expectContainsCI(flat, '`task_name` is register-only');
-    expectContainsCI(flat, 'stable public host metadata');
+    expectContainsCI(flat, 'public parent-scoped host metadata');
     expectContainsCI(flat, 'one unique reviewer UUID under the same parent and repository');
     expectContainsCI(flat, 'Save that returned UUID for `status` and `resolve`');
     expectContainsCI(flat, 'Retain the original native handle for waiting and result collection');
