@@ -575,6 +575,29 @@ describe('runPanelHandler', () => {
     ]));
   });
 
+  it('preserves supplied-text warnings for a reviewer bound to an implementer worktree', async () => {
+    const h = makeHarness([makeMockAdapter({
+      name: 'text-reviewer', repoContextMode: 'supplied-text',
+    })]);
+    cleanupHarness(h);
+    const implementer = await createRunState(h, { runId: 'impl', summary: 'Implemented a change' });
+    const out = await runPanelHandler({
+      implementer_run_id: 'impl',
+      reviewers: [{ agent_id: 'text-reviewer', prompt: 'Review the supplied summary' }],
+    }, h.ctx);
+    expect(out.partial).toBe(false);
+    const reviewer = out.reviewers[0];
+    const warning = reviewer.warnings.find((value) => value.startsWith('repo_context.supplied_text_only:'));
+    expect(warning).toBeDefined();
+    expect(h.runStateStore.read(reviewer.run_id)?.worktreePath).toBe(implementer.worktreePath);
+    await waitFor(() => h.runStateStore.read(reviewer.run_id)?.status === 'success');
+    const persisted = readPanelState(panelDir(h.crewHome, out.panel_id));
+    expect(persisted?.reviewers[0].dispatchWarnings).toContain(warning);
+    const status = getPanelStatusHandler({ panel_id: out.panel_id }, h.ctx);
+    expect(status.reviewers[0].dispatch_warnings).toContain(warning);
+    expect(h.runStateStore.read(reviewer.run_id)?.warnings).toContain(warning);
+  });
+
   it('dispatches two bound reviewers with one pending write and one final write each', async () => {
     const terminals = [createDeferred<TaskResult>(), createDeferred<TaskResult>()];
     const executions: Array<{

@@ -3,6 +3,15 @@
 These entries describe repository versions. Registry publication is a separate
 step; check npm dist-tags for the version available through `latest`.
 
+## 0.26.0 — 2026-11-03
+
+- Expose repository-context capabilities in agent inventory: workspace access,
+  supplied text only, or unknown.
+- Warn when dispatching or continuing supplied-text workers, including panel
+  reviewers, so a worktree binding is not mistaken for access to its contents.
+- Preserve supplied-text execution and prompts; automatic file/diff injection
+  remains unimplemented.
+
 ## 0.25.0 — 2026-11-02
 
 - Accept canonical Codex task names when registering native reviewer wake

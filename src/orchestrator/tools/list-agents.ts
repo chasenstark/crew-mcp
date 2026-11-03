@@ -24,7 +24,9 @@ import type {
   EffortLevel,
   GoalSupport,
   ModelSelectionSupport,
+  RepoContextMode,
 } from '../../adapters/types.js';
+import { resolveRepoContextMode } from '../../adapters/types.js';
 import { modelSelectionSupport } from '../../adapters/model-selection.js';
 import type { AgentPrefsMap } from '../../agent-prefs/store.js';
 import { effectiveAgentPrefs } from '../../agent-prefs/store.js';
@@ -48,7 +50,7 @@ export const listAgentsInputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'List configured agents before dispatching so the caller can choose a valid agent_id. Takes no required input and returns agents with name, aliases, useWhen routing guidance, strengths, default effort/model, model_selection_support, goal_support, adapter, availability, health details, and optional quota snapshots with state, confidence, and source when a quotaProbe is wired. Call list_models for provider choices; this inventory does not trigger model discovery. Quota is omitted entirely when no probe is wired or no snapshot is available. Unavailable agents are included with available:false and an error instead of throwing.';
+  'List configured agents before dispatch to choose agent_id. Returns name, aliases, useWhen routing guidance, strengths, default effort/model, model_selection_support, goal_support, repo_context_mode (workspace, supplied-text, unknown), adapter and health/availability. Supplied-text agents cannot inspect/edit checkout files; send needed text via prompts/peer messages. Unavailable agents remain listed with available:false and an error. Optional quota snapshots include state, confidence and source; omitted without a probe/snapshot. Call list_models for provider choices; this inventory does not discover models.';
 
 export type QuotaState =
   | 'ok'
@@ -116,6 +118,7 @@ export interface ListAgentsAgentEntry {
   readonly model?: string;
   readonly model_selection_support: ModelSelectionSupport;
   readonly goal_support: GoalSupport;
+  readonly repo_context_mode: RepoContextMode;
   readonly adapter: string;
   readonly available: boolean;
   readonly version?: string;
@@ -214,6 +217,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
         ...(merged.model ? { model: merged.model } : {}),
         model_selection_support: modelSelectionSupport(adapter),
         goal_support: adapter.goalSupport ?? 'unsupported',
+        repo_context_mode: resolveRepoContextMode(adapter),
         adapter: adapter.name,
       } as const;
       let health: Awaited<ReturnType<typeof adapter.healthCheck>>;

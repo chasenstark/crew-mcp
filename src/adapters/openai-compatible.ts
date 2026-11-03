@@ -49,6 +49,7 @@ export class OpenAiCompatibleAdapter implements AgentAdapter {
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
   readonly modelSelectionSupport = 'catalog' as const;
+  readonly repoContextMode = 'supplied-text' as const;
   readonly unmetered: boolean;
   // Chat completions do not provide an adapter-level filesystem change list.
   readonly filesModifiedReliable = false;

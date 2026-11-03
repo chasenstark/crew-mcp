@@ -78,6 +78,7 @@ export class GenericAdapter implements AgentAdapter {
   readonly supportsJsonSchema = false;
   readonly enforcesReadOnly = false;
   readonly modelSelectionSupport = 'unsupported' as const;
+  readonly repoContextMode = 'unknown' as const;
   readonly unmetered = true;
   // Arbitrary CLI commands have no uniform terminal file-change reporting.
   readonly filesModifiedReliable = false;

@@ -86,6 +86,20 @@ Current OpenAI-compatible agents are chat-completions workers. They do not
 receive repository contents or filesystem tools, so use them for brainstorming,
 prose, and supplied-text review—not claims that require reading the checkout.
 
+`list_agents.repo_context_mode` makes repository access explicit:
+
+| Mode | What the worker can receive |
+| --- | --- |
+| `workspace` | Working-directory access through its provider tools. This does not prove it inspected a file. |
+| `supplied-text` | Text supplied in the prompt or peer messages; no checkout access. |
+| `unknown` | Crew cannot establish the configured command's capabilities. |
+
+OpenAI-compatible workers report `supplied-text`. Initial dispatches,
+continuations, and panel reviewers carry a `repo_context.supplied_text_only`
+warning. Supply the relevant text again on continuation. Binding a reviewer to
+an implementer's worktree does not send that worktree's contents. These warnings
+do not prevent supplied-text tasks from running.
+
 Generic agents run a configured command. Their filesystem, review, model, and
 result guarantees depend on that command; Crew does not invent unsupported
 capabilities.

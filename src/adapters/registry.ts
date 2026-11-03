@@ -6,6 +6,7 @@ import type {
   GoalSupport,
   HealthCheckResult,
   ModelSelectionSupport,
+  RepoContextMode,
   ReviewDispatchMode,
 } from './types.js';
 import type { AgentConfig } from '../workflow/types.js';
@@ -46,6 +47,7 @@ interface LazyAdapterMetadata {
   readonly supportsResume?: boolean;
   readonly goalSupport?: GoalSupport;
   readonly modelSelectionSupport: ModelSelectionSupport;
+  readonly repoContextMode?: RepoContextMode;
   readonly hasGetCliVersionTag?: boolean;
 }
 
@@ -80,6 +82,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsResume: true,
     goalSupport: 'claude-native',
     modelSelectionSupport: 'provider-validated',
+    repoContextMode: 'workspace',
     hasGetCliVersionTag: true,
   },
   [AdapterId.CODEX]: {
@@ -96,6 +99,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsResume: true,
     goalSupport: 'unsupported',
     modelSelectionSupport: 'provider-validated',
+    repoContextMode: 'workspace',
     hasGetCliVersionTag: true,
   },
   [AdapterId.AGY]: {
@@ -122,6 +126,7 @@ const BUILTIN_ADAPTER_METADATA: Record<BuiltinAdapterId, LazyAdapterMetadata> = 
     supportsResume: true,
     goalSupport: 'unsupported',
     modelSelectionSupport: 'catalog-and-provider-id',
+    repoContextMode: 'workspace',
     hasGetCliVersionTag: true,
   },
 };
@@ -302,6 +307,7 @@ function createLazyAdapterProxy(
     supportsResume: metadata.supportsResume,
     goalSupport: metadata.goalSupport,
     modelSelectionSupport: metadata.modelSelectionSupport,
+    repoContextMode: metadata.repoContextMode,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),
     listModels: async (options) => {
@@ -380,6 +386,7 @@ function registerGenericAdapter(
       supportsJsonSchema: false,
       enforcesReadOnly: false,
       modelSelectionSupport: 'unsupported',
+      repoContextMode: 'unknown',
       unmetered: true,
       captainCapabilities: GENERIC_CAPABILITIES,
     },
@@ -413,6 +420,7 @@ function registerOpenAiCompatibleAdapter(
       supportsJsonSchema: false,
       enforcesReadOnly: false,
       modelSelectionSupport: 'catalog',
+      repoContextMode: 'supplied-text',
       unmetered,
       captainCapabilities: GENERIC_CAPABILITIES,
     },

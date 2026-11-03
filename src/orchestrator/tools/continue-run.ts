@@ -20,6 +20,7 @@ import {
   resolveDepsStalenessAction,
 } from '../../git/deps-provision.js';
 import type { AgentAdapter, ModelSelectionRecord } from '../../adapters/types.js';
+import { repoContextWarnings } from '../../adapters/repo-context.js';
 
 import {
   criteriaPeerMessageBypassWarnings,
@@ -280,6 +281,7 @@ export async function continueRunToolHandler(
   const dispatchWarnings: string[] = runMode === 'read_only' && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
+  dispatchWarnings.push(...repoContextWarnings(adapter));
   dispatchWarnings.push(...policyWarnings);
   if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   const criteriaWarnings = criteriaPeerMessageBypassWarnings(

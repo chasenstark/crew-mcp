@@ -26,6 +26,7 @@ import { GET_RUN_STATUS_DESCRIPTION } from '../../src/orchestrator/tools/get-run
 import { RUN_AGENT_DESCRIPTION } from '../../src/orchestrator/tools/run-agent.js';
 import { RUN_PANEL_DESCRIPTION } from '../../src/orchestrator/tools/run-panel.js';
 import { MANAGE_NATIVE_REVIEWER_DESCRIPTION } from '../../src/orchestrator/tools/manage-native-reviewer.js';
+import { LIST_AGENTS_DESCRIPTION } from '../../src/orchestrator/tools/list-agents.js';
 import {
   AUTHORIZE_PR_WATCH_ACTIONS_DESCRIPTION,
   CANCEL_PR_WATCH_DESCRIPTION,
@@ -70,6 +71,11 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
       expect(CATALOG_TOOLS).toHaveLength(27);
       expect(names).toHaveLength(26);
       expect(names).toContain('list_models');
+      expect(result.tools.find((tool) => tool.name === 'list_agents')?.description)
+        .toBe(LIST_AGENTS_DESCRIPTION);
+      expect(CATALOG_TOOLS.find((tool) => tool.name === 'list_agents')?.description)
+        .toBe(LIST_AGENTS_DESCRIPTION);
+      expect(LIST_AGENTS_DESCRIPTION).toContain('repo_context_mode');
       expect(names).not.toContain('send_message');
       expect(names).toContain('manage_native_reviewer');
       expect(names).toEqual(expect.arrayContaining([

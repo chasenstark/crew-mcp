@@ -925,6 +925,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly supportsJsonSchema = true;
   readonly enforcesReadOnly = false;
   readonly modelSelectionSupport = 'provider-validated' as const;
+  readonly repoContextMode = 'workspace' as const;
   // Reviews run in place via the read_only dispatch path (advisory contract,
   // not FS-sandboxed — enforcesReadOnly above stays the enforcement truth).
   // Keep in lockstep with BUILTIN_ADAPTER_METADATA in registry.ts

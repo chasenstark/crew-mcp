@@ -249,6 +249,8 @@ export interface AgentAdapter {
   readonly goalSupport?: GoalSupport;
   /** Static capability surfaced cheaply through `list_agents`. */
   readonly modelSelectionSupport?: ModelSelectionSupport;
+  /** Repository access capability; lazy metadata must match the loaded adapter. */
+  readonly repoContextMode?: RepoContextMode;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
   getCliVersionTag?(): Promise<string | undefined>;
@@ -265,6 +267,19 @@ export interface AgentAdapter {
  * `AgentAdapter.reviewDispatchMode` doc for the semantics of each value.
  */
 export type ReviewDispatchMode = 'read-only-dispatch' | 'ephemeral-worktree' | 'unsupported';
+
+/**
+ * `workspace` means the adapter can access its working directory, not that it
+ * inspected any particular file. Undeclared/external-command capabilities are
+ * `unknown`; only `supplied-text` proves the worker cannot inspect the checkout.
+ */
+export type RepoContextMode = 'workspace' | 'supplied-text' | 'unknown';
+
+export function resolveRepoContextMode(
+  adapter: Pick<AgentAdapter, 'repoContextMode'>,
+): RepoContextMode {
+  return adapter.repoContextMode ?? 'unknown';
+}
 
 /**
  * Canonical accessor for an adapter's review placement. An adapter that

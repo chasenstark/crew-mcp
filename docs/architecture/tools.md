@@ -18,7 +18,7 @@ The complete catalog contains twenty-seven tools. Twenty-six are captain-facing;
 
 | Tool | Role | Contract |
 | --- | --- | --- |
-| `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, `model_selection_support`, and `goal_support`. |
+| `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, `model_selection_support`, `goal_support`, and `repo_context_mode`. |
 | `list_models` | Captain | Discovers one agent's provider-native model catalog. Accepts `{agent_id, refresh?}` and returns exact arguments, catalog provenance, authority, and warnings. |
 | `get_crew_preferences` | Captain | Reads effective per-machine crew preferences, including crew-iterate round limits. |
 | `list_runs` | Captain | Lists repo-scoped persisted runs, including each run's latest model and goal state. |
@@ -68,6 +68,13 @@ mutation surface.
 `catalog`, `catalog-and-provider-id`, `provider-validated`, or `unsupported`
 model selection. Call `list_models` only when choices are needed. Provider
 catalogs are cached in-process; `refresh:true` bypasses the cache.
+
+`repo_context_mode` separately reports `workspace`, `supplied-text`, or
+`unknown`. Known supplied-text agents receive only the composed prompt;
+dispatch, continuation and panel envelopes warn that a working directory does
+not provide checkout contents. Those warnings persist with terminal and panel
+reviewer results. Supplied-text tasks still run, and unknown capabilities are
+not guessed from the agent's name or endpoint.
 
 `run_agent`, `continue_run`, and every `run_panel` reviewer accept an optional
 `model`. A supplied model is resolved before run allocation or continuation

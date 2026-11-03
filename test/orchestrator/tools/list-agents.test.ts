@@ -36,6 +36,24 @@ function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
 }
 
 describe('listAgents', () => {
+  it('reports declared context capabilities even when health fails, without guessing from names or preferences', async () => {
+    const out = await listAgents({
+      registry: makeRegistry([
+        makeAdapter({ name: 'codex' }),
+        makeAdapter({ name: 'workspace-worker', repoContextMode: 'workspace' }),
+        makeAdapter({
+          name: 'text-worker', repoContextMode: 'supplied-text',
+          healthCheck: async () => { throw new Error('endpoint unavailable'); },
+        }),
+      ]),
+      agentPrefs: { 'text-worker': { useWhen: 'Read workspace files' } },
+    });
+    expect(out.agents.map((agent) => [agent.name, agent.repo_context_mode])).toEqual([
+      ['codex', 'unknown'], ['workspace-worker', 'workspace'], ['text-worker', 'supplied-text'],
+    ]);
+    expect(out.agents[2]).toMatchObject({ available: false, error: 'endpoint unavailable' });
+  });
+
   it('surfaces every registered adapter with health info', async () => {
     const registry = makeRegistry([
       makeAdapter({

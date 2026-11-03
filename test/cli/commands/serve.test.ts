@@ -3047,6 +3047,45 @@ describe('crew serve — run_agent tool', () => {
 });
 
 describe('crew serve — continue_run tool', () => {
+  it.each([
+    { fullEnvelope: true, status: 'success' as const },
+    { fullEnvelope: false, status: 'error' as const },
+  ])('preserves supplied-text warnings across dispatch, continuation and terminal $status (full=$fullEnvelope)', async ({ fullEnvelope, status }) => {
+    const prompts: string[] = [];
+    const h = await startHarness([makeMockAdapter({
+      name: 'text-worker',
+      repoContextMode: 'supplied-text',
+      execute: async (task) => {
+        prompts.push(task.prompt);
+        return { output: 'provider result', filesModified: [], status, metadata: {} };
+      },
+    })], { fullEnvelope });
+    try {
+      const first = await h.client.callTool({
+        name: 'run_agent', arguments: { agent_id: 'text-worker', prompt: 'supplied text A' },
+      });
+      const firstEnv = first.structuredContent as FullRunEnvelope;
+      const warning = firstEnv.warnings?.find((value) => value.startsWith('repo_context.supplied_text_only:'));
+      expect(warning).toBeDefined();
+      expect(toolText(first)).toContain(warning);
+      const firstTerminal = await pollUntilTerminal(h.client, firstEnv.run_id);
+      expect(firstTerminal.status).toBe(status);
+      expect(firstTerminal.state.warnings).toContain(warning);
+
+      const second = await h.client.callTool({
+        name: 'continue_run', arguments: { run_id: firstEnv.run_id, prompt: 'supplied text B' },
+      });
+      expect((second.structuredContent as FullRunEnvelope).warnings).toContain(warning);
+      expect(toolText(second)).toContain(warning);
+      const secondTerminal = await pollUntilTerminal(h.client, firstEnv.run_id);
+      expect(secondTerminal.status).toBe(status);
+      expect(secondTerminal.state.warnings).toContain(warning);
+      expect(prompts).toEqual(['supplied text A', 'supplied text B']);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('reuses the existing worktree and increments the prompt turn', async () => {
     const calls: string[] = [];
     const adapter = makeMockAdapter({

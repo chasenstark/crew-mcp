@@ -76,9 +76,10 @@ describe('OpenAiCompatibleAdapter', () => {
 
     await adapter.execute({
       prompt: composedPrompt,
-      context: { workingDirectory: '/tmp/project' },
+      context: { workingDirectory: '/tmp/project', files: ['not-injected.txt'] },
     });
 
+    expect(adapter.repoContextMode).toBe('supplied-text');
     const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
     expect(body.messages).toEqual([{ role: 'user', content: composedPrompt }]);
   });

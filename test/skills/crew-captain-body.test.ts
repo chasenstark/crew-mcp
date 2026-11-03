@@ -390,6 +390,17 @@ describe('crew-captain body — review panels', () => {
     expectContainsCI(flat, 'CLI default');
   });
 
+  it('distinguishes repository access from supplied-text review evidence', async () => {
+    const flat = flattenWhitespace(await loadBody());
+    for (const anchor of [
+      'list_agents.repo_context_mode', '`workspace`', '`supplied-text`', '`unknown`',
+      'including again on continuation',
+      'does not send repository contents',
+      'repo_context.supplied_text_only',
+      'never count a supplied-text answer as an independent checkout review',
+    ]) expectContainsCI(flat, anchor);
+  });
+
   it('tells the captain to silently no-op a host reviewer completion for an already-consolidated round', async () => {
     const body = await loadBody();
     const section = sliceBetween(body, '### Host reviewer', '### `run_panel` shape');

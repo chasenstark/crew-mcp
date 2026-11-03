@@ -15,6 +15,21 @@ network, and writable-path decisions. Each concrete provider converts those
 constraints to its native CLI or API request. The run lifecycle owns state,
 worktrees, progress, warnings, and terminal persistence.
 
+## Repository-context capability
+
+`AgentAdapter.repoContextMode` describes how an adapter can access repository
+evidence. Claude Code, Codex and agy declare `workspace`; OpenAI-compatible
+declares `supplied-text`; Generic and undeclared adapters resolve to `unknown`.
+The lazy registry preserves the same capability before and after loading the
+adapter. Names, endpoints, quota status and routing hints do not determine it.
+
+`list_agents` exposes this as `repo_context_mode`, including unavailable agents.
+Dispatch and continuation append `repo_context.supplied_text_only` warnings for
+known supplied-text adapters through the existing warning pipeline. Panels
+reuse that path and persist reviewer warnings. Terminal results retain those
+warnings. No file contents are read or injected and the composed prompt stays
+unchanged; `workspace` describes access, not proof that the worker inspected it.
+
 ## Model-selection capability
 
 `AgentAdapter` exposes `modelSelectionSupport` and, when supported,

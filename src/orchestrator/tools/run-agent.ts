@@ -36,6 +36,7 @@ import { resolve, sep } from 'path';
 import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import { modelSelectionToWire } from '../../adapters/model-selection.js';
+import { repoContextWarnings } from '../../adapters/repo-context.js';
 import type {
   AgentAdapter,
   EffortLevel,
@@ -536,6 +537,7 @@ export async function planRunAgent(
   const dispatchWarnings: string[] = readOnly && adapter.enforcesReadOnly !== true
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
+  dispatchWarnings.push(...repoContextWarnings(adapter));
   if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   let worktreePath: string;
   let branchPointSeedPaths: readonly string[] | undefined;

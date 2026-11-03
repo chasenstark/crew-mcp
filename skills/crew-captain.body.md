@@ -563,6 +563,15 @@ do not shell out yourself.
   was requested or configured, which deliberately uses the provider CLI
   default. On `continue_run`, omit `model` to inherit the preceding turn's
   selection; pass it explicitly only to change models.
+- Read `list_agents.repo_context_mode` before assigning checkout-dependent
+  work. `workspace` means the adapter can access its working directory, not
+  that it has inspected any file. `supplied-text` means it sees only text in
+  the prompt or peer messages: provide the needed excerpts, including again
+  on continuation. A `working_directory` or implementer-worktree binding
+  does not send repository contents to these agents. `unknown` means Crew
+  cannot establish the configured command's capabilities; verify them before
+  relying on checkout access. Relay `repo_context.supplied_text_only` warnings
+  and never count a supplied-text answer as an independent checkout review.
 - Uncommitted host state is mirrored into write run worktrees. Do not
   manually copy files. `continue_run` re-syncs user edits between turns.
 - Prefer inline reasoning for work you can answer yourself.

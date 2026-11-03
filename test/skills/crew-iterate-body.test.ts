@@ -517,6 +517,18 @@ describe('crew-iterate body — Step 0.5 agent picks', () => {
     }
   });
 
+  it('requires the roster to distinguish workspace and supplied-text evidence', async () => {
+    const body = await loadBody();
+    const step = sliceBetween(body, '### Step 0.5 — Confirm agent picks', '### Step 1 — Dispatch implementer')
+      .replace(/\s+/g, ' ');
+    for (const anchor of [
+      'list_agents.repo_context_mode', '`workspace`', '`supplied-text`', '`unknown`',
+      'including again on continuation', 'does not send repository contents',
+      'repo_context.supplied_text_only',
+      'never count a supplied-text answer as an independent checkout review',
+    ]) expectContainsCI(step, anchor);
+  });
+
   it('decides docs-only coverage before confirmation and reconfirms later roster changes', async () => {
     const body = await loadBody();
     const step05 = sliceBetween(body, '### Step 0.5 — Confirm agent picks', '### Step 1 — Dispatch implementer');

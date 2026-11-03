@@ -6,6 +6,28 @@ import {
 } from '../../src/adapters/registry.js';
 import { BUILTIN_AGENT_ROUTING } from '../../src/adapters/strengths.js';
 import type { AgentAdapter } from '../../src/adapters/types.js';
+import { resolveRepoContextMode } from '../../src/adapters/types.js';
+
+describe('repoContextMode proxy/instance parity', () => {
+  it('preserves builtin and arbitrary custom capabilities before and after loading', async () => {
+    const registry = createBuiltinRegistry();
+    mergeCustomAgents(registry, {
+      'local-reviewer': { adapter: 'openai-compatible', apiBase: 'http://127.0.0.1:11434/v1' },
+      'remote-reviewer': { adapter: 'openai-compatible', apiBase: 'https://example.com/v1' },
+      'external-command': { adapter: 'generic', command: 'external-tool' },
+    });
+    const snapshot = (adapters: AgentAdapter[]) => Object.fromEntries(
+      adapters.map((adapter) => [adapter.name, resolveRepoContextMode(adapter)]),
+    );
+    const cold = snapshot(registry.listAvailable());
+    expect(cold).toEqual({
+      'claude-code': 'workspace', codex: 'workspace', agy: 'workspace',
+      'local-reviewer': 'supplied-text', 'remote-reviewer': 'supplied-text',
+      'external-command': 'unknown',
+    });
+    expect(snapshot(await registry.loadAll())).toEqual(cold);
+  });
+});
 
 describe('createBuiltinRegistry', () => {
   it('leaves built-in cloud adapters falsy for unmetered', () => {

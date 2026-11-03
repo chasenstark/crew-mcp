@@ -485,6 +485,7 @@ export class AgyAdapter implements AgentAdapter {
   // No native JSON-schema support.
   readonly supportsJsonSchema = false;
   readonly modelSelectionSupport = 'catalog-and-provider-id' as const;
+  readonly repoContextMode = 'workspace' as const;
   // agy CANNOT enforce a read-only filesystem sandbox: absolute paths in a
   // prompt escape any --add-dir/--sandbox, and there is no --policy/tool-deny
   // equivalent to gemini's. So read-only is not "weakly enforced" — it is
