@@ -274,6 +274,40 @@ describe('WorktreeManager', () => {
       expect(pruneCallsDuringCreates).toHaveLength(0);
     });
 
+    it.each(['success', 'failure'] as const)('drains constructor worktree prune through %s completion', async (outcome) => {
+      const root = mkdtempSync(join(tmpdir(), 'crew-worktree-prune-drain-'));
+      const crewHome = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
+      tempDirs.push(root, crewHome);
+      const prune = deferred<string>();
+      const rootGit = getGitClient(root);
+      rootGit.raw.mockImplementationOnce(() => prune.promise);
+      const warn = vi.spyOn(logger, 'warn');
+      const manager = new WorktreeManager({ projectRoot: root, crewHome });
+      let drained = false;
+      const drain = manager.drainBackgroundCleanups().then(() => { drained = true; });
+
+      try {
+        expect(rootGit.raw).toHaveBeenCalledWith(['worktree', 'prune']);
+        await Promise.resolve();
+        expect(drained).toBe(false);
+
+        if (outcome === 'failure') prune.reject(new Error('held prune failure'));
+        else prune.resolve('');
+        await drain;
+
+        expect(drained).toBe(true);
+        if (outcome === 'failure') {
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('held prune failure'));
+        } else {
+          expect(warn).not.toHaveBeenCalled();
+        }
+      } finally {
+        prune.resolve('');
+        await drain;
+        warn.mockRestore();
+      }
+    });
+
     it('downgrades the prune failure to debug when cwd is not a git repository', async () => {
       const root = mkdtempSync(join(tmpdir(), 'crew-worktree-not-a-repo-'));
       const crewHome = mkdtempSync(join(tmpdir(), 'crew-worktree-home-'));
@@ -297,11 +331,8 @@ describe('WorktreeManager', () => {
       const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
 
       try {
-        new WorktreeManager({ projectRoot: root, crewHome });
-        // The prune is fire-and-forget (`void git.raw(...).catch(...)`); a
-        // single microtask flush is enough to let the rejection handler run.
-        await Promise.resolve();
-        await Promise.resolve();
+        const manager = new WorktreeManager({ projectRoot: root, crewHome });
+        await manager.drainBackgroundCleanups();
 
         const warnedAboutPrune = warn.mock.calls.some(
           ([msg]) => typeof msg === 'string' && msg.includes('prune stale git worktrees'),
@@ -333,9 +364,8 @@ describe('WorktreeManager', () => {
 
       const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
       try {
-        new WorktreeManager({ projectRoot: root, crewHome });
-        await Promise.resolve();
-        await Promise.resolve();
+        const manager = new WorktreeManager({ projectRoot: root, crewHome });
+        await manager.drainBackgroundCleanups();
         const warnedAboutPrune = warn.mock.calls.some(
           ([msg]) => typeof msg === 'string' && msg.includes('prune stale git worktrees'),
         );

@@ -37,10 +37,10 @@ import {
   type PanelHarness,
 } from './panel-test-harness.js';
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()?.();
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
 function harnessWith(adapters: AgentAdapter[]): PanelHarness {

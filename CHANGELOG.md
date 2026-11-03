@@ -3,6 +3,12 @@
 These entries describe repository versions. Registry publication is a separate
 step; check npm dist-tags for the version available through `latest`.
 
+## 0.26.2 — 2026-11-03
+
+- Include startup Git worktree pruning in background-cleanup draining, so
+  temporary repositories remain available until pruning finishes.
+- Await panel fixture cleanup before ending tests.
+
 ## 0.26.1 — 2026-11-03
 
 - Find active native reviewers with Codex's public parent-scoped thread lookup,

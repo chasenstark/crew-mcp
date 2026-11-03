@@ -49,7 +49,7 @@ import {
 } from './panel-test-harness.js';
 import { getDefaultConfig } from '../../../src/workflow/config-codec.js';
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 const mockedHomedir = vi.mocked(homedir);
 let isolatedHome: string;
 
@@ -63,7 +63,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   rmSync(isolatedHome, { recursive: true, force: true });
   while (cleanups.length > 0) {
-    cleanups.pop()?.();
+    await cleanups.pop()?.();
   }
 });
 

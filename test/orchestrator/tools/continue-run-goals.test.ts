@@ -19,12 +19,12 @@ import {
   waitFor,
 } from './panel-test-harness.js';
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   await drainPendingTerminalPersists();
   vi.restoreAllMocks();
-  while (cleanups.length > 0) cleanups.pop()?.();
+  while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
 const extra: ToolRequestExtra = {

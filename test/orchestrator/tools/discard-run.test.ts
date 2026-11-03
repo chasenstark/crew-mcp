@@ -34,11 +34,7 @@ afterEach(async () => {
 
 function harness(): PanelHarness {
   const h = makeHarness([makeMockAdapter()]);
-  cleanups.push(async () => {
-    // Keep Git fixtures alive until discard cleanup finishes, even after failed assertions.
-    await h.worktreeManager.drainBackgroundCleanups();
-    h.cleanup();
-  });
+  cleanups.push(h.cleanup);
   return h;
 }
 

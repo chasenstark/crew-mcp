@@ -1754,7 +1754,7 @@ export class WorktreeManager {
     const pruneKey = this.resolveProjectRootPruneKey(projectRoot);
     if (WorktreeManager.prunedProjectRootRealpaths.has(pruneKey)) return;
     WorktreeManager.prunedProjectRootRealpaths.add(pruneKey);
-    void this.git.raw(['worktree', 'prune']).catch((err) => {
+    const prune = this.git.raw(['worktree', 'prune']).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       // Host CLIs (e.g. Conductor) launch crew-mcp from their own app bin
       // directory, which isn't a git repo. The prune has nothing to prune
@@ -1770,6 +1770,7 @@ export class WorktreeManager {
         `Failed to prune stale git worktrees for ${projectRoot}: ${message}`,
       );
     });
+    this.trackBackgroundCleanup(prune);
   }
 
   private resolveProjectRootPruneKey(projectRoot: string): string {

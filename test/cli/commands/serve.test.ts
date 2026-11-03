@@ -7762,77 +7762,54 @@ describe('crew serve — lifecycle', () => {
         });
       },
     });
-    const root = mkdtempSync(join(tmpdir(), 'crew-serve-cancel-'));
-    const crewHome = mkdtempSync(join(tmpdir(), 'crew-serve-cancel-home-'));
-    const previousFullEnvelope = process.env.CREW_FULL_ENVELOPE;
-    process.env.CREW_FULL_ENVELOPE = '1';
-    execSync('git init -q', { cwd: root });
-    execSync('git config user.email test@crew.local', { cwd: root });
-    execSync('git config user.name test', { cwd: root });
-    writeFileSync(join(root, 'README.md'), 'init\n', 'utf-8');
-    execSync('git add README.md', { cwd: root });
-    execSync('git commit -q -m init', { cwd: root });
-    const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
-    const { server, dispatcher } = buildCrewMcpServer({
-      cwd: root,
-      crewHome,
-      registry: makeRegistry([adapter]),
-      worktreeManager,
-    });
-    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-    const client = new Client({ name: 'crew-test-client', version: '0.0.0' });
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const h = await startHarness([adapter], { fullEnvelope: true });
+    const { client, dispatcher } = h;
+    try {
+      const run = await client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock-slow', prompt: 'never returns' },
+      });
+      const env = run.structuredContent as FullRunEnvelope;
+      expect(env.status).toBe('running');
 
-    const run = await client.callTool({
-      name: 'run_agent',
-      arguments: { agent_id: 'mock-slow', prompt: 'never returns' },
-    });
-    const env = run.structuredContent as FullRunEnvelope;
-    expect(env.status).toBe('running');
+      // Wait for the dispatcher to start the task before cancelling.
+      await waitFor(() => dispatcher.inFlightCount() === 1);
+      dispatcher.cancelAll('lifecycle test');
 
-    // Wait for the dispatcher to start the task before cancelling.
-    await waitFor(() => dispatcher.inFlightCount() === 1);
-    dispatcher.cancelAll('lifecycle test');
-
-    // Async-first: cancellation lands in state.json on the bg
-    // listener. Poll until we see the cancelled status.
-    await waitFor(async () => {
-      const r = await client.callTool({
+      // Async-first: cancellation lands in state.json on the bg
+      // listener. Poll until we see the cancelled status.
+      await waitFor(async () => {
+        const r = await client.callTool({
+          name: 'get_run_status',
+          arguments: { run_id: env.run_id },
+        });
+        return (r.structuredContent as { status: string }).status === 'cancelled';
+      });
+      const final = await client.callTool({
         name: 'get_run_status',
         arguments: { run_id: env.run_id },
       });
-      return (r.structuredContent as { status: string }).status === 'cancelled';
-    });
-    const final = await client.callTool({
-      name: 'get_run_status',
-      arguments: { run_id: env.run_id },
-    });
-    const f = final.structuredContent as {
-      status: string;
-      lastError?: string;
-      summary?: string;
-      prompts: Array<{ turn: number; summary?: string }>;
-    };
-    expect(f.status).toBe('cancelled');
-    // Top-level `summary` carries the cancellation reason text;
-    // per-turn `prompts[].summary` is elided from the wire.
-    expect(f.summary).toMatch(/lifecycle test/);
-    expect(f.prompts[f.prompts.length - 1].summary).toBeUndefined();
-    if (adapterStarted) {
-      expect(abortObserved).toBe(true);
-    } else {
-      expect(abortObserved).toBe(false);
-    }
+      const f = final.structuredContent as {
+        status: string;
+        lastError?: string;
+        summary?: string;
+        prompts: Array<{ turn: number; summary?: string }>;
+      };
+      expect(f.status).toBe('cancelled');
+      // Top-level `summary` carries the cancellation reason text;
+      // per-turn `prompts[].summary` is elided from the wire.
+      expect(f.summary).toMatch(/lifecycle test/);
+      expect(f.prompts[f.prompts.length - 1].summary).toBeUndefined();
+      if (adapterStarted) {
+        expect(abortObserved).toBe(true);
+      } else {
+        expect(abortObserved).toBe(false);
+      }
 
-    await client.close();
-    await server.close();
-    if (previousFullEnvelope === undefined) {
-      delete process.env.CREW_FULL_ENVELOPE;
-    } else {
-      process.env.CREW_FULL_ENVELOPE = previousFullEnvelope;
+    } finally {
+      dispatcher.cancelAll('lifecycle test cleanup');
+      await h.close();
     }
-    rmSync(root, { recursive: true, force: true });
-    rmSync(crewHome, { recursive: true, force: true });
   });
 });
 

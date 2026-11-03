@@ -17,11 +17,11 @@ import {
   waitFor,
 } from './panel-test-harness.js';
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 const extra: ToolRequestExtra = { sendNotification: async () => undefined };
 
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()?.();
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
 function depsFor(

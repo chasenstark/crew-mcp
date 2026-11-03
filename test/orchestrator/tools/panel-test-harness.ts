@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import type { AdapterRegistry } from '../../../src/adapters/registry.js';
 import type { AgentAdapter, TaskResult } from '../../../src/adapters/types.js';
+import { waitForShutdownDrain } from '../../../src/cli/commands/serve.js';
 import { WorktreeManager } from '../../../src/git/worktree.js';
 import type { DispatchContext } from '../../../src/orchestrator/dispatch-run-agent-internal.js';
 import { RunStateStore, type RunStateV1 } from '../../../src/orchestrator/run-state.js';
@@ -60,7 +61,7 @@ export interface PanelHarness {
   readonly runStateStore: RunStateStore;
   readonly dispatcher: ToolDispatcher;
   readonly ctx: DispatchContext;
-  readonly cleanup: () => void;
+  readonly cleanup: () => Promise<void>;
 }
 
 export function makeHarness(adapters: AgentAdapter[]): PanelHarness {
@@ -93,7 +94,14 @@ export function makeHarness(adapters: AgentAdapter[]): PanelHarness {
     runStateStore,
     dispatcher,
     ctx,
-    cleanup: () => {
+    cleanup: async () => {
+      const drained = await waitForShutdownDrain(dispatcher, { maxWaitMs: 20_000, pollIntervalMs: 5 });
+      if (!drained.inFlightDrained || !drained.terminalPersistsDrained || !drained.processGroupsDrained) {
+        throw new Error(`Panel harness shutdown did not drain: ${JSON.stringify(drained)}`);
+      }
+      // Includes the constructor's prune and any merge/discard cleanup.
+      await worktreeManager.drainBackgroundCleanups();
+      runStateStore.closeEventAppendHandles();
       rmSync(root, { recursive: true, force: true });
       rmSync(crewHome, { recursive: true, force: true });
     },
