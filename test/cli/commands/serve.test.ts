@@ -439,7 +439,7 @@ async function startHarness(
   }
 
   const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
-  const { server, dispatcher, runStateStore } = buildCrewMcpServer({
+  const { server, dispatcher, runStateStore, stopPeriodicRunGc } = buildCrewMcpServer({
     cwd: root,
     crewHome,
     home,
@@ -476,10 +476,19 @@ async function startHarness(
     codexBridgeFile,
     codexThreadId,
     close: async () => {
+      stopPeriodicRunGc();
       await client.close();
       await server.close();
+      // Closing MCP transports does not stop dispatched Git work or terminal writes.
+      expect(await waitForShutdownDrain(dispatcher)).toEqual({
+        inFlightDrained: true,
+        terminalPersistsDrained: true,
+        processGroupsDrained: true,
+      });
       await getStaleRunSweep();
+      await getRunGc();
       await worktreeManager.drainBackgroundCleanups();
+      runStateStore.closeEventAppendHandles();
       if (previousFullEnvelope === undefined) {
         delete process.env.CREW_FULL_ENVELOPE;
       } else {
@@ -518,7 +527,7 @@ async function startDefaultRegistryHarness(
   );
 
   const worktreeManager = new WorktreeManager({ projectRoot: root, crewHome });
-  const { server, dispatcher, runStateStore } = buildCrewMcpServer({
+  const { server, dispatcher, runStateStore, stopPeriodicRunGc } = buildCrewMcpServer({
     cwd: root,
     crewHome,
     home,
@@ -542,10 +551,18 @@ async function startDefaultRegistryHarness(
     crewHome,
     home,
     close: async () => {
+      stopPeriodicRunGc();
       await client.close();
       await server.close();
+      expect(await waitForShutdownDrain(dispatcher)).toEqual({
+        inFlightDrained: true,
+        terminalPersistsDrained: true,
+        processGroupsDrained: true,
+      });
       await getStaleRunSweep();
+      await getRunGc();
       await worktreeManager.drainBackgroundCleanups();
+      runStateStore.closeEventAppendHandles();
       if (previousFullEnvelope === undefined) {
         delete process.env.CREW_FULL_ENVELOPE;
       } else {
@@ -3244,6 +3261,7 @@ describe('crew serve — continue_run tool', () => {
 
   it('refuses to continue when a terminal run still has in-flight cleanup', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    const inFlight = vi.spyOn(h.dispatcher, 'listInFlight');
     try {
       const initial = await h.client.callTool({
         name: 'run_agent',
@@ -3252,7 +3270,7 @@ describe('crew serve — continue_run tool', () => {
       const env = initial.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, env.run_id);
       const append = vi.spyOn(h.runStateStore, 'appendPrompt');
-      vi.spyOn(h.dispatcher, 'listInFlight').mockReturnValue([
+      inFlight.mockReturnValue([
         { toolCallId: 'still-finishing', toolName: 'run_agent', runId: env.run_id },
       ]);
 
@@ -3266,6 +3284,7 @@ describe('crew serve — continue_run tool', () => {
       expect(append).not.toHaveBeenCalled();
       expect(readPersistedState(h, env.run_id).status).toBe('success');
     } finally {
+      inFlight.mockRestore();
       await h.close();
     }
   });
@@ -5271,6 +5290,7 @@ describe('crew serve — discard_run tool', () => {
 
   it('marks metadata discarded but skips worktree cleanup while the run is still in-flight', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
+    const inFlight = vi.spyOn(h.dispatcher, 'listInFlight');
     try {
       const run = await h.client.callTool({
         name: 'run_agent',
@@ -5279,7 +5299,7 @@ describe('crew serve — discard_run tool', () => {
       const runEnv = run.structuredContent as FullRunEnvelope;
       await pollUntilTerminal(h.client, runEnv.run_id);
       const cleanup = vi.spyOn(h.worktreeManager, 'cleanupByRunId');
-      vi.spyOn(h.dispatcher, 'listInFlight').mockReturnValue([
+      inFlight.mockReturnValue([
         { toolCallId: 'still-finishing', toolName: 'run_agent', runId: runEnv.run_id },
       ]);
 
@@ -5294,6 +5314,7 @@ describe('crew serve — discard_run tool', () => {
       expect(readPersistedState(h, runEnv.run_id).status).toBe('success');
       expect(toolText(discard)).toContain('run_in_flight: discard_run refused');
     } finally {
+      inFlight.mockRestore();
       await h.close();
     }
   });
@@ -7594,6 +7615,48 @@ describe('crew serve — async-first dispatch + on-demand get_run_status', () =>
 });
 
 describe('crew serve — lifecycle', () => {
+  it('keeps harness fixtures alive until in-flight dispatches finish', async () => {
+    const entered = createDeferred<void>();
+    const terminal = createDeferred<TaskResult>();
+    const result: TaskResult = {
+      output: 'done', filesModified: [], status: 'success', metadata: {},
+    };
+    const h = await startHarness([makeMockAdapter({
+      execute: async () => {
+        entered.resolve();
+        return terminal.promise;
+      },
+    })]);
+    let closing: Promise<void> | undefined;
+    try {
+      await h.client.callTool({
+        name: 'run_agent',
+        arguments: { agent_id: 'mock', prompt: 'go' },
+      });
+      await entered.promise;
+      await getStaleRunSweep();
+      await getRunGc();
+
+      closing = h.close();
+      // Flush transport-close continuations while the adapter remains explicitly gated.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(h.dispatcher.inFlightCount()).toBe(1);
+      expect(existsSync(h.root)).toBe(true);
+      expect(existsSync(h.crewHome)).toBe(true);
+
+      terminal.resolve(result);
+      await closing;
+      expect(h.dispatcher.inFlightCount()).toBe(0);
+      expect(existsSync(h.root)).toBe(false);
+      expect(existsSync(h.crewHome)).toBe(false);
+    } finally {
+      terminal.resolve(result);
+      await waitForShutdownDrain(h.dispatcher);
+      await closing;
+      await h.close();
+    }
+  });
+
   it('waits for in-flight dispatches to drain during shutdown grace', async () => {
     let busy = true;
     setTimeout(() => {
