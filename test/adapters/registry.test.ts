@@ -27,6 +27,24 @@ describe('repoContextMode proxy/instance parity', () => {
     });
     expect(snapshot(await registry.loadAll())).toEqual(cold);
   });
+
+  it('exposes file attachment support consistently without inferring it from locality', async () => {
+    const registry = createBuiltinRegistry();
+    mergeCustomAgents(registry, {
+      local: { adapter: 'openai-compatible', apiBase: 'http://127.0.0.1:11434/v1' },
+      remote: { adapter: 'openai-compatible', apiBase: 'https://example.com/v1' },
+      shell: { adapter: 'generic', command: 'echo' },
+    });
+    const snapshot = (adapters: AgentAdapter[]) => Object.fromEntries(
+      adapters.map((adapter) => [adapter.name, adapter.acceptsRepoContext === true]),
+    );
+    const cold = snapshot(registry.listAvailable());
+    expect(cold).toEqual({
+      'claude-code': false, codex: false, agy: false,
+      local: true, remote: true, shell: false,
+    });
+    expect(snapshot(await registry.loadAll())).toEqual(cold);
+  });
 });
 
 describe('createBuiltinRegistry', () => {

@@ -18,7 +18,7 @@ The complete catalog contains twenty-seven tools. Twenty-six are captain-facing;
 
 | Tool | Role | Contract |
 | --- | --- | --- |
-| `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, `model_selection_support`, `goal_support`, and `repo_context_mode`. |
+| `list_agents` | Captain | Lists configured agents, aliases, health/quota, preferences, routing guidance, `model_selection_support`, `goal_support`, `repo_context_mode`, and `accepts_context_files`. |
 | `list_models` | Captain | Discovers one agent's provider-native model catalog. Accepts `{agent_id, refresh?}` and returns exact arguments, catalog provenance, authority, and warnings. |
 | `get_crew_preferences` | Captain | Reads effective per-machine crew preferences, including crew-iterate round limits. |
 | `list_runs` | Captain | Lists repo-scoped persisted runs, including each run's latest model and goal state. |
@@ -70,11 +70,29 @@ model selection. Call `list_models` only when choices are needed. Provider
 catalogs are cached in-process; `refresh:true` bypasses the cache.
 
 `repo_context_mode` separately reports `workspace`, `supplied-text`, or
-`unknown`. Known supplied-text agents receive only the composed prompt;
-dispatch, continuation and panel envelopes warn that a working directory does
-not provide checkout contents. Those warnings persist with terminal and panel
-reviewer results. Supplied-text tasks still run, and unknown capabilities are
-not guessed from the agent's name or endpoint.
+`unknown`. Supplied-text agents receive the composed prompt and any explicitly
+selected attachments they support; a working directory alone does not provide
+checkout contents. Capability warnings persist with terminal and panel reviewer
+results. Unknown capabilities are not guessed from the agent's name or endpoint.
+
+`accepts_context_files` reports explicit file-attachment support. `run_agent`,
+`continue_run`, and each `run_panel` reviewer accept an optional `context_files`
+array of up to 50 relative paths, each 1–4096 characters. Unsupported agents
+reject nonempty selections before dispatch. Files are read from the effective
+run working directory with containment and resource limits; no automatic diff
+is collected. Selections are per call and are not inherited on continuation.
+A files-only continuation is accepted, but callers should restate their task
+because supplied-text adapters do not resume the preceding conversation.
+
+Remote file reads require `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; loopback
+endpoints are allowed by default. Omission/egress warnings reach terminal
+results, and the model receives an omission list. Original panel-dispatch
+snapshots retain these warnings after reviewer runs are removed; while a run
+exists, panel reads also include its current warnings after continuation.
+`aggregate_panel` exposes optional
+reviewer-labelled `warnings` for attachment and supplied-text limitations;
+captains must consider them when consolidating votes. See the
+[agent guide](../guides/agents-and-models.md) for limits and backend caveats.
 
 `run_agent`, `continue_run`, and every `run_panel` reviewer accept an optional
 `model`. A supplied model is resolved before run allocation or continuation

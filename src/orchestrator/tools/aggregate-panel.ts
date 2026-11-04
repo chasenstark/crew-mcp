@@ -23,12 +23,13 @@ export interface AggregatePanelOutput {
   readonly panel_id: string;
   readonly provenance?: UntrustedWorkerContentProvenance;
   readonly peer_messages: PeerMessageInput[];
+  readonly warnings?: readonly string[];
 }
 
 export interface AggregatePanelHandlerContext extends Pick<DispatchContext, 'crewHome' | 'runStateStore'> {}
 
 export const AGGREGATE_PANEL_DESCRIPTION =
-  'Build peer_messages from a completed review panel so they can be passed to continue_run. Rejects if any dispatched reviewer is still running; includes terminal, failed-dispatch, and state-unavailable reviewers.';
+  'Build peer_messages from a completed review panel so they can be passed to continue_run. Rejects if any dispatched reviewer is still running; includes terminal, failed-dispatch, and state-unavailable reviewers. Repository-context warnings are returned separately; inspect them before treating a review as complete.';
 
 export function aggregatePanelToolHandler(
   args: AggregatePanelInput,
@@ -103,10 +104,18 @@ export function aggregatePanelHandler(
   }
 
   const peerMessages = aggregatePanel({ panelState, reviewerStates });
+  const warnings = [...new Set(panelState.reviewers.flatMap((reviewer) => {
+    const state = reviewer.dispatched ? reviewerStates.get(reviewer.runId) : undefined;
+    const liveWarnings = state && 'prompts' in state ? state.warnings ?? [] : [];
+    return [...reviewer.dispatchWarnings, ...liveWarnings]
+      .filter((warning) => warning.startsWith('context_') || warning.startsWith('repo_context.'))
+      .map((warning) => `[${JSON.stringify(reviewer.agentId)}${reviewer.dispatched ? ` run ${reviewer.runId}` : ''}] ${warning}`);
+  }))];
   return {
     panel_id: panelState.panelId,
     ...(peerMessages.length > 0 ? { provenance: UNTRUSTED_WORKER_CONTENT_PROVENANCE } : {}),
     peer_messages: peerMessages,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

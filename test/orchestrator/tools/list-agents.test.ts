@@ -42,7 +42,7 @@ describe('listAgents', () => {
         makeAdapter({ name: 'codex' }),
         makeAdapter({ name: 'workspace-worker', repoContextMode: 'workspace' }),
         makeAdapter({
-          name: 'text-worker', repoContextMode: 'supplied-text',
+          name: 'text-worker', repoContextMode: 'supplied-text', acceptsRepoContext: true,
           healthCheck: async () => { throw new Error('endpoint unavailable'); },
         }),
       ]),
@@ -52,6 +52,7 @@ describe('listAgents', () => {
       ['codex', 'unknown'], ['workspace-worker', 'workspace'], ['text-worker', 'supplied-text'],
     ]);
     expect(out.agents[2]).toMatchObject({ available: false, error: 'endpoint unavailable' });
+    expect(out.agents.map((agent) => agent.accepts_context_files)).toEqual([false, false, true]);
   });
 
   it('surfaces every registered adapter with health info', async () => {

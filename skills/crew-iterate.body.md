@@ -419,12 +419,24 @@ provider-reported `observed_model`; do not claim observation from the argument.
 **Repository access.** Read `list_agents.repo_context_mode` when choosing
 implementers and reviewers. `workspace` means the adapter can access the
 working directory, not that it inspected the checkout. `supplied-text` agents
-receive only the prompt and peer-message text: supply all necessary excerpts,
-including again on continuation. A `working_directory` or implementer-worktree
-binding does not send repository contents. `unknown` means the configured
+receive supplied text without checkout tools. When
+`list_agents.accepts_context_files` is true, pass explicit `context_files`
+on each dispatch, continuation, or panel reviewer to attach relative paths
+from its actual working directory. Otherwise supply the necessary excerpts.
+Restate the task and resend selections on continuation; prior model responses
+and selections are not inherited. A `working_directory` or implementer-worktree
+binding alone does not send repository contents. `unknown` means the configured
 command's capabilities need verification. Relay
 `repo_context.supplied_text_only` warnings and never count a supplied-text
 answer as an independent checkout review.
+Relay `context_truncated`, `context_file_omitted`, and `context_egress_skipped`
+warnings. Omitted files were not reviewed; even a complete attachment cannot
+prove the backend consumed every byte. Remote attachments require operator
+opt-in via `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; never silently enable it.
+Automatic diff collection is not implemented.
+Check reviewer-labelled `aggregate_panel.warnings` before consolidating votes;
+it includes live continuation warnings and the original panel-dispatch
+attachment limitations retained after reviewer run cleanup.
 
 1. Call `list_agents` and `get_crew_preferences({scope: "iterate"})`; skip
    preferences only when that tool is absent.

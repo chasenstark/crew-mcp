@@ -40,10 +40,10 @@ describe('dist JS parity with current src descriptions', () => {
 
   it.each([
     ['run_agent', 'Start a bounded subagent run'],
-    ['continue_run', 'Resume an existing run with prompt and/or peer_messages'],
+    ['continue_run', 'Continue with prompt, peer_messages or per-call context_files'],
     ['merge_run', 'Merge a completed run after approval'],
     ['get_run_status', 'Read run status by run_id'],
-    ['list_agents', 'repo_context_mode (workspace, supplied-text, unknown)'],
+    ['list_agents', 'repo_context_mode, accepts_context_files'],
     ['cancel_run', 'Abort an in-flight run by run_id'],
     ['discard_run', 'Mark a run discarded and remove its owned worktree'],
   ] as const)('dist contains current %s description anchor', (_name, anchor) => {

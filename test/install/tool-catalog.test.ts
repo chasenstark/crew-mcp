@@ -111,6 +111,17 @@ describe('install/tool-catalog ↔ crew serve parity', () => {
         'ban_override',
         'dispatch_anyway',
       ]));
+      const expectedContextFiles = {
+        type: 'array',
+        maxItems: 50,
+        items: { type: 'string', minLength: 1, maxLength: 4096 },
+      };
+      expect(propertiesFor('run_agent').context_files).toMatchObject(expectedContextFiles);
+      expect(propertiesFor('continue_run').context_files).toMatchObject(expectedContextFiles);
+      const reviewers = propertiesFor('run_panel').reviewers as {
+        items: { properties: Record<string, unknown> };
+      };
+      expect(reviewers.items.properties.context_files).toMatchObject(expectedContextFiles);
       expect(Object.keys(propertiesFor('get_run_status'))).toContain('user_requested_wait');
       expect(Object.keys(propertiesFor('manage_native_reviewer')).sort()).toEqual([
         'agent_id', 'operation', 'panel_id', 'task_name',

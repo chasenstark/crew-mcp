@@ -3,6 +3,15 @@
 These entries describe repository versions. Registry publication is a separate
 step; check npm dist-tags for the version available through `latest`.
 
+## 0.27.0 — 2026-11-04
+
+- Attach explicit `context_files` to OpenAI-compatible dispatches, continuations,
+  and panel reviewers, with bounded reads and visible omissions.
+- Expose file-attachment support in agent inventory. Require remote-endpoint
+  opt-in before reading selected files and reject attachment-request redirects.
+- Keep source data separate from task instructions and omit provider error
+  bodies that could echo attached contents.
+
 ## 0.26.2 — 2026-11-03
 
 - Include startup Git worktree pruning in background-cleanup draining, so

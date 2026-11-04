@@ -565,13 +565,26 @@ do not shell out yourself.
   selection; pass it explicitly only to change models.
 - Read `list_agents.repo_context_mode` before assigning checkout-dependent
   work. `workspace` means the adapter can access its working directory, not
-  that it has inspected any file. `supplied-text` means it sees only text in
-  the prompt or peer messages: provide the needed excerpts, including again
-  on continuation. A `working_directory` or implementer-worktree binding
-  does not send repository contents to these agents. `unknown` means Crew
+  that it has inspected any file. `supplied-text` means it sees supplied text,
+  without checkout tools. When `list_agents.accepts_context_files` is true,
+  use explicit `context_files` on `run_agent`, `continue_run`, or each panel
+  reviewer to attach relative paths from that run's working directory. Supply
+  paths again and restate the task on continuation; selections and prior model
+  responses are not inherited. Otherwise include needed excerpts in the prompt
+  or peer messages. A `working_directory` or implementer-worktree binding alone
+  does not send repository contents. `unknown` means Crew
   cannot establish the configured command's capabilities; verify them before
   relying on checkout access. Relay `repo_context.supplied_text_only` warnings
   and never count a supplied-text answer as an independent checkout review.
+  File attachments are bounded and may omit whole files. Relay
+  `context_truncated`, `context_file_omitted`, and `context_egress_skipped`
+  warnings; never treat an omitted-file review as complete. Remote attachments
+  require operator opt-in with `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; do not
+  silently enable it. No warning proves that the backend consumed every byte,
+  and automatic diff collection is not available.
+  Check `aggregate_panel.warnings` when consolidating a panel; those
+  reviewer-labelled context limitations include live continuation warnings and
+  the original panel-dispatch snapshot retained after run cleanup.
 - Uncommitted host state is mirrored into write run worktrees. Do not
   manually copy files. `continue_run` re-syncs user edits between turns.
 - Prefer inline reasoning for work you can answer yourself.

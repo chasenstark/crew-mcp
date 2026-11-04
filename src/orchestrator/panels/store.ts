@@ -98,6 +98,7 @@ export function snapshotPanelReviewerTerminal(
   targetPanelDir: string,
   runId: string,
   snapshot: PanelReviewerTerminalSnapshot,
+  terminalWarnings: readonly string[] = [],
 ): PanelStateV1 {
   const current = readPanelState(targetPanelDir);
   if (!current) {
@@ -112,6 +113,7 @@ export function snapshotPanelReviewerTerminal(
       return {
         ...reviewer,
         terminalSnapshot: snapshot,
+        dispatchWarnings: [...new Set([...reviewer.dispatchWarnings, ...terminalWarnings])],
       };
     }),
   };

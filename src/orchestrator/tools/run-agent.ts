@@ -37,6 +37,7 @@ import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import { modelSelectionToWire } from '../../adapters/model-selection.js';
 import { repoContextWarnings } from '../../adapters/repo-context.js';
+import { assembleNamedFileContext, CONTEXT_EGRESS_SKIPPED_WARNING } from '../context-injection.js';
 import type {
   AgentAdapter,
   EffortLevel,
@@ -115,9 +116,30 @@ export interface RegistryForRunAgent {
   list?(): { name: string; strengths: readonly string[] | string[] }[];
 }
 
+export const contextFilesInputSchema = z.array(z.string().min(1).max(4096)).max(50).optional();
+
+export function contextFilesUnsupportedMessage(adapter: Pick<AgentAdapter, 'name'>): string {
+  return `context_files.unsupported: Agent "${adapter.name}" does not accept attached repository files. `
+    + 'Choose an agent with accepts_context_files:true, or omit context_files.';
+}
+
+export function contextFilesDispatchWarnings(
+  adapter: Pick<AgentAdapter, 'unmetered'>,
+  contextFiles: readonly string[] | undefined,
+): string[] {
+  return contextFiles?.length && !allowsNamedFileContext(adapter)
+    ? [CONTEXT_EGRESS_SKIPPED_WARNING]
+    : [];
+}
+
+function allowsNamedFileContext(adapter: Pick<AgentAdapter, 'unmetered'>): boolean {
+  return adapter.unmetered === true || process.env.CREW_OPENAI_ALLOW_REMOTE_CONTEXT === '1';
+}
+
 export const runAgentInputSchema = z.object({
   agent_id: z.string().min(1),
   prompt: z.string().min(1),
+  context_files: contextFilesInputSchema,
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
   criteria_set_id: z.string().min(1).optional(),
   working_directory: z.string().optional(),
@@ -183,7 +205,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. Explicit model selection is exact-or-refuse. goal takes a repeat-safe validation command plus aggregate turn/wall bounds; native only for Claude write implementers. peer_messages prepend untrusted context; criteria_set_id marks iterate policy. ban_override, same_host_ok, and health/quota dispatch_anyway require user approval. run_mode is write, read_only, or ephemeral_review. provision_deps provisions worktree node_modules (true = clone else install; omitted = config auto clone-only; rejected read_only). Returns async with model_selection, goal, deps, relay fields, warnings, and a crew-wait required_next_action.';
+  'Start a bounded subagent run. context_files attaches bounded relative files for capable text-only agents; remote delivery requires CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1. Models are exact-or-refuse. goal is a bounded validation loop (native: Claude write only). peer_messages are untrusted; criteria_set_id marks iterate policy. ban_override, same_host_ok and health/quota dispatch_anyway require approval. run_mode: write/read_only/ephemeral_review. provision_deps provisions worktree dependencies. Returns async model/goal/deps/relay/warnings and a crew-wait required_next_action.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -454,6 +476,10 @@ export async function planRunAgent(
     };
   }
 
+  if (input.context_files?.length && adapter.acceptsRepoContext !== true) {
+    return { kind: 'error', message: contextFilesUnsupportedMessage(adapter) };
+  }
+
   const modeResolution = runModeFromInput(input);
   if (!modeResolution.ok) {
     return { kind: 'error', message: modeResolution.message };
@@ -538,6 +564,7 @@ export async function planRunAgent(
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   dispatchWarnings.push(...repoContextWarnings(adapter));
+  dispatchWarnings.push(...contextFilesDispatchWarnings(adapter, input.context_files));
   if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   let worktreePath: string;
   let branchPointSeedPaths: readonly string[] | undefined;
@@ -635,6 +662,7 @@ export async function planRunAgent(
       runId,
       adapter,
       prompt: composedPrompt,
+      contextFiles: input.context_files,
       dispatchMcpEnv,
       effectiveWorkingDirectory,
       worktreePath,
@@ -811,6 +839,7 @@ export function buildAdapterDispatchTask(args: {
   readonly runId: string;
   readonly adapter: AgentAdapter;
   readonly prompt: string;
+  readonly contextFiles?: readonly string[];
   readonly dispatchMcpEnv?: DispatchMcpEnv;
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
@@ -855,6 +884,9 @@ export function buildAdapterDispatchTask(args: {
     streamsIncrementally: args.adapter.streamsIncrementally === true,
     input: args.input,
     run: async (taskCtx: DispatchTaskContext): Promise<TaskResult> => {
+      if (args.contextFiles?.length && args.adapter.acceptsRepoContext !== true) {
+        throw new Error(contextFilesUnsupportedMessage(args.adapter));
+      }
       const readOnly = args.runMode === 'read_only';
       let writablePaths: readonly string[] | undefined;
       let branchPointBefore: ReadonlyMap<string, string> | undefined;
@@ -899,38 +931,61 @@ export function buildAdapterDispatchTask(args: {
       if (taskCtx.signal.aborted) {
         throw taskCtx.signal.reason ?? new Error('cancelled');
       }
-      const result = await args.adapter.execute({
-        prompt: args.prompt,
-        dispatchMcpEnv: args.dispatchMcpEnv,
-        context: {
-          workingDirectory: args.effectiveWorkingDirectory,
-        },
-        constraints: {
-          signal: taskCtx.signal,
-          model: args.modelSelection.modelArgument,
-          effort: args.effectiveEffort,
-          resumeSessionId: args.resumeSessionId,
-          goal: args.goalConstraint,
-          // ephemeral_review deliberately dispatches workspace-write: the
-          // reviewer runs write-capable in its disposable worktree (agy would
-          // hard-error on sandbox:'read-only'); containment is disposal.
-          sandbox: readOnly ? 'read-only' : 'workspace-write',
-          // Findings-only contract for disposable-worktree reviews — the
-          // adapter (agy) swaps its operational preamble on this.
-          reviewIntent: args.runMode === 'ephemeral_review' ? true : undefined,
-          writablePaths,
-          // Allow localhost egress so tests that hit a local DB or
-          // devserver actually exercise the change. Without this,
-          // Codex's workspace-write sandbox blocks connect() and the
-          // run reports "tests passed" without having tested anything
-          // that touches the network — verified failure mode 2026-05.
-          // FS isolation still comes from the worktree (write-mode) +
-          // the dirty-tree probe (read-only mode); enabling network
-          // does not weaken either contract.
-          networkAccess: true,
-        },
-        onOutput: taskCtx.onStream,
-      });
+      const assembled = args.contextFiles?.length
+        ? await assembleNamedFileContext({
+            workingDirectory: args.effectiveWorkingDirectory,
+            contextFiles: args.contextFiles,
+            prompt: args.prompt,
+            allowRead: allowsNamedFileContext(args.adapter),
+            signal: taskCtx.signal,
+          })
+        : undefined;
+      let result: TaskResult;
+      try {
+        result = await args.adapter.execute({
+          prompt: args.prompt,
+          dispatchMcpEnv: args.dispatchMcpEnv,
+          context: {
+            workingDirectory: args.effectiveWorkingDirectory,
+            ...(assembled !== undefined ? { repoContext: assembled.context } : {}),
+          },
+          constraints: {
+            signal: taskCtx.signal,
+            model: args.modelSelection.modelArgument,
+            effort: args.effectiveEffort,
+            resumeSessionId: args.resumeSessionId,
+            goal: args.goalConstraint,
+            // ephemeral_review deliberately dispatches workspace-write: the
+            // reviewer runs write-capable in its disposable worktree (agy would
+            // hard-error on sandbox:'read-only'); containment is disposal.
+            sandbox: readOnly ? 'read-only' : 'workspace-write',
+            // Findings-only contract for disposable-worktree reviews — the
+            // adapter (agy) swaps its operational preamble on this.
+            reviewIntent: args.runMode === 'ephemeral_review' ? true : undefined,
+            writablePaths,
+            // Allow localhost egress so tests that hit a local DB or
+            // devserver actually exercise the change. Without this,
+            // Codex's workspace-write sandbox blocks connect() and the
+            // run reports "tests passed" without having tested anything
+            // that touches the network — verified failure mode 2026-05.
+            // FS isolation still comes from the worktree (write-mode) +
+            // the dirty-tree probe (read-only mode); enabling network
+            // does not weaken either contract.
+            networkAccess: true,
+          },
+          onOutput: taskCtx.onStream,
+        });
+      } catch (error) {
+        // A failed request still needs the file-omission receipt. Preserve the
+        // dispatcher's abort path and the behavior of calls without attachments.
+        if (taskCtx.signal.aborted || assembled === undefined) throw error;
+        result = {
+          status: 'error',
+          output: 'Repository-context request failed before returning a result.',
+          filesModified: [],
+          metadata: {},
+        };
+      }
 
       const resumeChecked = enforceRequestedResumeSessionId({
         result,
@@ -942,7 +997,10 @@ export function buildAdapterDispatchTask(args: {
         result: resumeChecked,
         dirtyBefore,
         runMode: args.runMode,
-        dispatchWarnings: args.dispatchWarnings,
+        dispatchWarnings: [...new Set([
+          ...(args.dispatchWarnings ?? []),
+          ...(assembled?.warnings ?? []),
+        ])],
         effectiveWorkingDirectory: args.effectiveWorkingDirectory,
         worktreePath: args.worktreePath,
         branchPointBefore,

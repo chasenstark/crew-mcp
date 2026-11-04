@@ -27,8 +27,40 @@ adapter. Names, endpoints, quota status and routing hints do not determine it.
 Dispatch and continuation append `repo_context.supplied_text_only` warnings for
 known supplied-text adapters through the existing warning pipeline. Panels
 reuse that path and persist reviewer warnings. Terminal results retain those
-warnings. No file contents are read or injected and the composed prompt stays
-unchanged; `workspace` describes access, not proof that the worker inspected it.
+warnings. `workspace` describes access, not proof that the worker inspected it.
+
+`acceptsRepoContext` is a separate positive capability, mirrored by the lazy
+registry and exposed as `list_agents.accepts_context_files`. OpenAI-compatible
+adapters consume explicit `context_files` attachments while remaining
+`supplied-text`: they have no filesystem tools. Other adapters reject nonempty
+file selections. The legacy internal `Task.context.files` field does not
+authorize file reads.
+
+Shared dispatch assembles selected files relative to the actual run working
+directory. It rejects escaping paths, symlinks, Git metadata and nonregular or
+non-text files, and bounds reads and serialized context. Files are selected for
+each call; continuations do not inherit selections or prior model output.
+Automatic diff collection is not implemented.
+Opened-file and parent-identity checks detect ordinary replacement races.
+They are not OS filesystem isolation against a concurrent attacker repeatedly
+replacing and restoring ancestor directories; portable Node provides no
+directory-handle-relative open chain.
+
+Loopback endpoints can receive selected files. Remote endpoints require
+`CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1` in the Crew server environment; otherwise
+assembly skips reads and reports `context_egress_skipped`. The adapter checks
+that gate again before sending contents. Requests with file context reject HTTP
+redirects, including redirects from a loopback server. Provider errors for
+these requests omit response bodies that could echo source text.
+
+The adapter places a Crew-authored data-handling policy in a system message,
+the serialized files and omissions in a user message, and the composed task in
+the final user message. Source text never enters the system policy. This
+framing distinguishes data from instructions; it cannot guarantee that a model
+will resist instructions embedded in source. Crew reports omitted files both
+in-band and through persisted warnings. Token estimates reserve prompt,
+framing and output space, but do not establish the backend's context window or
+prove that it consumed every byte.
 
 ## Model-selection capability
 

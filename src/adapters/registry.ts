@@ -48,6 +48,7 @@ interface LazyAdapterMetadata {
   readonly goalSupport?: GoalSupport;
   readonly modelSelectionSupport: ModelSelectionSupport;
   readonly repoContextMode?: RepoContextMode;
+  readonly acceptsRepoContext?: boolean;
   readonly hasGetCliVersionTag?: boolean;
 }
 
@@ -308,6 +309,7 @@ function createLazyAdapterProxy(
     goalSupport: metadata.goalSupport,
     modelSelectionSupport: metadata.modelSelectionSupport,
     repoContextMode: metadata.repoContextMode,
+    acceptsRepoContext: metadata.acceptsRepoContext,
     execute: async (task) => (await load()).execute(task),
     healthCheck: async (options) => (await load()).healthCheck(options),
     listModels: async (options) => {
@@ -421,6 +423,7 @@ function registerOpenAiCompatibleAdapter(
       enforcesReadOnly: false,
       modelSelectionSupport: 'catalog',
       repoContextMode: 'supplied-text',
+      acceptsRepoContext: true,
       unmetered,
       captainCapabilities: GENERIC_CAPABILITIES,
     },

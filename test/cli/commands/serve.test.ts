@@ -3776,7 +3776,7 @@ describe('crew serve — peer_messages integration', () => {
     },
   );
 
-  it('rejects continue_run as peer_messages.no_op when prompt and peer_messages are both empty', async () => {
+  it('rejects continue_run as peer_messages.no_op without prompt, peer_messages or context_files', async () => {
     const h = await startHarness([makeMockAdapter({ name: 'mock-coder' })]);
     try {
       const run = await h.client.callTool({
@@ -3792,7 +3792,7 @@ describe('crew serve — peer_messages integration', () => {
       });
       expect(res.isError).toBe(true);
       expect(toolText(res)).toBe(
-        'peer_messages.no_op: continue_run requires either prompt or peer_messages',
+        'peer_messages.no_op: continue_run requires either prompt or peer_messages or context_files',
       );
     } finally {
       await h.close();

@@ -49,6 +49,9 @@ import {
 import { ownsWorktree, runModeFromState } from '../run-mode.js';
 import {
   buildAdapterDispatchTask,
+  contextFilesInputSchema,
+  contextFilesUnsupportedMessage,
+  contextFilesDispatchWarnings,
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
   resolveEffectiveEffort,
@@ -81,6 +84,7 @@ import {
 export const continueRunInputSchema = z.object({
   run_id: z.string().min(1),
   prompt: z.string().default(''),
+  context_files: contextFilesInputSchema,
   peer_messages: z.array(peerMessageInputSchema).max(10000).optional(),
   criteria_set_id: z.string().min(1).optional(),
   model: z.string().trim().min(1).max(300).optional(),
@@ -103,7 +107,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Resume an existing run with prompt and/or peer_messages. goal_policy is inherit, clear, or replace and defaults to clear; replace requires goal, and aggregate goal budgets cannot reset or grow. Explicit model selection is exact-or-refuse; omission inherits the prior decision. Criteria policy and continuation caps are rechecked. ban_override, same_host_ok, cap_override, and health/quota dispatch_anyway require user approval. effort may override defaults; run_mode stays sticky and ephemeral_review stays frozen. Returns async with model_selection, goal, relay fields, warnings, and a crew-wait required_next_action when available.';
+  'Continue with prompt, peer_messages or per-call context_files. Files require a capable text-only agent and remote opt-in CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1; restate intent for stateless agents. goal_policy: clear (default), inherit or replace; budgets cannot grow. Models are exact-or-refuse or inherited. Criteria/caps are rechecked. ban_override, same_host_ok, cap_override and health/quota dispatch_anyway require approval. effort can override defaults; run_mode stays sticky, ephemeral_review frozen. Returns async model/goal/relay/warnings and a crew-wait required_next_action.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -123,8 +127,8 @@ export async function continueRunToolHandler(
     return errorContent(err instanceof Error ? err.message : String(err));
   }
 
-  if (userPrompt === '' && validatedInput.length === 0) {
-    return errorContent('peer_messages.no_op: continue_run requires either prompt or peer_messages');
+  if (userPrompt === '' && validatedInput.length === 0 && !args.context_files?.length) {
+    return errorContent('peer_messages.no_op: continue_run requires either prompt or peer_messages or context_files');
   }
 
   if (preState.status === 'running') {
@@ -162,6 +166,9 @@ export async function continueRunToolHandler(
     return errorContent(
       `Agent "${preState.agentId}" is no longer registered; cannot continue run "${args.run_id}".`,
     );
+  }
+  if (args.context_files?.length && adapter.acceptsRepoContext !== true) {
+    return errorContent(contextFilesUnsupportedMessage(adapter));
   }
   // Sticky lifecycle mode, resolved once for every branch below. Legacy
   // records (no runMode field) derive from the persisted readOnly shim.
@@ -282,6 +289,7 @@ export async function continueRunToolHandler(
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   dispatchWarnings.push(...repoContextWarnings(adapter));
+  dispatchWarnings.push(...contextFilesDispatchWarnings(adapter, args.context_files));
   dispatchWarnings.push(...policyWarnings);
   if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   const criteriaWarnings = criteriaPeerMessageBypassWarnings(
@@ -423,6 +431,7 @@ export async function continueRunToolHandler(
     runId: args.run_id,
     adapter,
     prompt: appendWorkerFooterForAdapter(composedPrompt, adapter),
+    contextFiles: args.context_files,
     dispatchMcpEnv,
     effectiveWorkingDirectory: state.worktreePath,
     worktreePath: state.worktreePath,

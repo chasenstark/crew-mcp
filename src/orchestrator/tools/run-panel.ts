@@ -72,9 +72,12 @@ import {
 } from './dispatch-policy.js';
 import { preflightAgentDispatch } from './dispatch-preflight.js';
 
+import { contextFilesInputSchema, contextFilesUnsupportedMessage } from './run-agent.js';
+
 const runPanelReviewerInputSchema = z.object({
   agent_id: z.string().min(1),
   prompt: z.string().min(1),
+  context_files: contextFilesInputSchema,
   model: z.string().trim().min(1).max(300).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   working_directory: z.string().optional(),
@@ -142,7 +145,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers as one panel. Reviewers are canonicalized; each explicit model resolves exactly or that reviewer fails without fallback. Same-provider reviewers with different models stay independently labeled. ban_override and health/quota dispatch_anyway require user approval; current-host reviewers stay refused. dispatch_anyway may be top-level or per reviewer. agy auto-routes to ephemeral_review. Reviewer provision_deps provisions a worktree-owning placement (rejected read_only). Returns panel_id, reviewer model_selection/deps/failures, and a panel-level crew-wait watcher command; per-reviewer wait commands remain available.';
+  'Dispatch parallel reviewers. Per-reviewer context_files attaches bounded relative files for capable text-only agents; remote opt-in: CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1. Models resolve exactly or fail per reviewer; model votes stay separate. ban_override and health/quota dispatch_anyway require approval; current-host reviewers refused. dispatch_anyway is top-level or per reviewer. agy uses ephemeral_review. provision_deps requires an owned worktree. Returns panel_id, reviewer models/deps/failures and a panel-level crew-wait watcher command; per-reviewer wait commands remain available.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -189,6 +192,16 @@ export async function runPanelHandler(
   const input = runPanelInputSchema.parse(args);
   const reviewers = resolvePanelReviewers(input.reviewers, input.ban_override === true, ctx);
   validateRunPanelPreflight(reviewers);
+  // Reject unsupported attachments before creating a panel or any reviewer run.
+  await Promise.all(reviewers.map(async (reviewer) => {
+    if (!reviewer.context_files?.length) return;
+    const adapter = typeof ctx.registry.load === 'function'
+      ? await ctx.registry.load(reviewer.agent_id)
+      : ctx.registry.get(reviewer.agent_id);
+    if (adapter?.acceptsRepoContext !== true) {
+      throw new Error(contextFilesUnsupportedMessage(adapter ?? { name: reviewer.agent_id }));
+    }
+  }));
 
   const implementerState = input.implementer_run_id
     ? readImplementerState(input.implementer_run_id, ctx)
@@ -346,6 +359,7 @@ export async function runPanelHandler(
         input: {
           agent_id: reviewer.agent_id,
           prompt: reviewer.prompt,
+          ...(reviewer.context_files !== undefined ? { context_files: reviewer.context_files } : {}),
           ...(input.criteria_set_id !== undefined ? { criteria_set_id: input.criteria_set_id } : {}),
           ...(reviewer.model !== undefined ? { model: reviewer.model } : {}),
           ...(reviewer.effort !== undefined ? { effort: reviewer.effort } : {}),
@@ -381,6 +395,7 @@ export async function runPanelHandler(
                 targetPanelDir,
                 state.runId,
                 terminalSnapshotFromRunState(state),
+                state.warnings,
               );
             });
           } catch (err) {

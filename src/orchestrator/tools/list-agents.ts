@@ -50,7 +50,7 @@ export const listAgentsInputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'List configured agents before dispatch to choose agent_id. Returns name, aliases, useWhen routing guidance, strengths, default effort/model, model_selection_support, goal_support, repo_context_mode (workspace, supplied-text, unknown), adapter and health/availability. Supplied-text agents cannot inspect/edit checkout files; send needed text via prompts/peer messages. Unavailable agents remain listed with available:false and an error. Optional quota snapshots include state, confidence and source; omitted without a probe/snapshot. Call list_models for provider choices; this inventory does not discover models.';
+  'List configured agents before dispatch. Returns names/aliases, routing, strengths, default effort/model, model_selection_support, goal_support, repo_context_mode, accepts_context_files, and health. Supplied-text agents see prompts, peer messages and supported explicit attachments; they cannot inspect/edit the checkout. Unavailable agents remain listed with available:false and an error. Optional quota snapshots include state, confidence and source. Call list_models to discover provider choices.';
 
 export type QuotaState =
   | 'ok'
@@ -119,6 +119,7 @@ export interface ListAgentsAgentEntry {
   readonly model_selection_support: ModelSelectionSupport;
   readonly goal_support: GoalSupport;
   readonly repo_context_mode: RepoContextMode;
+  readonly accepts_context_files: boolean;
   readonly adapter: string;
   readonly available: boolean;
   readonly version?: string;
@@ -218,6 +219,7 @@ export async function listAgents(ctx: ListAgentsContext): Promise<ListAgentsOutp
         model_selection_support: modelSelectionSupport(adapter),
         goal_support: adapter.goalSupport ?? 'unsupported',
         repo_context_mode: resolveRepoContextMode(adapter),
+        accepts_context_files: adapter.acceptsRepoContext === true,
         adapter: adapter.name,
       } as const;
       let health: Awaited<ReturnType<typeof adapter.healthCheck>>;

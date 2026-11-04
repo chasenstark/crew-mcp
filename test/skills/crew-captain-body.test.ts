@@ -394,7 +394,10 @@ describe('crew-captain body — review panels', () => {
     const flat = flattenWhitespace(await loadBody());
     for (const anchor of [
       'list_agents.repo_context_mode', '`workspace`', '`supplied-text`', '`unknown`',
-      'including again on continuation',
+      'Supply paths again and restate the task on continuation',
+      'list_agents.accepts_context_files',
+      'context_truncated', 'context_egress_skipped',
+      'CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1', 'aggregate_panel.warnings',
       'does not send repository contents',
       'repo_context.supplied_text_only',
       'never count a supplied-text answer as an independent checkout review',

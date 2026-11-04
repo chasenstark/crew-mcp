@@ -220,6 +220,7 @@ export function getPanelStatusHandler(
         return snapshotStatus(reviewer, `missing state for run ${reviewer.runId}`);
       }
       recordWatchTarget(state);
+      const dispatchWarnings = [...new Set([...reviewer.dispatchWarnings, ...(state.warnings ?? [])])];
       if (!isTerminalRunStatus(state.status)) {
         const modelSelection = latestModelSelection(state.prompts) ?? reviewer.modelSelection;
         const goal = state.prompts.at(-1)?.goal;
@@ -228,7 +229,7 @@ export function getPanelStatusHandler(
           agent_id: reviewer.agentId,
           state_unavailable: false,
           status: state.status,
-          dispatch_warnings: reviewer.dispatchWarnings,
+          dispatch_warnings: dispatchWarnings,
           ...(modelSelection !== undefined
             ? { model_selection: modelSelectionToWire(modelSelection) }
             : {}),
@@ -247,7 +248,7 @@ export function getPanelStatusHandler(
         files_changed: state.filesChanged,
         ...(state.completedAt !== undefined ? { completedAt: state.completedAt } : {}),
         ...(state.failure !== undefined ? { failure: state.failure } : {}),
-        dispatch_warnings: reviewer.dispatchWarnings,
+        dispatch_warnings: dispatchWarnings,
         ...(modelSelection !== undefined
           ? { model_selection: modelSelectionToWire(modelSelection) }
           : {}),

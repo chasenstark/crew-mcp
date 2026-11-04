@@ -82,23 +82,62 @@ Requests to Ollama or LM Studio stay local when the endpoint itself is local.
 Remote OpenAI-compatible endpoints use that endpoint's own authentication and
 billing.
 
-Current OpenAI-compatible agents are chat-completions workers. They do not
-receive repository contents or filesystem tools, so use them for brainstorming,
-prose, and supplied-text review—not claims that require reading the checkout.
+OpenAI-compatible agents are chat-completions workers without filesystem
+tools. They can review supplied text and explicitly attached files, as well as
+handle brainstorming and prose tasks.
 
 `list_agents.repo_context_mode` makes repository access explicit:
 
 | Mode | What the worker can receive |
 | --- | --- |
 | `workspace` | Working-directory access through its provider tools. This does not prove it inspected a file. |
-| `supplied-text` | Text supplied in the prompt or peer messages; no checkout access. |
+| `supplied-text` | Prompt, peer messages and supported explicit file attachments; no checkout access. |
 | `unknown` | Crew cannot establish the configured command's capabilities. |
 
 OpenAI-compatible workers report `supplied-text`. Initial dispatches,
 continuations, and panel reviewers carry a `repo_context.supplied_text_only`
-warning. Supply the relevant text again on continuation. Binding a reviewer to
-an implementer's worktree does not send that worktree's contents. These warnings
-do not prevent supplied-text tasks from running.
+warning. Binding a reviewer to an implementer's worktree does not automatically
+send its contents. These warnings do not prevent supplied-text tasks from running.
+
+Agents with `list_agents.accepts_context_files: true` accept `context_files`
+on `run_agent`, `continue_run`, and each `run_panel` reviewer. For example:
+
+```json
+{
+  "agent_id": "qwen",
+  "prompt": "Review these two files for error handling problems.",
+  "run_mode": "read_only",
+  "context_files": ["src/parser.ts", "src/handler.ts"]
+}
+```
+
+Paths are relative to the selected run working directory. A bound panel reads
+its review workspace; a continuation reads its current run workspace. File
+selections apply only to that call. Resend the paths and restate the task on
+continuation; the adapter does not inherit its previous response. Unsupported
+adapters reject file selections.
+
+Crew accepts up to 50 paths, with at most 32 KiB per file and 64 KiB of file
+text in total. A separate estimated 16,384-token request budget reserves 4,096
+tokens for output and 1,024 for framing, subtracts the composed prompt, and
+counts serialized attachment data. Its conservative bytes/3 estimate is a
+heuristic, not a tokenizer or a guarantee about the backend's context window.
+Whole files that exceed these limits are omitted, rather than partially read
+as complete files. Symlinks, paths outside the workspace, Git metadata,
+nonregular files, binary files and invalid UTF-8 are also omitted.
+
+Omissions appear in the model's attachment and in terminal warnings:
+`context_truncated` for budget omissions, `context_file_omitted` for unusable
+paths, and `context_egress_skipped` when remote transmission is disabled. Inspect
+these warnings before relying on a review. Even without a warning, Crew cannot
+verify whether the backend truncated input; an attached-file review does not
+establish an independent review of the whole checkout.
+
+Loopback endpoints receive selected files by default. To send them to a remote
+endpoint, set `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1` in the Crew server's
+environment. Without it Crew skips the reads. Attachment requests reject
+redirects; configure the final endpoint URL directly. Automatic diff collection
+is not implemented.
 
 Generic agents run a configured command. Their filesystem, review, model, and
 result guarantees depend on that command; Crew does not invent unsupported

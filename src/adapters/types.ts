@@ -251,6 +251,8 @@ export interface AgentAdapter {
   readonly modelSelectionSupport?: ModelSelectionSupport;
   /** Repository access capability; lazy metadata must match the loaded adapter. */
   readonly repoContextMode?: RepoContextMode;
+  /** Consumes explicitly attached file text; lazy metadata must match. */
+  readonly acceptsRepoContext?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
   getCliVersionTag?(): Promise<string | undefined>;
@@ -274,6 +276,12 @@ export type ReviewDispatchMode = 'read-only-dispatch' | 'ephemeral-worktree' | '
  * `unknown`; only `supplied-text` proves the worker cannot inspect the checkout.
  */
 export type RepoContextMode = 'workspace' | 'supplied-text' | 'unknown';
+
+/** Per-call, bounded file text assembled by Crew; never provider instructions. */
+export interface RepositoryFileContext {
+  readonly files: readonly { readonly path: string; readonly content: string }[];
+  readonly omissions: readonly { readonly path: string; readonly reason: string }[];
+}
 
 export function resolveRepoContextMode(
   adapter: Pick<AgentAdapter, 'repoContextMode'>,
@@ -393,6 +401,7 @@ export interface Task {
   context: {
     workingDirectory: string;
     files?: string[];
+    repoContext?: RepositoryFileContext;
     previousResults?: TaskResult[];
   };
   constraints?: {

@@ -11,6 +11,7 @@ const parallelRealGitIntegrationTests = [
   'test/orchestrator/dispatch-run-agent-internal.test.ts',
   'test/orchestrator/run-lifecycle-listeners.test.ts',
   'test/orchestrator/tools/run-agent.test.ts',
+  'test/orchestrator/tools/context-files.test.ts',
   'test/orchestrator/tools/ephemeral-review*.test.ts',
   'test/orchestrator/tools/run-panel.test.ts',
 ];
