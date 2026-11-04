@@ -50,7 +50,7 @@ export const listAgentsInputSchema = z.object({
 export type ListAgentsInput = z.infer<typeof listAgentsInputSchema>;
 
 export const LIST_AGENTS_DESCRIPTION =
-  'List configured agents before dispatch. Returns names/aliases, routing, strengths, default effort/model, model_selection_support, goal_support, repo_context_mode, accepts_context_files, and health. Supplied-text agents see prompts, peer messages and supported explicit attachments; they cannot inspect/edit the checkout. Unavailable agents remain listed with available:false and an error. Optional quota snapshots include state, confidence and source. Call list_models to discover provider choices.';
+  'List configured agents before dispatch. Returns names/aliases, routing, strengths, default effort/model, model_selection_support, goal_support, repo_context_mode, accepts_context_files, and health. Supplied-text agents see supplied text and supported bounded file/diff context; they cannot inspect/edit the checkout. Unavailable agents remain listed with available:false and an error. Optional quota snapshots include state, confidence and source. Call list_models to discover provider choices.';
 
 export type QuotaState =
   | 'ok'

@@ -31,7 +31,7 @@ warnings. `workspace` describes access, not proof that the worker inspected it.
 
 `acceptsRepoContext` is a separate positive capability, mirrored by the lazy
 registry and exposed as `list_agents.accepts_context_files`. OpenAI-compatible
-adapters consume explicit `context_files` attachments while remaining
+adapters consume explicit `context_files` attachments and automatic read-only diffs while remaining
 `supplied-text`: they have no filesystem tools. Other adapters reject nonempty
 file selections. The legacy internal `Task.context.files` field does not
 authorize file reads.
@@ -40,21 +40,33 @@ Shared dispatch assembles selected files relative to the actual run working
 directory. It rejects escaping paths, symlinks, Git metadata and nonregular or
 non-text files, and bounds reads and serialized context. Files are selected for
 each call; continuations do not inherit selections or prior model output.
-Automatic diff collection is not implemented.
+Automatic diffs require all three: positive attachment capability,
+`supplied-text` mode and `read_only` dispatch. Host workspaces compare current
+contents with `HEAD`; owned Crew run workspaces use their recorded branch point,
+persisted on the reviewer for continuation. Missing baseline metadata is an
+omission, not a fallback to a guessed branch. Non-Git and nested working
+directories are omitted rather than expanding the selected workspace.
+Named files take priority within one serialized-context and raw-byte budget.
+Bounded Git metadata/raw-object reads and Crew's file reader feed an in-process
+patch builder; it does not invoke worktree diff, textconv or clean filters.
+Additional scan limits and whole-patch omissions are explicit. Renames are
+delete/add pairs; the attachment distinguishes incomplete collection from a
+complete empty diff. Write and ephemeral review modes never auto-collect.
 Opened-file and parent-identity checks detect ordinary replacement races.
 They are not OS filesystem isolation against a concurrent attacker repeatedly
 replacing and restoring ancestor directories; portable Node provides no
 directory-handle-relative open chain.
 
-Loopback endpoints can receive selected files. Remote endpoints require
+Loopback endpoints can receive repository context. Remote endpoints require
 `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1` in the Crew server environment; otherwise
-assembly skips reads and reports `context_egress_skipped`. The adapter checks
-that gate again before sending contents. Requests with file context reject HTTP
+assembly skips file and Git context reads and reports `context_egress_skipped`.
+The adapter checks that gate again before sending file or diff contents.
+Requests with repository context reject HTTP
 redirects, including redirects from a loopback server. Provider errors for
 these requests omit response bodies that could echo source text.
 
 The adapter places a Crew-authored data-handling policy in a system message,
-the serialized files and omissions in a user message, and the composed task in
+the serialized files, diff, baseline and omissions in a user message, and the composed task in
 the final user message. Source text never enters the system policy. This
 framing distinguishes data from instructions; it cannot guarantee that a model
 will resist instructions embedded in source. Crew reports omitted files both

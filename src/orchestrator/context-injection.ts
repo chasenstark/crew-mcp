@@ -1,10 +1,11 @@
 import { constants, type Stats } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, join, win32 } from 'node:path';
-import type { RepositoryFileContext } from '../adapters/types.js';
+import type { RepositoryFileContext, RepositoryReviewSource } from '../adapters/types.js';
+import { collectAutomaticDiff, DEFAULT_AUTOMATIC_DIFF_CAPS, type AutomaticDiffCaps } from './automatic-diff.js';
 
 export const CONTEXT_EGRESS_SKIPPED_WARNING =
-  'context_egress_skipped: Repository files were not read or sent because this endpoint is remote. '
+  'context_egress_skipped: Repository context was not read or sent because this endpoint is remote. '
   + 'Set CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1 to opt in, or use a loopback endpoint.';
 
 export interface NamedFileContextCaps {
@@ -91,8 +92,10 @@ async function readNamedFile(
   path: string,
   maxBytes: number,
   signal?: AbortSignal,
-): Promise<{ content: string; bytes: number } | { reason: string }> {
+): Promise<{ content: string; bytes: number; mode: number; bytesRead: number } | { reason: string; bytesRead: number }> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let bytesRead = 0;
+  const omitted = (reason: string) => ({ reason, bytesRead });
   try {
     signal?.throwIfAborted();
     const parts = path.split('/');
@@ -101,26 +104,26 @@ async function readNamedFile(
     for (let index = 0; index < parts.length; index += 1) {
       signal?.throwIfAborted();
       const current = await lstat(directory);
-      if (current.isSymbolicLink()) return { reason: 'symlink' };
-      if (!current.isDirectory()) return { reason: 'not_regular_file' };
+      if (current.isSymbolicLink()) return omitted('symlink');
+      if (!current.isDirectory()) return omitted('not_regular_file');
       parents.push({ path: directory, stat: current });
       if (index < parts.length - 1) directory = join(directory, parts[index]);
     }
     const absolute = join(root, ...parts);
     const before = await lstat(absolute);
-    if (before.isSymbolicLink()) return { reason: 'symlink' };
-    if (!before.isFile()) return { reason: 'not_regular_file' };
-    if (before.size > maxBytes) return { reason: 'too_large' };
+    if (before.isSymbolicLink()) return omitted('symlink');
+    if (!before.isFile()) return omitted('not_regular_file');
+    if (before.size > maxBytes) return omitted('too_large');
     signal?.throwIfAborted();
     // O_NONBLOCK prevents a raced-in FIFO/device from blocking open. O_NOFOLLOW
     // protects the final component; parent identity checks cover ordinary swaps.
     // Portable Node has no openat chain: this is not an OS sandbox against an
     // attacker concurrently replacing and restoring ancestor directories.
-    if (!constants.O_NOFOLLOW) return { reason: 'unsupported_platform' };
+    if (!constants.O_NOFOLLOW) return omitted('unsupported_platform');
     handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const opened = await handle.stat();
     if (!opened.isFile() || !sameFile(before, opened) || !await parentsUnchanged(parents, signal)) {
-      return { reason: 'file_changed' };
+      return omitted('file_changed');
     }
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -128,9 +131,10 @@ async function readNamedFile(
       signal?.throwIfAborted();
       const buffer = Buffer.alloc(Math.min(8192, maxBytes + 1 - bytes));
       const read = await handle.read(buffer, 0, buffer.length, bytes);
+      bytesRead += read.bytesRead;
       if (read.bytesRead === 0) break;
       bytes += read.bytesRead;
-      if (bytes > maxBytes) return { reason: 'too_large' };
+      if (bytes > maxBytes) return omitted('too_large');
       chunks.push(buffer.subarray(0, read.bytesRead));
     }
     signal?.throwIfAborted();
@@ -138,35 +142,43 @@ async function readNamedFile(
     const atPath = await lstat(absolute);
     if (!sameFile(opened, after) || !sameFile(after, atPath) || atPath.isSymbolicLink()
       || bytes !== after.size || !await parentsUnchanged(parents, signal)) {
-      return { reason: 'file_changed' };
+      return omitted('file_changed');
     }
     const contents = Buffer.concat(chunks, bytes);
     // NUL and non-text control characters are conservative binary indicators.
     if (contents.some((byte) => byte === 0 || (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13))) {
-      return { reason: 'binary' };
+      return omitted('binary');
     }
     try {
-      return { content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(contents), bytes };
+      return { content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(contents), bytes, mode: after.mode, bytesRead };
     } catch {
-      return { reason: 'invalid_utf8' };
+      return omitted('invalid_utf8');
     }
   } catch (error) {
     signal?.throwIfAborted();
-    return { reason: errorReason(error) };
+    return omitted(errorReason(error));
   } finally {
     await handle?.close();
   }
 }
 
 /** Assemble only explicitly requested files; never infer or collect a diff. */
-export async function assembleNamedFileContext(input: {
+export interface RepositoryContextInput {
   readonly workingDirectory: string;
   readonly contextFiles: readonly string[];
   readonly prompt: string;
   readonly allowRead: boolean;
   readonly signal?: AbortSignal;
   readonly caps?: Partial<NamedFileContextCaps>;
-}): Promise<{ context: RepositoryFileContext; warnings: string[] }> {
+  readonly reviewSource?: RepositoryReviewSource;
+  readonly diffCaps?: Partial<AutomaticDiffCaps>;
+}
+
+export async function assembleNamedFileContext(input: Omit<RepositoryContextInput, 'reviewSource' | 'diffCaps'>): Promise<{ context: RepositoryFileContext; warnings: string[] }> {
+  return assembleNamedFiles(input);
+}
+
+async function assembleNamedFiles(input: RepositoryContextInput, onRead?: (bytes: number) => void): Promise<{ context: RepositoryFileContext; warnings: string[] }> {
   input.signal?.throwIfAborted();
   const caps = resolveCaps(input.caps);
   if (input.contextFiles.length > 50) throw new Error('Repository context accepts at most 50 files');
@@ -218,6 +230,7 @@ export async function assembleNamedFileContext(input: {
     if (!reason && rawBytes >= caps.maxContextBytes) reason = 'budget_exhausted';
     if (!reason && root !== undefined) {
       const result = await readNamedFile(root, request.path, caps.maxFileBytes, input.signal);
+      onRead?.(result.bytesRead);
       if ('reason' in result) {
         reason = result.reason;
       } else {
@@ -240,4 +253,39 @@ export async function assembleNamedFileContext(input: {
   const other = omissions.length - truncated.length;
   if (other > 0) warnings.push(`context_file_omitted: ${other} requested files could not be included; see the repository context omission reasons.`);
   return { context: { files, omissions }, warnings };
+}
+
+/** Named files have priority; automatic changes share their byte/token budget. */
+export async function assembleRepositoryContext(input: RepositoryContextInput): Promise<{ context: RepositoryFileContext; warnings: string[] }> {
+  let namedReadBytes = 0;
+  const caps = resolveCaps(input.caps);
+  // Preserve room for the baseline and a collapsed omission marker, even when
+  // named files consume the available attachment budget. As for named files,
+  // an already-oversized caller prompt still receives a bounded disclosure.
+  const named = await assembleNamedFiles(input.reviewSource ? {
+    ...input, caps: { ...caps, framingReserveTokens: caps.framingReserveTokens + 256 },
+  } : input, (bytes) => { namedReadBytes += bytes; });
+  if (!input.reviewSource) return named;
+  const tokenBudget = caps.maxRequestTokens - caps.outputReserveTokens - caps.framingReserveTokens
+    - estimatedTokens(input.prompt);
+  const namedBytes = named.context.files.reduce((total, file) => total + Buffer.byteLength(file.content), 0);
+  const automatic = await collectAutomaticDiff({
+    workingDirectory: input.workingDirectory,
+    reviewSource: input.reviewSource,
+    allowRead: input.allowRead,
+    signal: input.signal,
+    caps: {
+      ...input.diffCaps,
+      maxScanBytes: Math.max(0, (input.diffCaps?.maxScanBytes ?? DEFAULT_AUTOMATIC_DIFF_CAPS.maxScanBytes) - namedReadBytes),
+    },
+    maxFileBytes: caps.maxFileBytes,
+    maxPatchBytes: Math.max(0, caps.maxContextBytes - namedBytes),
+    fits: (diff) => estimatedTokens(JSON.stringify({ ...named.context, diff })) <= tokenBudget,
+    pathReason,
+    readFile: readNamedFile,
+  });
+  return {
+    context: { ...named.context, diff: automatic.diff },
+    warnings: [...new Set([...named.warnings, ...automatic.warnings])],
+  };
 }

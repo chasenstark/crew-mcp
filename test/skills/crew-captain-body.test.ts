@@ -396,9 +396,11 @@ describe('crew-captain body — review panels', () => {
       'list_agents.repo_context_mode', '`workspace`', '`supplied-text`', '`unknown`',
       'Supply paths again and restate the task on continuation',
       'list_agents.accepts_context_files',
-      'context_truncated', 'context_egress_skipped',
+      'context_truncated', 'context_egress_skipped', 'context_diff_incomplete',
       'CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1', 'aggregate_panel.warnings',
-      'does not send repository contents',
+      'Host roots compare with current `HEAD`',
+      'recorded starting commit, including committed work',
+      'Write and disposable-review modes do not auto-collect',
       'repo_context.supplied_text_only',
       'never count a supplied-text answer as an independent checkout review',
     ]) expectContainsCI(flat, anchor);

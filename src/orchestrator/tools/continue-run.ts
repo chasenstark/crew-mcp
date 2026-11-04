@@ -52,6 +52,7 @@ import {
   contextFilesInputSchema,
   contextFilesUnsupportedMessage,
   contextFilesDispatchWarnings,
+  hasAutomaticReviewContext,
   readOnlyAdvisoryWarning,
   readOnlyRejectMessage,
   resolveEffectiveEffort,
@@ -107,7 +108,7 @@ export const continueRunInputSchema = z.object({
 export type ContinueRunInput = z.infer<typeof continueRunInputSchema>;
 
 export const CONTINUE_RUN_DESCRIPTION =
-  'Continue with prompt, peer_messages or per-call context_files. Files require a capable text-only agent and remote opt-in CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1; restate intent for stateless agents. goal_policy: clear (default), inherit or replace; budgets cannot grow. Models are exact-or-refuse or inherited. Criteria/caps are rechecked. ban_override, same_host_ok, cap_override and health/quota dispatch_anyway require approval. effort can override defaults; run_mode stays sticky, ephemeral_review frozen. Returns async model/goal/relay/warnings and a crew-wait required_next_action.';
+  'Continue with prompt, peer_messages or per-call context_files. Capable supplied-text read_only runs refresh bounded diffs using their original review source. Remote context requires CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1; restate intent for stateless agents. goal_policy: clear (default), inherit or replace; budgets cannot grow. Models are exact-or-refuse or inherited. Criteria/caps are rechecked. ban_override, same_host_ok, cap_override and health/quota dispatch_anyway require approval. effort may override defaults; run_mode stays sticky, ephemeral_review frozen. Returns async model/goal/relay/warnings and crew-wait required_next_action.';
 
 export async function continueRunToolHandler(
   args: ContinueRunInput,
@@ -289,7 +290,7 @@ export async function continueRunToolHandler(
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   dispatchWarnings.push(...repoContextWarnings(adapter));
-  dispatchWarnings.push(...contextFilesDispatchWarnings(adapter, args.context_files));
+  dispatchWarnings.push(...contextFilesDispatchWarnings(adapter, args.context_files, hasAutomaticReviewContext(adapter, runMode)));
   dispatchWarnings.push(...policyWarnings);
   if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   const criteriaWarnings = criteriaPeerMessageBypassWarnings(
@@ -432,6 +433,14 @@ export async function continueRunToolHandler(
     adapter,
     prompt: appendWorkerFooterForAdapter(composedPrompt, adapter),
     contextFiles: args.context_files,
+    reviewSource: state.repositoryReviewSource,
+    onReviewSourceResolved: async (source) => {
+      if (source.kind === 'unavailable') return;
+      await deps.runStateStore.update(args.run_id, (current) => ({
+        ...current,
+        repositoryReviewSource: current.repositoryReviewSource ?? source,
+      }));
+    },
     dispatchMcpEnv,
     effectiveWorkingDirectory: state.worktreePath,
     worktreePath: state.worktreePath,

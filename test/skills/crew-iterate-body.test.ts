@@ -523,9 +523,12 @@ describe('crew-iterate body — Step 0.5 agent picks', () => {
       .replace(/\s+/g, ' ');
     for (const anchor of [
       'list_agents.repo_context_mode', '`workspace`', '`supplied-text`', '`unknown`',
-      'Restate the task and resend selections on continuation', 'does not send repository contents',
+      'Restate the task and resend selections on continuation',
+      'host roots compare with current `HEAD`',
+      'recorded starting commit, including committed work',
+      'Write and disposable-review modes do not auto-collect',
       'list_agents.accepts_context_files',
-      'context_truncated', 'context_egress_skipped',
+      'context_truncated', 'context_egress_skipped', 'context_diff_incomplete',
       'CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1', 'aggregate_panel.warnings',
       'repo_context.supplied_text_only',
       'never count a supplied-text answer as an independent checkout review',

@@ -57,6 +57,8 @@ export interface DispatchRunAgentInternalArgs {
    * other run_mode. See RunAgentHandlerContext.ephemeralReviewSnapshot.
    */
   readonly ephemeralReviewSnapshot?: EphemeralSnapshotSource;
+  /** Internal bound-panel source; never a public request override. */
+  readonly reviewSourceRunId?: string;
   readonly onStart?: (
     info: { agentName: string; runId: string; worktreePath: string },
   ) => void | Promise<void>;
@@ -121,6 +123,7 @@ export async function dispatchRunAgentInternal(
       ...(args.ephemeralReviewSnapshot !== undefined
         ? { ephemeralReviewSnapshot: args.ephemeralReviewSnapshot }
         : {}),
+      ...(args.reviewSourceRunId !== undefined ? { reviewSourceRunId: args.reviewSourceRunId } : {}),
     });
   } catch (err) {
     throw new DispatchError(errorMessage(err));
@@ -216,6 +219,13 @@ export async function dispatchRunAgentInternal(
     const task = plan.buildTask(
       appendWorkerFooterForAdapter(createResult.composedPrompt, plan.adapter),
       dispatchMcpEnv,
+      async (source) => {
+        if (source.kind === 'unavailable') return;
+        await ctx.runStateStore.update(plan.runId, (state) => ({
+          ...state,
+          repositoryReviewSource: state.repositoryReviewSource ?? source,
+        }));
+      },
     );
     ctx.dispatcher.start(task);
     startWorkerReadyHandshake({

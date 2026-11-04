@@ -169,7 +169,7 @@ for automation and diagnostics:
 | `CREW_PROCESS_GROUP_FORCE_KILL_AFTER_MS` | 5s | SIGTERM-to-SIGKILL delay |
 | `CREW_OPENAI_BASE_URL` | unset | Default OpenAI-compatible endpoint |
 | `CREW_OPENAI_COMPATIBLE_TIMEOUT_MS` | 10m | OpenAI-compatible request timeout |
-| `CREW_OPENAI_ALLOW_REMOTE_CONTEXT` | unset | Set to `1` to allow explicit `context_files` reads and transmission to remote OpenAI-compatible endpoints; loopback endpoints are allowed by default |
+| `CREW_OPENAI_ALLOW_REMOTE_CONTEXT` | unset | Set to `1` to allow explicit files and automatic review diffs to be read and sent to remote OpenAI-compatible endpoints; loopback endpoints are allowed by default |
 | `CREW_HEALTHCHECK_TTL_MS` | 5m | Successful health-probe cache |
 | `CREW_TAIL_INSTALL_DIR` | `~/Applications` | Direct tail-handler install location |
 

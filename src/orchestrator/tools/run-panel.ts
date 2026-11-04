@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { z } from 'zod';
 
 import {
@@ -145,7 +145,7 @@ export interface RunPanelHandlerContext extends DispatchContext {
 }
 
 export const RUN_PANEL_DESCRIPTION =
-  'Dispatch parallel reviewers. Per-reviewer context_files attaches bounded relative files for capable text-only agents; remote opt-in: CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1. Models resolve exactly or fail per reviewer; model votes stay separate. ban_override and health/quota dispatch_anyway require approval; current-host reviewers refused. dispatch_anyway is top-level or per reviewer. agy uses ephemeral_review. provision_deps requires an owned worktree. Returns panel_id, reviewer models/deps/failures and a panel-level crew-wait watcher command; per-reviewer wait commands remain available.';
+  'Dispatch parallel reviewers. Capable supplied-text read_only reviewers receive bounded diffs from the implementer branch point or host HEAD; context_files adds relative files. Remote opt-in: CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1. Models resolve exactly or fail per reviewer; votes stay separate. ban_override and health/quota dispatch_anyway require approval; current-host reviewers refused. dispatch_anyway is top-level or per reviewer. agy uses ephemeral_review. provision_deps requires an owned worktree. Returns panel_id, reviewer models/deps/failures and a panel-level crew-wait watcher command; per-reviewer wait commands remain available.';
 
 export async function runPanelToolHandler(
   args: RunPanelInput,
@@ -379,6 +379,11 @@ export async function runPanelHandler(
         ctx,
         ...(ephemeralReviewer && implementerState !== undefined
           ? { ephemeralReviewSnapshot: implementerSnapshotSource(implementerState, ctx) }
+          : {}),
+        ...(!ephemeralReviewer && effectiveReadOnly && implementerState !== undefined
+          && effectiveWorkingDirectory !== undefined
+          && sameExistingDirectory(effectiveWorkingDirectory, implementerState.worktreePath)
+          ? { reviewSourceRunId: implementerState.runId }
           : {}),
         progress: ctx.progress,
         ...(criteriaContract !== undefined ? { criteriaContract } : {}),
@@ -646,6 +651,10 @@ function ephemeralPanelReviewerRejection(
  * the reviewer fails and its worktree is discarded rather than reviewing
  * a moved target.
  */
+function sameExistingDirectory(left: string, right: string): boolean {
+  try { return realpathSync(left) === realpathSync(right); } catch { return false; }
+}
+
 function implementerSnapshotSource(
   implementerState: RunStateV1,
   ctx: RunPanelHandlerContext,

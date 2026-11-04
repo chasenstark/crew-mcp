@@ -424,16 +424,23 @@ receive supplied text without checkout tools. When
 on each dispatch, continuation, or panel reviewer to attach relative paths
 from its actual working directory. Otherwise supply the necessary excerpts.
 Restate the task and resend selections on continuation; prior model responses
-and selections are not inherited. A `working_directory` or implementer-worktree
-binding alone does not send repository contents. `unknown` means the configured
+and selections are not inherited. Capable supplied-text agents in `read_only`
+mode also receive a bounded automatic diff: host roots compare with current
+`HEAD`; known Crew implementer worktrees compare with their recorded starting
+commit, including committed work. Continuations refresh contents against that
+same run baseline. A clean host feature branch has no working-tree diff; no
+branch base is guessed. Write and disposable-review modes do not auto-collect.
+Named files take priority over patches within a shared budget. `unknown` means the configured
 command's capabilities need verification. Relay
 `repo_context.supplied_text_only` warnings and never count a supplied-text
 answer as an independent checkout review.
-Relay `context_truncated`, `context_file_omitted`, and `context_egress_skipped`
-warnings. Omitted files were not reviewed; even a complete attachment cannot
+Relay `context_truncated`, `context_file_omitted`, `context_diff_incomplete`, and
+`context_egress_skipped` warnings. Check the baseline and omissions: a missing
+baseline or scan limit is not an empty diff. Omitted files were not reviewed;
+even a complete attachment cannot
 prove the backend consumed every byte. Remote attachments require operator
 opt-in via `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; never silently enable it.
-Automatic diff collection is not implemented.
+Neither file attachments nor diffs add checkout tools.
 Check reviewer-labelled `aggregate_panel.warnings` before consolidating votes;
 it includes live continuation warnings and the original panel-dispatch
 attachment limitations retained after reviewer run cleanup.

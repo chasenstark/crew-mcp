@@ -3,6 +3,16 @@
 These entries describe repository versions. Registry publication is a separate
 step; check npm dist-tags for the version available through `latest`.
 
+## 0.28.0 — 2026-11-04
+
+- Supply bounded automatic diffs to OpenAI-compatible read-only reviewers,
+  including committed changes when reviewing an existing Crew run.
+- Refresh diff contents on continuation while retaining the run's starting
+  commit. Give explicit files priority within the shared context budget.
+- Report missing baselines, scan limits and omitted patches. Require remote
+  opt-in before context reads and prevent Git filters from executing during
+  automatic collection.
+
 ## 0.27.0 — 2026-11-04
 
 - Attach explicit `context_files` to OpenAI-compatible dispatches, continuations,

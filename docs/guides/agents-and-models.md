@@ -83,7 +83,7 @@ Remote OpenAI-compatible endpoints use that endpoint's own authentication and
 billing.
 
 OpenAI-compatible agents are chat-completions workers without filesystem
-tools. They can review supplied text and explicitly attached files, as well as
+tools. They can review supplied text, attached files and bounded automatic diffs, as well as
 handle brainstorming and prose tasks.
 
 `list_agents.repo_context_mode` makes repository access explicit:
@@ -91,13 +91,14 @@ handle brainstorming and prose tasks.
 | Mode | What the worker can receive |
 | --- | --- |
 | `workspace` | Working-directory access through its provider tools. This does not prove it inspected a file. |
-| `supplied-text` | Prompt, peer messages and supported explicit file attachments; no checkout access. |
+| `supplied-text` | Prompt, peer messages, supported file attachments and automatic review diffs; no checkout tools. |
 | `unknown` | Crew cannot establish the configured command's capabilities. |
 
 OpenAI-compatible workers report `supplied-text`. Initial dispatches,
 continuations, and panel reviewers carry a `repo_context.supplied_text_only`
-warning. Binding a reviewer to an implementer's worktree does not automatically
-send its contents. These warnings do not prevent supplied-text tasks from running.
+warning. OpenAI-compatible read-only reviews receive a bounded automatic diff;
+they cannot explore the checkout or fetch missing context themselves. These
+warnings do not prevent supplied-text tasks from running.
 
 Agents with `list_agents.accepts_context_files: true` accept `context_files`
 on `run_agent`, `continue_run`, and each `run_panel` reviewer. For example:
@@ -117,8 +118,22 @@ selections apply only to that call. Resend the paths and restate the task on
 continuation; the adapter does not inherit its previous response. Unsupported
 adapters reject file selections.
 
-Crew accepts up to 50 paths, with at most 32 KiB per file and 64 KiB of file
-text in total. A separate estimated 16,384-token request budget reserves 4,096
+For capable supplied-text agents, `read_only` dispatches and continuations also
+collect a diff. At a host repository root, the baseline is the current `HEAD`:
+staged, unstaged and nonignored untracked contents are compared with that commit.
+A clean feature branch has no working-tree diff; Crew does not guess its branch
+base. When reviewing an existing Crew run, including a bound panel, the baseline
+is the run's recorded starting commit, so committed implementer changes are
+included. That baseline stays fixed across continuation; the contents refresh.
+An explicit panel working-directory override selects the corresponding target.
+Missing run metadata, non-Git directories and repository subdirectories produce
+omissions rather than silently selecting another baseline or a parent checkout.
+Write runs, disposable review workspaces, workspace agents and agents with
+unknown capabilities do not receive automatic diffs.
+
+Crew accepts up to 50 named paths, with at most 32 KiB per file and 64 KiB of
+repository text in total. Named files take priority over automatic patches.
+A shared estimated 16,384-token request budget reserves 4,096
 tokens for output and 1,024 for framing, subtracts the composed prompt, and
 counts serialized attachment data. Its conservative bytes/3 estimate is a
 heuristic, not a tokenizer or a guarantee about the backend's context window.
@@ -126,18 +141,28 @@ Whole files that exceed these limits are omitted, rather than partially read
 as complete files. Symlinks, paths outside the workspace, Git metadata,
 nonregular files, binary files and invalid UTF-8 are also omitted.
 
+Automatic scanning allows at most 2,000 paths, 512 KiB of Git metadata, 2 MiB
+of file/blob reads (including named-file reads), and a five-second scan deadline.
+Individual patches also have a 32 KiB limit. Its attachment states the baseline
+and whether collection was complete. Renames appear as a
+deletion and addition; conflicts, symlinks, submodules and unreadable entries
+are omitted. Git supplies bounded metadata and raw blobs; Crew safely reads
+current files and constructs patches without running repository diff or clean
+filters. These checks do not provide an OS sandbox against hostile concurrent
+filesystem changes. Inspect the omissions even when some patches were included.
+
 Omissions appear in the model's attachment and in terminal warnings:
 `context_truncated` for budget omissions, `context_file_omitted` for unusable
-paths, and `context_egress_skipped` when remote transmission is disabled. Inspect
+paths, `context_diff_incomplete` for incomplete automatic collection, and
+`context_egress_skipped` when remote transmission is disabled. Inspect
 these warnings before relying on a review. Even without a warning, Crew cannot
 verify whether the backend truncated input; an attached-file review does not
 establish an independent review of the whole checkout.
 
-Loopback endpoints receive selected files by default. To send them to a remote
+Loopback endpoints receive repository context by default. To send it to a remote
 endpoint, set `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1` in the Crew server's
-environment. Without it Crew skips the reads. Attachment requests reject
-redirects; configure the final endpoint URL directly. Automatic diff collection
-is not implemented.
+environment. Without it Crew skips context file and Git reads. Attachment
+requests reject redirects; configure the final endpoint URL directly.
 
 Generic agents run a configured command. Their filesystem, review, model, and
 result guarantees depend on that command; Crew does not invent unsupported

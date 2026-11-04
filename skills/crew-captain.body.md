@@ -571,17 +571,24 @@ do not shell out yourself.
   reviewer to attach relative paths from that run's working directory. Supply
   paths again and restate the task on continuation; selections and prior model
   responses are not inherited. Otherwise include needed excerpts in the prompt
-  or peer messages. A `working_directory` or implementer-worktree binding alone
-  does not send repository contents. `unknown` means Crew
+  or peer messages. Capable supplied-text agents in `read_only` mode also receive
+  a bounded automatic diff. Host roots compare with current `HEAD`; a known Crew
+  implementer worktree compares with its recorded starting commit, including
+  committed work. Continuations refresh contents against that same run baseline.
+  A clean host feature branch has no working-tree diff; no branch base is guessed.
+  Write and disposable-review modes do not auto-collect. `unknown` means Crew
   cannot establish the configured command's capabilities; verify them before
   relying on checkout access. Relay `repo_context.supplied_text_only` warnings
   and never count a supplied-text answer as an independent checkout review.
-  File attachments are bounded and may omit whole files. Relay
-  `context_truncated`, `context_file_omitted`, and `context_egress_skipped`
-  warnings; never treat an omitted-file review as complete. Remote attachments
+  Named files take priority over patches within the shared context budget.
+  Attachments are bounded and may omit whole files or patches. Relay
+  `context_truncated`, `context_file_omitted`, `context_diff_incomplete`, and
+  `context_egress_skipped` warnings; never treat an incomplete review as complete.
+  Check the stated baseline and omissions; a missing source baseline or scan
+  limit is not an empty diff. Remote attachments
   require operator opt-in with `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; do not
-  silently enable it. No warning proves that the backend consumed every byte,
-  and automatic diff collection is not available.
+  silently enable it. An absence of warnings does not prove that the backend
+  consumed every byte. Neither file attachments nor diffs add checkout tools.
   Check `aggregate_panel.warnings` when consolidating a panel; those
   reviewer-labelled context limitations include live continuation warnings and
   the original panel-dispatch snapshot retained after run cleanup.

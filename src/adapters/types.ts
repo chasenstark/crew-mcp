@@ -251,7 +251,7 @@ export interface AgentAdapter {
   readonly modelSelectionSupport?: ModelSelectionSupport;
   /** Repository access capability; lazy metadata must match the loaded adapter. */
   readonly repoContextMode?: RepoContextMode;
-  /** Consumes explicitly attached file text; lazy metadata must match. */
+  /** Consumes bounded repository text assembled by Crew; lazy metadata must match. */
   readonly acceptsRepoContext?: boolean;
   readonly captainCapabilities?: CaptainCapabilities;
   execute(task: Task): Promise<TaskResult>;
@@ -277,10 +277,27 @@ export type ReviewDispatchMode = 'read-only-dispatch' | 'ephemeral-worktree' | '
  */
 export type RepoContextMode = 'workspace' | 'supplied-text' | 'unknown';
 
-/** Per-call, bounded file text assembled by Crew; never provider instructions. */
+/** Internal review baseline. Host HEAD refreshes; an owned run's base stays fixed. */
+export type RepositoryReviewSource =
+  | { readonly kind: 'head' }
+  | { readonly kind: 'run'; readonly sourceRunId: string; readonly baseCommit: string }
+  | { readonly kind: 'unavailable'; readonly reason: string };
+
+/** Per-call, bounded repository text assembled by Crew; never provider instructions. */
 export interface RepositoryFileContext {
   readonly files: readonly { readonly path: string; readonly content: string }[];
   readonly omissions: readonly { readonly path: string; readonly reason: string }[];
+  readonly diff?: {
+    readonly baseCommit?: string;
+    readonly source: 'host-head' | 'run-branch-point' | 'unavailable';
+    readonly files: readonly {
+      readonly path: string;
+      readonly status: 'added' | 'modified' | 'deleted' | 'mode_changed';
+      readonly patch: string;
+    }[];
+    readonly omissions: readonly { readonly path: string; readonly reason: string }[];
+    readonly complete: boolean;
+  };
 }
 
 export function resolveRepoContextMode(

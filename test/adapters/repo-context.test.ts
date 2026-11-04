@@ -20,4 +20,12 @@ describe('repository context capability', () => {
     expect(warnings[0]).toContain('cannot inspect or edit checkout files');
     expect(warnings[0]).toContain('prompt or peer messages, including on continuation');
   });
+
+  it('describes bounded automatic review context without claiming workspace access or resume', () => {
+    const [warning] = repoContextWarnings({ name: 'local-text', repoContextMode: 'supplied-text', acceptsRepoContext: true });
+    expect(warning).toContain('Read-only runs receive bounded automatic review context when allowed');
+    expect(warning).toContain('inspect omission warnings');
+    expect(warning).toContain('attach context_files');
+    expect(warning).toContain('not a complete-workspace or conversational-resume guarantee');
+  });
 });

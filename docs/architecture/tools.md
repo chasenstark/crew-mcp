@@ -71,20 +71,27 @@ catalogs are cached in-process; `refresh:true` bypasses the cache.
 
 `repo_context_mode` separately reports `workspace`, `supplied-text`, or
 `unknown`. Supplied-text agents receive the composed prompt and any explicitly
-selected attachments they support; a working directory alone does not provide
-checkout contents. Capability warnings persist with terminal and panel reviewer
+selected attachments they support. Capable read-only agents also receive a
+bounded automatic diff, but cannot explore the checkout. Capability warnings persist with terminal and panel reviewer
 results. Unknown capabilities are not guessed from the agent's name or endpoint.
 
 `accepts_context_files` reports explicit file-attachment support. `run_agent`,
 `continue_run`, and each `run_panel` reviewer accept an optional `context_files`
 array of up to 50 relative paths, each 1–4096 characters. Unsupported agents
 reject nonempty selections before dispatch. Files are read from the effective
-run working directory with containment and resource limits; no automatic diff
-is collected. Selections are per call and are not inherited on continuation.
+run working directory with containment and resource limits. Selections are per
+call and are not inherited on continuation.
 A files-only continuation is accepted, but callers should restate their task
 because supplied-text adapters do not resume the preceding conversation.
 
-Remote file reads require `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; loopback
+Automatic diffs require `supplied-text`, positive attachment support and
+`read_only` mode. A host root uses current `HEAD`; an existing Crew run uses its
+recorded branch point, including committed work. The baseline persists across
+continuation while contents refresh. Named files take budget priority. Diff
+omissions and scan limits are visible; write and disposable-review modes do not
+auto-collect. A clean host feature branch is not compared to another branch.
+
+Remote repository context reads require `CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1`; loopback
 endpoints are allowed by default. Omission/egress warnings reach terminal
 results, and the model receives an omission list. Original panel-dispatch
 snapshots retain these warnings after reviewer runs are removed; while a run

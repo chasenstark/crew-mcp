@@ -2,11 +2,18 @@ import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'crypto';
 import {
+  closeSync,
+  constants,
   createReadStream,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
+  openSync,
+  opendirSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmdirSync,
   rmSync,
@@ -40,6 +47,7 @@ import {
   type FileLockRecord,
 } from '../utils/file-lock.js';
 import { logger } from '../utils/logger.js';
+import type { RepositoryReviewSource } from '../adapters/types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -189,6 +197,88 @@ export class WorktreeManager {
 
   hasOwnedRunWorktreeRecord(runId: string): boolean {
     return this.readRunWorktreeRecord(runId) !== undefined;
+  }
+
+  /** Read only Crew's bounded ownership metadata; Git verification belongs to
+   * the gated context assembler. Never infer a run's baseline from HEAD. */
+  resolveRepositoryReviewSource(workingDirectory: string, sourceRunId?: string): RepositoryReviewSource {
+    const unavailable = (reason: string): RepositoryReviewSource => ({ kind: 'unavailable', reason });
+    let target: string;
+    let runsRoot: string;
+    try {
+      target = realpathSync(workingDirectory);
+      runsRoot = realpathSync(this.runBasePath);
+    } catch {
+      return unavailable('working_directory_unavailable');
+    }
+    const inspect = (runId: string): RepositoryReviewSource => {
+      if (!/^[a-zA-Z0-9._-]{1,200}$/.test(runId)) return unavailable('invalid_run_metadata');
+      let fd: number | undefined;
+      try {
+        const metadataPath = this.runMetadataFilePath(runId);
+        if (!constants.O_NOFOLLOW) return unavailable('run_metadata_unavailable');
+        fd = openSync(metadataPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const before = fstatSync(fd);
+        if (!before.isFile() || before.size > 16 * 1024) return unavailable('invalid_run_metadata');
+        const bytes = Buffer.alloc(16 * 1024 + 1);
+        let count = 0;
+        while (count < bytes.length) {
+          const read = readSync(fd, bytes, count, bytes.length - count, count);
+          if (read === 0) break;
+          count += read;
+        }
+        const after = fstatSync(fd);
+        const atPath = lstatSync(metadataPath);
+        if (count > 16 * 1024 || count !== after.size || before.size !== after.size
+          || before.dev !== after.dev || before.ino !== after.ino
+          || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs
+          || atPath.isSymbolicLink() || atPath.dev !== after.dev || atPath.ino !== after.ino) return unavailable('invalid_run_metadata');
+        const record = JSON.parse(bytes.subarray(0, count).toString('utf8')) as Partial<RunWorktreeRecord> | null;
+        if (!record || record.runId !== runId || typeof record.worktreePath !== 'string'
+          || !isAbsolute(record.worktreePath) || realpathSync(record.worktreePath) !== target
+          || realpathSync(join(this.runBasePath, this.toRunToken(runId), 'worktree')) !== target
+          || typeof record.branchPointSha !== 'string' || !/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(record.branchPointSha)) {
+          return unavailable('invalid_run_metadata');
+        }
+        return { kind: 'run', sourceRunId: runId, baseCommit: record.branchPointSha.toLowerCase() };
+      } catch {
+        return unavailable('run_metadata_unavailable');
+      } finally {
+        if (fd !== undefined) closeSync(fd);
+      }
+    };
+    if (sourceRunId !== undefined) return inspect(sourceRunId);
+    const parts = relative(runsRoot, target).split(/[\\/]/);
+    if (parts[0] === '..' || isAbsolute(relative(runsRoot, target))) return { kind: 'head' };
+    if (parts.length !== 2 || parts[1] !== 'worktree') return unavailable('run_metadata_unavailable');
+    // Generated IDs already equal their directory token. Verify the record,
+    // rather than treating the directory name itself as identity evidence.
+    const direct = inspect(parts[0]);
+    if (direct.kind === 'run') return direct;
+    // Older/internal worktree callers can have an ID that normalizes to a
+    // different directory token. Bound discovery and refuse incomplete lookup.
+    try {
+      const directory = opendirSync(this.runMetadataPath);
+      const matches: RepositoryReviewSource[] = [];
+      try {
+        let count = 0;
+        let entry;
+        while ((entry = directory.readSync()) !== null) {
+          if (++count > 1024) return unavailable('run_metadata_inventory_exceeded');
+          if (!entry.name.endsWith('.json')) continue;
+          let runId: string;
+          try { runId = decodeURIComponent(entry.name.slice(0, -5)); } catch { continue; }
+          if (this.toRunToken(runId) !== parts[0]) continue;
+          const found = inspect(runId);
+          if (found.kind === 'run') matches.push(found);
+        }
+      } finally {
+        directory.closeSync();
+      }
+      return matches.length === 1 ? matches[0] : unavailable('run_metadata_unavailable');
+    } catch {
+      return unavailable('run_metadata_unavailable');
+    }
   }
 
   getRunGitCommitWritablePaths(runId: string): RunGitCommitWritablePaths {

@@ -37,12 +37,13 @@ import { z } from 'zod';
 import type { AdapterRegistry } from '../../adapters/registry.js';
 import { modelSelectionToWire } from '../../adapters/model-selection.js';
 import { repoContextWarnings } from '../../adapters/repo-context.js';
-import { assembleNamedFileContext, CONTEXT_EGRESS_SKIPPED_WARNING } from '../context-injection.js';
+import { assembleRepositoryContext, CONTEXT_EGRESS_SKIPPED_WARNING } from '../context-injection.js';
 import type {
   AgentAdapter,
   EffortLevel,
   GoalTaskConstraint,
   ModelSelectionRecord,
+  RepositoryReviewSource,
   TaskResult,
 } from '../../adapters/types.js';
 import { clampEffortToSupported, resolveReviewDispatchMode } from '../../adapters/types.js';
@@ -126,14 +127,35 @@ export function contextFilesUnsupportedMessage(adapter: Pick<AgentAdapter, 'name
 export function contextFilesDispatchWarnings(
   adapter: Pick<AgentAdapter, 'unmetered'>,
   contextFiles: readonly string[] | undefined,
+  automaticReview = false,
 ): string[] {
-  return contextFiles?.length && !allowsNamedFileContext(adapter)
+  return (contextFiles?.length || automaticReview) && !allowsNamedFileContext(adapter)
     ? [CONTEXT_EGRESS_SKIPPED_WARNING]
     : [];
 }
 
 function allowsNamedFileContext(adapter: Pick<AgentAdapter, 'unmetered'>): boolean {
   return adapter.unmetered === true || process.env.CREW_OPENAI_ALLOW_REMOTE_CONTEXT === '1';
+}
+
+export function hasAutomaticReviewContext(adapter: AgentAdapter, runMode: RunMode): boolean {
+  return runMode === 'read_only' && adapter.acceptsRepoContext === true && adapter.repoContextMode === 'supplied-text';
+}
+
+function storedReviewSource(value: unknown): RepositoryReviewSource | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null) return { kind: 'unavailable', reason: 'invalid_review_source' };
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'head') return { kind: 'head' };
+  if (record.kind === 'run' && typeof record.sourceRunId === 'string'
+    && /^[a-zA-Z0-9._-]{1,200}$/.test(record.sourceRunId) && typeof record.baseCommit === 'string'
+    && /^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(record.baseCommit)) {
+    return { kind: 'run', sourceRunId: record.sourceRunId, baseCommit: record.baseCommit.toLowerCase() };
+  }
+  if (record.kind === 'unavailable' && typeof record.reason === 'string' && /^[a-z_]{1,80}$/.test(record.reason)) {
+    return { kind: 'unavailable', reason: record.reason };
+  }
+  return { kind: 'unavailable', reason: 'invalid_review_source' };
 }
 
 export const runAgentInputSchema = z.object({
@@ -205,7 +227,7 @@ export const runAgentInputSchema = z.object({
 export type RunAgentInput = z.infer<typeof runAgentInputSchema>;
 
 export const RUN_AGENT_DESCRIPTION =
-  'Start a bounded subagent run. context_files attaches bounded relative files for capable text-only agents; remote delivery requires CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1. Models are exact-or-refuse. goal is a bounded validation loop (native: Claude write only). peer_messages are untrusted; criteria_set_id marks iterate policy. ban_override, same_host_ok and health/quota dispatch_anyway require approval. run_mode: write/read_only/ephemeral_review. provision_deps provisions worktree dependencies. Returns async model/goal/deps/relay/warnings and a crew-wait required_next_action.';
+  'Start a bounded subagent run. Capable supplied-text read_only runs receive bounded automatic diffs; context_files adds relative files. Remote context requires CREW_OPENAI_ALLOW_REMOTE_CONTEXT=1. Models are exact-or-refuse. goal: bounded validation loop (native Claude write only). peer_messages are untrusted; criteria_set_id marks iterate policy. ban_override, same_host_ok and health/quota dispatch_anyway require approval. run_mode: write/read_only/ephemeral_review. provision_deps provisions worktree dependencies. Returns async model/goal/deps/relay/warnings and crew-wait required_next_action.';
 
 export async function runAgentToolHandler(
   args: RunAgentInput,
@@ -382,6 +404,8 @@ export interface RunAgentHandlerContext {
    * source-mutation guard semantics.
    */
   readonly ephemeralReviewSnapshot?: EphemeralSnapshotSource;
+  /** Internal source identity for a panel's in-place implementer reviewer. */
+  readonly reviewSourceRunId?: string;
   /**
    * Per-user crew home, used to read the `deps.provision` config default.
    * Optional so plan-level tests can omit it (built-in default applies).
@@ -433,7 +457,11 @@ export interface RunAgentDispatchPlan {
   readonly goalConstraint?: GoalTaskConstraint;
   readonly adapter: AgentAdapter;
   readonly toolCallId: string;
-  readonly buildTask: (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv) => DispatchTask;
+  readonly buildTask: (
+    composedPrompt: string,
+    dispatchMcpEnv?: DispatchMcpEnv,
+    onReviewSourceResolved?: (source: RepositoryReviewSource) => Promise<void>,
+  ) => DispatchTask;
 }
 
 export interface RunAgentErrorPlan {
@@ -564,7 +592,7 @@ export async function planRunAgent(
     ? [readOnlyAdvisoryWarning(adapter.name)]
     : [];
   dispatchWarnings.push(...repoContextWarnings(adapter));
-  dispatchWarnings.push(...contextFilesDispatchWarnings(adapter, input.context_files));
+  dispatchWarnings.push(...contextFilesDispatchWarnings(adapter, input.context_files, hasAutomaticReviewContext(adapter, runMode)));
   if (goalPlan.warning !== undefined) dispatchWarnings.push(goalPlan.warning);
   let worktreePath: string;
   let branchPointSeedPaths: readonly string[] | undefined;
@@ -575,7 +603,7 @@ export async function planRunAgent(
     // RunStateV1 mirrors that — it is informational, not a worktree
     // we own.
     worktreePath = input.working_directory ?? ctx.worktreeManager.getProjectRoot();
-    if (input.working_directory === undefined) {
+    if (input.working_directory === undefined && adapter.repoContextMode !== 'supplied-text') {
       try {
         await ctx.worktreeManager.assertHostRepoReadyForDispatch(runId);
       } catch (err: unknown) {
@@ -656,13 +684,19 @@ export async function planRunAgent(
   const toolCallId = randomUUID();
   await ctx.onStart?.({ agentName: input.agent_id, runId, worktreePath });
 
-  const buildTask = (composedPrompt: string, dispatchMcpEnv?: DispatchMcpEnv): DispatchTask =>
+  const buildTask = (
+    composedPrompt: string,
+    dispatchMcpEnv?: DispatchMcpEnv,
+    onReviewSourceResolved?: (source: RepositoryReviewSource) => Promise<void>,
+  ): DispatchTask =>
     buildAdapterDispatchTask({
       toolCallId,
       runId,
       adapter,
       prompt: composedPrompt,
       contextFiles: input.context_files,
+      reviewSourceRunId: ctx.reviewSourceRunId,
+      onReviewSourceResolved,
       dispatchMcpEnv,
       effectiveWorkingDirectory,
       worktreePath,
@@ -840,6 +874,9 @@ export function buildAdapterDispatchTask(args: {
   readonly adapter: AgentAdapter;
   readonly prompt: string;
   readonly contextFiles?: readonly string[];
+  readonly reviewSource?: RepositoryReviewSource;
+  readonly reviewSourceRunId?: string;
+  readonly onReviewSourceResolved?: (source: RepositoryReviewSource) => Promise<void>;
   readonly dispatchMcpEnv?: DispatchMcpEnv;
   readonly effectiveWorkingDirectory: string;
   readonly worktreePath: string;
@@ -888,6 +925,7 @@ export function buildAdapterDispatchTask(args: {
         throw new Error(contextFilesUnsupportedMessage(args.adapter));
       }
       const readOnly = args.runMode === 'read_only';
+      const suppliedText = args.adapter.repoContextMode === 'supplied-text';
       let writablePaths: readonly string[] | undefined;
       let branchPointBefore: ReadonlyMap<string, string> | undefined;
       if (ownsWorktree(args.runMode)) {
@@ -922,7 +960,7 @@ export function buildAdapterDispatchTask(args: {
       // every read-only dispatch against a dirty host repo (the common
       // case during development) returns a false-positive warning
       // listing files the agent never touched.
-      const dirtyBefore = readOnly
+      const dirtyBefore = readOnly && !suppliedText
         ? await capturePathSignatureSnapshot(
             args.effectiveWorkingDirectory,
             await detectDirtyTree(args.effectiveWorkingDirectory).catch(() => []),
@@ -931,12 +969,34 @@ export function buildAdapterDispatchTask(args: {
       if (taskCtx.signal.aborted) {
         throw taskCtx.signal.reason ?? new Error('cancelled');
       }
-      const assembled = args.contextFiles?.length
-        ? await assembleNamedFileContext({
+      const automaticReview = hasAutomaticReviewContext(args.adapter, args.runMode);
+      const allowRead = allowsNamedFileContext(args.adapter);
+      let reviewSource: RepositoryReviewSource | undefined;
+      if (automaticReview) {
+        // A defined source requests automatic context even when remote reads
+        // are denied. The assembler checks allowRead before any Git operation.
+        reviewSource = { kind: 'unavailable', reason: 'remote_context_disabled' };
+        if (allowRead) {
+          const stored = storedReviewSource(args.reviewSource);
+          if (stored?.kind === 'run') {
+            const current = args.worktreeManager.resolveRepositoryReviewSource(args.effectiveWorkingDirectory, stored.sourceRunId);
+            reviewSource = current.kind === 'run' && current.baseCommit === stored.baseCommit
+              ? stored
+              : { kind: 'unavailable', reason: 'run_baseline_changed_or_unavailable' };
+          } else {
+            reviewSource = stored ?? args.worktreeManager.resolveRepositoryReviewSource(args.effectiveWorkingDirectory, args.reviewSourceRunId);
+          }
+          await args.onReviewSourceResolved?.(reviewSource);
+          taskCtx.signal.throwIfAborted();
+        }
+      }
+      const assembled = args.contextFiles?.length || automaticReview
+        ? await assembleRepositoryContext({
             workingDirectory: args.effectiveWorkingDirectory,
-            contextFiles: args.contextFiles,
+            contextFiles: args.contextFiles ?? [],
             prompt: args.prompt,
-            allowRead: allowsNamedFileContext(args.adapter),
+            allowRead,
+            reviewSource,
             signal: taskCtx.signal,
           })
         : undefined;
@@ -1007,6 +1067,7 @@ export function buildAdapterDispatchTask(args: {
         worktreeManager: args.worktreeManager,
         runId: args.runId,
         adapterName: args.adapter.name,
+        skipReadOnlyProbe: suppliedText,
       });
     },
   };
@@ -1064,6 +1125,7 @@ async function finalizeAdapterResult(args: {
   readonly worktreeManager: WorktreeManager;
   readonly runId: string;
   readonly adapterName: string;
+  readonly skipReadOnlyProbe?: boolean;
 }): Promise<TaskResult> {
   const resultWithDispatchWarnings =
     args.dispatchWarnings && args.dispatchWarnings.length > 0
@@ -1108,6 +1170,7 @@ async function finalizeAdapterResult(args: {
   }
 
   if (args.runMode === 'read_only') {
+    if (args.skipReadOnlyProbe) return resultWithDispatchWarnings;
     // Best-effort: detect contract violations (the agent edited
     // despite being told not to) and surface as a warning. Never
     // fail the dispatch on probe errors — the run completed; the

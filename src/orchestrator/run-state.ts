@@ -46,6 +46,7 @@ import { warnOnce } from '../utils/warn-once.js';
 import type {
   GoalExecutionResult,
   ModelSelectionRecord,
+  RepositoryReviewSource,
   TaskFailure,
 } from '../adapters/types.js';
 import type { DepsProvisionRecord } from '../git/deps-provision.js';
@@ -128,6 +129,10 @@ export interface RunStateV1 {
   readonly startedAt: string;
   readonly completedAt?: string;
   readonly worktreePath: string;
+  /** Sticky automatic-review baseline. Absent until the local-read gate allows
+   * successful resolution; transient unavailability is retried, while a resolved
+   * run baseline survives continuations and server restarts. */
+  readonly repositoryReviewSource?: RepositoryReviewSource;
   /**
    * Absolute, symlink-resolved path of the host repo this run was
    * dispatched from. Added in M3.5 so runs in a single global
